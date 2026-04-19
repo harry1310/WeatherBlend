@@ -1,0 +1,100 @@
+# WeatherBlend
+
+PoC for blending ~6 free NWP models against ERA5 reanalysis (training truth)
+and METAR observations (verification truth) to produce a better single-location
+forecast than any single model. Target site: **Bonehill Rocks, Dartmoor**
+(50.5831°N, 3.7931°W, 393m).
+
+Stack: .NET 10 console app, Parquet + DuckDB on disk (no database), Microsoft.ML
+LightGBM for the blender. Open-Meteo for forecasts + ERA5; aviationweather.gov
+for live METAR; OGIMET for historical METAR.
+
+## Layout
+
+```
+src/WeatherBlend/
+  Program.cs              CLI + DI host
+  config.yaml             all tunables (location, models, variables, paths)
+  Config/AppConfig.cs     POCOs bound from yaml
+  Models/                 ForecastRow, ObservationRow, Era5Row
+  Collect/                OpenMeteoClient, MetarClient, Era5Client, OgimetClient
+  Storage/ParquetWriter   hive-partitioned writer (forecasts/observations/era5)
+  Commands/               Collect, Backfill, Status, Inspect, Compare, Train, Evaluate
+tests/WeatherBlend.Tests/
+data/                     (gitignored) parquet output
+```
+
+Hive paths:
+- `data/forecasts/location=<n>/model=<id>/date=<yyyy-MM-dd>/run=<HH>.parquet` — NWP predictions (live + historical-forecast API, same schema)
+- `data/truth/era5/location=<n>/date=<yyyy-MM-dd>/data.parquet` — reanalysis, gapless training truth
+- `data/truth/metar/location=<n>/station=<icao>/date=<yyyy-MM-dd>/observations.parquet` — station obs, verification truth
+
+## Commands I'll use most
+
+```powershell
+dotnet build
+dotnet run --project src/WeatherBlend -- collect                    # one cycle (live forecasts + recent METAR)
+dotnet run --project src/WeatherBlend -- status                     # disk summary
+dotnet run --project src/WeatherBlend -- inspect --path <parquet>   # dump one file
+dotnet run --project src/WeatherBlend -- compare --glob "<glob>"    # cross-model agreement view
+dotnet run --project src/WeatherBlend -- backfill --source all --start 2023-04-19 --end 2026-04-18
+dotnet run --project src/WeatherBlend -- train --target temperature # phase 2 stub
+dotnet run --project src/WeatherBlend -- evaluate                   # phase 2 stub
+```
+
+`backfill --source` accepts `forecasts | era5 | metar | all`. `collect` is what
+Task Scheduler should fire on a cycle (currently every 3h per README; 6h is also reasonable).
+
+## Phased roadmap
+
+1. **Phase 1 (current):** collector, storage, status, ERA5 + OGIMET backfill. Accumulate data.
+2. **Phase 2:** temperature blender — LightGBM per lead-time bucket, trained on ERA5,
+   verified on METAR; must beat persistence, climatology, mean-of-models, and best single model.
+3. **Phase 3:** quantitative precip source (Met Office DataHub gauge / Nimrod radar) —
+   ERA5 precip is OK but a real gauge/radar near Dartmoor is better for orographic events.
+4. **Phase 4:** precip occurrence classifier (Brier, reliability, AUC).
+5. **Phase 5:** precip intensity + quantile regressions for probabilistic thresholds (CRPS).
+6. **Phase 6:** add ML models (GraphCast, AIFS) as inputs.
+
+## Key design decisions (see docs/DESIGN.md for full reasoning)
+
+- **Parquet + DuckDB, no database.** Single-location volume is tens of MB/year;
+  a DB adds ops burden with no speed benefit at this size.
+- **Open-Meteo for forecasts + ERA5.** Six models + reanalysis through one consistent
+  JSON API with the same query pattern. Tradeoff: their interpolation, deterministic runs only.
+- **Two truth sources:** ERA5 for *training* (gapless, quantitative precip);
+  METAR for *verification* (real obs, sanity check that the blend beats reality, not just reanalysis).
+- **LightGBM blender.** Native missing-value handling (models drop in/out per
+  lead-time), monotonic constraints, quantile mode, first-class .NET trainer.
+- **Per-lead-time models, not one big model.** Skill characteristics differ wildly
+  across horizons. Buckets: [1-3h], [6-12h], [24-36h], [48-72h], [96-120h], [144-168h].
+- **Two-stage precip (phase 5):** P(precip > 0.1mm) classifier × E[precip | wet]
+  intensity regression, plus quantile regressions for probabilistic output.
+- **Verification rules pre-committed:** time-based splits only; walk-forward
+  validation; report per lead time; Brier + reliability for precip alongside MAE.
+
+## Known limitations
+
+- Lowland METAR (EGTE / EGDY) as verification truth for a 393m tor — systematic
+  biases. ERA5's 0.25° grid + elevation interpolation is closer to representative.
+- Open-Meteo historical-forecast archive returns best-available per valid-time,
+  not rigorous "as issued at run T". Good enough for PoC baselines.
+- Live collector approximates run time as "most recent hour" — historical rows
+  end up with negative `LeadHours`. Filter `WHERE LeadHours >= 0` for analysis.
+- OGIMET is community-funded and rate-limits aggressively (5s between requests
+  enforced in `BackfillCommand`). Hammer it and the IP gets blocked.
+
+## Gotchas worth knowing now
+
+- `config.yaml` is copied to build output via `<CopyToOutputDirectory>`; loaded
+  from `AppContext.BaseDirectory` (or `WEATHERBLEND_CONFIG` env var).
+- YAML provider is `NetEscapades.Configuration.Yaml` (the
+  `Microsoft.Extensions.Configuration.Yaml` package only ships a 2.0.0-preview).
+- `ObservationRow`/`Era5Row` have `[SetsRequiredMembers]` parameterless ctors so
+  `ParquetSerializer.DeserializeAsync<T>` satisfies its `new()` constraint.
+- DuckDB queries use `hive_partitioning = false` because the hive keys
+  `model`/`station` collide with in-file `Model`/`Station` columns under
+  case-insensitive resolution; in-file columns are authoritative.
+- OGIMET response is CSV-prefixed: `ICAO,YYYY,MM,DD,HH,mm,METAR_TEXT`. NIL
+  reports are skipped. The minimal METAR parser covers routine bodies only —
+  TAF amendments, RVR, runway state, etc. are ignored.

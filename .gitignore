@@ -1,0 +1,22 @@
+# Build output
+bin/
+obj/
+out/
+
+# IDE
+.vs/
+.idea/
+*.user
+*.suo
+
+# Data - never commit data directories
+data/
+logs/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# User config overrides (if you add them later)
+config.local.yaml
+appsettings.Local.json

@@ -1,0 +1,85 @@
+# WeatherBlend configuration
+#
+# Location: Bonehill Rocks, Dartmoor
+# A granite tor on the eastern edge of Dartmoor, at 393m elevation.
+# Expect orographic precipitation enhancement, frequent low cloud/fog,
+# and strong local wind effects that lowland stations will not capture well.
+
+location:
+  name: "bonehill_rocks"
+  displayName: "Bonehill Rocks, Dartmoor"
+  latitude: 50.5831
+  longitude: -3.7931
+  elevationMeters: 393
+
+  # METAR truth sources. Exeter is nearest but lowland (~30km SE, ~30m elev).
+  # Yeovilton is further but more frequent reports.
+  # TODO: replace with Met Office DataHub station closer to the moor
+  #       (e.g. Princetown, 414m) for precip training in phase 2.
+  metar:
+    primary: "EGTE"    # Exeter Airport
+    fallback: "EGDY"   # RNAS Yeovilton
+
+# NWP models to collect via Open-Meteo.
+# Open-Meteo exposes many models through one API with a consistent schema.
+# See https://open-meteo.com/en/docs for the full list.
+models:
+  - id: "gfs_seamless"
+    displayName: "NOAA GFS"
+  - id: "ecmwf_ifs025"
+    displayName: "ECMWF IFS 0.25°"
+  - id: "icon_seamless"
+    displayName: "DWD ICON"
+  - id: "meteofrance_seamless"
+    displayName: "Météo-France ARPEGE/AROME"
+  - id: "ukmo_seamless"
+    displayName: "UK Met Office"
+  - id: "gem_seamless"
+    displayName: "Environment Canada GEM"
+
+# Variables to pull for every model, every run.
+# Pull everything we might want now — backfilling later is painful.
+variables:
+  - temperature_2m
+  - dew_point_2m
+  - relative_humidity_2m
+  - precipitation
+  - precipitation_probability
+  - rain
+  - showers
+  - snowfall
+  - cloud_cover
+  - cloud_cover_low
+  - cloud_cover_mid
+  - cloud_cover_high
+  - wind_speed_10m
+  - wind_direction_10m
+  - wind_gusts_10m
+  - surface_pressure
+  - cape
+  - visibility
+
+# Lead times (hours ahead) we care about for evaluation.
+# Collection pulls the full forecast; these are the horizons we train & score on.
+leadHours: [1, 3, 6, 12, 24, 36, 48, 72, 96, 120, 144, 168]
+
+# How far ahead to pull each run.
+forecastDays: 7
+
+# Storage root - relative paths are resolved from the repo root.
+# Layout:
+#   forecasts/   NWP model predictions (live + historical-forecast API, same schema)
+#   truth/era5/  Open-Meteo ERA5 reanalysis - training truth (gapless, quantitative)
+#   truth/metar/ Station observations - verification truth (gappy, real obs)
+storage:
+  forecastsPath: "data/forecasts"
+  observationsPath: "data/truth/metar"
+  era5Path: "data/truth/era5"
+  predictionsPath: "data/predictions"
+  reportsPath: "data/reports"
+
+# HTTP client settings.
+http:
+  userAgent: "WeatherBlend-PoC/0.1 (contact: you@example.com)"
+  timeoutSeconds: 60
+  retryCount: 3
