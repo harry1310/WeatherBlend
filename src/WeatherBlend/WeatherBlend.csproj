@@ -14,6 +14,7 @@
     <None Update="config.yaml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <InternalsVisibleTo Include="WeatherBlend.Tests" />
   </ItemGroup>
 
   <ItemGroup>

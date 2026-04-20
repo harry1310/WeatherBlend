@@ -120,9 +120,9 @@ public static class Program
 
         var targetOpt = new Option<string>(
             name: "--target",
-            description: "Target variable: temperature | precip_occurrence | precip_amount",
+            description: "Target variable: temperature",
             getDefaultValue: () => "temperature");
-        var train = new Command("train", "Train the blender (stubbed in phase 1)") { targetOpt };
+        var train = new Command("train", "Train the temperature blender (phase 2a)") { targetOpt };
         train.SetHandler(async (target) =>
         {
             var cmd = host.Services.GetRequiredService<TrainCommand>();
@@ -130,12 +130,23 @@ public static class Program
         }, targetOpt);
         root.AddCommand(train);
 
-        var evaluate = new Command("evaluate", "Run verification report (stubbed in phase 1)");
-        evaluate.SetHandler(async ctx =>
+        var evalTargetOpt = new Option<string>(
+            name: "--target",
+            description: "Target variable: temperature",
+            getDefaultValue: () => "temperature");
+        var modelVersionOpt = new Option<string>(
+            name: "--model-version",
+            description: "Version directory name (e.g. 'v2026-04-20_140000') or 'current'",
+            getDefaultValue: () => "current");
+        var evaluate = new Command("evaluate", "Run verification report against the held-out test set")
+        {
+            evalTargetOpt, modelVersionOpt,
+        };
+        evaluate.SetHandler(async (target, version) =>
         {
             var cmd = host.Services.GetRequiredService<EvaluateCommand>();
-            ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
-        });
+            await cmd.RunAsync(target, version, CancellationToken.None);
+        }, evalTargetOpt, modelVersionOpt);
         root.AddCommand(evaluate);
 
         var pathOpt = new Option<string>("--path", "Path to a parquet file") { IsRequired = true };

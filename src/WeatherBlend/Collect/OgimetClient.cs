@@ -90,7 +90,7 @@ public sealed class OgimetClient
     private static readonly Regex PrecipCodeRx =
         new(@"(RA|DZ|SN|SG|PL|GR|GS|IC|UP|SH|TS)", RegexOptions.Compiled);
 
-    private static ObservationRow? TryParseCsvLine(string line, string locationName, string station)
+    internal static ObservationRow? TryParseCsvLine(string line, string locationName, string station)
     {
         // Split off the 6 date fields + METAR text.
         var parts = line.Split(',', 7);

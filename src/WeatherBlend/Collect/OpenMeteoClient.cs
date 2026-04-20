@@ -84,7 +84,7 @@ public sealed class OpenMeteoClient
         return Parse(doc.RootElement, location.Name, modelId, isHistorical);
     }
 
-    private static List<ForecastRow> Parse(JsonElement root, string locationName, string modelId, bool isHistorical)
+    internal static List<ForecastRow> Parse(JsonElement root, string locationName, string modelId, bool isHistorical)
     {
         if (!root.TryGetProperty("hourly", out var hourly))
             return new();
