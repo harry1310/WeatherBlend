@@ -38,7 +38,15 @@ public static class Program
                     c.Timeout = TimeSpan.FromSeconds(cfg.Http.TimeoutSeconds);
                     c.DefaultRequestHeaders.UserAgent.ParseAdd(cfg.Http.UserAgent);
                 })
-                .AddStandardResilienceHandler();
+                .AddStandardResilienceHandler(opts =>
+                {
+                    // Default 10s attempt / 30s total is too tight for meteofrance_seamless
+                    // historical chunks — slow archive responses were timing out on backfill.
+                    // Widened with extra headroom; SamplingDuration must be ≥ 2×AttemptTimeout.
+                    opts.AttemptTimeout.Timeout = TimeSpan.FromSeconds(60);
+                    opts.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(180);
+                    opts.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(240);
+                });
 
                 services.AddHttpClient<MetarClient>(c =>
                 {

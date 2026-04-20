@@ -38,10 +38,25 @@ public sealed class MetarClient
 
         using var resp = await _http.GetAsync(url, ct);
         resp.EnsureSuccessStatusCode();
-        await using var stream = await resp.Content.ReadAsStreamAsync(ct);
-        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
 
         var rows = new List<ObservationRow>();
+
+        // aviationweather.gov returns 204 No Content when the station has no
+        // METARs in the requested window — not an error, just "nothing to report".
+        if (resp.StatusCode == System.Net.HttpStatusCode.NoContent)
+        {
+            _log.LogInformation("No METARs available for {Station} (204)", station);
+            return rows;
+        }
+
+        var body = await resp.Content.ReadAsStringAsync(ct);
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            _log.LogInformation("Empty body for {Station}", station);
+            return rows;
+        }
+
+        using var doc = JsonDocument.Parse(body);
         if (doc.RootElement.ValueKind != JsonValueKind.Array)
             return rows;
 

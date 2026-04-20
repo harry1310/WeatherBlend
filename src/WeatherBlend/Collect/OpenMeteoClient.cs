@@ -34,7 +34,7 @@ public sealed class OpenMeteoClient
         IEnumerable<string> variables,
         int forecastDays,
         CancellationToken ct)
-        => FetchAsync(LiveBase, location, modelId, variables, forecastDays, null, null, ct);
+        => FetchAsync(LiveBase, location, modelId, variables, forecastDays, null, null, isHistorical: false, ct);
 
     public Task<List<ForecastRow>> FetchHistoricalAsync(
         LocationConfig location,
@@ -43,7 +43,7 @@ public sealed class OpenMeteoClient
         DateOnly startDate,
         DateOnly endDate,
         CancellationToken ct)
-        => FetchAsync(HistoricalBase, location, modelId, variables, null, startDate, endDate, ct);
+        => FetchAsync(HistoricalBase, location, modelId, variables, null, startDate, endDate, isHistorical: true, ct);
 
     private async Task<List<ForecastRow>> FetchAsync(
         string baseUrl,
@@ -53,6 +53,7 @@ public sealed class OpenMeteoClient
         int? forecastDays,
         DateOnly? startDate,
         DateOnly? endDate,
+        bool isHistorical,
         CancellationToken ct)
     {
         var hourly = string.Join(",", variables);
@@ -80,10 +81,10 @@ public sealed class OpenMeteoClient
         await using var stream = await resp.Content.ReadAsStreamAsync(ct);
         using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
 
-        return Parse(doc.RootElement, location.Name, modelId);
+        return Parse(doc.RootElement, location.Name, modelId, isHistorical);
     }
 
-    private static List<ForecastRow> Parse(JsonElement root, string locationName, string modelId)
+    private static List<ForecastRow> Parse(JsonElement root, string locationName, string modelId, bool isHistorical)
     {
         if (!root.TryGetProperty("hourly", out var hourly))
             return new();
@@ -119,17 +120,20 @@ public sealed class OpenMeteoClient
         var vis   = Col("visibility");
 
         // Open-Meteo doesn't return the run time explicitly.
-        // Live endpoint: model run is recent; we approximate run_time as
-        // the most recent model cycle hour prior to "now". For the historical
-        // endpoint this approximation isn't quite right - the API returns the
-        // best-available forecast per valid-time, not a specific run.
-        // Phase 2: go direct to ECMWF/NOAA GRIB archives for rigorous run_time tracking.
-        var runTime = NowUtcFloorToHour();
+        // Live endpoint: approximate run_time as the most recent whole hour — rows
+        //   a few hours old end up with negative LeadHours; filter WHERE LeadHours>=0 for analysis.
+        // Historical endpoint: "run time" is meaningless (API returns best-available per valid-time,
+        //   not rows from a specific run). Set RunTime per-row to midnight of the valid day so:
+        //     - LeadHours = hour-of-day [0..23]  (stable, not wall-clock dependent)
+        //     - Storage partitions cleanly by valid date (avoids overwrite across chunks)
+        //   Phase 2: GRIB archives for rigorous issue-time tracking.
+        var liveRunTime = isHistorical ? default : NowUtcFloorToHour();
 
         var rows = new List<ForecastRow>(times.Length);
         for (int i = 0; i < times.Length; i++)
         {
             var valid = times[i];
+            var runTime = isHistorical ? valid.Date : liveRunTime;
             var lead = (int)Math.Round((valid - runTime).TotalHours);
             rows.Add(new ForecastRow
             {

@@ -75,7 +75,7 @@ public sealed class BackfillCommand
                 {
                     var rows = await _forecasts.FetchHistoricalAsync(
                         _cfg.Location, model.Id, _cfg.Variables, cursor, chunkEnd, ct);
-                    await ParquetWriter.WriteForecastsAsync(_cfg.Storage.ForecastsPath, rows, ct);
+                    await ParquetWriter.WriteHistoricalForecastsAsync(_cfg.Storage.ForecastsPath, rows, ct);
                     _log.LogInformation("  forecasts/{Model} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd}: {Rows} rows",
                         model.Id, cursor, chunkEnd, rows.Count);
                 }
@@ -153,8 +153,9 @@ public sealed class BackfillCommand
                     _log.LogError(ex, "  metar/{Station} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} FAILED",
                         station, cursor, chunkEnd);
                 }
-                // OGIMET rate limit — abuse blocks the IP. 5s is the conservative floor.
-                await Task.Delay(TimeSpan.FromSeconds(5), ct);
+                // OGIMET recommendation is 20 requests / 10 min ≈ one every 30s.
+                // 5s caused ~50% failure rate on the first full run — honour 30s now.
+                await Task.Delay(TimeSpan.FromSeconds(30), ct);
                 cursor = chunkEnd.AddDays(1);
             }
         }

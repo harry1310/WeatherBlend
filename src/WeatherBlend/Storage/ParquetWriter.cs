@@ -35,6 +35,36 @@ public static class ParquetWriter
         await ParquetSerializer.SerializeAsync(rows, file, cancellationToken: ct);
     }
 
+    /// <summary>
+    /// Historical-forecast writer. Groups hourly rows by valid-date and writes one
+    /// file per day — mirrors ERA5's layout. Drops the run=HH key from the path since
+    /// the historical-forecast API doesn't expose a true issue time (per-row RunTime
+    /// is synthesized as midnight of valid date; see OpenMeteoClient.Parse).
+    /// Path: location=.../model=.../date=&lt;valid_date&gt;/data.parquet
+    /// </summary>
+    public static async Task WriteHistoricalForecastsAsync(
+        string basePath,
+        IReadOnlyList<ForecastRow> rows,
+        CancellationToken ct = default)
+    {
+        if (rows.Count == 0) return;
+
+        foreach (var group in rows.GroupBy(r => new { r.LocationName, r.Model, Date = r.ValidTimeUtc.Date }))
+        {
+            var dateStr = group.Key.Date.ToString("yyyy-MM-dd");
+            var dir = Path.Combine(
+                basePath,
+                $"location={group.Key.LocationName}",
+                $"model={group.Key.Model}",
+                $"date={dateStr}");
+            Directory.CreateDirectory(dir);
+
+            var file = Path.Combine(dir, "data.parquet");
+            await ParquetSerializer.SerializeAsync(
+                group.OrderBy(r => r.ValidTimeUtc).ToList(), file, cancellationToken: ct);
+        }
+    }
+
     public static async Task WriteEra5Async(
         string basePath,
         IReadOnlyList<Era5Row> rows,
