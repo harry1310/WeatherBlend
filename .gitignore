@@ -20,3 +20,9 @@ Thumbs.db
 # User config overrides (if you add them later)
 config.local.yaml
 appsettings.Local.json
+
+# Phase 3 tooling (local machine state, not repo artefacts)
+.venv/
+tmp/
+__pycache__/
+*.pyc
