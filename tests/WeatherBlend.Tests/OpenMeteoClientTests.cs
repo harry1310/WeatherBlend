@@ -129,6 +129,48 @@ public class OpenMeteoClientTests
     }
 
     [Fact]
+    public void Parse_historical_tags_run_time_source_synthesised()
+    {
+        var json = """{ "hourly": { "time": ["2025-06-10T06:00"], "temperature_2m": [12.0] } }""";
+        var rows = OpenMeteoClient.Parse(Payload(json), Loc, Model, isHistorical: true);
+        rows.Single().RunTimeSource.Should().Be(WeatherBlend.Models.RunTimeSources.Synthesised);
+    }
+
+    [Fact]
+    public void Parse_live_without_reported_time_tags_synthesised()
+    {
+        var json = """{ "hourly": { "time": ["2025-06-10T06:00"], "temperature_2m": [12.0] } }""";
+        var rows = OpenMeteoClient.Parse(Payload(json), Loc, Model, isHistorical: false);
+        rows.Single().RunTimeSource.Should().Be(WeatherBlend.Models.RunTimeSources.Synthesised);
+    }
+
+    [Fact]
+    public void Parse_live_with_reported_time_sets_run_time_and_tags_reported()
+    {
+        var reported = new DateTime(2025, 6, 10, 0, 0, 0, DateTimeKind.Utc);
+        var json = """
+        {
+          "hourly": {
+            "time": ["2025-06-10T01:00","2025-06-10T06:00","2025-06-11T00:00"],
+            "temperature_2m": [10.0, 11.0, 12.0]
+          }
+        }
+        """;
+
+        var rows = OpenMeteoClient.Parse(Payload(json), Loc, Model, isHistorical: false, reportedRunTime: reported);
+
+        rows.Should().HaveCount(3);
+        foreach (var r in rows)
+        {
+            r.RunTimeUtc.Should().Be(reported);
+            r.RunTimeSource.Should().Be(WeatherBlend.Models.RunTimeSources.Reported);
+        }
+        rows[0].LeadHours.Should().Be(1);
+        rows[1].LeadHours.Should().Be(6);
+        rows[2].LeadHours.Should().Be(24);
+    }
+
+    [Fact]
     public void Parse_live_uses_wall_clock_run_time_so_lead_varies()
     {
         // Live mode: RunTime is "now floored to hour" — different valid times should

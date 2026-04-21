@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
 using WeatherBlend.Models;
+using RunTimeSources = WeatherBlend.Models.RunTimeSources;
 
 namespace WeatherBlend.Collect;
 
@@ -18,6 +19,23 @@ public sealed class OpenMeteoClient
 {
     private const string LiveBase = "https://api.open-meteo.com/v1/forecast";
     private const string HistoricalBase = "https://historical-forecast-api.open-meteo.com/v1/forecast";
+    private const string MetadataBase = "https://api.open-meteo.com/data";
+
+    // Our config "seamless" ids don't have metadata endpoints — they're composites.
+    // Map each to the short-range / highest-res constituent whose cycle best
+    // approximates the front end of the seamless forecast. Docs warn the reported
+    // time "does not directly correlate with the update times in the Forecast API",
+    // so this is an approximation tagged RunTimeSource=reported, not exact.
+    private static readonly IReadOnlyDictionary<string, string> MetadataModelMap = new Dictionary<string, string>
+    {
+        { "gfs_seamless", "ncep_gfs013" },
+        { "ecmwf_ifs025", "ecmwf_ifs025" },
+        { "ecmwf_aifs025", "ecmwf_aifs025_single" },
+        { "icon_seamless", "dwd_icon" },
+        { "meteofrance_seamless", "meteofrance_arpege_europe" },
+        { "ukmo_seamless", "ukmo_uk_deterministic_2km" },
+        { "gem_seamless", "cmc_gem_gdps" },
+    };
 
     private readonly HttpClient _http;
     private readonly ILogger<OpenMeteoClient> _log;
@@ -28,13 +46,17 @@ public sealed class OpenMeteoClient
         _log = log;
     }
 
-    public Task<List<ForecastRow>> FetchLiveAsync(
+    public async Task<List<ForecastRow>> FetchLiveAsync(
         LocationConfig location,
         string modelId,
         IEnumerable<string> variables,
         int forecastDays,
         CancellationToken ct)
-        => FetchAsync(LiveBase, location, modelId, variables, forecastDays, null, null, isHistorical: false, ct);
+    {
+        var reported = await GetReportedCycleAsync(modelId, ct);
+        return await FetchAsync(LiveBase, location, modelId, variables,
+            forecastDays, null, null, isHistorical: false, reported, ct);
+    }
 
     public Task<List<ForecastRow>> FetchHistoricalAsync(
         LocationConfig location,
@@ -43,7 +65,48 @@ public sealed class OpenMeteoClient
         DateOnly startDate,
         DateOnly endDate,
         CancellationToken ct)
-        => FetchAsync(HistoricalBase, location, modelId, variables, null, startDate, endDate, isHistorical: true, ct);
+        => FetchAsync(HistoricalBase, location, modelId, variables,
+            null, startDate, endDate, isHistorical: true, reportedRunTime: null, ct);
+
+    /// <summary>
+    /// Hits the Open-Meteo model-metadata endpoint for the supplied config model id
+    /// and returns the `last_run_initialisation_time` (unix seconds) as a UTC DateTime.
+    /// Null when no mapping exists, the endpoint 404s, or the field is missing —
+    /// callers should fall back to the synthesised run-time.
+    /// </summary>
+    public async Task<DateTime?> GetReportedCycleAsync(string modelId, CancellationToken ct)
+    {
+        if (!MetadataModelMap.TryGetValue(modelId, out var metaPath))
+        {
+            _log.LogDebug("No metadata mapping for model {Model}; run-time will be synthesised", modelId);
+            return null;
+        }
+
+        var url = $"{MetadataBase}/{metaPath}/static/meta.json";
+        try
+        {
+            using var resp = await _http.GetAsync(url, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                _log.LogWarning("Metadata GET {Url} returned {Status}", url, (int)resp.StatusCode);
+                return null;
+            }
+            await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+            if (!doc.RootElement.TryGetProperty("last_run_initialisation_time", out var t)
+                || t.ValueKind != JsonValueKind.Number)
+            {
+                return null;
+            }
+            var unixSec = t.GetInt64();
+            return DateTimeOffset.FromUnixTimeSeconds(unixSec).UtcDateTime;
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Metadata fetch failed for {Model} via {Path}", modelId, metaPath);
+            return null;
+        }
+    }
 
     private async Task<List<ForecastRow>> FetchAsync(
         string baseUrl,
@@ -54,6 +117,7 @@ public sealed class OpenMeteoClient
         DateOnly? startDate,
         DateOnly? endDate,
         bool isHistorical,
+        DateTime? reportedRunTime,
         CancellationToken ct)
     {
         var hourly = string.Join(",", variables);
@@ -81,10 +145,15 @@ public sealed class OpenMeteoClient
         await using var stream = await resp.Content.ReadAsStreamAsync(ct);
         using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
 
-        return Parse(doc.RootElement, location.Name, modelId, isHistorical);
+        return Parse(doc.RootElement, location.Name, modelId, isHistorical, reportedRunTime);
     }
 
-    internal static List<ForecastRow> Parse(JsonElement root, string locationName, string modelId, bool isHistorical)
+    internal static List<ForecastRow> Parse(
+        JsonElement root,
+        string locationName,
+        string modelId,
+        bool isHistorical,
+        DateTime? reportedRunTime = null)
     {
         if (!root.TryGetProperty("hourly", out var hourly))
             return new();
@@ -119,15 +188,23 @@ public sealed class OpenMeteoClient
         var cape  = Col("cape");
         var vis   = Col("visibility");
 
-        // Open-Meteo doesn't return the run time explicitly.
-        // Live endpoint: approximate run_time as the most recent whole hour — rows
-        //   a few hours old end up with negative LeadHours; filter WHERE LeadHours>=0 for analysis.
-        // Historical endpoint: "run time" is meaningless (API returns best-available per valid-time,
-        //   not rows from a specific run). Set RunTime per-row to midnight of the valid day so:
-        //     - LeadHours = hour-of-day [0..23]  (stable, not wall-clock dependent)
-        //     - Storage partitions cleanly by valid date (avoids overwrite across chunks)
-        //   Phase 2: GRIB archives for rigorous issue-time tracking.
-        var liveRunTime = isHistorical ? default : NowUtcFloorToHour();
+        // Run-time strategy (see Models/ForecastRow.RunTimeSource for canonical values):
+        //   - Historical endpoint always synthesises: API returns best-available per
+        //     valid-time, not a specific run. RunTime = midnight of valid day, so
+        //     LeadHours = hour-of-day [0..23] and partitions split cleanly by valid date.
+        //   - Live endpoint: if caller supplied a reportedRunTime (from the model's
+        //     /data/{model}/static/meta.json `last_run_initialisation_time`), use it
+        //     and tag "reported". Otherwise fall back to wall-clock-floored-to-hour
+        //     and tag "synthesised" (older behaviour; rows a few hours old land with
+        //     negative LeadHours, filter WHERE LeadHours>=0 for analysis).
+        var liveRunTime = isHistorical
+            ? default
+            : (reportedRunTime ?? NowUtcFloorToHour());
+
+        string runTimeSource;
+        if (isHistorical) runTimeSource = RunTimeSources.Synthesised;
+        else if (reportedRunTime.HasValue) runTimeSource = RunTimeSources.Reported;
+        else runTimeSource = RunTimeSources.Synthesised;
 
         var rows = new List<ForecastRow>(times.Length);
         for (int i = 0; i < times.Length; i++)
@@ -142,6 +219,7 @@ public sealed class OpenMeteoClient
                 RunTimeUtc = runTime,
                 ValidTimeUtc = valid,
                 LeadHours = lead,
+                RunTimeSource = runTimeSource,
                 Temperature2m = t2m[i],
                 DewPoint2m = td2m[i],
                 RelativeHumidity2m = rh2m[i],
