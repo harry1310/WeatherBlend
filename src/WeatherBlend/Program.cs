@@ -168,12 +168,16 @@ public static class Program
             name: "--target",
             description: "Target variable: temperature",
             getDefaultValue: () => "temperature");
-        var train = new Command("train", "Train the temperature blender (phase 2a)") { targetOpt };
-        train.SetHandler(async (target) =>
+        var leadOpt = new Option<string>(
+            name: "--lead",
+            description: "Lead hours: 24 | 48 | 72 | all (phase 2b per-lead blenders) | phase2a (bucket-free reproduction)",
+            getDefaultValue: () => "all");
+        var train = new Command("train", "Train the temperature blender (phase 2b per-lead by default)") { targetOpt, leadOpt };
+        train.SetHandler(async (target, lead) =>
         {
             var cmd = host.Services.GetRequiredService<TrainCommand>();
-            await cmd.RunAsync(target, CancellationToken.None);
-        }, targetOpt);
+            await cmd.RunAsync(target, lead, CancellationToken.None);
+        }, targetOpt, leadOpt);
         root.AddCommand(train);
 
         var evalTargetOpt = new Option<string>(

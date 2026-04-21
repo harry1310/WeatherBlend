@@ -44,19 +44,52 @@ public static class FeatureBuilder
 
     /// <summary>
     /// Reads forecast and ERA5 parquet from local disk and produces training rows,
-    /// sorted ascending by ValidTimeUtc.
+    /// sorted ascending by ValidTimeUtc. Phase 2a behaviour — no lead filter,
+    /// takes latest run per (ValidTime, Model). Kept so 2a training can be reproduced.
     /// </summary>
     public static List<TrainingRow> Build(
         string forecastsPath,
         string era5Path,
         string locationName,
         CancellationToken ct = default)
+        => BuildInternal(forecastsPath, era5Path, locationName, leadFilter: null, ct);
+
+    /// <summary>
+    /// Phase 2b variant: one dataset per lead ∈ {24, 48, 72}. Filters on
+    /// RunTimeSource = 'offset_day' AND LeadHours = lead — so each training row
+    /// comes from the Open-Meteo Previous Runs API with an exact lead horizon,
+    /// not a synthesised midnight anchor. Any lead value is technically accepted
+    /// but only 24/48/72 have backfill data behind them.
+    /// </summary>
+    public static List<TrainingRow> BuildForLead(
+        string forecastsPath,
+        string era5Path,
+        string locationName,
+        int leadHours,
+        CancellationToken ct = default)
+        => BuildInternal(forecastsPath, era5Path, locationName, leadFilter: leadHours, ct);
+
+    private static List<TrainingRow> BuildInternal(
+        string forecastsPath,
+        string era5Path,
+        string locationName,
+        int? leadFilter,
+        CancellationToken ct)
     {
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
 
         var fcGlob = NormaliseGlob(Path.Combine(forecastsPath, "**", "*.parquet"));
         var eraGlob = NormaliseGlob(Path.Combine(era5Path, "**", "*.parquet"));
+
+        // For a per-lead build, restrict to offset_day rows at exactly that lead.
+        // RunTimeSource filter is load-bearing: legacy synthesised rows (RunTime=midnight)
+        // can land on LeadHours=24/48/72 by coincidence and would contaminate the
+        // lead-specific training set. Without the filter, "24h forecast" would include
+        // 0h analyses issued at midnight.
+        var fcWhere = leadFilter.HasValue
+            ? $"LocationName = '{locationName}' AND RunTimeSource = 'offset_day' AND LeadHours = {leadFilter.Value} AND Temperature2m IS NOT NULL"
+            : $"LocationName = '{locationName}' AND LeadHours >= 0 AND Temperature2m IS NOT NULL";
 
         // One row per (valid_time, model) — latest RunTime wins when live-collected
         // data has stacked multiple forecasts for the same valid time.
@@ -70,9 +103,7 @@ WITH latest AS (
                ORDER BY RunTimeUtc DESC
            ) AS rn
     FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
-    WHERE LocationName = '{locationName}'
-      AND LeadHours >= 0
-      AND Temperature2m IS NOT NULL
+    WHERE {fcWhere}
 ),
 pivoted AS (
     SELECT

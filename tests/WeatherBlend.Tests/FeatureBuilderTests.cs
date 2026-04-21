@@ -124,4 +124,53 @@ public class FeatureBuilderTests
         HourSin = 0, HourCos = 1, DoySin = 0, DoyCos = 1,
         WindDirMean = 0, Era5Temp = 1,
     };
+
+    [Fact]
+    public void LeadModelFileName_formats_as_leadNh_zip()
+    {
+        WeatherBlend.Train.ModelArtifact.LeadModelFileName(24).Should().Be("lead_24h.zip");
+        WeatherBlend.Train.ModelArtifact.LeadModelFileName(72).Should().Be("lead_72h.zip");
+    }
+
+    [Fact]
+    public void TemperatureTrainer_end_to_end_on_synthetic_data_produces_non_nan_metrics()
+    {
+        // Tiny synthetic set: ERA5 truth is a known linear combination of per-model temps
+        // so the trainer has something to fit. Enough rows to survive the 70/15/15 split
+        // with val/test having >= 1 row each.
+        var rng = new Random(42);
+        var rows = new List<TrainingRow>();
+        var start = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        for (int i = 0; i < 400; i++)
+        {
+            var temps = new double[6];
+            for (int m = 0; m < 6; m++) temps[m] = 10.0 + rng.NextDouble() * 5.0;
+
+            // Simulate ERA5 = mean + small noise, so the optimal blend is close to mean.
+            var mean = temps.Average();
+            var era5 = mean + (rng.NextDouble() - 0.5) * 0.2;
+
+            rows.Add(FeatureBuilder.ComposeRow(
+                start.AddHours(i),
+                temps,
+                windDirMeanDeg: 180.0,
+                era5Temp: era5));
+        }
+
+        var ds = TrainingDataset.Split(rows);
+        var hp = new TemperatureTrainer.Hyperparameters(
+            NumberOfIterations: 50,        // keep the test fast
+            EarlyStoppingRound: 10);
+        var trained = TemperatureTrainer.Train(ds, hp);
+
+        var predicted = TemperatureTrainer.Predict(trained.Ml, trained.Model, ds.Test);
+        predicted.Should().HaveCount(ds.Test.Count);
+        predicted.All(x => !double.IsNaN(x) && !double.IsInfinity(x)).Should().BeTrue();
+
+        var actual = ds.Test.Select(x => (double)x.Era5Temp).ToArray();
+        var stats = WeatherBlend.Evaluate.Metrics.Compute(predicted, actual);
+        double.IsNaN(stats.Mae).Should().BeFalse();
+        // Very loose bound — we're checking the pipeline runs, not learned quality.
+        stats.Mae.Should().BeLessThan(5.0);
+    }
 }
