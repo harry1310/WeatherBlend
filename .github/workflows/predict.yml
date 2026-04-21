@@ -1,0 +1,101 @@
+name: predict
+
+# Daily: collect a fresh forecast cycle, run the blender, push predictions to R2.
+# 08:00 UTC picks up the overnight 00z ECMWF/GFS/ICON/GEM runs plus UKMO's ~02z,
+# matching the PredictCommand backfill anchor.
+on:
+  schedule:
+    - cron: "5 8 * * *"
+  workflow_dispatch:
+    inputs:
+      for_date:
+        description: "Retroactive fill (yyyy-MM-dd). Leave blank for live run."
+        required: false
+        type: string
+
+concurrency:
+  group: weatherblend-data
+  cancel-in-progress: false
+
+jobs:
+  predict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+          dotnet-quality: preview
+
+      - name: Install rclone
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          rclone version
+
+      - name: Configure rclone for R2
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf <<EOF
+          [r2]
+          type = s3
+          provider = Cloudflare
+          access_key_id = ${R2_ACCESS_KEY_ID}
+          secret_access_key = ${R2_SECRET_ACCESS_KEY}
+          endpoint = ${R2_ENDPOINT}
+          acl = private
+          EOF
+
+      - name: Pull model artefacts + existing predictions from R2
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          # Blender artefacts — predict can't run without the per-lead zips + MANIFEST.
+          mkdir -p data/models
+          rclone copy "r2:${R2_BUCKET}/data/models" ./data/models --fast-list --transfers 16 --checkers 32 --progress
+
+          # Existing predictions for today's partition (read-modify-write dedupe
+          # on PredictCommand side needs the current file if it exists). Pulling
+          # only the predictions subtree keeps the copy small.
+          mkdir -p data/predictions
+          rclone copy "r2:${R2_BUCKET}/data/predictions" ./data/predictions --fast-list --transfers 16 --checkers 32 --progress
+
+      - name: Build
+        run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
+
+      - name: Collect latest forecasts
+        # Predict needs fresh live-forecast rows covering +24/+48/+72h. `collect`
+        # writes run-date partitioned files whose ValidTimeUtc columns extend 168h.
+        run: dotnet run --project src/WeatherBlend --no-build -c Release -- collect
+
+      - name: Predict
+        run: |
+          FOR_DATE="${{ github.event.inputs.for_date }}"
+          if [ -n "$FOR_DATE" ]; then
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature --for-date "$FOR_DATE"
+          else
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature
+          fi
+
+      - name: Push predictions + refreshed forecasts to R2
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          # copy (not sync) — additive only, never deletes remote files. Keeps
+          # both new forecast rows and new prediction rows in lock-step.
+          rclone copy ./data/predictions "r2:${R2_BUCKET}/data/predictions" --fast-list --transfers 16 --checkers 32 --progress
+          rclone copy ./data/forecasts   "r2:${R2_BUCKET}/data/forecasts"   --fast-list --transfers 16 --checkers 32 --progress
+
+      - name: Upload logs as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: predict-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 14
+          if-no-files-found: ignore

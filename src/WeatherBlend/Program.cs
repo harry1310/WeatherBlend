@@ -99,6 +99,7 @@ public static class Program
                 services.AddTransient<EvaluateCommand>();
                 services.AddTransient<InspectCommand>();
                 services.AddTransient<CompareCommand>();
+                services.AddTransient<PredictCommand>();
             })
             .Build();
 
@@ -207,6 +208,30 @@ public static class Program
             await cmd.RunAsync(path, CancellationToken.None);
         }, pathOpt);
         root.AddCommand(inspect);
+
+        var predictTargetOpt = new Option<string>(
+            name: "--target",
+            description: "Target variable: temperature",
+            getDefaultValue: () => "temperature");
+        var predictVersionOpt = new Option<string>(
+            name: "--model-version",
+            description: "Version directory name or 'current'",
+            getDefaultValue: () => "current");
+        var predictForDateOpt = new Option<DateOnly?>(
+            name: "--for-date",
+            description: "Retroactive fill: pretend anchor is this date at 08:00 UTC (yyyy-MM-dd). Omit for live run.");
+        var predict = new Command(
+            "predict",
+            "Produce blended forecasts for the next 24/48/72h from the current blender")
+        {
+            predictTargetOpt, predictVersionOpt, predictForDateOpt,
+        };
+        predict.SetHandler(async (target, version, forDate) =>
+        {
+            var cmd = host.Services.GetRequiredService<PredictCommand>();
+            await cmd.RunAsync(target, version, forDate, CancellationToken.None);
+        }, predictTargetOpt, predictVersionOpt, predictForDateOpt);
+        root.AddCommand(predict);
 
         var globOpt = new Option<string>("--glob", "Parquet glob across models for one run") { IsRequired = true };
         var compare = new Command("compare", "Cross-model agreement summary for a run") { globOpt };
