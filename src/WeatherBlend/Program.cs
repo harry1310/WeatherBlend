@@ -70,8 +70,30 @@ public static class Program
                     c.DefaultRequestHeaders.UserAgent.ParseAdd(cfg.Http.UserAgent);
                 });
 
+                // GFS S3 archive — large Range-downloads per cycle, needs long timeouts
+                // and resilience against transient S3 errors.
+                services.AddHttpClient<GfsClient>(c =>
+                {
+                    c.Timeout = TimeSpan.FromSeconds(120);
+                    c.DefaultRequestHeaders.UserAgent.ParseAdd(cfg.Http.UserAgent);
+                })
+                .AddStandardResilienceHandler(opts =>
+                {
+                    opts.AttemptTimeout.Timeout = TimeSpan.FromSeconds(60);
+                    opts.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(180);
+                    opts.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(240);
+                });
+
+                services.AddSingleton<Wgrib2>(sp =>
+                {
+                    var exe = Environment.GetEnvironmentVariable("WEATHERBLEND_WGRIB2")
+                              ?? @"C:\Tools\wgrib2\wgrib2.exe";
+                    return new Wgrib2(exe, sp.GetRequiredService<ILogger<Wgrib2>>());
+                });
+
                 services.AddTransient<CollectCommand>();
                 services.AddTransient<BackfillCommand>();
+                services.AddTransient<GfsBackfillCommand>();
                 services.AddTransient<StatusCommand>();
                 services.AddTransient<TrainCommand>();
                 services.AddTransient<EvaluateCommand>();
@@ -109,6 +131,30 @@ public static class Program
             await cmd.RunAsync(source, start, end, CancellationToken.None);
         }, sourceOpt, startOpt, endOpt);
         root.AddCommand(backfill);
+
+        var gfsStartOpt = new Option<DateOnly>("--start", "Start cycle date (yyyy-MM-dd), UTC")
+            { IsRequired = true };
+        var gfsEndOpt = new Option<DateOnly>(
+            name: "--end",
+            description: "End cycle date (yyyy-MM-dd), UTC (default: yesterday)",
+            getDefaultValue: () => DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-1)));
+        var gfsCyclesOpt = new Option<string>(
+            name: "--cycles",
+            description: "Comma-separated cycle hours, e.g. 0,6,12,18 (default: all four)",
+            getDefaultValue: () => "0,6,12,18");
+        var gfsBackfill = new Command(
+            "gfs-backfill",
+            "Phase 3: fetch GFS cycles from NOAA S3 archive with exact run-times/lead-hours")
+            { gfsStartOpt, gfsEndOpt, gfsCyclesOpt };
+        gfsBackfill.SetHandler(async (start, end, cyclesStr) =>
+        {
+            var cycles = cyclesStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(s => int.Parse(s, System.Globalization.CultureInfo.InvariantCulture))
+                .ToArray();
+            var cmd = host.Services.GetRequiredService<GfsBackfillCommand>();
+            await cmd.RunAsync(start, end, cycles, CancellationToken.None);
+        }, gfsStartOpt, gfsEndOpt, gfsCyclesOpt);
+        root.AddCommand(gfsBackfill);
 
         var status = new Command("status", "Show what data is on disk");
         status.SetHandler(async ctx =>
