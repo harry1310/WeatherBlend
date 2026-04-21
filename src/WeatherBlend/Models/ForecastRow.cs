@@ -20,6 +20,8 @@ public sealed class ForecastRow
     ///              last_run_initialisation_time) — approximate, may not match what the forecast endpoint served.
     /// "synthesised" — fabricated for backward compatibility (e.g. midnight-of-valid-day, fetch-time-floored).
     ///                 Do not use for per-lead-time training.
+    /// "offset_day"  — Open-Meteo Previous Runs API row. RunTime = ValidTime − 24·N h and
+    ///                 LeadHours = 24·N is the lower edge of the [24N..24N+23] bucket.
     /// null — legacy file; treat as "synthesised" for training purposes.
     /// </summary>
     public string? RunTimeSource { get; init; }

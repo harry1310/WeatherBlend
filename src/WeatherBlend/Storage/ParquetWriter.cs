@@ -65,6 +65,36 @@ public static class ParquetWriter
         }
     }
 
+    /// <summary>
+    /// Previous Runs writer. Groups rows by valid-date and writes one file per day,
+    /// next to the historical-forecast <c>data.parquet</c> but under a distinct file name
+    /// so offset_day rows and synthesised historical-forecast rows don't overwrite each other.
+    /// Path: location=.../model=.../date=&lt;valid_date&gt;/previous_runs.parquet
+    /// </summary>
+    public static async Task WritePreviousRunsAsync(
+        string basePath,
+        IReadOnlyList<ForecastRow> rows,
+        CancellationToken ct = default)
+    {
+        if (rows.Count == 0) return;
+
+        foreach (var group in rows.GroupBy(r => new { r.LocationName, r.Model, Date = r.ValidTimeUtc.Date }))
+        {
+            var dateStr = group.Key.Date.ToString("yyyy-MM-dd");
+            var dir = Path.Combine(
+                basePath,
+                $"location={group.Key.LocationName}",
+                $"model={group.Key.Model}",
+                $"date={dateStr}");
+            Directory.CreateDirectory(dir);
+
+            var file = Path.Combine(dir, "previous_runs.parquet");
+            await ParquetSerializer.SerializeAsync(
+                group.OrderBy(r => r.ValidTimeUtc).ThenBy(r => r.LeadHours).ToList(),
+                file, cancellationToken: ct);
+        }
+    }
+
     public static async Task WriteEra5Async(
         string basePath,
         IReadOnlyList<Era5Row> rows,

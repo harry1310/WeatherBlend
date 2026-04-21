@@ -171,6 +171,122 @@ public class OpenMeteoClientTests
     }
 
     [Fact]
+    public void ParsePreviousRuns_emits_one_row_per_offset_with_lead_24N_and_runtime_back_shift()
+    {
+        var json = """
+        {
+          "hourly": {
+            "time": ["2025-06-10T12:00"],
+            "temperature_2m_previous_day1": [15.0],
+            "temperature_2m_previous_day2": [14.5],
+            "temperature_2m_previous_day3": [14.0],
+            "temperature_2m_previous_day4": [13.5],
+            "temperature_2m_previous_day5": [13.0],
+            "temperature_2m_previous_day6": [12.5],
+            "temperature_2m_previous_day7": [12.0]
+          }
+        }
+        """;
+
+        var rows = OpenMeteoClient.ParsePreviousRuns(
+            Payload(json), Loc, Model, new[] { "temperature_2m" });
+
+        rows.Should().HaveCount(7);
+        var valid = new DateTime(2025, 6, 10, 12, 0, 0, DateTimeKind.Utc);
+
+        for (int n = 1; n <= 7; n++)
+        {
+            var r = rows[n - 1];
+            r.ValidTimeUtc.Should().Be(valid);
+            r.LeadHours.Should().Be(24 * n);
+            r.RunTimeUtc.Should().Be(valid.AddHours(-24 * n));
+            r.RunTimeSource.Should().Be(WeatherBlend.Models.RunTimeSources.OffsetDay);
+            r.Model.Should().Be(Model);
+            r.LocationName.Should().Be(Loc);
+            r.Temperature2m.Should().Be(15.5 - 0.5 * n);
+        }
+    }
+
+    [Fact]
+    public void ParsePreviousRuns_drops_rows_where_all_variables_are_null_for_that_offset()
+    {
+        // previous_day3 is all-null for this hour → the offset=3 row for that hour is dropped.
+        // Other offsets still emit.
+        var json = """
+        {
+          "hourly": {
+            "time": ["2025-06-10T12:00"],
+            "temperature_2m_previous_day1": [15.0],
+            "temperature_2m_previous_day2": [14.5],
+            "temperature_2m_previous_day3": [null],
+            "temperature_2m_previous_day4": [13.5],
+            "temperature_2m_previous_day5": [13.0],
+            "temperature_2m_previous_day6": [12.5],
+            "temperature_2m_previous_day7": [12.0]
+          }
+        }
+        """;
+
+        var rows = OpenMeteoClient.ParsePreviousRuns(
+            Payload(json), Loc, Model, new[] { "temperature_2m" });
+
+        rows.Should().HaveCount(6);
+        rows.Select(r => r.LeadHours).Should().NotContain(72);
+    }
+
+    [Fact]
+    public void ParsePreviousRuns_maps_multiple_variables_per_offset()
+    {
+        var json = """
+        {
+          "hourly": {
+            "time": ["2025-06-10T00:00"],
+            "temperature_2m_previous_day1": [10.0],
+            "temperature_2m_previous_day2": [null],
+            "temperature_2m_previous_day3": [null],
+            "temperature_2m_previous_day4": [null],
+            "temperature_2m_previous_day5": [null],
+            "temperature_2m_previous_day6": [null],
+            "temperature_2m_previous_day7": [null],
+            "precipitation_previous_day1": [0.5],
+            "precipitation_previous_day2": [null],
+            "precipitation_previous_day3": [null],
+            "precipitation_previous_day4": [null],
+            "precipitation_previous_day5": [null],
+            "precipitation_previous_day6": [null],
+            "precipitation_previous_day7": [null],
+            "wind_speed_10m_previous_day1": [3.2],
+            "wind_speed_10m_previous_day2": [null],
+            "wind_speed_10m_previous_day3": [null],
+            "wind_speed_10m_previous_day4": [null],
+            "wind_speed_10m_previous_day5": [null],
+            "wind_speed_10m_previous_day6": [null],
+            "wind_speed_10m_previous_day7": [null]
+          }
+        }
+        """;
+
+        var rows = OpenMeteoClient.ParsePreviousRuns(
+            Payload(json), Loc, Model, new[] { "temperature_2m", "precipitation", "wind_speed_10m" });
+
+        // Only offset=1 survives the all-null filter; six other offsets drop.
+        rows.Should().HaveCount(1);
+        var r = rows.Single();
+        r.LeadHours.Should().Be(24);
+        r.Temperature2m.Should().Be(10.0);
+        r.Precipitation.Should().Be(0.5);
+        r.WindSpeed10m.Should().Be(3.2);
+    }
+
+    [Fact]
+    public void ParsePreviousRuns_missing_hourly_returns_empty()
+    {
+        var rows = OpenMeteoClient.ParsePreviousRuns(
+            Payload("""{ "latitude": 50.5 }"""), Loc, Model, new[] { "temperature_2m" });
+        rows.Should().BeEmpty();
+    }
+
+    [Fact]
     public void Parse_live_uses_wall_clock_run_time_so_lead_varies()
     {
         // Live mode: RunTime is "now floored to hour" — different valid times should

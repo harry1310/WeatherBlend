@@ -19,7 +19,12 @@ public sealed class OpenMeteoClient
 {
     private const string LiveBase = "https://api.open-meteo.com/v1/forecast";
     private const string HistoricalBase = "https://historical-forecast-api.open-meteo.com/v1/forecast";
+    private const string PreviousRunsBase = "https://previous-runs-api.open-meteo.com/v1/forecast";
     private const string MetadataBase = "https://api.open-meteo.com/data";
+
+    /// <summary>Offsets exposed by the Previous Runs API. Each offset N maps to
+    /// the lead-hour bucket [24N..24N+23]; we tag rows with LeadHours = 24N.</summary>
+    private static readonly int[] PreviousDayOffsets = { 1, 2, 3, 4, 5, 6, 7 };
 
     // Our config "seamless" ids don't have metadata endpoints — they're composites.
     // Map each to the short-range / highest-res constituent whose cycle best
@@ -67,6 +72,144 @@ public sealed class OpenMeteoClient
         CancellationToken ct)
         => FetchAsync(HistoricalBase, location, modelId, variables,
             null, startDate, endDate, isHistorical: true, reportedRunTime: null, ct);
+
+    /// <summary>
+    /// Fetches historical forecasts from Open-Meteo's Previous Runs API. The endpoint
+    /// returns one column per (variable, previous-day-offset) pair — e.g.
+    /// <c>temperature_2m_previous_day1</c> through <c>_previous_day7</c>. Each offset N
+    /// covers the forecast lead-hour bucket [24N..24N+23]; we emit one
+    /// <see cref="ForecastRow"/> per (valid-hour, offset) with
+    /// <c>LeadHours = 24·N</c> (lower edge of the bucket),
+    /// <c>RunTimeUtc = ValidTime − 24·N h</c>, and
+    /// <c>RunTimeSource = <see cref="RunTimeSources.OffsetDay"/></c>.
+    /// </summary>
+    public async Task<List<ForecastRow>> FetchPreviousRunsAsync(
+        LocationConfig location,
+        string modelId,
+        IEnumerable<string> variables,
+        DateOnly startDate,
+        DateOnly endDate,
+        CancellationToken ct)
+    {
+        var varList = variables.ToArray();
+        // Build hourly = var1_previous_day1,var1_previous_day2,...,varK_previous_day7
+        var hourlyNames = new List<string>(varList.Length * PreviousDayOffsets.Length);
+        foreach (var v in varList)
+            foreach (var n in PreviousDayOffsets)
+                hourlyNames.Add($"{v}_previous_day{n}");
+        var hourly = string.Join(",", hourlyNames);
+
+        var qs = new List<string>
+        {
+            $"latitude={location.Latitude.ToString(System.Globalization.CultureInfo.InvariantCulture)}",
+            $"longitude={location.Longitude.ToString(System.Globalization.CultureInfo.InvariantCulture)}",
+            $"elevation={location.ElevationMeters.ToString(System.Globalization.CultureInfo.InvariantCulture)}",
+            $"hourly={Uri.EscapeDataString(hourly)}",
+            $"models={Uri.EscapeDataString(modelId)}",
+            $"start_date={startDate:yyyy-MM-dd}",
+            $"end_date={endDate:yyyy-MM-dd}",
+            "timezone=UTC",
+            "windspeed_unit=ms",
+            "temperature_unit=celsius",
+            "precipitation_unit=mm"
+        };
+
+        var url = $"{PreviousRunsBase}?{string.Join('&', qs)}";
+        _log.LogInformation("GET {Url}", url);
+
+        using var resp = await _http.GetAsync(url, ct);
+        resp.EnsureSuccessStatusCode();
+        await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+
+        return ParsePreviousRuns(doc.RootElement, location.Name, modelId, varList);
+    }
+
+    internal static List<ForecastRow> ParsePreviousRuns(
+        JsonElement root,
+        string locationName,
+        string modelId,
+        IReadOnlyList<string> variables)
+    {
+        if (!root.TryGetProperty("hourly", out var hourly))
+            return new();
+
+        var times = hourly.GetProperty("time").EnumerateArray()
+            .Select(e => DateTime.SpecifyKind(DateTime.Parse(e.GetString()!), DateTimeKind.Utc))
+            .ToArray();
+
+        double?[] Col(string name) =>
+            hourly.TryGetProperty(name, out var arr)
+                ? arr.EnumerateArray()
+                     .Select(e => e.ValueKind == JsonValueKind.Null ? (double?)null : e.GetDouble())
+                     .ToArray()
+                : Enumerable.Repeat<double?>(null, times.Length).ToArray();
+
+        // Pull each (var, offset) column up front so the row loop is tight.
+        // Map: variable -> offset N -> column array.
+        var cols = new Dictionary<string, Dictionary<int, double?[]>>(variables.Count);
+        foreach (var v in variables)
+        {
+            var byOffset = new Dictionary<int, double?[]>(PreviousDayOffsets.Length);
+            foreach (var n in PreviousDayOffsets)
+                byOffset[n] = Col($"{v}_previous_day{n}");
+            cols[v] = byOffset;
+        }
+
+        double? Get(string var_, int offset, int i) => cols[var_][offset][i];
+
+        var rows = new List<ForecastRow>(times.Length * PreviousDayOffsets.Length);
+        for (int i = 0; i < times.Length; i++)
+        {
+            var valid = times[i];
+            foreach (var n in PreviousDayOffsets)
+            {
+                var lead = 24 * n;
+                var runTime = valid.AddHours(-lead);
+
+                // Skip rows where every configured variable is null for this offset.
+                // Open-Meteo returns all-null columns for model+date combinations
+                // outside the model's Previous Runs archive (e.g. UKMO pre-launch).
+                var anyValue = false;
+                foreach (var v in variables)
+                {
+                    if (Get(v, n, i).HasValue) { anyValue = true; break; }
+                }
+                if (!anyValue) continue;
+
+                rows.Add(new ForecastRow
+                {
+                    LocationName = locationName,
+                    Model = modelId,
+                    RunTimeUtc = runTime,
+                    ValidTimeUtc = valid,
+                    LeadHours = lead,
+                    RunTimeSource = RunTimeSources.OffsetDay,
+                    Temperature2m           = Maybe("temperature_2m"),
+                    DewPoint2m              = Maybe("dew_point_2m"),
+                    RelativeHumidity2m      = Maybe("relative_humidity_2m"),
+                    Precipitation           = Maybe("precipitation"),
+                    PrecipitationProbability= Maybe("precipitation_probability"),
+                    Rain                    = Maybe("rain"),
+                    Showers                 = Maybe("showers"),
+                    Snowfall                = Maybe("snowfall"),
+                    CloudCover              = Maybe("cloud_cover"),
+                    CloudCoverLow           = Maybe("cloud_cover_low"),
+                    CloudCoverMid           = Maybe("cloud_cover_mid"),
+                    CloudCoverHigh          = Maybe("cloud_cover_high"),
+                    WindSpeed10m            = Maybe("wind_speed_10m"),
+                    WindDirection10m        = Maybe("wind_direction_10m"),
+                    WindGusts10m            = Maybe("wind_gusts_10m"),
+                    SurfacePressure         = Maybe("surface_pressure"),
+                    Cape                    = Maybe("cape"),
+                    Visibility              = Maybe("visibility"),
+                });
+
+                double? Maybe(string v) => cols.TryGetValue(v, out var byOff) ? byOff[n][i] : null;
+            }
+        }
+        return rows;
+    }
 
     /// <summary>
     /// Hits the Open-Meteo model-metadata endpoint for the supplied config model id

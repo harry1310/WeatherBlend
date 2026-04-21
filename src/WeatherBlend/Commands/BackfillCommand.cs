@@ -7,12 +7,16 @@ namespace WeatherBlend.Commands;
 
 /// <summary>
 /// Backfill historical data from one or more sources:
-///   forecasts - Open-Meteo historical-forecast API (per model, monthly chunks)
-///   era5      - Open-Meteo ERA5 reanalysis archive (gapless training truth)
-///   metar     - OGIMET historical METAR archive (verification truth, gappy)
-///   all       - everything above
+///   forecasts     - Open-Meteo historical-forecast API (per model, monthly chunks)
+///   previous-runs - Open-Meteo Previous Runs API (per model, monthly chunks):
+///                   same six models, but returns separate columns per 24h-lead bucket
+///                   (1..7 days), so we get real per-lead training signal at 24-167h.
+///                   Rows tagged RunTimeSource=offset_day, LeadHours in {24,48,...,168}.
+///   era5          - Open-Meteo ERA5 reanalysis archive (gapless training truth)
+///   metar         - OGIMET historical METAR archive (verification truth, gappy)
+///   all           - everything above
 ///
-/// Forecasts/ERA5 hit Open-Meteo (generous limits, 2s polite delay).
+/// Forecasts/previous-runs/ERA5 hit Open-Meteo (generous limits, 2s polite delay).
 /// METAR hits OGIMET, which is rate-limited to ~5s between requests; one
 /// request per (station, day). For 3 years × 2 stations that's ~2.5 hours.
 /// </summary>
@@ -46,13 +50,14 @@ public sealed class BackfillCommand
         var src = source.ToLowerInvariant();
         var errors = 0;
 
-        if (src is "forecasts" or "all") errors += await BackfillForecastsAsync(start, end, ct);
-        if (src is "era5" or "all")      errors += await BackfillEra5Async(start, end, ct);
-        if (src is "metar" or "all")     errors += await BackfillMetarAsync(start, end, ct);
+        if (src is "forecasts" or "all")     errors += await BackfillForecastsAsync(start, end, ct);
+        if (src is "previous-runs" or "all") errors += await BackfillPreviousRunsAsync(start, end, ct);
+        if (src is "era5" or "all")          errors += await BackfillEra5Async(start, end, ct);
+        if (src is "metar" or "all")         errors += await BackfillMetarAsync(start, end, ct);
 
-        if (src is not ("forecasts" or "era5" or "metar" or "all"))
+        if (src is not ("forecasts" or "previous-runs" or "era5" or "metar" or "all"))
         {
-            _log.LogError("Unknown source '{Source}'. Use: forecasts | era5 | metar | all", source);
+            _log.LogError("Unknown source '{Source}'. Use: forecasts | previous-runs | era5 | metar | all", source);
             return 2;
         }
 
@@ -83,6 +88,44 @@ public sealed class BackfillCommand
                 {
                     errors++;
                     _log.LogError(ex, "  forecasts/{Model} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} FAILED",
+                        model.Id, cursor, chunkEnd);
+                }
+                await Task.Delay(TimeSpan.FromSeconds(2), ct);
+                cursor = chunkEnd.AddDays(1);
+            }
+        }
+        return errors;
+    }
+
+    // ---- Previous Runs (per model, monthly chunks) -------------------------------
+    //
+    // Rows are tagged RunTimeSource=offset_day with LeadHours in {24,48,...,168}.
+    // UKMO's archive on this endpoint starts later than the other five; for dates
+    // before it went live the API returns all-null columns and ParsePreviousRuns
+    // drops them, so early-date UKMO chunks will log 0 rows — that's expected.
+
+    private async Task<int> BackfillPreviousRunsAsync(DateOnly start, DateOnly end, CancellationToken ct)
+    {
+        var errors = 0;
+        foreach (var model in _cfg.Models)
+        {
+            var cursor = start;
+            while (cursor <= end)
+            {
+                var chunkEnd = cursor.AddMonths(1).AddDays(-1);
+                if (chunkEnd > end) chunkEnd = end;
+                try
+                {
+                    var rows = await _forecasts.FetchPreviousRunsAsync(
+                        _cfg.Location, model.Id, _cfg.Variables, cursor, chunkEnd, ct);
+                    await ParquetWriter.WritePreviousRunsAsync(_cfg.Storage.ForecastsPath, rows, ct);
+                    _log.LogInformation("  previous-runs/{Model} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd}: {Rows} rows",
+                        model.Id, cursor, chunkEnd, rows.Count);
+                }
+                catch (Exception ex)
+                {
+                    errors++;
+                    _log.LogError(ex, "  previous-runs/{Model} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} FAILED",
                         model.Id, cursor, chunkEnd);
                 }
                 await Task.Delay(TimeSpan.FromSeconds(2), ct);

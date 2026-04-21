@@ -121,7 +121,7 @@ public static class Program
             getDefaultValue: () => DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-1)));
         var sourceOpt = new Option<string>(
             name: "--source",
-            description: "forecasts | era5 | metar | all",
+            description: "forecasts | previous-runs | era5 | metar | all",
             getDefaultValue: () => "all");
         var backfill = new Command("backfill", "Fetch historical data (forecasts, ERA5, OGIMET METAR)")
             { sourceOpt, startOpt, endOpt };
