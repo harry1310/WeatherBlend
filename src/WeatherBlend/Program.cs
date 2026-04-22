@@ -176,18 +176,22 @@ public static class Program
 
         var targetOpt = new Option<string>(
             name: "--target",
-            description: "Target variable: temperature",
+            description: "Target variable: temperature | precipitation",
             getDefaultValue: () => "temperature");
         var leadOpt = new Option<string>(
             name: "--lead",
             description: "Lead hours: 24 | 48 | 72 | all",
             getDefaultValue: () => "all");
-        var train = new Command("train", "Train the temperature blender (phase 2b per-lead by default)") { targetOpt, leadOpt };
-        train.SetHandler(async (target, lead) =>
+        var stationOpt = new Option<string?>(
+            name: "--station",
+            description: "Rainfall station name (precipitation target only). Defaults to the first station in config.",
+            getDefaultValue: () => null);
+        var train = new Command("train", "Train the blender (phase 2b temperature / phase 3a precipitation, per-lead)") { targetOpt, leadOpt, stationOpt };
+        train.SetHandler(async (target, lead, station) =>
         {
             var cmd = host.Services.GetRequiredService<TrainCommand>();
-            await cmd.RunAsync(target, lead, CancellationToken.None);
-        }, targetOpt, leadOpt);
+            await cmd.RunAsync(target, lead, station, CancellationToken.None);
+        }, targetOpt, leadOpt, stationOpt);
         root.AddCommand(train);
 
         var evalTargetOpt = new Option<string>(
