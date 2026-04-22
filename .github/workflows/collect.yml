@@ -45,18 +45,19 @@ jobs:
           acl = private
           EOF
 
-      - name: Pull existing METAR observations from R2
+      - name: Pull existing METAR + rainfall from R2
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
           # Forecasts/ERA5 writers are append-only at the file level (unique
           # run=HH.parquet / date=... paths per cycle), so we don't need the
-          # existing tree locally. Only ParquetWriter.WriteObservationsAsync
-          # uses read-modify-write — it reads the day's observations.parquet,
-          # merges new rows, dedupes by ObservedTimeUtc, and rewrites. That
-          # one subtree is what we need locally; everything else is wasted IO.
-          mkdir -p data/truth/metar
-          rclone copy "r2:${R2_BUCKET}/data/truth/metar" ./data/truth/metar --fast-list --transfers 16 --checkers 32 --progress
+          # existing tree locally. The read-modify-write writers are
+          # WriteObservationsAsync (METAR) and WriteRainfallAsync (EA) — each
+          # reads the day's parquet, merges new rows, dedupes by timestamp,
+          # rewrites. Those subtrees we pull; everything else is wasted IO.
+          mkdir -p data/truth/metar data/truth/rainfall
+          rclone copy "r2:${R2_BUCKET}/data/truth/metar"    ./data/truth/metar    --fast-list --transfers 16 --checkers 32 --progress
+          rclone copy "r2:${R2_BUCKET}/data/truth/rainfall" ./data/truth/rainfall --fast-list --transfers 16 --checkers 32 --progress
 
       - name: Build
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo

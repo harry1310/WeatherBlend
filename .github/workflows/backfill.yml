@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       source:
-        description: "forecasts | previous-runs | era5 | metar | all"
+        description: "forecasts | previous-runs | era5 | metar | rainfall | all"
         required: true
         default: "all"
         type: choice
-        options: [forecasts, previous-runs, era5, metar, all]
+        options: [forecasts, previous-runs, era5, metar, rainfall, all]
       start:
         description: "Start date (yyyy-MM-dd, UTC)"
         required: true
@@ -57,17 +57,29 @@ jobs:
           acl = private
           EOF
 
-      - name: Pull existing METAR observations from R2 (merge-target for metar/all)
+      - name: Pull METAR merge-target from R2 (for metar/all)
         if: ${{ inputs.source == 'metar' || inputs.source == 'all' }}
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
-          # Only ParquetWriter.WriteObservationsAsync uses read-modify-write
-          # (reads day's observations.parquet, merges, dedupes, rewrites).
-          # Forecasts / ERA5 / previous-runs are all append-only at the file
-          # level so the existing tree isn't needed locally.
+          # WriteObservationsAsync is read-modify-write (merge + dedup by
+          # ObservedTimeUtc + rewrite). Pull the subtree so existing rows
+          # aren't clobbered. Forecasts / ERA5 / previous-runs are append-only
+          # at the file level and don't need the existing tree locally.
           mkdir -p data/truth/metar
           rclone copy "r2:${R2_BUCKET}/data/truth/metar" ./data/truth/metar --fast-list --transfers 16 --checkers 32 --progress
+
+      - name: Pull rainfall merge-target from R2 (for rainfall/all)
+        if: ${{ inputs.source == 'rainfall' || inputs.source == 'all' }}
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          # WriteRainfallAsync is read-modify-write (merge + dedup by
+          # ObservedTimeUtc + rewrite), same pattern as METAR. Only reason to
+          # pull for rainfall is if the backfill window overlaps existing
+          # partitions — otherwise it's all new files. Cheap insurance.
+          mkdir -p data/truth/rainfall
+          rclone copy "r2:${R2_BUCKET}/data/truth/rainfall" ./data/truth/rainfall --fast-list --transfers 16 --checkers 32 --progress
 
       - name: Build
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
