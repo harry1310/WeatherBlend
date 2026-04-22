@@ -1,0 +1,136 @@
+name: verify
+
+# Weekly rolling verification. Joins the prediction tree against the ERA5 truth
+# tree, stratifies by (model_version, lead), and flags drift when rolling MAE
+# exceeds 1.5× the training-time test MAE for that lead.
+#
+# Scheduled Mondays 09:30 UTC — comfortably after the last daily predict run of
+# the prior week, and Monday morning is when a human is most likely to read it.
+on:
+  schedule:
+    - cron: "30 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      as_of:
+        description: "Anchor date for the rolling window (yyyy-MM-dd). Leave blank for 'now'."
+        required: false
+        type: string
+      window_days:
+        description: "Rolling window size in days."
+        required: false
+        default: "14"
+        type: string
+      drift:
+        description: "Drift threshold multiplier (rolling MAE vs training test MAE)."
+        required: false
+        default: "1.5"
+        type: string
+
+concurrency:
+  group: weatherblend-data
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+          dotnet-quality: preview
+
+      - name: Install rclone
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          rclone version
+
+      - name: Configure rclone for R2
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf <<EOF
+          [r2]
+          type = s3
+          provider = Cloudflare
+          access_key_id = ${R2_ACCESS_KEY_ID}
+          secret_access_key = ${R2_SECRET_ACCESS_KEY}
+          endpoint = ${R2_ENDPOINT}
+          acl = private
+          EOF
+
+      - name: Pull predictions + ERA5 + model metadata + reports from R2
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          # Predictions: the thing we're verifying.
+          mkdir -p data/predictions
+          rclone copy "r2:${R2_BUCKET}/data/predictions" ./data/predictions --fast-list --transfers 16 --checkers 32 --progress
+
+          # ERA5 truth: join key. Pulling the whole tree is fine at PoC scale.
+          mkdir -p data/truth/era5
+          rclone copy "r2:${R2_BUCKET}/data/truth/era5" ./data/truth/era5 --fast-list --transfers 16 --checkers 32 --progress
+
+          # Model metadata (training_metadata.json + MANIFEST.json) for the drift
+          # threshold reference. We don't need the .zip artefacts for verify but
+          # copying the whole models tree is simpler than filtering.
+          mkdir -p data/models
+          rclone copy "r2:${R2_BUCKET}/data/models" ./data/models --fast-list --transfers 16 --checkers 32 --progress
+
+          # Existing reports — additive-only writes land in the same tree.
+          mkdir -p data/reports
+          rclone copy "r2:${R2_BUCKET}/data/reports" ./data/reports --fast-list --transfers 16 --checkers 32 --progress
+
+      - name: Build
+        run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
+
+      - name: Verify
+        # Exit code 4 = drift detected. Keep the step non-fatal (|| true) but
+        # propagate the exit to a separate step so the job is still visibly
+        # orange in the run list.
+        id: verify_run
+        run: |
+          AS_OF="${{ github.event.inputs.as_of }}"
+          WINDOW="${{ github.event.inputs.window_days }}"
+          DRIFT="${{ github.event.inputs.drift }}"
+          ARGS="--target temperature"
+          if [ -n "$AS_OF" ]; then ARGS="$ARGS --as-of $AS_OF"; fi
+          if [ -n "$WINDOW" ]; then ARGS="$ARGS --window-days $WINDOW"; fi
+          if [ -n "$DRIFT" ]; then ARGS="$ARGS --drift $DRIFT"; fi
+          set +e
+          dotnet run --project src/WeatherBlend --no-build -c Release -- verify $ARGS
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Push refreshed reports to R2
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          rclone copy ./data/reports "r2:${R2_BUCKET}/data/reports" --fast-list --transfers 16 --checkers 32 --progress
+
+      - name: Upload logs + report as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-output-${{ github.run_id }}
+          path: |
+            logs/
+            data/reports/verify_*.md
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Flag drift in job summary
+        if: always()
+        run: |
+          EXIT="${{ steps.verify_run.outputs.exit }}"
+          if [ "$EXIT" = "4" ]; then
+            echo "::warning::Drift detected — see verify report."
+            echo "**Drift detected.** See attached \`verify_*.md\` report." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$EXIT" != "0" ]; then
+            echo "::error::Verify step exited $EXIT (non-drift failure)."
+            exit 1
+          fi

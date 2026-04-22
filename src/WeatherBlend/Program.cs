@@ -100,6 +100,7 @@ public static class Program
                 services.AddTransient<InspectCommand>();
                 services.AddTransient<CompareCommand>();
                 services.AddTransient<PredictCommand>();
+                services.AddTransient<VerifyCommand>();
             })
             .Build();
 
@@ -232,6 +233,38 @@ public static class Program
             await cmd.RunAsync(target, version, forDate, CancellationToken.None);
         }, predictTargetOpt, predictVersionOpt, predictForDateOpt);
         root.AddCommand(predict);
+
+        var verifyTargetOpt = new Option<string>(
+            name: "--target",
+            description: "Target variable: temperature",
+            getDefaultValue: () => "temperature");
+        var verifyAsOfOpt = new Option<DateOnly?>(
+            name: "--as-of",
+            description: "Anchor date for the rolling window (yyyy-MM-dd). Default: now.");
+        var verifyWindowOpt = new Option<int>(
+            name: "--window-days",
+            description: "Rolling window size in days",
+            getDefaultValue: () => 14);
+        var verifyLatencyOpt = new Option<int>(
+            name: "--latency-days",
+            description: "ERA5 release latency — exclude this many most-recent days",
+            getDefaultValue: () => 5);
+        var verifyDriftOpt = new Option<double>(
+            name: "--drift",
+            description: "Drift threshold multiplier (rolling MAE vs training test MAE)",
+            getDefaultValue: () => 1.5);
+        var verify = new Command(
+            "verify",
+            "Rolling verification vs ERA5, stratified by (model version, lead). Flags drift.")
+        {
+            verifyTargetOpt, verifyAsOfOpt, verifyWindowOpt, verifyLatencyOpt, verifyDriftOpt,
+        };
+        verify.SetHandler(async (target, asOf, windowDays, latencyDays, drift) =>
+        {
+            var cmd = host.Services.GetRequiredService<VerifyCommand>();
+            Environment.ExitCode = await cmd.RunAsync(target, asOf, windowDays, latencyDays, drift, CancellationToken.None);
+        }, verifyTargetOpt, verifyAsOfOpt, verifyWindowOpt, verifyLatencyOpt, verifyDriftOpt);
+        root.AddCommand(verify);
 
         var globOpt = new Option<string>("--glob", "Parquet glob across models for one run") { IsRequired = true };
         var compare = new Command("compare", "Cross-model agreement summary for a run") { globOpt };
