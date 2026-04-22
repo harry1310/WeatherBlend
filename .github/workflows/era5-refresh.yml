@@ -1,0 +1,105 @@
+name: era5-refresh
+
+# Daily ERA5 truth refresh. Open-Meteo's ERA5 feed mirrors ECMWF's release
+# cadence — roughly once a day with ~5-day lag — so polling more often is
+# wasted calls. We backfill a rolling 14-day window each morning to catch
+# any late-arriving days without assuming a single release timing.
+#
+# 06:00 UTC is early enough that the render-site workflow (fired by predict
+# at ~08:05 UTC) sees the fresh truth when it runs.
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "Start date (yyyy-MM-dd, UTC). Default: today − 14 days."
+        required: false
+        default: ""
+      end:
+        description: "End date (yyyy-MM-dd, UTC). Default: today."
+        required: false
+        default: ""
+
+concurrency:
+  # Share the data-write lock with collect/backfill/predict so no two jobs
+  # try to push to R2 at the same time.
+  group: weatherblend-data
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+          dotnet-quality: preview
+
+      - name: Install rclone
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          rclone version
+
+      - name: Configure rclone for R2
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf <<EOF
+          [r2]
+          type = s3
+          provider = Cloudflare
+          access_key_id = ${R2_ACCESS_KEY_ID}
+          secret_access_key = ${R2_SECRET_ACCESS_KEY}
+          endpoint = ${R2_ENDPOINT}
+          acl = private
+          EOF
+
+      - name: Compute refresh window
+        id: window
+        run: |
+          START="${{ github.event.inputs.start }}"
+          END="${{ github.event.inputs.end }}"
+          if [ -z "$START" ]; then
+            START=$(date -u -d '14 days ago' +%Y-%m-%d)
+          fi
+          if [ -z "$END" ]; then
+            END=$(date -u +%Y-%m-%d)
+          fi
+          echo "start=$START" >> "$GITHUB_OUTPUT"
+          echo "end=$END"   >> "$GITHUB_OUTPUT"
+          echo "ERA5 refresh window: $START .. $END"
+
+      - name: Build
+        run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
+
+      - name: Refresh ERA5
+        # Backfill is idempotent — ParquetWriter.WriteEra5Async rewrites per-date
+        # files, so re-pulling the same days just overwrites with the latest
+        # Open-Meteo data. Days Open-Meteo hasn't released yet are simply skipped.
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            backfill --source era5 \
+            --start ${{ steps.window.outputs.start }} \
+            --end   ${{ steps.window.outputs.end }}
+
+      - name: Push ERA5 tree to R2
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          rclone copy ./data/truth/era5 "r2:${R2_BUCKET}/data/truth/era5" --fast-list --transfers 16 --checkers 32 --progress
+
+      - name: Upload logs as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: era5-refresh-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 14
+          if-no-files-found: ignore
