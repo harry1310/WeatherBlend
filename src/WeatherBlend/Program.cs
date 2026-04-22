@@ -108,6 +108,7 @@ public static class Program
                 services.AddTransient<CompareCommand>();
                 services.AddTransient<PredictCommand>();
                 services.AddTransient<VerifyCommand>();
+                services.AddTransient<RenderSiteCommand>();
             })
             .Build();
 
@@ -272,6 +273,31 @@ public static class Program
             Environment.ExitCode = await cmd.RunAsync(target, asOf, windowDays, latencyDays, drift, CancellationToken.None);
         }, verifyTargetOpt, verifyAsOfOpt, verifyWindowOpt, verifyLatencyOpt, verifyDriftOpt);
         root.AddCommand(verify);
+
+        var siteOutputOpt = new Option<string>(
+            name: "--output",
+            description: "Directory to write the static site into",
+            getDefaultValue: () => Path.Combine("data", "site"));
+        var siteWindowOpt = new Option<int>(
+            name: "--window-days",
+            description: "How many days of predictions to include (table + charts)",
+            getDefaultValue: () => 30);
+        var siteRollingOpt = new Option<int>(
+            name: "--rolling-window-days",
+            description: "Rolling-MAE window size for verification charts",
+            getDefaultValue: () => 14);
+        var renderSite = new Command(
+            "render-site",
+            "Render a self-contained static site (home/predictions/verify/about)")
+        {
+            siteOutputOpt, siteWindowOpt, siteRollingOpt,
+        };
+        renderSite.SetHandler(async (output, window, rolling) =>
+        {
+            var cmd = host.Services.GetRequiredService<RenderSiteCommand>();
+            Environment.ExitCode = await cmd.RunAsync(output, window, rolling, CancellationToken.None);
+        }, siteOutputOpt, siteWindowOpt, siteRollingOpt);
+        root.AddCommand(renderSite);
 
         var globOpt = new Option<string>("--glob", "Parquet glob across models for one run") { IsRequired = true };
         var compare = new Command("compare", "Cross-model agreement summary for a run") { globOpt };

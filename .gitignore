@@ -26,3 +26,6 @@ appsettings.Local.json
 tmp/
 __pycache__/
 *.pyc
+
+# Wrangler (Cloudflare Pages deploy tooling — local cache/tmp only)
+.wrangler/

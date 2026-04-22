@@ -1,0 +1,109 @@
+name: render-site
+
+# Renders the static site from R2-backed parquet and deploys it to Cloudflare Pages.
+#
+# Fires automatically after `predict` (daily) and `verify` (weekly) complete, so the
+# public site always reflects the most recent forecast/verification state. Also
+# supports manual dispatch for one-off re-renders.
+on:
+  workflow_run:
+    workflows: ["predict", "verify"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      window_days:
+        description: "How many days of predictions to include (table + charts)."
+        required: false
+        default: "30"
+        type: string
+      rolling_window_days:
+        description: "Rolling-MAE window size for verification charts."
+        required: false
+        default: "14"
+        type: string
+
+# Cancel an in-flight render if a newer one is queued — the older render would be
+# rendering stale data by the time it finished. Scoped to the site job only so it
+# can't interrupt data-writing workflows that share the weatherblend-data group.
+concurrency:
+  group: weatherblend-site
+  cancel-in-progress: true
+
+jobs:
+  render-and-deploy:
+    # Skip the auto-run if the triggering workflow failed — a failed predict means
+    # today's predictions aren't on R2 yet, so re-rendering just redeploys yesterday's
+    # site with a newer timestamp, which is misleading.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+          dotnet-quality: preview
+
+      - name: Install rclone
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          rclone version
+
+      - name: Configure rclone for R2
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf <<EOF
+          [r2]
+          type = s3
+          provider = Cloudflare
+          access_key_id = ${R2_ACCESS_KEY_ID}
+          secret_access_key = ${R2_SECRET_ACCESS_KEY}
+          endpoint = ${R2_ENDPOINT}
+          acl = private
+          EOF
+
+      - name: Pull predictions + ERA5 + METAR from R2
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          # Read-only pulls — render-site never writes back to R2.
+          mkdir -p data/predictions data/truth/era5 data/truth/metar
+          rclone copy "r2:${R2_BUCKET}/data/predictions" ./data/predictions --fast-list --transfers 16 --checkers 32 --progress
+          rclone copy "r2:${R2_BUCKET}/data/truth/era5"  ./data/truth/era5  --fast-list --transfers 16 --checkers 32 --progress
+          rclone copy "r2:${R2_BUCKET}/data/truth/metar" ./data/truth/metar --fast-list --transfers 16 --checkers 32 --progress
+
+      - name: Build
+        run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
+
+      - name: Render site
+        run: |
+          WINDOW="${{ github.event.inputs.window_days }}"
+          ROLLING="${{ github.event.inputs.rolling_window_days }}"
+          ARGS="--output data/site"
+          if [ -n "$WINDOW" ]; then ARGS="$ARGS --window-days $WINDOW"; fi
+          if [ -n "$ROLLING" ]; then ARGS="$ARGS --rolling-window-days $ROLLING"; fi
+          dotnet run --project src/WeatherBlend --no-build -c Release -- render-site $ARGS
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # --branch main promotes to the production URL (weatherblend.pages.dev);
+          # without it the deploy would only get a preview URL.
+          command: pages deploy data/site --project-name weatherblend --branch main --commit-dirty=true
+
+      - name: Upload logs as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: render-site-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 14
+          if-no-files-found: ignore
