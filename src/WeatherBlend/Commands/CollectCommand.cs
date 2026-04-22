@@ -16,17 +16,20 @@ public sealed class CollectCommand
     private readonly AppConfig _cfg;
     private readonly OpenMeteoClient _forecasts;
     private readonly MetarClient _metar;
+    private readonly EaHydrologyClient _rainfall;
     private readonly ILogger<CollectCommand> _log;
 
     public CollectCommand(
         AppConfig cfg,
         OpenMeteoClient forecasts,
         MetarClient metar,
+        EaHydrologyClient rainfall,
         ILogger<CollectCommand> log)
     {
         _cfg = cfg;
         _forecasts = forecasts;
         _metar = metar;
+        _rainfall = rainfall;
         _log = log;
     }
 
@@ -77,6 +80,29 @@ public sealed class CollectCommand
             return 2;
         }
 
-        return forecastErrors > 0 ? 1 : 0;
+        // EA rainfall: pull the last 2 days per station. Interval-end timestamps
+        // plus overnight latency mean a 1-day window can miss readings still
+        // being backfilled by EA; 2 days gives a safe overlap and the dedup
+        // writer makes repeated runs cheap.
+        var endDate = DateOnly.FromDateTime(DateTime.UtcNow);
+        var startDate = endDate.AddDays(-1);
+        var rainfallErrors = 0;
+        foreach (var st in _cfg.Location.Rainfall.Stations)
+        {
+            try
+            {
+                var rain = await _rainfall.FetchAsync(_cfg.Location.Name, st, startDate, endDate, ct);
+                await ParquetWriter.WriteRainfallAsync(_cfg.Storage.RainfallPath, rain, ct);
+                _log.LogInformation("  EA {Station}: wrote {Rows} readings", st.Name, rain.Count);
+            }
+            catch (Exception ex)
+            {
+                rainfallErrors++;
+                _log.LogError(ex, "  EA {Station}: FAILED", st.Name);
+            }
+        }
+
+        if (forecastErrors > 0 || rainfallErrors > 0) return 1;
+        return 0;
     }
 }

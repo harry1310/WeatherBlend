@@ -82,6 +82,34 @@ public sealed class StatusCommand
         }
 
         Console.WriteLine();
+        var rainGlob = Path.Combine(_cfg.Storage.RainfallPath, "**", "*.parquet").Replace('\\', '/');
+        if (Directory.Exists(_cfg.Storage.RainfallPath))
+        {
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = $@"
+                SELECT StationName AS station,
+                       COUNT(*) AS rows,
+                       MIN(ObservedTimeUtc) AS earliest,
+                       MAX(ObservedTimeUtc) AS latest,
+                       SUM(CASE WHEN Quality = 'Good' THEN 1 ELSE 0 END) AS good_rows,
+                       ROUND(SUM(COALESCE(Value15MinMm, 0)), 1) AS total_mm
+                FROM read_parquet('{rainGlob}', hive_partitioning = false, union_by_name = true)
+                GROUP BY StationName
+                ORDER BY StationName";
+            using var r = cmd.ExecuteReader();
+            Console.WriteLine("Rainfall (EA):");
+            Console.WriteLine($"  {"station",-25} {"rows",8} {"earliest",-22} {"latest",-22} {"good",8} {"total_mm",10}");
+            while (r.Read())
+            {
+                Console.WriteLine($"  {r.GetString(0),-25} {r.GetInt64(1),8} {r.GetValue(2),-22} {r.GetValue(3),-22} {r.GetInt64(4),8} {r.GetValue(5),10}");
+            }
+        }
+        else
+        {
+            Console.WriteLine("Rainfall (EA): (no data yet)");
+        }
+
+        Console.WriteLine();
         return Task.FromResult(0);
     }
 }

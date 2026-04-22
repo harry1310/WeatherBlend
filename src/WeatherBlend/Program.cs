@@ -62,6 +62,13 @@ public static class Program
                 })
                 .AddStandardResilienceHandler();
 
+                services.AddHttpClient<EaHydrologyClient>(c =>
+                {
+                    c.Timeout = TimeSpan.FromSeconds(cfg.Http.TimeoutSeconds);
+                    c.DefaultRequestHeaders.UserAgent.ParseAdd(cfg.Http.UserAgent);
+                })
+                .AddStandardResilienceHandler();
+
                 // OGIMET: longer timeout, no aggressive retry — the rate limit means
                 // a hammered retry loop is the fastest way to get the IP blocked.
                 services.AddHttpClient<OgimetClient>(c =>
@@ -123,9 +130,9 @@ public static class Program
             getDefaultValue: () => DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-1)));
         var sourceOpt = new Option<string>(
             name: "--source",
-            description: "forecasts | previous-runs | era5 | metar | all",
+            description: "forecasts | previous-runs | era5 | metar | rainfall | all",
             getDefaultValue: () => "all");
-        var backfill = new Command("backfill", "Fetch historical data (forecasts, ERA5, OGIMET METAR)")
+        var backfill = new Command("backfill", "Fetch historical data (forecasts, ERA5, OGIMET METAR, EA rainfall)")
             { sourceOpt, startOpt, endOpt };
         backfill.SetHandler(async (source, start, end) =>
         {

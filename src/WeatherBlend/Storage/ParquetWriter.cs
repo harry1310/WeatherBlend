@@ -114,6 +114,46 @@ public static class ParquetWriter
         }
     }
 
+    /// <summary>
+    /// EA rainfall writer. Partitioned by location/station/date so each file holds
+    /// at most 96 rows (one day of 15-minute totals). Merges with any existing
+    /// partition file, deduping on ObservedTimeUtc with last-write-wins — matches
+    /// the METAR observation pattern so re-runs and backfills are idempotent.
+    /// Path: location=.../station=&lt;name&gt;/date=&lt;yyyy-MM-dd&gt;/rainfall.parquet
+    /// </summary>
+    public static async Task WriteRainfallAsync(
+        string basePath,
+        IReadOnlyList<RainfallRow> rows,
+        CancellationToken ct = default)
+    {
+        if (rows.Count == 0) return;
+
+        foreach (var group in rows.GroupBy(r => new { r.LocationName, r.StationName, Date = r.ObservedTimeUtc.Date }))
+        {
+            var dateStr = group.Key.Date.ToString("yyyy-MM-dd");
+            var dir = Path.Combine(
+                basePath,
+                $"location={group.Key.LocationName}",
+                $"station={group.Key.StationName}",
+                $"date={dateStr}");
+            Directory.CreateDirectory(dir);
+
+            var file = Path.Combine(dir, "rainfall.parquet");
+            var existing = File.Exists(file)
+                ? (await ParquetSerializer.DeserializeAsync<RainfallRow>(file, cancellationToken: ct)).ToList()
+                : new List<RainfallRow>();
+
+            var merged = existing
+                .Concat(group)
+                .GroupBy(r => r.ObservedTimeUtc)
+                .Select(g => g.Last())
+                .OrderBy(r => r.ObservedTimeUtc)
+                .ToList();
+
+            await ParquetSerializer.SerializeAsync(merged, file, cancellationToken: ct);
+        }
+    }
+
     public static async Task WriteObservationsAsync(
         string basePath,
         IReadOnlyList<ObservationRow> rows,

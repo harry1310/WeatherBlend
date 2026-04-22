@@ -14,6 +14,7 @@ namespace WeatherBlend.Commands;
 ///                   Rows tagged RunTimeSource=offset_day, LeadHours in {24,48,...,168}.
 ///   era5          - Open-Meteo ERA5 reanalysis archive (gapless training truth)
 ///   metar         - OGIMET historical METAR archive (verification truth, gappy)
+///   rainfall      - EA Hydrology 15-min rainfall totals (precip verification truth)
 ///   all           - everything above
 ///
 /// Forecasts/previous-runs/ERA5 hit Open-Meteo (generous limits, 2s polite delay).
@@ -26,6 +27,7 @@ public sealed class BackfillCommand
     private readonly OpenMeteoClient _forecasts;
     private readonly Era5Client _era5;
     private readonly OgimetClient _ogimet;
+    private readonly EaHydrologyClient _rainfall;
     private readonly ILogger<BackfillCommand> _log;
 
     public BackfillCommand(
@@ -33,12 +35,14 @@ public sealed class BackfillCommand
         OpenMeteoClient forecasts,
         Era5Client era5,
         OgimetClient ogimet,
+        EaHydrologyClient rainfall,
         ILogger<BackfillCommand> log)
     {
         _cfg = cfg;
         _forecasts = forecasts;
         _era5 = era5;
         _ogimet = ogimet;
+        _rainfall = rainfall;
         _log = log;
     }
 
@@ -54,10 +58,11 @@ public sealed class BackfillCommand
         if (src is "previous-runs" or "all") errors += await BackfillPreviousRunsAsync(start, end, ct);
         if (src is "era5" or "all")          errors += await BackfillEra5Async(start, end, ct);
         if (src is "metar" or "all")         errors += await BackfillMetarAsync(start, end, ct);
+        if (src is "rainfall" or "all")      errors += await BackfillRainfallAsync(start, end, ct);
 
-        if (src is not ("forecasts" or "previous-runs" or "era5" or "metar" or "all"))
+        if (src is not ("forecasts" or "previous-runs" or "era5" or "metar" or "rainfall" or "all"))
         {
-            _log.LogError("Unknown source '{Source}'. Use: forecasts | previous-runs | era5 | metar | all", source);
+            _log.LogError("Unknown source '{Source}'. Use: forecasts | previous-runs | era5 | metar | rainfall | all", source);
             return 2;
         }
 
@@ -199,6 +204,44 @@ public sealed class BackfillCommand
                 // OGIMET recommendation is 20 requests / 10 min ≈ one every 30s.
                 // 5s caused ~50% failure rate on the first full run — honour 30s now.
                 await Task.Delay(TimeSpan.FromSeconds(30), ct);
+                cursor = chunkEnd.AddDays(1);
+            }
+        }
+        return errors;
+    }
+
+    // ---- EA rainfall (per station, monthly chunks) -------------------------------
+    //
+    // EA Hydrology has no rate-limit worth worrying about and a 2M-row hard cap
+    // per call. A month of 15-min data is ~2900 rows so monthly chunks give
+    // comfortable headroom and tidy per-chunk logs. A 1-second polite delay is
+    // more than enough.
+
+    private async Task<int> BackfillRainfallAsync(DateOnly start, DateOnly end, CancellationToken ct)
+    {
+        var errors = 0;
+        foreach (var station in _cfg.Location.Rainfall.Stations)
+        {
+            var cursor = start;
+            while (cursor <= end)
+            {
+                var chunkEnd = cursor.AddMonths(1).AddDays(-1);
+                if (chunkEnd > end) chunkEnd = end;
+                try
+                {
+                    var rows = await _rainfall.FetchAsync(
+                        _cfg.Location.Name, station, cursor, chunkEnd, ct);
+                    await ParquetWriter.WriteRainfallAsync(_cfg.Storage.RainfallPath, rows, ct);
+                    _log.LogInformation("  rainfall/{Station} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd}: {Rows} rows",
+                        station.Name, cursor, chunkEnd, rows.Count);
+                }
+                catch (Exception ex)
+                {
+                    errors++;
+                    _log.LogError(ex, "  rainfall/{Station} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} FAILED",
+                        station.Name, cursor, chunkEnd);
+                }
+                await Task.Delay(TimeSpan.FromSeconds(1), ct);
                 cursor = chunkEnd.AddDays(1);
             }
         }

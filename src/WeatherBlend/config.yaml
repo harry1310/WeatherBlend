@@ -20,6 +20,21 @@ location:
     primary: "EGTE"    # Exeter Airport
     fallback: "EGDY"   # RNAS Yeovilton
 
+  # Environment Agency rainfall stations within ~15km of Bonehill Rocks, via the
+  # EA Hydrology API (https://environment.data.gov.uk/hydrology). OGL v3, no auth.
+  # 15-min tip totals; aggregate 4× for hourly. Bellever is closest moorland match;
+  # Princetown is higher/wetter (orographic crosscheck); the one near Hexworthy
+  # (EA labels it simply "Dartmoor") is the WSW fallback. `id` is the EA measure
+  # prefix — for versioned stations it includes the wiskiID suffix (e.g. `_363307`).
+  rainfall:
+    stations:
+      - id: "723a8fc4-908b-4430-91c7-9990be86540a_363307"
+        name: "Bellever Dartmoor"
+      - id: "f0676423-f697-4dec-8958-440f335cce9a"
+        name: "Princetown"
+      - id: "b69ee00c-aa73-49d0-bc62-ff4673094553"
+        name: "Dartmoor nr Hexworthy"
+
 # NWP models to collect via Open-Meteo.
 # Open-Meteo exposes many models through one API with a consistent schema.
 # See https://open-meteo.com/en/docs for the full list.
@@ -75,6 +90,7 @@ storage:
   forecastsPath: "data/forecasts"
   observationsPath: "data/truth/metar"
   era5Path: "data/truth/era5"
+  rainfallPath: "data/truth/rainfall"
   predictionsPath: "data/predictions"
   reportsPath: "data/reports"
 
