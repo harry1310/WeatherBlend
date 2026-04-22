@@ -5,8 +5,9 @@ using Microsoft.ML.Trainers.LightGbm;
 namespace WeatherBlend.Train;
 
 /// <summary>
-/// LightGBM regressor for the temperature blender. One model, no lead-time bucketing
-/// (phase 2a Option A — see docs/LEAD_TIME_BACKFILL.md and session notes for why).
+/// LightGBM regressor for the temperature blender. Pure fit-and-predict over the
+/// 13 features in <see cref="FeatureBuilder.FeatureNames"/> — callers decide what
+/// training data to hand in (e.g. one dataset per lead for per-lead blenders).
 ///
 /// Deviations from the original brief, forced by Microsoft.ML.LightGbm 4.0.0's public API:
 ///   - Objective is L2 (squared error), not regression_l1. The public Options class

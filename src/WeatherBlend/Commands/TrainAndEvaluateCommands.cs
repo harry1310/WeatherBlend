@@ -7,10 +7,9 @@ using WeatherBlend.Train;
 namespace WeatherBlend.Commands;
 
 /// <summary>
-/// Trains the temperature blender. Default mode is phase 2b "redo" — one LightGBM
-/// regressor per lead ∈ {24,48,72}, each fed only Open-Meteo Previous Runs rows
-/// (RunTimeSource = 'offset_day') filtered to that exact lead. Phase 2a (bucket-free)
-/// is preserved as a callable path for reproducing the v2026-04-20_221013 artefact.
+/// Trains the temperature blender — one LightGBM regressor per lead ∈ {24,48,72},
+/// each fed Open-Meteo Previous Runs rows (RunTimeSource = 'offset_day') at that
+/// exact lead, targeting ERA5 reanalysis.
 /// </summary>
 public sealed class TrainCommand
 {
@@ -33,14 +32,10 @@ public sealed class TrainCommand
             return 2;
         }
 
-        // --lead phase2a is the escape hatch for reproducing the bucket-free 2a model.
-        if (string.Equals(lead, "phase2a", StringComparison.OrdinalIgnoreCase))
-            return await RunPhase2aAsync(ct);
-
         var leads = ParseLeads(lead);
         if (leads is null)
         {
-            _log.LogError("Invalid --lead value '{Lead}'. Expected 24, 48, 72, all, or phase2a.", lead);
+            _log.LogError("Invalid --lead value '{Lead}'. Expected 24, 48, 72, or all.", lead);
             return 2;
         }
 
@@ -60,11 +55,11 @@ public sealed class TrainCommand
     {
         var now = DateTime.UtcNow;
         var modelsRoot = Path.Combine("data", "models");
-        var versionDir = ModelArtifact.BuildVersionDir(modelsRoot, "temperature", now, suffix: "phase2redo");
+        var versionDir = ModelArtifact.BuildVersionDir(modelsRoot, "temperature", now);
         var versionName = Path.GetFileName(versionDir);
 
         var hp = new TemperatureTrainer.Hyperparameters();
-        _log.LogInformation("Phase 2b (redo) — training per-lead blenders for leads [{Leads}]",
+        _log.LogInformation("Phase 2b — training per-lead blenders for leads [{Leads}]",
             string.Join(",", leads));
         _log.LogInformation("Hyperparameters: iter={Iter} lr={Lr} leaves={Leaves} esr={Esr} seed={Seed}",
             hp.NumberOfIterations, hp.LearningRate, hp.NumberOfLeaves, hp.EarlyStoppingRound, hp.Seed);
@@ -148,7 +143,7 @@ public sealed class TrainCommand
         {
             Version = versionName,
             Target = "temperature",
-            Phase = "2b_redo",
+            Phase = "2b",
             DataSource = "previous_runs_api",
             TrainedAtUtc = now,
             Hyperparameters = BuildHpDict(hp),
@@ -169,84 +164,6 @@ public sealed class TrainCommand
             string.Join("; ", perLead.Select(kv =>
                 $"lead {kv.Key}h: blend MAE {kv.Value.BlendTestMae:0.000}°C vs {kv.Value.BestSingle} val MAE {kv.Value.BestSingleValMae:0.000}°C")));
 
-        await Task.CompletedTask;
-        return 0;
-    }
-
-    private async Task<int> RunPhase2aAsync(CancellationToken ct)
-    {
-        _log.LogInformation("Phase 2a (bucket-free) — reproduction path.");
-
-        var rows = FeatureBuilder.Build(
-            _cfg.Storage.ForecastsPath,
-            _cfg.Storage.Era5Path,
-            _cfg.Location.Name,
-            ct);
-        _log.LogInformation("Loaded {N} joined rows spanning {Start:yyyy-MM-dd} → {End:yyyy-MM-dd}",
-            rows.Count,
-            rows.Count == 0 ? DateTime.MinValue : rows[0].ValidTimeUtc,
-            rows.Count == 0 ? DateTime.MinValue : rows[^1].ValidTimeUtc);
-
-        if (rows.Count < 100)
-        {
-            _log.LogError("Only {N} joined rows available — too few to train. Run backfill first.", rows.Count);
-            return 3;
-        }
-
-        var ds = TrainingDataset.Split(rows);
-        var hp = new TemperatureTrainer.Hyperparameters();
-        var trained = TemperatureTrainer.Train(ds, hp);
-
-        var testPred = TemperatureTrainer.Predict(trained.Ml, trained.Model, ds.Test);
-        var testActual = ds.Test.Select(x => (double)x.Era5Temp).ToArray();
-        var testStats = Metrics.Compute(testPred, testActual);
-        var best = Baselines.BestSingle(ds.Val);
-        var bestStats = Metrics.Compute(Baselines.SingleModel(ds.Test, best), testActual);
-        var meanStats = Metrics.Compute(Baselines.MeanOfModels(ds.Test), testActual);
-
-        _log.LogInformation("Headline test MAE — blend={Blend:0.000}°C, best_single({Best})={BestMae:0.000}°C, mean_of_models={MeanMae:0.000}°C",
-            testStats.Mae, best, bestStats.Mae, meanStats.Mae);
-
-        var now = DateTime.UtcNow;
-        var modelsRoot = Path.Combine("data", "models");
-        var versionDir = ModelArtifact.BuildVersionDir(modelsRoot, "temperature", now);
-        var versionName = Path.GetFileName(versionDir);
-
-        ModelArtifact.SaveModel(trained.Ml, trained.Model, trained.InputSchema, versionDir);
-        ModelArtifact.SaveFeatureSchema(versionDir, trained.FeatureNames);
-        ModelArtifact.SaveFeatureImportance(versionDir, trained.FeatureImportance);
-
-        var metadata = new ModelArtifact.TrainingMetadata
-        {
-            Version = versionName,
-            Target = "temperature",
-            Phase = "2a",
-            DataSource = "open_meteo_historical_forecast_api",
-            TrainedAtUtc = now,
-            DataRangeTrain = $"{ds.TrainStart:yyyy-MM-dd HH:mm}Z → {ds.TrainEnd:yyyy-MM-dd HH:mm}Z",
-            DataRangeVal   = $"{ds.ValStart:yyyy-MM-dd HH:mm}Z → {ds.ValEnd:yyyy-MM-dd HH:mm}Z",
-            DataRangeTest  = $"{ds.TestStart:yyyy-MM-dd HH:mm}Z → {ds.TestEnd:yyyy-MM-dd HH:mm}Z",
-            TrainRows = ds.Train.Count,
-            ValRows   = ds.Val.Count,
-            TestRows  = ds.Test.Count,
-            Hyperparameters = BuildHpDict(hp),
-            TestMae = new Dictionary<string, double>
-            {
-                ["blend"]                = testStats.Mae,
-                [$"best_single[{best}]"] = bestStats.Mae,
-                ["mean_of_models"]       = meanStats.Mae,
-            },
-            DeviationsFromBrief = new List<string>
-            {
-                "Objective is L2 (squared error); MAE used only as early-stopping metric. Microsoft.ML.LightGbm 4.0 does not expose regression_l1.",
-                "No monotone constraints on per-model temperature inputs. Microsoft.ML.LightGbm 4.0 does not expose monotone_constraints.",
-                "No lead-time bucketing. Historical-forecast API lacks real issue times; phase 3 will address this (see docs/LEAD_TIME_BACKFILL.md).",
-            },
-        };
-        ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
-        ModelArtifact.UpdateManifest(modelsRoot, "temperature", versionName);
-
-        _log.LogInformation("Saved model → {Dir}", versionDir);
         await Task.CompletedTask;
         return 0;
     }
@@ -293,81 +210,14 @@ public sealed class EvaluateCommand
 
         var metadata = ModelArtifact.LoadTrainingMetadata(versionDir);
 
-        // Route by metadata phase. Anything with PerLead populated → phase 2b report.
-        if (metadata.PerLead.Count > 0)
-            return await RunPhase2bAsync(versionDir, metadata, ct);
-
-        var ml = new Microsoft.ML.MLContext(seed: 42);
-        var model = ModelArtifact.LoadModel(ml, versionDir, out _);
-
-        _log.LogInformation("Rebuilding features from local parquet...");
-        var rows = FeatureBuilder.Build(
-            _cfg.Storage.ForecastsPath,
-            _cfg.Storage.Era5Path,
-            _cfg.Location.Name,
-            ct);
-        var ds = TrainingDataset.Split(rows);
-
-        var testActual = ds.Test.Select(x => (double)x.Era5Temp).ToArray();
-        var blendPred = TemperatureTrainer.Predict(ml, model, ds.Test);
-
-        var best = Baselines.BestSingle(ds.Val);
-        var baselineRows = new List<Reporter.ModelPrediction>
+        if (metadata.PerLead.Count == 0)
         {
-            new("temp_gfs",          Baselines.SingleModel(ds.Test, "temp_gfs")),
-            new("temp_ecmwf",        Baselines.SingleModel(ds.Test, "temp_ecmwf")),
-            new("temp_icon",         Baselines.SingleModel(ds.Test, "temp_icon")),
-            new("temp_mf",           Baselines.SingleModel(ds.Test, "temp_mf")),
-            new("temp_ukmo",         Baselines.SingleModel(ds.Test, "temp_ukmo")),
-            new("temp_gem",          Baselines.SingleModel(ds.Test, "temp_gem")),
-            new("mean_of_models",    Baselines.MeanOfModels(ds.Test)),
-        };
+            _log.LogError("Model version {V} has no per-lead blenders — evaluate requires a per-lead artefact.",
+                metadata.Version);
+            return 2;
+        }
 
-        // Persistence + climatology use ERA5 truth lookups.
-        var truthByTime = rows.ToDictionary(x => x.ValidTimeUtc, x => (double)x.Era5Temp);
-        baselineRows.Add(new Reporter.ModelPrediction(
-            "persistence_-24h", Baselines.Persistence(ds.Test, truthByTime, 24)));
-        baselineRows.Add(new Reporter.ModelPrediction(
-            "climatology(month,hour)", Baselines.Climatology(ds.Train, ds.Test)));
-
-        var featImportance = ModelArtifact.LoadFeatureImportance(versionDir);
-
-        // METAR secondary check over the test window.
-        var (metarBlend, metarBest, metarActual, metarCount) = BuildMetarCheck(
-            ds.Test, blendPred, Baselines.SingleModel(ds.Test, best), best);
-
-        var input = new Reporter.ReportInput
-        {
-            GeneratedAtUtc = DateTime.UtcNow,
-            ModelVersion = metadata.Version,
-            Phase = metadata.Phase,
-            Metadata = metadata,
-            TestRows = ds.Test,
-            BlendTest = new Reporter.ModelPrediction("blend", blendPred),
-            BaselinesTest = baselineRows,
-            BestSingleName = best,
-            FeatureImportance = featImportance,
-            BlendMetar = metarBlend,
-            BestSingleMetar = metarBest,
-            ActualMetar = metarActual,
-            MetarTestRowsAvailable = metarCount,
-            LeadTimeBackfillMemoPath = "docs/LEAD_TIME_BACKFILL.md",
-        };
-
-        var md = Reporter.BuildMarkdown(input);
-        Directory.CreateDirectory(_cfg.Storage.ReportsPath);
-        var localPath = Path.Combine(_cfg.Storage.ReportsPath,
-            $"phase{metadata.Phase}_{DateTime.UtcNow:yyyy-MM-dd_HHmmss}.md");
-        await File.WriteAllTextAsync(localPath, md, ct);
-        _log.LogInformation("Report written → {Path}", localPath);
-
-        // Quick blend-vs-best headline for the terminal.
-        var blendMae = Metrics.Compute(blendPred, testActual).Mae;
-        var bestMae  = Metrics.Compute(Baselines.SingleModel(ds.Test, best), testActual).Mae;
-        _log.LogInformation("Summary — blend MAE={Blend:0.000}°C, best_single({Best}) MAE={BestMae:0.000}°C, delta={Delta:+0.000;-0.000;0.000}°C",
-            blendMae, best, bestMae, blendMae - bestMae);
-
-        return 0;
+        return await RunPhase2bAsync(versionDir, metadata, ct);
     }
 
     private async Task<int> RunPhase2bAsync(
@@ -379,12 +229,6 @@ public sealed class EvaluateCommand
 
         var ml = new Microsoft.ML.MLContext(seed: 42);
         var perLeadImportance = ModelArtifact.LoadPerLeadFeatureImportance(versionDir);
-
-        // Phase 2a headline numbers, for the before/after section. Scan version dirs
-        // for the most recent one with phase "2a" and non-empty TestMae.
-        double? p2aBlend = null, p2aBest = null;
-        string? p2aBestLabel = null, p2aVersion = null;
-        TryLoadPhase2aStats(Path.GetDirectoryName(versionDir)!, out p2aBlend, out p2aBest, out p2aBestLabel, out p2aVersion);
 
         var bundles = new List<Reporter.LeadBundle>();
         foreach (var lead in Phase2bLeads)
@@ -475,15 +319,11 @@ public sealed class EvaluateCommand
             ModelVersion = metadata.Version,
             Metadata = metadata,
             Leads = bundles,
-            Phase2aBlendMae = p2aBlend,
-            Phase2aBestSingleMae = p2aBest,
-            Phase2aBestSingleLabel = p2aBestLabel,
-            Phase2aVersion = p2aVersion,
         });
 
         Directory.CreateDirectory(_cfg.Storage.ReportsPath);
         var localPath = Path.Combine(_cfg.Storage.ReportsPath,
-            $"phase2_redo_{DateTime.UtcNow:yyyy-MM-dd_HHmmss}.md");
+            $"phase2b_{DateTime.UtcNow:yyyy-MM-dd_HHmmss}.md");
         await File.WriteAllTextAsync(localPath, report, ct);
         _log.LogInformation("Report written → {Path}", localPath);
 
@@ -510,44 +350,6 @@ public sealed class EvaluateCommand
             if (b.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
                 return b.Predicted;
         throw new KeyNotFoundException($"No baseline named '{name}' for lead {lb.LeadHours}h");
-    }
-
-    private static void TryLoadPhase2aStats(
-        string targetRoot,
-        out double? blendMae,
-        out double? bestSingleMae,
-        out string? bestSingleLabel,
-        out string? version)
-    {
-        blendMae = null; bestSingleMae = null; bestSingleLabel = null; version = null;
-        if (!Directory.Exists(targetRoot)) return;
-
-        foreach (var dir in Directory.EnumerateDirectories(targetRoot).OrderByDescending(d => d))
-        {
-            var mdPath = Path.Combine(dir, ModelArtifact.TrainingMetadataFileName);
-            if (!File.Exists(mdPath)) continue;
-            try
-            {
-                var md = ModelArtifact.LoadTrainingMetadata(dir);
-                if (md.Phase == "2a" && md.TestMae.TryGetValue("blend", out var b))
-                {
-                    blendMae = b;
-                    version = md.Version;
-                    var bestKey = md.TestMae.Keys.FirstOrDefault(k => k.StartsWith("best_single"));
-                    if (bestKey is not null && md.TestMae.TryGetValue(bestKey, out var bs))
-                    {
-                        bestSingleMae = bs;
-                        var open = bestKey.IndexOf('[');
-                        var close = bestKey.IndexOf(']');
-                        bestSingleLabel = (open > 0 && close > open)
-                            ? bestKey.Substring(open + 1, close - open - 1)
-                            : bestKey;
-                    }
-                    return;
-                }
-            }
-            catch { /* skip broken dirs */ }
-        }
     }
 
     private (Reporter.ModelPrediction? blend,

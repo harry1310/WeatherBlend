@@ -14,8 +14,15 @@ namespace WeatherBlend.Models;
 public sealed class PredictionRow
 {
     // ParquetSerializer.DeserializeAsync<T>() needs new() — see CLAUDE.md gotcha.
+    // Seeding required strings matches the Era5Row/ObservationRow pattern and keeps
+    // the nullable analyzer quiet.
     [SetsRequiredMembers]
-    public PredictionRow() { }
+    public PredictionRow()
+    {
+        LocationName = "";
+        ModelVersion = "";
+        FeatureVectorHash = "";
+    }
 
     public required string LocationName { get; init; }
     public required string ModelVersion { get; init; }

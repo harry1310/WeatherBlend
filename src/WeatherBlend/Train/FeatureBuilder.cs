@@ -3,23 +3,20 @@ using DuckDB.NET.Data;
 namespace WeatherBlend.Train;
 
 /// <summary>
-/// Builds the 13-feature training dataset for the temperature blender.
+/// Builds the 13-feature training dataset for the temperature blender, one lead at a time.
 ///
-/// Data flow:
+/// Data flow for <see cref="BuildForLead"/>:
 ///   1. Read all forecast parquet across 6 models via DuckDB (hive_partitioning=false,
 ///      in-file Model/LocationName columns are authoritative — see CLAUDE.md gotchas).
-///   2. Dedupe to the latest forecast per (ValidTime, Model) — `collect` runs every 3h
+///   2. Filter to Previous Runs rows (<c>RunTimeSource = 'offset_day'</c>) at the exact
+///      requested lead so the blender sees real issue-time vs. valid-time pairs.
+///   3. Dedupe to the latest forecast per (ValidTime, Model) — `collect` runs every 3h
 ///      and stacks multiple forecasts per valid time; we keep the most recent RunTime.
-///   3. Pivot so each valid_time has one row with 6 per-model temperature columns.
-///   4. Inner-join to ERA5 on ValidTimeUtc.
-///   5. Drop any row where any of the 6 model forecasts is null (blender shouldn't
+///   4. Pivot so each valid_time has one row with 6 per-model temperature columns.
+///   5. Inner-join to ERA5 on ValidTimeUtc.
+///   6. Drop any row where any of the 6 model forecasts is null (blender shouldn't
 ///      learn "model X missing => ..." patterns).
-///   6. Compute spread + cyclical calendar features in .NET.
-///
-/// Why not filter by lead bucket? Historical-forecast rows have synthesised
-/// RunTime=midnight (see OpenMeteoClient.Parse), so LeadHours is effectively hour-of-day
-/// and doesn't correspond to a real forecast horizon. See docs/LEAD_TIME_BACKFILL.md.
-/// Option A for phase 2a: train bucket-free. Revisit with real issue-time archives in phase 3.
+///   7. Compute spread + cyclical calendar features in .NET.
 /// </summary>
 public static class FeatureBuilder
 {
@@ -43,23 +40,10 @@ public static class FeatureBuilder
     };
 
     /// <summary>
-    /// Reads forecast and ERA5 parquet from local disk and produces training rows,
-    /// sorted ascending by ValidTimeUtc. Phase 2a behaviour — no lead filter,
-    /// takes latest run per (ValidTime, Model). Kept so 2a training can be reproduced.
-    /// </summary>
-    public static List<TrainingRow> Build(
-        string forecastsPath,
-        string era5Path,
-        string locationName,
-        CancellationToken ct = default)
-        => BuildInternal(forecastsPath, era5Path, locationName, leadFilter: null, ct);
-
-    /// <summary>
-    /// Phase 2b variant: one dataset per lead ∈ {24, 48, 72}. Filters on
-    /// RunTimeSource = 'offset_day' AND LeadHours = lead — so each training row
-    /// comes from the Open-Meteo Previous Runs API with an exact lead horizon,
-    /// not a synthesised midnight anchor. Any lead value is technically accepted
-    /// but only 24/48/72 have backfill data behind them.
+    /// Produces one dataset per lead ∈ {24, 48, 72}. Filters on
+    /// RunTimeSource = 'offset_day' AND LeadHours = lead — each training row comes
+    /// from the Open-Meteo Previous Runs API with an exact lead horizon. Any lead
+    /// value is technically accepted but only 24/48/72 have backfill behind them.
     /// </summary>
     public static List<TrainingRow> BuildForLead(
         string forecastsPath,
@@ -67,14 +51,6 @@ public static class FeatureBuilder
         string locationName,
         int leadHours,
         CancellationToken ct = default)
-        => BuildInternal(forecastsPath, era5Path, locationName, leadFilter: leadHours, ct);
-
-    private static List<TrainingRow> BuildInternal(
-        string forecastsPath,
-        string era5Path,
-        string locationName,
-        int? leadFilter,
-        CancellationToken ct)
     {
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
@@ -82,14 +58,12 @@ public static class FeatureBuilder
         var fcGlob = NormaliseGlob(Path.Combine(forecastsPath, "**", "*.parquet"));
         var eraGlob = NormaliseGlob(Path.Combine(era5Path, "**", "*.parquet"));
 
-        // For a per-lead build, restrict to offset_day rows at exactly that lead.
-        // RunTimeSource filter is load-bearing: legacy synthesised rows (RunTime=midnight)
-        // can land on LeadHours=24/48/72 by coincidence and would contaminate the
-        // lead-specific training set. Without the filter, "24h forecast" would include
-        // 0h analyses issued at midnight.
-        var fcWhere = leadFilter.HasValue
-            ? $"LocationName = '{locationName}' AND RunTimeSource = 'offset_day' AND LeadHours = {leadFilter.Value} AND Temperature2m IS NOT NULL"
-            : $"LocationName = '{locationName}' AND LeadHours >= 0 AND Temperature2m IS NOT NULL";
+        // RunTimeSource filter is load-bearing: historical-forecast rows with
+        // RunTime synthesised to midnight can land on LeadHours=24/48/72 by
+        // coincidence and would contaminate the lead-specific training set.
+        // Without the filter, "24h forecast" would include 0h analyses issued
+        // at midnight.
+        var fcWhere = $"LocationName = '{locationName}' AND RunTimeSource = 'offset_day' AND LeadHours = {leadHours} AND Temperature2m IS NOT NULL";
 
         // One row per (valid_time, model) — latest RunTime wins when live-collected
         // data has stacked multiple forecasts for the same valid time.

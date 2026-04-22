@@ -5,9 +5,9 @@ namespace WeatherBlend.Evaluate;
 /// <summary>
 /// Non-learned baselines the blender must beat to earn its keep.
 ///
-/// Note: "persistence" is classically the forecast from issue-time minus some lag.
-/// We don't have real issue times in phase 2a (see docs/LEAD_TIME_BACKFILL.md),
-/// so we use "same hour yesterday" — ERA5(T - 24h) — as a sane stand-in.
+/// Persistence: ERA5(T - lagHours), where lagHours matches the forecast lead
+/// being evaluated (24/48/72). Per-lead evaluation passes the lead directly;
+/// the default lag of 24h is the "same hour yesterday" fallback.
 /// </summary>
 public static class Baselines
 {

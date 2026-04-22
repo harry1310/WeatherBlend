@@ -171,7 +171,7 @@ public static class Program
             getDefaultValue: () => "temperature");
         var leadOpt = new Option<string>(
             name: "--lead",
-            description: "Lead hours: 24 | 48 | 72 | all (phase 2b per-lead blenders) | phase2a (bucket-free reproduction)",
+            description: "Lead hours: 24 | 48 | 72 | all",
             getDefaultValue: () => "all");
         var train = new Command("train", "Train the temperature blender (phase 2b per-lead by default)") { targetOpt, leadOpt };
         train.SetHandler(async (target, lead) =>

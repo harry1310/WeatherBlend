@@ -174,9 +174,12 @@ public sealed class PredictCommand
             ? (await ParquetSerializer.DeserializeAsync<PredictionRow>(outPath, cancellationToken: ct)).ToList()
             : new List<PredictionRow>();
 
+        // Dedupe on (PredictionMadeAtUtc, LeadHours) — newest row for the key wins.
+        // MaxBy(PredictionMadeAtUtc) is explicit about "latest"; don't rely on concat
+        // order so a retry that pulls existing-file rows in any order still converges.
         var merged = existing.Concat(predictions)
             .GroupBy(r => (r.PredictionMadeAtUtc, r.LeadHours))
-            .Select(g => g.Last())
+            .Select(g => g.MaxBy(r => r.PredictionMadeAtUtc)!)
             .OrderBy(r => r.ValidTimeUtc)
             .ThenBy(r => r.LeadHours)
             .ToList();
