@@ -335,7 +335,7 @@ ORDER BY ValidTimeUtc, Model;";
     private static double? NanToNull(float v) => float.IsNaN(v) ? null : v;
 
     /// <summary>SHA-256 hex of the 53 feature floats in DryWindowFeatureBuilder order.</summary>
-    private static string HashFeatures(DryWindowTrainingRow row) => FeatureHashing.HashFloats(new[]
+    public static string HashFeatures(DryWindowTrainingRow row) => FeatureHashing.HashFloats(new[]
     {
         row.PrecipSumGfs, row.PrecipSumEcmwf, row.PrecipSumIcon, row.PrecipSumMf, row.PrecipSumUkmo, row.PrecipSumGem,
         row.PrecipMaxHourGfs, row.PrecipMaxHourEcmwf, row.PrecipMaxHourIcon, row.PrecipMaxHourMf, row.PrecipMaxHourUkmo, row.PrecipMaxHourGem,

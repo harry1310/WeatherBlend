@@ -49,6 +49,14 @@ dotnet run --project src/WeatherBlend -- evaluate
 dotnet run --project src/WeatherBlend -- train --target precipitation --station "Bellever Dartmoor"
 dotnet run --project src/WeatherBlend -- predict --target precipitation --truth-station all
 dotnet run --project src/WeatherBlend -- verify --target precipitation --truth-station all
+
+# Phase 3b: per-station, per-window dry-window blender — P(at least one
+# contiguous N-hour dry block exists in target UTC day), N in {3, 4, 6}
+dotnet run --project src/WeatherBlend -- dry-window-diagnostic
+dotnet run --project src/WeatherBlend -- train --target dry-window --station "Bellever Dartmoor" --window all
+dotnet run --project src/WeatherBlend -- dry-window-report
+dotnet run --project src/WeatherBlend -- predict --target dry-window --truth-station all --window all
+dotnet run --project src/WeatherBlend -- verify --target dry-window --truth-station all --window all
 ```
 
 ### Precipitation target specifics
@@ -64,6 +72,35 @@ dotnet run --project src/WeatherBlend -- verify --target precipitation --truth-s
 - Verify stratifies by (station, version, lead) and reports Brier, climatology Brier,
   BSS, mean-of-models, best-single, persistence, frequency bias @0.5, and a 10-bin
   reliability table. Drift flags fire when rolling Brier > 1.5× training-test Brier.
+
+### Dry-window target specifics (phase 3b)
+
+- Daily binary classifier per (station, window-length): label is "is there at
+  least one contiguous run of `WindowHours` UTC hours with all four 15-min
+  rainfall readings ≤ 0.1 mm/h within the target UTC day". Window lengths in the
+  POC: **3, 4, 6 hours** at leads **24, 48, 72 hours** = 18 models.
+- Truth gating: hourly bins with `COUNT(*)=4` only. Cross-midnight windows are
+  not currently modelled (UTC-day boundary; deferred). Daylight filtering is
+  deferred to the application layer.
+- Artefacts live under `data/models/dry_window/{station_slug}/window_{N}h/v{ts}/`
+  with composite manifest keys `{slug}/window_{N}h`.
+- Per-row feature vector is **53 floats** in a frozen schema (per-model day
+  aggregates: precip-sum / max-hour / wet-hour-count / longest-dry-run /
+  has-dry-window self-prediction / max prob; ensemble agreement; day-level
+  meteorology means + extremes; doy sin/cos).
+- Predict output: `data/predictions/dry_window/{station}/window_{N}h/model_version={v}/date={yyyy-MM-dd}/predictions.parquet`
+  with `ProbHasDryWindow`, climatology baseline, agreement, per-model
+  self-predictions + day totals (so verify can recompute mean-of-models without
+  re-reading the forecast tree), and a SHA-256 feature hash.
+- Verify pairs predictions against the truth labels rebuilt from EA hourly
+  rainfall via `DryWindowLabelBuilder`, stratifies by (station, window, version,
+  lead), and reports blend Brier vs climatology vs mean-of-models, BSS, freq
+  bias, drift flag (rolling Brier > 1.5× training Brier).
+- **Train/predict distribution mismatch (known caveat):** training pulls
+  `RunTimeSource='offset_day'` rows so each lead has an exact target-anchor
+  pairing; live inference uses the most-recent live-cycle row per (valid-time,
+  model). Feature shape is identical and the model applies cleanly, but the
+  inference-time distribution is not exactly the training distribution.
 
 ## Scheduling on Windows
 
@@ -122,11 +159,25 @@ data/models/precipitation/
     v2026-04-23_071842/
       lead_24h.zip lead_48h.zip lead_72h.zip
       training_metadata.json climatology.json
+data/models/dry_window/
+  MANIFEST.json                    composite keys {slug}/window_{N}h
+  ea_bellever_dartmoor/
+    window_3h/
+      v2026-04-23_101107/
+        lead_24h.zip lead_48h.zip lead_72h.zip
+        training_metadata.json dry_window_climatology.json
+        feature_schema.json feature_importance.json
 data/predictions/precipitation/
   ea_bellever_dartmoor/
     model_version=v2026-04-23_071842/
       date=2026-04-23/
         predictions.parquet       P(wet) per lead, deduped by (predicted-at, lead)
+data/predictions/dry_window/
+  ea_bellever_dartmoor/
+    window_3h/
+      model_version=v2026-04-23_101107/
+        date=2026-04-23/
+          predictions.parquet     P(dry window) per lead, deduped by (predicted-at, lead)
 ```
 
 DuckDB reads this natively:
@@ -159,8 +210,8 @@ SELECT * FROM read_parquet(
 - **Phase 1:** collector, storage, status tooling, 12-month backfill. **Done.**
 - **Phase 2:** temperature blender - LightGBM per lead-time bucket, beat best single model. **Done (phase 2b, rolling verify shipped).**
 - **Phase 3a:** precip occurrence blender. Per-station P(wet≥0.1mm/h) classifier trained on EA Hydrology gauges (Bellever, Princetown). Per-lead, same temperature pipeline. **Done — predict + verify live.**
-- **Phase 3b:** precip intensity regression E[mm | wet] per station, combined to expected_precip = P(wet)·E[mm|wet].
-- **Phase 3c:** quantile regressions for probabilistic thresholds (P>1mm, P>5mm, P>10mm); CRPS reporting.
+- **Phase 3b:** per-station dry-window classifier — P(at least one contiguous N-hour dry block in target UTC day) for N ∈ {3, 4, 6} at leads 24/48/72h. Replaces the original intensity-regressor plan after the user pivot to "is there time to walk the dog dry?". Per-station per-window LightGBM, climatology baseline, predict + verify wired into the daily/weekly CI alongside temperature + precipitation. **Done — predict + verify live.**
+- **Phase 3c:** intensity regression / quantile regressions deferred indefinitely — the dry-window framing covers the user-facing probabilistic question without the calibration headaches of conditional precip.
 - **Phase 4:** add ML models as inputs (GraphCast, AIFS - both now published by ECMWF).
 
 ## License

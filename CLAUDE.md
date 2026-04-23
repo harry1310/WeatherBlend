@@ -47,14 +47,16 @@ Task Scheduler should fire on a cycle (currently every 3h per README; 6h is also
 
 ## Phased roadmap
 
-1. **Phase 1 (current):** collector, storage, status, ERA5 + OGIMET backfill. Accumulate data.
+1. **Phase 1:** collector, storage, status, ERA5 + OGIMET backfill. **Done.**
 2. **Phase 2:** temperature blender — LightGBM per lead-time bucket, trained on ERA5,
-   verified on METAR; must beat persistence, climatology, mean-of-models, and best single model.
-3. **Phase 3:** quantitative precip source (Met Office DataHub gauge / Nimrod radar) —
-   ERA5 precip is OK but a real gauge/radar near Dartmoor is better for orographic events.
-4. **Phase 4:** precip occurrence classifier (Brier, reliability, AUC).
-5. **Phase 5:** precip intensity + quantile regressions for probabilistic thresholds (CRPS).
-6. **Phase 6:** add ML models (GraphCast, AIFS) as inputs.
+   verified on METAR; beats persistence/climatology/mean-of-models/best single. **Done (2b: rolling verify shipped).**
+3. **Phase 3a:** per-station P(wet ≥ 0.1mm/h) classifier on EA Hydrology gauges
+   (Bellever, Princetown). Per-lead, same temperature pipeline. **Done — predict + verify live.**
+4. **Phase 3b:** per-station, per-window dry-window classifier — P(at least one
+   contiguous N-hour dry block in target UTC day) for N ∈ {3, 4, 6} at leads 24/48/72h.
+   Replaces the original intensity-regressor plan after the user pivot to "is there
+   time to walk the dog dry?". **Done — predict + verify live, 18 models in CI.**
+5. **Phase 4:** add ML models (GraphCast, AIFS) as inputs.
 
 ## Key design decisions (see docs/DESIGN.md for full reasoning)
 
@@ -68,8 +70,10 @@ Task Scheduler should fire on a cycle (currently every 3h per README; 6h is also
   lead-time), monotonic constraints, quantile mode, first-class .NET trainer.
 - **Per-lead-time models, not one big model.** Skill characteristics differ wildly
   across horizons. Buckets: [1-3h], [6-12h], [24-36h], [48-72h], [96-120h], [144-168h].
-- **Two-stage precip (phase 5):** P(precip > 0.1mm) classifier × E[precip | wet]
-  intensity regression, plus quantile regressions for probabilistic output.
+- **Dry-window over intensity (phase 3b):** the original two-stage P(wet) ×
+  E[mm | wet] plan was scrapped after the user reframed the question as
+  "is there a long-enough dry block today?". One classifier per (station, window)
+  beats calibrating a conditional intensity regressor for the actual decision.
 - **Verification rules pre-committed:** time-based splits only; walk-forward
   validation; report per lead time; Brier + reliability for precip alongside MAE.
 
