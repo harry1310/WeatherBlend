@@ -352,6 +352,7 @@ SELECT LocationName, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
        FeatureVectorHash
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
 WHERE LocationName = '{_cfg.Location.Name}'
+  AND BlendTemperature IS NOT NULL
   AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 ORDER BY PredictionMadeAtUtc DESC, LeadHours";
