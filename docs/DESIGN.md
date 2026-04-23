@@ -104,10 +104,33 @@ Two-stage:
    `climatology.json` alongside each version so predict/verify never need the
    training tree again.
 
-2. **Intensity regression (phase 3b)**: E[precip | precip > threshold], conditional
-   on the classifier firing. Train only on hours with observed precip.
+2. **Intensity regression (originally phase 3b)**: E[precip | precip > threshold],
+   conditional on the classifier firing. Train only on hours with observed precip.
+   Replaced by the Phase 3b dry-window classifier after the user pivoted to "is
+   there time to walk the dog dry?" — one binary classifier per (station, window)
+   beats calibrating a conditional intensity regressor for that decision.
 
-Combine: `expected_precip = P(precip) * E[precip | precip > 0]`.
+3. **Rich-feature occurrence blender (phase 3c, shipped)**: same LightGBM, same
+   hyperparameters, same chronological split as 3a — the isolated variable is
+   feature richness. 27 lean features + 28 extras: 18 per-model humidity
+   (dewpoint, RH, T-Td depression), 6 per-model surface pressure, 4 EA-observation
+   trailing-rainfall persistence features anchored at `run_time = valid - leadHours`
+   (prev-24h mm, prev-72h mm, wet-hours-last-24h, trailing-dry-hours). 55 features
+   total. Saved as a challenger alongside 3a via per-station `StationEntry.Active`
+   so both artefacts produce predictions every cycle and the rolling verify path
+   can score them side by side. Forecast-time trailing-precip persistence (H-1..-3
+   of the same run) and pressure tendency were explicitly dropped: Phase 1's
+   training parquet stores only leads {24, 48, 72} per `offset_day` run, so the
+   intermediate-lead cells those features need don't exist in training data even
+   though live cycles have them. Switching training to live cycles would break
+   the "same split as 3a" guarantee and is out of scope for 3c. The tier ablation
+   in `precip-ablate` shows the rich features are modestly helpful at best —
+   each tier contributes at most ~0.002 Brier points, and the EA-persistence
+   tier actively hurts at 2 of 3 stations.
+
+Original phase-3 combine recipe
+(`expected_precip = P(precip) * E[precip | precip > 0]`) is deferred indefinitely —
+the dry-window framing is what the user actually consumes.
 
 For probabilistic output (the real product), train quantile regressions at
 e.g. q10/q25/q50/q75/q90 of the precip distribution. CRPS is the metric that

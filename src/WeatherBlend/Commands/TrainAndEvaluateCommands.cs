@@ -51,9 +51,9 @@ public sealed class TrainCommand
             _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich.", featureSet);
             return 2;
         }
-        if (fs == "rich" && t != "temperature")
+        if (fs == "rich" && t == "dry-window")
         {
-            _log.LogError("--feature-set rich is only supported for target=temperature (Phase 2c).");
+            _log.LogError("--feature-set rich is not yet supported for target=dry-window.");
             return 2;
         }
 
@@ -62,7 +62,9 @@ public sealed class TrainCommand
             "temperature"   => fs == "rich"
                                   ? await RunPhase2cAsync(leads, ct)
                                   : await RunPhase2bAsync(leads, ct),
-            "precipitation" => await RunPhase3aAsync(leads, station, ct),
+            "precipitation" => fs == "rich"
+                                  ? await RunPhase3cAsync(leads, station, ct)
+                                  : await RunPhase3aAsync(leads, station, ct),
             "dry-window"    => await _dryWindow.RunAsync(station ?? "all", window ?? "all", leads, ct),
             _ => 2,
         };
@@ -505,6 +507,203 @@ public sealed class TrainCommand
         ModelArtifact.UpdateStationManifest(modelsRoot, "precipitation", stationSlug, versionName);
 
         _log.LogInformation("Phase 3a artefacts → {Dir}", versionDir);
+        _log.LogInformation("Summary — {Summary}",
+            string.Join("; ", perLead.Select(kv =>
+                $"lead {kv.Key}h: blend Brier {kv.Value.BlendTestMae:0.000} vs climatology Brier {kv.Value.BlendTestRmse:0.000}")));
+
+        await Task.CompletedTask;
+        return 0;
+    }
+
+    // ---- Phase 3c: rich-feature precip occurrence blender (champion/challenger) ----
+
+    private async Task<int> RunPhase3cAsync(int[] leads, string? stationOverride, CancellationToken ct)
+    {
+        if (_cfg.Location.Rainfall.Stations.Count == 0)
+        {
+            _log.LogError("No rainfall stations configured — cannot train precipitation blender.");
+            return 2;
+        }
+
+        // When no station override is given, 3c iterates every configured rainfall
+        // station so one command run produces a challenger for each 3a champion.
+        // A specific station still trains that one alone.
+        IReadOnlyList<string> stationsToTrain;
+        if (string.IsNullOrWhiteSpace(stationOverride))
+        {
+            stationsToTrain = _cfg.Location.Rainfall.Stations.Select(s => s.Name).ToList();
+        }
+        else
+        {
+            var match = _cfg.Location.Rainfall.Stations
+                .FirstOrDefault(s => s.Name.Equals(stationOverride, StringComparison.OrdinalIgnoreCase));
+            if (match is null)
+            {
+                _log.LogError("Station '{Station}' not found in config. Available: {Available}",
+                    stationOverride, string.Join(", ", _cfg.Location.Rainfall.Stations.Select(s => s.Name)));
+                return 2;
+            }
+            stationsToTrain = new[] { match.Name };
+        }
+
+        var modelsRoot = Path.Combine("data", "models");
+        var hp = new PrecipOccurrenceTrainer.Hyperparameters();
+        var featureCols = PrecipOccurrenceTrainer.RichFeatureColumnInternalNames();
+
+        _log.LogInformation("Phase 3c — rich-feature precip blender (55 features), stations=[{Stations}], leads=[{Leads}]",
+            string.Join(", ", stationsToTrain), string.Join(",", leads));
+        _log.LogInformation("Hyperparameters: iter={Iter} lr={Lr} leaves={Leaves} esr={Esr} seed={Seed} (identical to Phase 3a — feature richness is the only variable)",
+            hp.NumberOfIterations, hp.LearningRate, hp.NumberOfLeaves, hp.EarlyStoppingRound, hp.Seed);
+
+        var anyFail = false;
+        foreach (var station in stationsToTrain)
+        {
+            ct.ThrowIfCancellationRequested();
+            var rc = await TrainPhase3cStationAsync(station, leads, modelsRoot, hp, featureCols, ct);
+            if (rc != 0) anyFail = true;
+        }
+        return anyFail ? 3 : 0;
+    }
+
+    private async Task<int> TrainPhase3cStationAsync(
+        string primaryStation,
+        int[] leads,
+        string modelsRoot,
+        PrecipOccurrenceTrainer.Hyperparameters hp,
+        string[] featureCols,
+        CancellationToken ct)
+    {
+        var stationSlug = "ea_" + Slugify(primaryStation);
+        var now = DateTime.UtcNow;
+        var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "precipitation", stationSlug, now, suffix: "phase3c");
+        var versionName = Path.GetFileName(versionDir);
+
+        _log.LogInformation("=== Station '{Station}' (slug={Slug}) ===", primaryStation, stationSlug);
+
+        var perLead = new Dictionary<string, ModelArtifact.PerLeadStats>();
+        var importanceByLead = new Dictionary<int, IEnumerable<(string Name, double Gain)>>();
+        PrecipClimatology? climatology = null;
+
+        foreach (var lead in leads)
+        {
+            ct.ThrowIfCancellationRequested();
+            _log.LogInformation("--- Lead {Lead}h ---", lead);
+
+            var rows = PrecipRichFeatureBuilder.BuildForLead(
+                _cfg.Storage.ForecastsPath,
+                _cfg.Storage.RainfallPath,
+                _cfg.Location.Name,
+                primaryStation,
+                lead,
+                ct);
+            _log.LogInformation("Loaded {N} rich rows (wet={Wet} / {Pct:P1}) spanning {S:yyyy-MM-dd} → {E:yyyy-MM-dd}",
+                rows.Count,
+                rows.Count(r => r.WetBinary),
+                rows.Count == 0 ? 0 : (double)rows.Count(r => r.WetBinary) / rows.Count,
+                rows.Count == 0 ? DateTime.MinValue : rows[0].ValidTimeUtc,
+                rows.Count == 0 ? DateTime.MinValue : rows[^1].ValidTimeUtc);
+
+            if (rows.Count < 500)
+            {
+                _log.LogError("Only {N} rows for lead {Lead}h — too few to train.", rows.Count, lead);
+                return 3;
+            }
+
+            // Reuse 3a chronological split — covariance lets us pass rich rows
+            // as IReadOnlyList<PrecipTrainingRow> through PrecipDataset.Split and
+            // recover them via Cast<> when handing to the trainer.
+            var ds = PrecipDataset.Split(rows.Cast<PrecipTrainingRow>().ToList());
+            var richTrain = ds.Train.Cast<RichPrecipTrainingRow>().ToList();
+            var richVal   = ds.Val.Cast<RichPrecipTrainingRow>().ToList();
+            var richTest  = ds.Test.Cast<RichPrecipTrainingRow>().ToList();
+            climatology ??= PrecipClimatology.BuildFromTraining(ds.Train);
+
+            _log.LogInformation("Split → train {TN} (wet {TW}), val {VN} (wet {VW}), test {EN} (wet {EW})",
+                ds.Train.Count, ds.TrainWet,
+                ds.Val.Count,   ds.ValWet,
+                ds.Test.Count,  ds.TestWet);
+            _log.LogInformation("Time ranges — train {T0:yyyy-MM-dd}..{T1:yyyy-MM-dd}, " +
+                                "val {V0:yyyy-MM-dd}..{V1:yyyy-MM-dd}, test {E0:yyyy-MM-dd}..{E1:yyyy-MM-dd}",
+                ds.TrainStart, ds.TrainEnd, ds.ValStart, ds.ValEnd, ds.TestStart, ds.TestEnd);
+
+            var trained = PrecipOccurrenceTrainer.Train(richTrain, richVal, featureCols, hp);
+
+            var truthTest = richTest.Select(r => r.WetBinary ? 1.0 : 0.0).ToArray();
+            var blendProb = PrecipOccurrenceTrainer.PredictProbability(trained.Ml, trained.Model, richTest);
+            var blendBrier = PrecipMetrics.Brier(blendProb, truthTest);
+
+            var best = PrecipBaselines.BestSingle(ds.Val);
+            var bestValBrier = PrecipMetrics.Brier(
+                PrecipBaselines.SingleModelWet(ds.Val, best),
+                ds.Val.Select(r => r.WetBinary ? 1.0 : 0.0).ToArray());
+            var climPred = PrecipBaselines.Climatology(ds.Train, ds.Test);
+            var climBrier = PrecipMetrics.Brier(climPred, truthTest);
+            var bss = PrecipMetrics.BrierSkillScore(blendBrier, climBrier);
+
+            var blendBinary = blendProb.Select(p => p >= 0.5 ? 1.0 : 0.0).ToArray();
+            var fbias = PrecipMetrics.FrequencyBias(blendBinary, truthTest);
+
+            ModelArtifact.SaveLeadModel(trained.Ml, trained.Model, trained.InputSchema, versionDir, lead);
+            importanceByLead[lead] = trained.FeatureImportance;
+
+            var testMonths = ds.Test.Select(r => new DateTime(r.ValidTimeUtc.Year, r.ValidTimeUtc.Month, 1))
+                                    .Distinct().Count();
+
+            perLead[lead.ToString()] = new ModelArtifact.PerLeadStats
+            {
+                LeadHours = lead,
+                DataRangeTrain = $"{ds.TrainStart:yyyy-MM-dd HH:mm}Z → {ds.TrainEnd:yyyy-MM-dd HH:mm}Z",
+                DataRangeVal   = $"{ds.ValStart:yyyy-MM-dd HH:mm}Z → {ds.ValEnd:yyyy-MM-dd HH:mm}Z",
+                DataRangeTest  = $"{ds.TestStart:yyyy-MM-dd HH:mm}Z → {ds.TestEnd:yyyy-MM-dd HH:mm}Z",
+                TrainRows = ds.Train.Count,
+                ValRows   = ds.Val.Count,
+                TestRows  = ds.Test.Count,
+                TestCalendarMonths = testMonths,
+                BestSingle = best,
+                BestSingleValMae = bestValBrier,
+                BlendTestMae  = blendBrier,
+                BlendTestRmse = climBrier,
+                BlendTestBias = fbias,
+            };
+
+            _log.LogInformation(
+                "Lead {Lead}h headline — blend Brier={Brier:0.000}, climatology Brier={Clim:0.000}, BSS={Bss:+0.000;-0.000;0.000}, freq_bias={Fb:0.00}, best_single[{Best}] val Brier={BestBrier:0.000}",
+                lead, blendBrier, climBrier, bss, fbias, best, bestValBrier);
+        }
+
+        ModelArtifact.SaveFeatureSchema(versionDir, PrecipRichFeatureBuilder.OccurrenceFeatureNames);
+        ModelArtifact.SavePerLeadFeatureImportance(versionDir, importanceByLead);
+        if (climatology is not null)
+            climatology.SaveTo(Path.Combine(versionDir, ModelArtifact.ClimatologyFileName));
+
+        var metadata = new ModelArtifact.TrainingMetadata
+        {
+            Version = versionName,
+            Target = "precipitation",
+            Phase = "3c",
+            DataSource = "previous_runs_api+ea_rainfall",
+            TrainedAtUtc = DateTime.UtcNow,
+            Hyperparameters = BuildPrecipHpDict(hp),
+            TestMae = perLead.ToDictionary(kv => $"lead_{kv.Key}h_brier", kv => kv.Value.BlendTestMae),
+            PerLead = perLead,
+            DeviationsFromBrief = new List<string>
+            {
+                "Same hyperparameters as Phase 3a — feature richness is the isolated variable. Sample weighting and class weights untouched.",
+                "Forecast-time trailing persistence (H-1/H-2/H-3 of the same run) and pressure tendency not included: Phase 1 training parquet persists only leads {24, 48, 72} per RunTimeSource='offset_day' run, so the intermediate-lead cells those features need don't exist in training data. Tier is deferred until live-cycle training data is available.",
+                "EA observation persistence features anchored at run_time = valid_time - leadHours, filling NaN when the 24h/72h trailing window isn't fully present in the rainfall parquet.",
+                "Per-station layout: artefact folder is data/models/precipitation/{station}/v{ts}_phase3c/. Manifest appends 3c to StationEntry.Active alongside 3a so both versions produce predictions every cycle.",
+            },
+        };
+        ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
+
+        // Champion/challenger: add 3c to Active without unseating 3a as Current.
+        ModelArtifact.AppendStationVersion(modelsRoot, "precipitation", stationSlug, versionName);
+        var existing = ModelArtifact.ResolveStationActive(modelsRoot, "precipitation", stationSlug);
+        var newActive = existing.Concat(new[] { versionName }).Distinct().ToList();
+        ModelArtifact.SetStationActive(modelsRoot, "precipitation", stationSlug, newActive);
+
+        _log.LogInformation("Phase 3c artefacts → {Dir}", versionDir);
+        _log.LogInformation("Active versions for station {Station} now: [{Active}]", stationSlug, string.Join(", ", newActive));
         _log.LogInformation("Summary — {Summary}",
             string.Join("; ", perLead.Select(kv =>
                 $"lead {kv.Key}h: blend Brier {kv.Value.BlendTestMae:0.000} vs climatology Brier {kv.Value.BlendTestRmse:0.000}")));

@@ -45,10 +45,15 @@ dotnet run --project src/WeatherBlend -- backfill --start 2024-11-01 --end 2025-
 dotnet run --project src/WeatherBlend -- train --target temperature
 dotnet run --project src/WeatherBlend -- evaluate
 
-# Phase 3a: per-station precipitation occurrence blender (P(wet>=0.1mm/hour))
+# Phase 3a (lean): per-station precipitation occurrence blender (P(wet>=0.1mm/hour))
 dotnet run --project src/WeatherBlend -- train --target precipitation --station "Bellever Dartmoor"
 dotnet run --project src/WeatherBlend -- predict --target precipitation --truth-station all
 dotnet run --project src/WeatherBlend -- verify --target precipitation --truth-station all
+
+# Phase 3c (rich): same blender with 55 features (adds per-model humidity, surface
+# pressure, and EA trailing-rainfall persistence). Saves a challenger alongside 3a.
+dotnet run --project src/WeatherBlend -- train --target precipitation --feature-set rich --lead all
+dotnet run --project src/WeatherBlend -- precip-ablate      # 3a-vs-3c table + 24h tier ablation
 
 # Phase 3b: per-station, per-window dry-window blender — P(at least one
 # contiguous N-hour dry block exists in target UTC day), N in {3, 4, 6}
@@ -212,7 +217,8 @@ SELECT * FROM read_parquet(
 - **Phase 2c:** rich-feature temperature blender — expands from 13 to 88 features (lean + per-model dew/RH/cloud/wind/pressure secondaries + 9 cross-model aggregates). Trains via `--feature-set rich`, saves alongside 2b as a champion/challenger pair: both versions live in `MANIFEST.Active` and produce predictions every cycle; rolling verify reports a 2b-vs-2c MAE delta per lead. **Done — on held-out test, rich beats lean by 0.01–0.05°C at 24/48/72h.**
 - **Phase 3a:** precip occurrence blender. Per-station P(wet≥0.1mm/h) classifier trained on EA Hydrology gauges (Bellever, Princetown). Per-lead, same temperature pipeline. **Done — predict + verify live.**
 - **Phase 3b:** per-station dry-window classifier — P(at least one contiguous N-hour dry block in target UTC day) for N ∈ {3, 4, 6} at leads 24/48/72h. Replaces the original intensity-regressor plan after the user pivot to "is there time to walk the dog dry?". Per-station per-window LightGBM, climatology baseline, predict + verify wired into the daily/weekly CI alongside temperature + precipitation. **Done — predict + verify live.**
-- **Phase 3c:** intensity regression / quantile regressions deferred indefinitely — the dry-window framing covers the user-facing probabilistic question without the calibration headaches of conditional precip.
+- **Phase 3c:** rich-feature precipitation occurrence blender — 27 lean + 28 extras (18 per-model humidity, 6 per-model surface pressure, 4 EA-observation trailing-rainfall persistence) = 55 features. Same hyperparameters and split as 3a so feature richness is the isolated variable; saved as challenger alongside 3a via the per-station `Active` manifest. Forecast-time precip-persistence and pressure-tendency tiers were dropped — the training parquet only stores leads {24,48,72} per `offset_day` run, so the H-1/H-2/H-3 cells those tiers need don't exist. **Done — Bellever 24/48/72h Brier drops 0.006/0.014/0.013; Princetown 0.002/0.008/0.011 vs 3a. Tier ablation (`precip-ablate`) shows the gains are modest — dropping any one tier costs at most ~0.002 Brier points, and dropping EA persistence actually _improves_ Brier at Bellever + Hexworthy.**
+- **Phase 3d (deferred):** intensity regression / quantile regressions — the dry-window framing covers the user-facing probabilistic question without the calibration headaches of conditional precip.
 - **Phase 4:** add ML models as inputs (GraphCast, AIFS - both now published by ECMWF).
 
 ## License

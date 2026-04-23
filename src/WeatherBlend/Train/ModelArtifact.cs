@@ -126,10 +126,11 @@ public static class ModelArtifact
     /// Used by precipitation so per-station blenders live in parallel trees rather
     /// than sharing a flat folder with station-suffixed version names.
     /// </summary>
-    public static string BuildStationVersionDir(string modelsRoot, string target, string station, DateTime nowUtc)
+    public static string BuildStationVersionDir(string modelsRoot, string target, string station, DateTime nowUtc, string? suffix = null)
     {
         var ts = nowUtc.ToString("yyyy-MM-dd_HHmmss");
-        return Path.Combine(modelsRoot, target, station, $"v{ts}").Replace('\\', '/');
+        var name = string.IsNullOrEmpty(suffix) ? $"v{ts}" : $"v{ts}_{suffix}";
+        return Path.Combine(modelsRoot, target, station, name).Replace('\\', '/');
     }
 
     /// <summary>Save one pipeline for a specific lead bucket.</summary>

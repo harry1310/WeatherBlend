@@ -108,6 +108,7 @@ public static class Program
                 services.AddTransient<CompareCommand>();
                 services.AddTransient<PredictCommand>();
                 services.AddTransient<PrecipPredictCommand>();
+                services.AddTransient<PrecipAblateCommand>();
                 services.AddTransient<VerifyCommand>();
                 services.AddTransient<PrecipVerifyCommand>();
                 services.AddTransient<RenderSiteCommand>();
@@ -377,6 +378,16 @@ public static class Program
             Environment.ExitCode = await cmd.RunAsync(output, window, rolling, CancellationToken.None);
         }, siteOutputOpt, siteWindowOpt, siteRollingOpt);
         root.AddCommand(renderSite);
+
+        var precipAblate = new Command(
+            "precip-ablate",
+            "Phase 3c diagnostic: tabulate 3a vs 3c test-set Brier + run 24h feature-tier ablation");
+        precipAblate.SetHandler(async ctx =>
+        {
+            var cmd = host.Services.GetRequiredService<PrecipAblateCommand>();
+            ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
+        });
+        root.AddCommand(precipAblate);
 
         var dryWindowDiag = new Command(
             "dry-window-diagnostic",

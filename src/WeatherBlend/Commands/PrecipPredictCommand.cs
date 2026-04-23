@@ -131,6 +131,26 @@ public sealed class PrecipPredictCommand
         _log.LogInformation("Station {Station}: using blender version {V} (phase={Phase})",
             station, metadata.Version, metadata.Phase);
 
+        var isRich = string.Equals(metadata.Phase, "3c", StringComparison.OrdinalIgnoreCase);
+
+        // Phase 3c needs EA observation persistence anchored at run_time = valid - lead;
+        // load the whole hourly series once (small) and reuse across the three leads.
+        Dictionary<DateTime, double>? hourlyRain = null;
+        if (isRich)
+        {
+            var friendly = ResolveFriendlyStationName(station);
+            if (friendly is null)
+            {
+                _log.LogError("Station {Station}: cannot resolve rainfall config name for phase-3c persistence lookup. Known: [{Known}]",
+                    station, string.Join(", ", _cfg.Location.Rainfall.Stations.Select(s => s.Name)));
+                return false;
+            }
+            hourlyRain = PrecipRichFeatureBuilder.LoadHourlyRain(
+                _cfg.Storage.RainfallPath, _cfg.Location.Name, friendly, ct);
+            _log.LogInformation("Station {Station}: loaded {N} hourly rainfall rows for persistence features (friendly='{Friendly}')",
+                station, hourlyRain.Count, friendly);
+        }
+
         var ml = new MLContext(seed: 42);
         var predictions = new List<PrecipPredictionRow>();
 
@@ -157,16 +177,52 @@ public sealed class PrecipPredictCommand
 
             // truthMmHour is ignored at predict time (the trainer only reads features);
             // 0 keeps WetBinary=false in the composed row.
-            var featureRow = PrecipFeatureBuilder.ComposeRow(
-                valid, precip, prob,
-                rhMean: pivot.RhMean, dewDepressionMean: pivot.DewDepressionMean,
-                cloudLowMean: pivot.CloudLowMean, cloudMidMean: pivot.CloudMidMean,
-                cloudHighMean: pivot.CloudHighMean,
-                capeMean: pivot.CapeMean, windSpeedMean: pivot.WindSpeedMean,
-                truthMmHour: 0.0);
+            PrecipTrainingRow featureRow;
+            if (isRich)
+            {
+                var dew = pivot.Dew.Select(v => v ?? double.NaN).ToArray();
+                var rh  = pivot.Rh .Select(v => v ?? double.NaN).ToArray();
+                var pres = pivot.Pressure.Select(v => v ?? double.NaN).ToArray();
+                var dewDep = new double[6];
+                for (int i = 0; i < 6; i++)
+                {
+                    var t = pivot.Temp2m[i];
+                    var d = pivot.Dew[i];
+                    dewDep[i] = (t.HasValue && d.HasValue) ? t.Value - d.Value : double.NaN;
+                }
+
+                var runTime = valid.AddHours(-lead);
+                var persist = PrecipRichFeatureBuilder.ComputePersistence(hourlyRain!, runTime);
+
+                featureRow = PrecipRichFeatureBuilder.ComposeRow(
+                    valid, precip, prob, dew, rh, dewDep, pres,
+                    rhMean: pivot.RhMean, dewDepressionMean: pivot.DewDepressionMean,
+                    cloudLowMean: pivot.CloudLowMean, cloudMidMean: pivot.CloudMidMean,
+                    cloudHighMean: pivot.CloudHighMean,
+                    capeMean: pivot.CapeMean, windSpeedMean: pivot.WindSpeedMean,
+                    eaRainPrev24hMm: persist.Prev24hMm,
+                    eaRainPrev72hMm: persist.Prev72hMm,
+                    eaWetHoursLast24h: persist.WetHoursLast24h,
+                    eaDryHoursTrailing: persist.DryHoursTrailing,
+                    truthMmHour: 0.0);
+            }
+            else
+            {
+                featureRow = PrecipFeatureBuilder.ComposeRow(
+                    valid, precip, prob,
+                    rhMean: pivot.RhMean, dewDepressionMean: pivot.DewDepressionMean,
+                    cloudLowMean: pivot.CloudLowMean, cloudMidMean: pivot.CloudMidMean,
+                    cloudHighMean: pivot.CloudHighMean,
+                    capeMean: pivot.CapeMean, windSpeedMean: pivot.WindSpeedMean,
+                    truthMmHour: 0.0);
+            }
 
             var model = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
-            var pWet = PrecipOccurrenceTrainer.PredictProbability(ml, model, new[] { featureRow });
+            // Must type the input list as the row subclass so LoadFromEnumerable reflects
+            // the rich property set — the rich model expects the extra 28 columns.
+            var pWet = isRich
+                ? PrecipOccurrenceTrainer.PredictProbability(ml, model, new[] { (RichPrecipTrainingRow)featureRow })
+                : PrecipOccurrenceTrainer.PredictProbability(ml, model, new[] { featureRow });
             var climPWet = climatology.Predict(valid);
 
             predictions.Add(new PrecipPredictionRow
@@ -192,7 +248,9 @@ public sealed class PrecipPredictCommand
                 PrecipStd  = NanToNull(featureRow.PrecipStd),
                 PrecipMax  = NanToNull(featureRow.PrecipMax),
                 PrecipAgreementWet01 = NanToNull(featureRow.PrecipAgreementWet01),
-                FeatureVectorHash = HashFeatures(featureRow),
+                FeatureVectorHash = isRich
+                    ? HashFeatures((RichPrecipTrainingRow)featureRow)
+                    : HashFeatures(featureRow),
             });
 
             _log.LogInformation(
@@ -268,11 +326,17 @@ public sealed class PrecipPredictCommand
     }
 
     // Per-valid-time pivot mirrors PredictCommand.PivotedRow but carries the wider
-    // precip feature set required by the occurrence blender.
+    // precip feature set required by the occurrence blender. Per-model arrays
+    // (Dew/Rh/Temp/Pressure) feed the Phase 3c rich composer; the *Mean fields stay
+    // for Phase 3a's lean composer and keep the prediction-row covariate summary.
     private sealed record PivotedRow(
         double?[] Precip,
         double?[] Prob,
         DateTime?[] RunTime,
+        double?[] Dew,
+        double?[] Rh,
+        double?[] Temp2m,
+        double?[] Pressure,
         double RhMean,
         double DewDepressionMean,
         double CloudLowMean,
@@ -304,7 +368,7 @@ WITH latest AS (
            Precipitation, PrecipitationProbability,
            RelativeHumidity2m, Temperature2m, DewPoint2m,
            CloudCoverLow, CloudCoverMid, CloudCoverHigh,
-           Cape, WindSpeed10m,
+           Cape, WindSpeed10m, SurfacePressure,
            ROW_NUMBER() OVER (
                PARTITION BY ValidTimeUtc, Model
                ORDER BY RunTimeUtc DESC
@@ -316,7 +380,7 @@ SELECT ValidTimeUtc, Model, RunTimeUtc,
        Precipitation, PrecipitationProbability,
        RelativeHumidity2m, Temperature2m, DewPoint2m,
        CloudCoverLow, CloudCoverMid, CloudCoverHigh,
-       Cape, WindSpeed10m
+       Cape, WindSpeed10m, SurfacePressure
 FROM latest
 WHERE rn = 1
 ORDER BY ValidTimeUtc, Model;";
@@ -351,6 +415,7 @@ ORDER BY ValidTimeUtc, Model;";
             var cH     = reader.IsDBNull(10) ? (double?)null : reader.GetDouble(10);
             var cape   = reader.IsDBNull(11) ? (double?)null : reader.GetDouble(11);
             var wind   = reader.IsDBNull(12) ? (double?)null : reader.GetDouble(12);
+            var pres   = reader.IsDBNull(13) ? (double?)null : reader.GetDouble(13);
 
             if (!modelSlot.TryGetValue(model, out var slot))
                 continue;
@@ -360,17 +425,18 @@ ORDER BY ValidTimeUtc, Model;";
                 s = new Scratch();
                 scratch[valid] = s;
             }
-            s.Precip[slot] = precip;
-            s.Prob[slot]   = prob;
-            s.RunTime[slot] = runTime;
-
-            if (rh.HasValue)   s.RhList.Add(rh.Value);
-            if (t2m.HasValue && td.HasValue) s.DewDepList.Add(t2m.Value - td.Value);
-            if (cL.HasValue)   s.CLList.Add(cL.Value);
-            if (cM.HasValue)   s.CMList.Add(cM.Value);
-            if (cH.HasValue)   s.CHList.Add(cH.Value);
-            if (cape.HasValue) s.CapeList.Add(cape.Value);
-            if (wind.HasValue) s.WindList.Add(wind.Value);
+            s.Precip[slot]   = precip;
+            s.Prob[slot]     = prob;
+            s.RunTime[slot]  = runTime;
+            s.Dew[slot]      = td;
+            s.Rh[slot]       = rh;
+            s.Temp2m[slot]   = t2m;
+            s.CloudLow[slot] = cL;
+            s.CloudMid[slot] = cM;
+            s.CloudHigh[slot]= cH;
+            s.Cape[slot]     = cape;
+            s.WindSpeed[slot]= wind;
+            s.Pressure[slot] = pres;
         }
 
         return scratch.ToDictionary(
@@ -379,13 +445,17 @@ ORDER BY ValidTimeUtc, Model;";
                 Precip: kv.Value.Precip,
                 Prob: kv.Value.Prob,
                 RunTime: kv.Value.RunTime,
-                RhMean:             Mean(kv.Value.RhList),
-                DewDepressionMean:  Mean(kv.Value.DewDepList),
-                CloudLowMean:       Mean(kv.Value.CLList),
-                CloudMidMean:       Mean(kv.Value.CMList),
-                CloudHighMean:      Mean(kv.Value.CHList),
-                CapeMean:           Mean(kv.Value.CapeList),
-                WindSpeedMean:      Mean(kv.Value.WindList)));
+                Dew: kv.Value.Dew,
+                Rh: kv.Value.Rh,
+                Temp2m: kv.Value.Temp2m,
+                Pressure: kv.Value.Pressure,
+                RhMean:            MeanOfSlots(kv.Value.Rh),
+                DewDepressionMean: MeanOfDepressions(kv.Value.Temp2m, kv.Value.Dew),
+                CloudLowMean:      MeanOfSlots(kv.Value.CloudLow),
+                CloudMidMean:      MeanOfSlots(kv.Value.CloudMid),
+                CloudHighMean:     MeanOfSlots(kv.Value.CloudHigh),
+                CapeMean:          MeanOfSlots(kv.Value.Cape),
+                WindSpeedMean:     MeanOfSlots(kv.Value.WindSpeed)));
     }
 
     private sealed class Scratch
@@ -393,16 +463,37 @@ ORDER BY ValidTimeUtc, Model;";
         public double?[] Precip { get; } = new double?[6];
         public double?[] Prob { get; } = new double?[6];
         public DateTime?[] RunTime { get; } = new DateTime?[6];
-        public List<double> RhList { get; } = new();
-        public List<double> DewDepList { get; } = new();
-        public List<double> CLList { get; } = new();
-        public List<double> CMList { get; } = new();
-        public List<double> CHList { get; } = new();
-        public List<double> CapeList { get; } = new();
-        public List<double> WindList { get; } = new();
+        public double?[] Dew { get; } = new double?[6];
+        public double?[] Rh { get; } = new double?[6];
+        public double?[] Temp2m { get; } = new double?[6];
+        public double?[] CloudLow { get; } = new double?[6];
+        public double?[] CloudMid { get; } = new double?[6];
+        public double?[] CloudHigh { get; } = new double?[6];
+        public double?[] Cape { get; } = new double?[6];
+        public double?[] WindSpeed { get; } = new double?[6];
+        public double?[] Pressure { get; } = new double?[6];
     }
 
-    private static double Mean(List<double> xs) => xs.Count == 0 ? double.NaN : xs.Average();
+    private static double MeanOfSlots(double?[] slots)
+    {
+        double sum = 0; int n = 0;
+        foreach (var v in slots) if (v.HasValue) { sum += v.Value; n++; }
+        return n == 0 ? double.NaN : sum / n;
+    }
+
+    private static double MeanOfDepressions(double?[] temps, double?[] dews)
+    {
+        double sum = 0; int n = 0;
+        for (int i = 0; i < temps.Length; i++)
+        {
+            if (temps[i].HasValue && dews[i].HasValue)
+            {
+                sum += temps[i]!.Value - dews[i]!.Value;
+                n++;
+            }
+        }
+        return n == 0 ? double.NaN : sum / n;
+    }
 
     private static double? NanToNull(float v) => float.IsNaN(v) ? null : v;
 
@@ -417,6 +508,40 @@ ORDER BY ValidTimeUtc, Model;";
         row.CapeMean, row.WindSpeedMean,
         row.HourSin, row.HourCos, row.DoySin, row.DoyCos,
     });
+
+    /// <summary>SHA-256 hex of the 55 rich feature floats in Phase 3c order (lean 27 + humidity 18 + pressure 6 + persistence 4).</summary>
+    public static string HashFeatures(RichPrecipTrainingRow row) => FeatureHashing.HashFloats(new[]
+    {
+        row.PrecipGfs, row.PrecipEcmwf, row.PrecipIcon, row.PrecipMf, row.PrecipUkmo, row.PrecipGem,
+        row.ProbGfs,   row.ProbEcmwf,   row.ProbIcon,   row.ProbMf,   row.ProbUkmo,   row.ProbGem,
+        row.PrecipMean, row.PrecipStd, row.PrecipMax, row.PrecipAgreementWet01,
+        row.RhMean, row.DewDepressionMean,
+        row.CloudLowMean, row.CloudMidMean, row.CloudHighMean,
+        row.CapeMean, row.WindSpeedMean,
+        row.HourSin, row.HourCos, row.DoySin, row.DoyCos,
+        row.DewGfs, row.DewEcmwf, row.DewIcon, row.DewMf, row.DewUkmo, row.DewGem,
+        row.RhGfs,  row.RhEcmwf,  row.RhIcon,  row.RhMf,  row.RhUkmo,  row.RhGem,
+        row.DewDepressionGfs, row.DewDepressionEcmwf, row.DewDepressionIcon,
+        row.DewDepressionMf,  row.DewDepressionUkmo,  row.DewDepressionGem,
+        row.PressureGfs, row.PressureEcmwf, row.PressureIcon,
+        row.PressureMf,  row.PressureUkmo,  row.PressureGem,
+        row.EaRainPrev24hMm, row.EaRainPrev72hMm, row.EaWetHoursLast24h, row.EaDryHoursTrailing,
+    });
+
+    /// <summary>
+    /// Reverse-lookup the config rainfall-station friendly name from an "ea_..." slug
+    /// so predict time can reach for the same hourly rainfall series the trainer used.
+    /// </summary>
+    private string? ResolveFriendlyStationName(string stationSlug)
+    {
+        foreach (var s in _cfg.Location.Rainfall.Stations)
+        {
+            var slug = "ea_" + Slugify(s.Name);
+            if (string.Equals(slug, stationSlug, StringComparison.OrdinalIgnoreCase))
+                return s.Name;
+        }
+        return null;
+    }
 
     private static string Slugify(string name)
     {

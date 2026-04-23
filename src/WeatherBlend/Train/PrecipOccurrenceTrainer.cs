@@ -5,8 +5,10 @@ using Microsoft.ML.Trainers.LightGbm;
 namespace WeatherBlend.Train;
 
 /// <summary>
-/// LightGBM binary classifier for P(wet hour). Feature set is
-/// <see cref="PrecipFeatureBuilder.OccurrenceFeatureNames"/>. Label = WetBinary.
+/// LightGBM binary classifier for P(wet hour). Feature set is caller-supplied:
+///   • Phase 3a — <see cref="LeanFeatureColumnInternalNames"/> (27 columns on <see cref="PrecipTrainingRow"/>)
+///   • Phase 3c — <see cref="RichFeatureColumnInternalNames"/> (55 columns on <see cref="RichPrecipTrainingRow"/>)
+/// Label = WetBinary; both row types expose it through the base <see cref="PrecipTrainingRow"/>.
 ///
 /// Microsoft.ML.LightGbm 4.0 exposes only a subset of the raw LightGBM options.
 /// Deviations from the brief's "raw LightGBM" ask:
@@ -37,16 +39,35 @@ public sealed class PrecipOccurrenceTrainer
         IReadOnlyList<string> FeatureNames,
         IReadOnlyList<(string Name, double Gain)> FeatureImportance);
 
+    /// <summary>
+    /// Phase 3a call site: lean 27-feature dataset. Thin wrapper over the generic
+    /// <see cref="Train{T}"/> with the lean feature-column list.
+    /// </summary>
     public static TrainedClassifier Train(PrecipDataset ds, Hyperparameters hp)
+        => Train(ds.Train, ds.Val, LeanFeatureColumnInternalNames(), hp);
+
+    /// <summary>
+    /// Generic LightGBM fit over arbitrary rows + feature column list. Used by
+    /// Phase 3a (27 lean cols) and Phase 3c (55 rich cols). Each named column must
+    /// exist as a public property of <typeparamref name="T"/>; the type must also
+    /// expose <c>[ColumnName("Label")]</c> on the binary label — both lean and
+    /// rich row types inherit this from <see cref="PrecipTrainingRow"/>.
+    /// </summary>
+    public static TrainedClassifier Train<T>(
+        IReadOnlyList<T> train,
+        IReadOnlyList<T> val,
+        IReadOnlyList<string> featureColumnNames,
+        Hyperparameters hp)
+        where T : class
     {
         var ml = new MLContext(seed: hp.Seed);
 
-        var trainDv = ml.Data.LoadFromEnumerable(ds.Train);
-        var valDv   = ml.Data.LoadFromEnumerable(ds.Val);
+        var trainDv = ml.Data.LoadFromEnumerable(train);
+        var valDv   = ml.Data.LoadFromEnumerable(val);
 
-        var featureNames = PrecipFeatureBuilder.OccurrenceFeatureNames.ToArray();
+        var featureNames = featureColumnNames.ToArray();
 
-        var featurize = ml.Transforms.Concatenate("Features", FeatureColumnInternalNames());
+        var featurize = ml.Transforms.Concatenate("Features", featureNames);
         var featModel = featurize.Fit(trainDv);
         var trainFeat = featModel.Transform(trainDv);
         var valFeat   = featModel.Transform(valDv);
@@ -100,7 +121,8 @@ public sealed class PrecipOccurrenceTrainer
     /// Returns calibrated probabilities in [0,1]. LightGBM binary outputs already
     /// pass through a sigmoid via the ML.NET PlattCalibrator.
     /// </summary>
-    public static double[] PredictProbability(MLContext ml, ITransformer model, IReadOnlyList<PrecipTrainingRow> rows)
+    public static double[] PredictProbability<T>(MLContext ml, ITransformer model, IReadOnlyList<T> rows)
+        where T : class
     {
         if (rows.Count == 0) return Array.Empty<double>();
         var dv = ml.Data.LoadFromEnumerable(rows);
@@ -111,7 +133,8 @@ public sealed class PrecipOccurrenceTrainer
         return result;
     }
 
-    private static string[] FeatureColumnInternalNames() => new[]
+    /// <summary>Lean (Phase 3a) feature property names — 27 columns on <see cref="PrecipTrainingRow"/>.</summary>
+    public static string[] LeanFeatureColumnInternalNames() => new[]
     {
         nameof(PrecipTrainingRow.PrecipGfs),
         nameof(PrecipTrainingRow.PrecipEcmwf),
@@ -141,4 +164,38 @@ public sealed class PrecipOccurrenceTrainer
         nameof(PrecipTrainingRow.DoySin),
         nameof(PrecipTrainingRow.DoyCos),
     };
+
+    /// <summary>
+    /// Rich (Phase 3c) feature property names — 55 columns on <see cref="RichPrecipTrainingRow"/>.
+    /// Order matches <see cref="PrecipRichFeatureBuilder.OccurrenceFeatureNames"/>.
+    /// </summary>
+    public static string[] RichFeatureColumnInternalNames()
+    {
+        var lean = LeanFeatureColumnInternalNames();
+        var extras = new[]
+        {
+            // 18 per-model humidity.
+            nameof(RichPrecipTrainingRow.DewGfs), nameof(RichPrecipTrainingRow.DewEcmwf), nameof(RichPrecipTrainingRow.DewIcon),
+            nameof(RichPrecipTrainingRow.DewMf),  nameof(RichPrecipTrainingRow.DewUkmo),  nameof(RichPrecipTrainingRow.DewGem),
+
+            nameof(RichPrecipTrainingRow.RhGfs), nameof(RichPrecipTrainingRow.RhEcmwf), nameof(RichPrecipTrainingRow.RhIcon),
+            nameof(RichPrecipTrainingRow.RhMf),  nameof(RichPrecipTrainingRow.RhUkmo),  nameof(RichPrecipTrainingRow.RhGem),
+
+            nameof(RichPrecipTrainingRow.DewDepressionGfs), nameof(RichPrecipTrainingRow.DewDepressionEcmwf),
+            nameof(RichPrecipTrainingRow.DewDepressionIcon), nameof(RichPrecipTrainingRow.DewDepressionMf),
+            nameof(RichPrecipTrainingRow.DewDepressionUkmo), nameof(RichPrecipTrainingRow.DewDepressionGem),
+
+            // 6 per-model pressure.
+            nameof(RichPrecipTrainingRow.PressureGfs), nameof(RichPrecipTrainingRow.PressureEcmwf),
+            nameof(RichPrecipTrainingRow.PressureIcon), nameof(RichPrecipTrainingRow.PressureMf),
+            nameof(RichPrecipTrainingRow.PressureUkmo), nameof(RichPrecipTrainingRow.PressureGem),
+
+            // 4 EA observation persistence.
+            nameof(RichPrecipTrainingRow.EaRainPrev24hMm),
+            nameof(RichPrecipTrainingRow.EaRainPrev72hMm),
+            nameof(RichPrecipTrainingRow.EaWetHoursLast24h),
+            nameof(RichPrecipTrainingRow.EaDryHoursTrailing),
+        };
+        return lean.Concat(extras).ToArray();
+    }
 }

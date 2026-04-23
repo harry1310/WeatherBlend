@@ -15,7 +15,7 @@ namespace WeatherBlend.Train;
 /// 0 otherwise. <c>PrecipMmHour</c> carries the raw hourly total so the same
 /// dataset can back the intensity regressor later.
 /// </summary>
-public sealed class PrecipTrainingRow
+public class PrecipTrainingRow
 {
     public DateTime ValidTimeUtc { get; set; }
 
