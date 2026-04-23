@@ -114,6 +114,8 @@ public static class Program
                 services.AddTransient<DryWindowDiagnosticCommand>();
                 services.AddTransient<DryWindowTrainCommand>();
                 services.AddTransient<DryWindowReportCommand>();
+                services.AddTransient<DryWindowPredictCommand>();
+                services.AddTransient<DryWindowVerifyCommand>();
             })
             .Build();
 
@@ -236,7 +238,7 @@ public static class Program
 
         var predictTargetOpt = new Option<string>(
             name: "--target",
-            description: "Target variable: temperature | precipitation",
+            description: "Target variable: temperature | precipitation | dry-window",
             getDefaultValue: () => "temperature");
         var predictVersionOpt = new Option<string>(
             name: "--model-version",
@@ -247,39 +249,48 @@ public static class Program
             description: "Retroactive fill: pretend anchor is this date at 08:00 UTC (yyyy-MM-dd). Omit for live run.");
         var predictTruthStationOpt = new Option<string>(
             name: "--truth-station",
-            description: "Precipitation target only: truth station slug (e.g. ea_bellever_dartmoor), config station name, or 'all'",
+            description: "Precipitation / dry-window only: truth station slug (e.g. ea_bellever_dartmoor), config station name, or 'all'",
+            getDefaultValue: () => "all");
+        var predictWindowOpt = new Option<string>(
+            name: "--window",
+            description: "Dry-window only: window length in hours (3 | 4 | 6 | all)",
             getDefaultValue: () => "all");
         var predict = new Command(
             "predict",
             "Produce blended forecasts for the next 24/48/72h from the current blender")
         {
-            predictTargetOpt, predictVersionOpt, predictForDateOpt, predictTruthStationOpt,
+            predictTargetOpt, predictVersionOpt, predictForDateOpt, predictTruthStationOpt, predictWindowOpt,
         };
-        predict.SetHandler(async (target, version, forDate, truthStation) =>
+        predict.SetHandler(async (target, version, forDate, truthStation, window) =>
         {
             if (string.Equals(target, "precipitation", StringComparison.OrdinalIgnoreCase))
             {
                 var cmd = host.Services.GetRequiredService<PrecipPredictCommand>();
                 Environment.ExitCode = await cmd.RunAsync(truthStation, version, forDate, CancellationToken.None);
             }
+            else if (string.Equals(target, "dry-window", StringComparison.OrdinalIgnoreCase))
+            {
+                var cmd = host.Services.GetRequiredService<DryWindowPredictCommand>();
+                Environment.ExitCode = await cmd.RunAsync(truthStation, window, version, forDate, CancellationToken.None);
+            }
             else
             {
                 var cmd = host.Services.GetRequiredService<PredictCommand>();
                 await cmd.RunAsync(target, version, forDate, CancellationToken.None);
             }
-        }, predictTargetOpt, predictVersionOpt, predictForDateOpt, predictTruthStationOpt);
+        }, predictTargetOpt, predictVersionOpt, predictForDateOpt, predictTruthStationOpt, predictWindowOpt);
         root.AddCommand(predict);
 
         var verifyTargetOpt = new Option<string>(
             name: "--target",
-            description: "Target variable: temperature | precipitation",
+            description: "Target variable: temperature | precipitation | dry-window",
             getDefaultValue: () => "temperature");
         var verifyAsOfOpt = new Option<DateOnly?>(
             name: "--as-of",
             description: "Anchor date for the rolling window (yyyy-MM-dd). Default: now.");
         var verifyWindowOpt = new Option<int?>(
             name: "--window-days",
-            description: "Rolling window size in days. Default: 14 for temperature, 30 for precipitation.");
+            description: "Rolling window size in days. Default: 14 for temperature, 30 for precipitation/dry-window.");
         var verifyLatencyOpt = new Option<int>(
             name: "--latency-days",
             description: "Truth-release latency — exclude this many most-recent days",
@@ -290,29 +301,47 @@ public static class Program
             getDefaultValue: () => 1.5);
         var verifyTruthStationOpt = new Option<string>(
             name: "--truth-station",
-            description: "Precipitation target only: truth station slug, config name, or 'all'",
+            description: "Precipitation / dry-window target only: truth station slug, config name, or 'all'",
+            getDefaultValue: () => "all");
+        var verifyDryWindowOpt = new Option<string>(
+            name: "--window",
+            description: "Dry-window target only: window length in hours (3 | 4 | 6 | all)",
             getDefaultValue: () => "all");
         var verify = new Command(
             "verify",
-            "Rolling verification vs ERA5 (temperature) or EA rainfall (precipitation), stratified by (version, lead). Flags drift.")
+            "Rolling verification vs ERA5 (temperature) or EA rainfall (precipitation/dry-window), stratified by (version, lead). Flags drift.")
         {
-            verifyTargetOpt, verifyAsOfOpt, verifyWindowOpt, verifyLatencyOpt, verifyDriftOpt, verifyTruthStationOpt,
+            verifyTargetOpt, verifyAsOfOpt, verifyWindowOpt, verifyLatencyOpt, verifyDriftOpt, verifyTruthStationOpt, verifyDryWindowOpt,
         };
-        verify.SetHandler(async (target, asOf, windowDays, latencyDays, drift, truthStation) =>
+        verify.SetHandler(async (ctx) =>
         {
+            var target = ctx.ParseResult.GetValueForOption(verifyTargetOpt)!;
+            var asOf = ctx.ParseResult.GetValueForOption(verifyAsOfOpt);
+            var windowDays = ctx.ParseResult.GetValueForOption(verifyWindowOpt);
+            var latencyDays = ctx.ParseResult.GetValueForOption(verifyLatencyOpt);
+            var drift = ctx.ParseResult.GetValueForOption(verifyDriftOpt);
+            var truthStation = ctx.ParseResult.GetValueForOption(verifyTruthStationOpt)!;
+            var dryWindow = ctx.ParseResult.GetValueForOption(verifyDryWindowOpt)!;
+
             if (string.Equals(target, "precipitation", StringComparison.OrdinalIgnoreCase))
             {
                 var cmd = host.Services.GetRequiredService<PrecipVerifyCommand>();
-                Environment.ExitCode = await cmd.RunAsync(
-                    truthStation, asOf, windowDays ?? 30, latencyDays, drift, CancellationToken.None);
+                ctx.ExitCode = await cmd.RunAsync(
+                    truthStation, asOf, windowDays ?? 30, latencyDays, drift, ctx.GetCancellationToken());
+            }
+            else if (string.Equals(target, "dry-window", StringComparison.OrdinalIgnoreCase))
+            {
+                var cmd = host.Services.GetRequiredService<DryWindowVerifyCommand>();
+                ctx.ExitCode = await cmd.RunAsync(
+                    truthStation, dryWindow, asOf, windowDays ?? 30, latencyDays, drift, ctx.GetCancellationToken());
             }
             else
             {
                 var cmd = host.Services.GetRequiredService<VerifyCommand>();
-                Environment.ExitCode = await cmd.RunAsync(
-                    target, asOf, windowDays ?? 14, latencyDays, drift, CancellationToken.None);
+                ctx.ExitCode = await cmd.RunAsync(
+                    target, asOf, windowDays ?? 14, latencyDays, drift, ctx.GetCancellationToken());
             }
-        }, verifyTargetOpt, verifyAsOfOpt, verifyWindowOpt, verifyLatencyOpt, verifyDriftOpt, verifyTruthStationOpt);
+        });
         root.AddCommand(verify);
 
         var siteOutputOpt = new Option<string>(
