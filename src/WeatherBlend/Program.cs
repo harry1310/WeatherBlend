@@ -107,6 +107,7 @@ public static class Program
                 services.AddTransient<InspectCommand>();
                 services.AddTransient<CompareCommand>();
                 services.AddTransient<PredictCommand>();
+                services.AddTransient<PrecipPredictCommand>();
                 services.AddTransient<VerifyCommand>();
                 services.AddTransient<RenderSiteCommand>();
             })
@@ -224,7 +225,7 @@ public static class Program
 
         var predictTargetOpt = new Option<string>(
             name: "--target",
-            description: "Target variable: temperature",
+            description: "Target variable: temperature | precipitation",
             getDefaultValue: () => "temperature");
         var predictVersionOpt = new Option<string>(
             name: "--model-version",
@@ -233,17 +234,29 @@ public static class Program
         var predictForDateOpt = new Option<DateOnly?>(
             name: "--for-date",
             description: "Retroactive fill: pretend anchor is this date at 08:00 UTC (yyyy-MM-dd). Omit for live run.");
+        var predictTruthStationOpt = new Option<string>(
+            name: "--truth-station",
+            description: "Precipitation target only: truth station slug (e.g. ea_bellever_dartmoor), config station name, or 'all'",
+            getDefaultValue: () => "all");
         var predict = new Command(
             "predict",
             "Produce blended forecasts for the next 24/48/72h from the current blender")
         {
-            predictTargetOpt, predictVersionOpt, predictForDateOpt,
+            predictTargetOpt, predictVersionOpt, predictForDateOpt, predictTruthStationOpt,
         };
-        predict.SetHandler(async (target, version, forDate) =>
+        predict.SetHandler(async (target, version, forDate, truthStation) =>
         {
-            var cmd = host.Services.GetRequiredService<PredictCommand>();
-            await cmd.RunAsync(target, version, forDate, CancellationToken.None);
-        }, predictTargetOpt, predictVersionOpt, predictForDateOpt);
+            if (string.Equals(target, "precipitation", StringComparison.OrdinalIgnoreCase))
+            {
+                var cmd = host.Services.GetRequiredService<PrecipPredictCommand>();
+                Environment.ExitCode = await cmd.RunAsync(truthStation, version, forDate, CancellationToken.None);
+            }
+            else
+            {
+                var cmd = host.Services.GetRequiredService<PredictCommand>();
+                await cmd.RunAsync(target, version, forDate, CancellationToken.None);
+            }
+        }, predictTargetOpt, predictVersionOpt, predictForDateOpt, predictTruthStationOpt);
         root.AddCommand(predict);
 
         var verifyTargetOpt = new Option<string>(
