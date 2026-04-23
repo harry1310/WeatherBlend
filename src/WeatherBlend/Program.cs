@@ -109,6 +109,7 @@ public static class Program
                 services.AddTransient<PredictCommand>();
                 services.AddTransient<PrecipPredictCommand>();
                 services.AddTransient<VerifyCommand>();
+                services.AddTransient<PrecipVerifyCommand>();
                 services.AddTransient<RenderSiteCommand>();
             })
             .Build();
@@ -261,34 +262,47 @@ public static class Program
 
         var verifyTargetOpt = new Option<string>(
             name: "--target",
-            description: "Target variable: temperature",
+            description: "Target variable: temperature | precipitation",
             getDefaultValue: () => "temperature");
         var verifyAsOfOpt = new Option<DateOnly?>(
             name: "--as-of",
             description: "Anchor date for the rolling window (yyyy-MM-dd). Default: now.");
-        var verifyWindowOpt = new Option<int>(
+        var verifyWindowOpt = new Option<int?>(
             name: "--window-days",
-            description: "Rolling window size in days",
-            getDefaultValue: () => 14);
+            description: "Rolling window size in days. Default: 14 for temperature, 30 for precipitation.");
         var verifyLatencyOpt = new Option<int>(
             name: "--latency-days",
-            description: "ERA5 release latency — exclude this many most-recent days",
+            description: "Truth-release latency — exclude this many most-recent days",
             getDefaultValue: () => 5);
         var verifyDriftOpt = new Option<double>(
             name: "--drift",
-            description: "Drift threshold multiplier (rolling MAE vs training test MAE)",
+            description: "Drift threshold multiplier (rolling metric vs training test metric)",
             getDefaultValue: () => 1.5);
+        var verifyTruthStationOpt = new Option<string>(
+            name: "--truth-station",
+            description: "Precipitation target only: truth station slug, config name, or 'all'",
+            getDefaultValue: () => "all");
         var verify = new Command(
             "verify",
-            "Rolling verification vs ERA5, stratified by (model version, lead). Flags drift.")
+            "Rolling verification vs ERA5 (temperature) or EA rainfall (precipitation), stratified by (version, lead). Flags drift.")
         {
-            verifyTargetOpt, verifyAsOfOpt, verifyWindowOpt, verifyLatencyOpt, verifyDriftOpt,
+            verifyTargetOpt, verifyAsOfOpt, verifyWindowOpt, verifyLatencyOpt, verifyDriftOpt, verifyTruthStationOpt,
         };
-        verify.SetHandler(async (target, asOf, windowDays, latencyDays, drift) =>
+        verify.SetHandler(async (target, asOf, windowDays, latencyDays, drift, truthStation) =>
         {
-            var cmd = host.Services.GetRequiredService<VerifyCommand>();
-            Environment.ExitCode = await cmd.RunAsync(target, asOf, windowDays, latencyDays, drift, CancellationToken.None);
-        }, verifyTargetOpt, verifyAsOfOpt, verifyWindowOpt, verifyLatencyOpt, verifyDriftOpt);
+            if (string.Equals(target, "precipitation", StringComparison.OrdinalIgnoreCase))
+            {
+                var cmd = host.Services.GetRequiredService<PrecipVerifyCommand>();
+                Environment.ExitCode = await cmd.RunAsync(
+                    truthStation, asOf, windowDays ?? 30, latencyDays, drift, CancellationToken.None);
+            }
+            else
+            {
+                var cmd = host.Services.GetRequiredService<VerifyCommand>();
+                Environment.ExitCode = await cmd.RunAsync(
+                    target, asOf, windowDays ?? 14, latencyDays, drift, CancellationToken.None);
+            }
+        }, verifyTargetOpt, verifyAsOfOpt, verifyWindowOpt, verifyLatencyOpt, verifyDriftOpt, verifyTruthStationOpt);
         root.AddCommand(verify);
 
         var siteOutputOpt = new Option<string>(
