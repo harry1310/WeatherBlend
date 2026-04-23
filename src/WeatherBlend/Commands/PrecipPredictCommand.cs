@@ -132,6 +132,22 @@ public sealed class PrecipPredictCommand
             station, metadata.Version, metadata.Phase);
 
         var isRich = string.Equals(metadata.Phase, "3c", StringComparison.OrdinalIgnoreCase);
+        var isIsotonic = string.Equals(metadata.Phase, "3a_isotonic", StringComparison.OrdinalIgnoreCase);
+
+        PrecipIsotonicCalibration? calibration = null;
+        if (isIsotonic)
+        {
+            var calPath = Path.Combine(versionDir, PrecipIsotonicCalibration.FileName);
+            if (!File.Exists(calPath))
+            {
+                _log.LogError("Station {Station} version {V} declares Phase='3a_isotonic' but {File} is missing.",
+                    station, metadata.Version, PrecipIsotonicCalibration.FileName);
+                return false;
+            }
+            calibration = PrecipIsotonicCalibration.LoadFrom(calPath);
+            _log.LogInformation("Station {Station}: loaded isotonic calibration — source={Src}, leads=[{Leads}]",
+                station, calibration.SourceVersion, string.Join(", ", calibration.ByLead.Keys));
+        }
 
         // Phase 3c needs EA observation persistence anchored at run_time = valid - lead;
         // load the whole hourly series once (small) and reuse across the three leads.
@@ -223,6 +239,15 @@ public sealed class PrecipPredictCommand
             var pWet = isRich
                 ? PrecipOccurrenceTrainer.PredictProbability(ml, model, new[] { (RichPrecipTrainingRow)featureRow })
                 : PrecipOccurrenceTrainer.PredictProbability(ml, model, new[] { featureRow });
+
+            // Phase 3a_isotonic: remap the raw LightGBM score through the saved PAV
+            // knots for this lead. If the lead has no knot entry, fall through to
+            // the raw score — better to surface the original prediction than 0.
+            if (calibration is not null && calibration.ByLead.TryGetValue(lead.ToString(), out var leadCal))
+            {
+                pWet[0] = leadCal.Apply(pWet[0]);
+            }
+
             var climPWet = climatology.Predict(valid);
 
             predictions.Add(new PrecipPredictionRow

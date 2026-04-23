@@ -233,7 +233,13 @@ public static class SitePages
             <section>
               <hgroup>
                 <h2>Precipitation — P(wet ≥ 0.1 mm/h)</h2>
-                <p>Phase 3a per-station hourly occurrence blender. EA Hydrology gauges as truth; LightGBM per lead-time bucket.</p>
+                <p>Per-station hourly occurrence blender. EA Hydrology gauges as truth; LightGBM per lead-time bucket.
+                   Three blenders are active per station — <strong>Phase 3a (lean, 27 features)</strong> as the original champion,
+                   <strong>Phase 3a_isotonic</strong> (3a's output re-mapped by a per-lead pool-adjacent-violators isotonic regression
+                   fit on the validation slice), and <strong>Phase 3c (rich, 55 features)</strong> as the feature-richness challenger
+                   with per-model humidity, surface pressure, and EA trailing-rainfall persistence. All three produce predictions
+                   every cycle; charts below are grouped by phase so differences between feature richness and post-hoc calibration
+                   are visible at a glance.</p>
               </hgroup>
             """);
 
@@ -254,48 +260,43 @@ public static class SitePages
             (72, "#4527a0"),
         };
 
+        // Phase specs mirror the temperature forecast-vs-truth page: one chart per
+        // phase, with leads as separate series inside. "other" catches pre-3a rows
+        // or versions with no training_metadata.json on disk.
+        (string Key, string Title, string Description)[] phaseSpecs =
+        {
+            ("3a", "Phase 3a — lean (27 features)",
+                "Per-model precip + precip-prob, spread stats, covariate means, calendar encodings. Original champion."),
+            ("3a_isotonic", "Phase 3a_isotonic — lean + post-hoc calibration",
+                "Phase 3a's model unchanged; its output is remapped through a per-lead pool-adjacent-violators isotonic regression fit on the validation slice. Tests whether calibration post-processing alone delivers what Phase 3c's extra features deliver."),
+            ("3c", "Phase 3c — rich (55 features)",
+                "Lean + 18 per-model humidity (dew/RH/depression) + 6 per-model surface pressure + 4 EA trailing-rainfall persistence features. Challenger."),
+            ("other", "Other versions",
+                "Versions with no phase tag on disk — typically pre-3a experiments left in the manifest."),
+        };
+
         foreach (var station in stations)
         {
             var stationRows = input.PrecipPredictions.Where(p => p.Station == station).ToList();
 
-            // For each lead, take the latest forecast trajectory: most recent
-            // PredictedAtUtc per (lead, valid_time) keeps things simple — at the
-            // typical cadence each (lead, valid_time) is produced by one cycle.
-            var latestPerLead = stationRows
-                .GroupBy(r => (r.LeadHours, r.ValidTimeUtc))
+            // Headline: peak P(wet) at lead 24h over the next 72h, drawn from 3c if
+            // available (the challenger is better-calibrated at +24h), otherwise 3a.
+            var phaseForHeadline = stationRows.Any(r => BucketPrecipPhase(input.PhaseByVersion, r.Version) == "3c")
+                ? "3c" : "3a";
+            var headlineRows = stationRows
+                .Where(r => BucketPrecipPhase(input.PhaseByVersion, r.Version) == phaseForHeadline
+                         && r.LeadHours == 24
+                         && r.ValidTimeUtc >= input.GeneratedAtUtc)
+                .GroupBy(r => r.ValidTimeUtc)
                 .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
-                .ToList();
-
-            var series = new List<LineSeries>();
-            foreach (var (lead, color) in leadSpecs)
-            {
-                var pts = latestPerLead
-                    .Where(r => r.LeadHours == lead && r.ValidTimeUtc >= input.GeneratedAtUtc.AddHours(-1))
-                    .OrderBy(r => r.ValidTimeUtc)
-                    .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet))
-                    .ToList();
-                if (pts.Count > 0)
-                    series.Add(new LineSeries($"Blend +{lead}h", color, pts));
-            }
-
-            // Climatology baseline — same trace for every lead at a given valid time, so just
-            // pull it from one lead and render as a flat reference.
-            var climPts = latestPerLead
-                .Where(r => r.LeadHours == 24 && r.ValidTimeUtc >= input.GeneratedAtUtc.AddHours(-1))
                 .OrderBy(r => r.ValidTimeUtc)
-                .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ClimatologyPWet))
                 .ToList();
-            if (climPts.Count > 0)
-                series.Add(new LineSeries("Climatology", "#9e9e9e", climPts));
-
-            // Headline: peak P(wet) at lead 24h over the next 72h.
-            var lead24Future = latestPerLead.Where(r => r.LeadHours == 24 && r.ValidTimeUtc >= input.GeneratedAtUtc).ToList();
             string headline;
-            if (lead24Future.Count > 0)
+            if (headlineRows.Count > 0)
             {
-                var peak = lead24Future.OrderByDescending(r => r.ProbWet).First();
-                var meanP = lead24Future.Average(r => r.ProbWet);
-                headline = $"Next {lead24Future.Count}h at +24h: mean P(wet) = {meanP.ToString("0.00", Ci)}, peak {peak.ProbWet.ToString("0.00", Ci)} at {peak.ValidTimeUtc:yyyy-MM-dd HH:mm}Z.";
+                var peak = headlineRows.OrderByDescending(r => r.ProbWet).First();
+                var meanP = headlineRows.Average(r => r.ProbWet);
+                headline = $"Next {headlineRows.Count}h at +24h (Phase {phaseForHeadline}): mean P(wet) = {meanP.ToString("0.00", Ci)}, peak {peak.ProbWet.ToString("0.00", Ci)} at {peak.ValidTimeUtc:yyyy-MM-dd HH:mm}Z.";
             }
             else
             {
@@ -310,36 +311,112 @@ public static class SitePages
                   </hgroup>
                 """);
 
-            if (series.Count == 0)
+            // One chart per phase present for this station.
+            bool anyRendered = false;
+            foreach (var spec in phaseSpecs)
             {
-                content.Append(RenderEmptyChart($"P(wet) — {station}", "No forecast valid times in the future window."));
+                var phaseRows = stationRows
+                    .Where(r => BucketPrecipPhase(input.PhaseByVersion, r.Version) == spec.Key)
+                    .ToList();
+                if (phaseRows.Count == 0) continue;
+                anyRendered = true;
+
+                var latestPerLead = phaseRows
+                    .GroupBy(r => (r.LeadHours, r.ValidTimeUtc))
+                    .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
+                    .ToList();
+
+                var series = new List<LineSeries>();
+                foreach (var (lead, color) in leadSpecs)
+                {
+                    var pts = latestPerLead
+                        .Where(r => r.LeadHours == lead && r.ValidTimeUtc >= input.GeneratedAtUtc.AddHours(-1))
+                        .OrderBy(r => r.ValidTimeUtc)
+                        .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet))
+                        .ToList();
+                    if (pts.Count > 0)
+                        series.Add(new LineSeries($"Blend +{lead}h", color, pts));
+                }
+
+                // Climatology baseline — identical per valid time, pull it from whichever
+                // lead has data and overlay as a reference line.
+                var climPts = latestPerLead
+                    .Where(r => r.ValidTimeUtc >= input.GeneratedAtUtc.AddHours(-1))
+                    .GroupBy(r => r.ValidTimeUtc)
+                    .Select(g => g.First())
+                    .OrderBy(r => r.ValidTimeUtc)
+                    .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ClimatologyPWet))
+                    .ToList();
+                if (climPts.Count > 0)
+                    series.Add(new LineSeries("Climatology", "#9e9e9e", climPts));
+
+                content.Append(Ci, $"""
+                    <h4>{Escape(spec.Title)}</h4>
+                    <p class="skill-line">{Escape(spec.Description)}</p>
+                    """);
+
+                if (series.Count == 0)
+                {
+                    content.Append(RenderEmptyChart(
+                        $"P(wet) — {PrettyStation(station)} — {spec.Key}",
+                        "No forecast valid times in the future window."));
+                }
+                else
+                {
+                    content.Append(LineChartRenderer.Render(new LineChartSpec
+                    {
+                        Title = $"P(wet ≥ 0.1 mm/h) — {PrettyStation(station)} — Phase {spec.Key}",
+                        XLabel = "Valid time (UTC)",
+                        YLabel = "Probability",
+                        Series = series,
+                        Height = 300,
+                        FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
+                        FormatY = v => v.ToString("0.00", Ci),
+                    }));
+                }
             }
-            else
+
+            // Champion-vs-challenger overlay at +24h — the most skillful lead and
+            // the one the dog-walk user actually cares about. Drops in if both
+            // phases produced 24h rows for this station. "Now minus 1h" to anchor
+            // at the forecast trajectory rather than full history.
+            var cvc24 = BuildChampionVsChallengerSeries(stationRows, input.PhaseByVersion, input.GeneratedAtUtc.AddHours(-1), leadHours: 24);
+            if (cvc24.Count >= 2)
             {
+                content.Append(Ci, $"""
+                    <h4>Three-way comparison — +24h lead</h4>
+                    <p class="skill-line">3a (raw), 3a_isotonic (calibrated), and 3c (rich) on the same axis. If 3a_isotonic tracks 3c, calibration alone did the work the extra features were supposed to do.</p>
+                    """);
                 content.Append(LineChartRenderer.Render(new LineChartSpec
                 {
-                    Title = $"P(wet ≥ 0.1 mm/h) — {PrettyStation(station)}",
+                    Title = $"3a vs 3a_isotonic vs 3c — {PrettyStation(station)} — +24h",
                     XLabel = "Valid time (UTC)",
                     YLabel = "Probability",
-                    Series = series,
-                    Height = 320,
+                    Series = cvc24,
+                    Height = 280,
                     FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
                     FormatY = v => v.ToString("0.00", Ci),
                 }));
             }
 
+            if (!anyRendered)
+            {
+                content.Append(RenderEmptyChart($"P(wet) — {station}", "No forecast valid times in the future window."));
+            }
+
             content.Append("</article>");
         }
 
-        // Latest-per-(station, lead, valid_time) detail table, capped to the next
-        // 96h forward of generation to keep page weight reasonable.
+        // Latest-per-(station, phase, lead, valid_time) detail table, capped to the
+        // next 96h forward of generation to keep page weight reasonable.
         var future = input.PrecipPredictions
             .Where(p => p.ValidTimeUtc >= input.GeneratedAtUtc.AddHours(-1) && p.ValidTimeUtc <= input.GeneratedAtUtc.AddHours(96))
-            .GroupBy(p => (p.Station, p.LeadHours, p.ValidTimeUtc))
+            .GroupBy(p => (p.Station, p.Version, p.LeadHours, p.ValidTimeUtc))
             .Select(g => g.OrderByDescending(p => p.PredictedAtUtc).First())
             .OrderBy(p => p.Station, StringComparer.Ordinal)
             .ThenBy(p => p.ValidTimeUtc)
             .ThenBy(p => p.LeadHours)
+            .ThenBy(p => BucketPrecipPhase(input.PhaseByVersion, p.Version), StringComparer.Ordinal)
             .ToList();
 
         if (future.Count > 0)
@@ -347,9 +424,11 @@ public static class SitePages
             var tbody = new StringBuilder();
             foreach (var p in future)
             {
+                var phase = BucketPrecipPhase(input.PhaseByVersion, p.Version);
                 tbody.Append(Ci, $"""
                     <tr>
                       <td>{Escape(PrettyStation(p.Station))}</td>
+                      <td>{Escape(phase)}</td>
                       <td><time>{p.ValidTimeUtc:yyyy-MM-dd HH:mm}Z</time></td>
                       <td>{p.LeadHours}h</td>
                       <td class="num"><strong>{p.ProbWet.ToString("0.00", Ci)}</strong></td>
@@ -366,6 +445,7 @@ public static class SitePages
                     <thead>
                       <tr>
                         <th>Station</th>
+                        <th>Phase</th>
                         <th>Valid time</th>
                         <th>Lead</th>
                         <th class="num">P(wet)</th>
@@ -382,6 +462,56 @@ public static class SitePages
 
         content.Append("</section>");
         return WrapPage(input, "Precipitation", "precipitation", content.ToString());
+    }
+
+    /// <summary>
+    /// Bucket a precipitation version into its phase tag. Precip phases are exact
+    /// strings — "3a", "3a_isotonic", or "3c" — so anything else lands in "other".
+    /// </summary>
+    private static string BucketPrecipPhase(IReadOnlyDictionary<string, string> phaseByVersion, string version)
+    {
+        if (!phaseByVersion.TryGetValue(version, out var phase) || string.IsNullOrWhiteSpace(phase))
+            return "other";
+        if (phase.Equals("3a", StringComparison.OrdinalIgnoreCase)) return "3a";
+        if (phase.Equals("3a_isotonic", StringComparison.OrdinalIgnoreCase)) return "3a_isotonic";
+        if (phase.Equals("3c", StringComparison.OrdinalIgnoreCase)) return "3c";
+        return "other";
+    }
+
+    /// <summary>
+    /// Build "3a vs 3c" line series at a single lead for one station. Caller sets the
+    /// earliest valid time to include — the precipitation page uses "now minus 1h" to
+    /// get the forecast trajectory, while forecast-vs-truth uses <c>WindowStartUtc</c>
+    /// to see historical predictions alongside the observed rainfall line.
+    /// </summary>
+    private static List<LineSeries> BuildChampionVsChallengerSeries(
+        IReadOnlyList<PrecipForecastPoint> stationRows,
+        IReadOnlyDictionary<string, string> phaseByVersion,
+        DateTime minValidTimeUtc,
+        int leadHours)
+    {
+        var series = new List<LineSeries>();
+        (string phase, string label, string color)[] spec =
+        {
+            ("3a",          "Phase 3a (champion)",            "#90a4ae"),
+            ("3a_isotonic", "Phase 3a_isotonic (calibrated)", "#26a69a"),
+            ("3c",          "Phase 3c (challenger)",          "#7c4dff"),
+        };
+        foreach (var (phase, label, color) in spec)
+        {
+            var pts = stationRows
+                .Where(r => r.LeadHours == leadHours
+                         && BucketPrecipPhase(phaseByVersion, r.Version) == phase
+                         && r.ValidTimeUtc >= minValidTimeUtc)
+                .GroupBy(r => r.ValidTimeUtc)
+                .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
+                .OrderBy(r => r.ValidTimeUtc)
+                .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet))
+                .ToList();
+            if (pts.Count > 0)
+                series.Add(new LineSeries(label, color, pts));
+        }
+        return series;
     }
 
     public static string RenderDryWindow(SiteInputs input)
@@ -738,61 +868,108 @@ public static class SitePages
         content.Append(Ci, $"<h4>{Escape(PrettyStation(station))}</h4>");
 
         var stationPredictions = input.PrecipPredictions.Where(p => p.Station == station).ToList();
-        var latestPerLead = stationPredictions
-            .GroupBy(r => (r.LeadHours, r.ValidTimeUtc))
-            .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
-            .ToList();
 
-        var series = new List<LineSeries>();
+        // Precompute the observed-rainfall series once; it overlays on every phase chart.
+        List<(double X, double Y)> truthPts = new();
+        if (input.RainfallTruth.TryGetValue(station, out var truth) && truth.Count > 0)
+        {
+            truthPts = truth
+                .Where(kv => kv.Key >= input.WindowStartUtc)
+                .OrderBy(kv => kv.Key)
+                .Select(kv => (X: kv.Key.ToOADate(), Y: Math.Min(1.0, kv.Value)))
+                .ToList();
+        }
+
         (int lead, string color)[] leadSpecs =
         {
             (24, "#b39ddb"),
             (48, "#7c4dff"),
             (72, "#4527a0"),
         };
-        foreach (var (lead, color) in leadSpecs)
+        (string Key, string Title)[] phaseSpecs =
         {
-            var pts = latestPerLead
-                .Where(r => r.LeadHours == lead)
-                .OrderBy(r => r.ValidTimeUtc)
-                .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet))
-                .ToList();
-            if (pts.Count > 0)
-                series.Add(new LineSeries($"P(wet) +{lead}h", color, pts));
-        }
+            ("3a", "Phase 3a (lean)"),
+            ("3a_isotonic", "Phase 3a_isotonic (lean + PAV calibration)"),
+            ("3c", "Phase 3c (rich)"),
+            ("other", "Other versions"),
+        };
 
-        // Rainfall truth: plot mm/h on the same 0–1 axis by capping at 1 so one chart
-        // carries both (probability on same axis as "observed ≥ 1 mm → 1"). An obvious
-        // compromise — the alternative is a second axis which complicates the renderer.
-        // The capped line functions as "was it meaningfully raining?" visually.
-        if (input.RainfallTruth.TryGetValue(station, out var truth) && truth.Count > 0)
+        bool anyRendered = false;
+        foreach (var spec in phaseSpecs)
         {
-            var truthPts = truth
-                .Where(kv => kv.Key >= input.WindowStartUtc)
-                .OrderBy(kv => kv.Key)
-                .Select(kv => (X: kv.Key.ToOADate(), Y: Math.Min(1.0, kv.Value)))
+            var phaseRows = stationPredictions
+                .Where(p => BucketPrecipPhase(input.PhaseByVersion, p.Version) == spec.Key)
                 .ToList();
+            if (phaseRows.Count == 0) continue;
+            anyRendered = true;
+
+            var latestPerLead = phaseRows
+                .GroupBy(r => (r.LeadHours, r.ValidTimeUtc))
+                .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
+                .ToList();
+
+            var series = new List<LineSeries>();
+            foreach (var (lead, color) in leadSpecs)
+            {
+                var pts = latestPerLead
+                    .Where(r => r.LeadHours == lead)
+                    .OrderBy(r => r.ValidTimeUtc)
+                    .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet))
+                    .ToList();
+                if (pts.Count > 0)
+                    series.Add(new LineSeries($"P(wet) +{lead}h", color, pts));
+            }
+
+            // Rainfall truth: same 0–1 axis by capping at 1. The capped line functions
+            // as "was it meaningfully raining?" without a second Y-axis.
             if (truthPts.Count > 0)
                 series.Add(new LineSeries("Observed mm/h (capped at 1)", "#ef5350", truthPts));
-        }
 
-        if (series.Count == 0)
-        {
-            content.Append(RenderEmptyChart($"P(wet) vs observed — {station}", "No forecast or truth in window."));
-        }
-        else
-        {
+            if (series.Count == 0)
+            {
+                content.Append(RenderEmptyChart(
+                    $"P(wet) vs observed — {station} — {spec.Key}",
+                    "No forecast or truth in window."));
+                continue;
+            }
+
+            content.Append(Ci, $"<h5>{Escape(spec.Title)}</h5>");
             content.Append(LineChartRenderer.Render(new LineChartSpec
             {
-                Title = $"P(wet) vs observed rainfall — {PrettyStation(station)}",
+                Title = $"P(wet) vs observed rainfall — {PrettyStation(station)} — Phase {spec.Key}",
                 XLabel = "Time (UTC)",
                 YLabel = "Probability / mm·h⁻¹ (capped)",
                 Series = series,
-                Height = 300,
+                Height = 280,
                 FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
                 FormatY = v => v.ToString("0.00", Ci),
             }));
         }
+
+        // Champion-vs-challenger overlay at +24h with observed truth so the reader can
+        // see which phase tracked reality better for the lead that matters most.
+        var cvc = BuildChampionVsChallengerSeries(stationPredictions, input.PhaseByVersion, input.WindowStartUtc, leadHours: 24);
+        // Drop the generatedAt clamp above — for forecast-vs-truth we want history too.
+        if (cvc.Count >= 2)
+        {
+            if (truthPts.Count > 0)
+                cvc.Add(new LineSeries("Observed mm/h (capped at 1)", "#ef5350", truthPts));
+            content.Append("<h5>Three-way comparison — +24h lead</h5>");
+            content.Append(LineChartRenderer.Render(new LineChartSpec
+            {
+                Title = $"3a vs 3a_isotonic vs 3c vs observed — {PrettyStation(station)} — +24h",
+                XLabel = "Time (UTC)",
+                YLabel = "Probability / mm·h⁻¹ (capped)",
+                Series = cvc,
+                Height = 280,
+                FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
+                FormatY = v => v.ToString("0.00", Ci),
+            }));
+        }
+
+        if (!anyRendered)
+            content.Append(RenderEmptyChart($"P(wet) vs observed — {station}", "No forecast or truth in window."));
+
         return content.ToString();
     }
 

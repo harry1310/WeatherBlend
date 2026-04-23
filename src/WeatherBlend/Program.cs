@@ -108,6 +108,7 @@ public static class Program
                 services.AddTransient<CompareCommand>();
                 services.AddTransient<PredictCommand>();
                 services.AddTransient<PrecipPredictCommand>();
+                services.AddTransient<PrecipCalibrateCommand>();
                 services.AddTransient<PrecipAblateCommand>();
                 services.AddTransient<VerifyCommand>();
                 services.AddTransient<PrecipVerifyCommand>();
@@ -378,6 +379,23 @@ public static class Program
             Environment.ExitCode = await cmd.RunAsync(output, window, rolling, CancellationToken.None);
         }, siteOutputOpt, siteWindowOpt, siteRollingOpt);
         root.AddCommand(renderSite);
+
+        var calibrateStationOpt = new Option<string>(
+            name: "--truth-station",
+            description: "Station slug, config name, or 'all' — fit isotonic calibration for each matching 3a model",
+            getDefaultValue: () => "all");
+        var precipCalibrate = new Command(
+            "precip-calibrate",
+            "Phase 3a_isotonic: post-hoc isotonic (PAV) calibration of the 3a occurrence classifier; registers as a challenger alongside 3a and 3c")
+        {
+            calibrateStationOpt,
+        };
+        precipCalibrate.SetHandler(async (truthStation) =>
+        {
+            var cmd = host.Services.GetRequiredService<PrecipCalibrateCommand>();
+            Environment.ExitCode = await cmd.RunAsync(truthStation, CancellationToken.None);
+        }, calibrateStationOpt);
+        root.AddCommand(precipCalibrate);
 
         var precipAblate = new Command(
             "precip-ablate",

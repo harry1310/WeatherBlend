@@ -70,7 +70,7 @@ public sealed class RenderSiteCommand
 
         var rolling = ComputeRollingMae(predictions, truth, rollingWindowDays);
 
-        var phaseByVersion = LoadPhaseByVersion(predictions);
+        var phaseByVersion = LoadPhaseByVersion(predictions, precip);
         _log.LogInformation("Phase map: {Entries}",
             string.Join(", ", phaseByVersion.Select(kv => $"{kv.Key}→{kv.Value}")));
 
@@ -135,13 +135,17 @@ public sealed class RenderSiteCommand
         }
     }
 
-    private Dictionary<string, string> LoadPhaseByVersion(IReadOnlyList<PredictionRow> predictions)
+    private Dictionary<string, string> LoadPhaseByVersion(
+        IReadOnlyList<PredictionRow> predictions,
+        IReadOnlyList<SitePages.PrecipForecastPoint> precip)
     {
         // Only the versions that actually produced predictions are worth reading.
         // Missing training_metadata.json is non-fatal — the caller treats empty phase
-        // as "other" and renders the row outside the 2b/2c charts.
+        // as "other" and renders the row outside the 2b/2c or 3a/3c charts.
         var modelsRoot = Path.Combine("data", "models");
         var phases = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        // Temperature: flat tree data/models/temperature/{version}/.
         foreach (var v in predictions.Select(p => p.ModelVersion).Distinct())
         {
             try
@@ -156,9 +160,33 @@ public sealed class RenderSiteCommand
             }
             catch (Exception ex)
             {
-                _log.LogWarning("Phase lookup failed for {Version}: {Msg}", v, ex.Message);
+                _log.LogWarning("Phase lookup failed for temperature {Version}: {Msg}", v, ex.Message);
             }
         }
+
+        // Precipitation: per-station tree data/models/precipitation/{station}/{version}/.
+        // Same version string can recur across stations (e.g. v..._phase3c at all three
+        // stations), but the Phase is the same — probing any one station that produced
+        // the version is enough, so we iterate distinct (station, version) pairs and the
+        // later write just overwrites with the identical value.
+        foreach (var (station, version) in precip.Select(p => (p.Station, p.Version)).Distinct())
+        {
+            try
+            {
+                var dir = Path.Combine(modelsRoot, "precipitation", station, version);
+                if (!Directory.Exists(dir)) continue;
+                var metadataPath = Path.Combine(dir, ModelArtifact.TrainingMetadataFileName);
+                if (!File.Exists(metadataPath)) continue;
+                var metadata = ModelArtifact.LoadTrainingMetadata(dir);
+                if (!string.IsNullOrWhiteSpace(metadata.Phase))
+                    phases[version] = metadata.Phase;
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning("Phase lookup failed for precipitation {Station}/{Version}: {Msg}", station, version, ex.Message);
+            }
+        }
+
         return phases;
     }
 
