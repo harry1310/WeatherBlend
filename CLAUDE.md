@@ -42,8 +42,9 @@ dotnet run --project src/WeatherBlend -- train --target temperature # phase 2 st
 dotnet run --project src/WeatherBlend -- evaluate                   # phase 2 stub
 ```
 
-`backfill --source` accepts `forecasts | era5 | metar | all`. `collect` is what
-Task Scheduler should fire on a cycle (currently every 3h per README; 6h is also reasonable).
+`backfill --source` accepts `previous-runs | era5 | metar | rainfall | all`. `collect`
+is what Task Scheduler should fire on a cycle (currently every 3h per README; 6h is
+also reasonable).
 
 ## Phased roadmap
 

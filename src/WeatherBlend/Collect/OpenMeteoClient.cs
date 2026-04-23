@@ -9,16 +9,15 @@ namespace WeatherBlend.Collect;
 /// <summary>
 /// Fetches forecasts from Open-Meteo.
 ///
-/// Live endpoint:      https://api.open-meteo.com/v1/forecast
-/// Historical forecast: https://historical-forecast-api.open-meteo.com/v1/forecast
+/// Live endpoint:        https://api.open-meteo.com/v1/forecast
+/// Previous Runs:        https://previous-runs-api.open-meteo.com/v1/forecast
 ///
-/// The historical endpoint returns past model runs (as they were issued)
-/// and is what we use for backfill. Both endpoints share a schema.
+/// The Previous Runs endpoint backs all training data (proper per-lead 24..168h
+/// buckets via offset_day rows). The live endpoint backs the cycle collector.
 /// </summary>
 public sealed class OpenMeteoClient
 {
     private const string LiveBase = "https://api.open-meteo.com/v1/forecast";
-    private const string HistoricalBase = "https://historical-forecast-api.open-meteo.com/v1/forecast";
     private const string PreviousRunsBase = "https://previous-runs-api.open-meteo.com/v1/forecast";
     private const string MetadataBase = "https://api.open-meteo.com/data";
 
@@ -60,18 +59,8 @@ public sealed class OpenMeteoClient
     {
         var reported = await GetReportedCycleAsync(modelId, ct);
         return await FetchAsync(LiveBase, location, modelId, variables,
-            forecastDays, null, null, isHistorical: false, reported, ct);
+            forecastDays, null, null, reported, ct);
     }
-
-    public Task<List<ForecastRow>> FetchHistoricalAsync(
-        LocationConfig location,
-        string modelId,
-        IEnumerable<string> variables,
-        DateOnly startDate,
-        DateOnly endDate,
-        CancellationToken ct)
-        => FetchAsync(HistoricalBase, location, modelId, variables,
-            null, startDate, endDate, isHistorical: true, reportedRunTime: null, ct);
 
     /// <summary>
     /// Fetches historical forecasts from Open-Meteo's Previous Runs API. The endpoint
@@ -259,7 +248,6 @@ public sealed class OpenMeteoClient
         int? forecastDays,
         DateOnly? startDate,
         DateOnly? endDate,
-        bool isHistorical,
         DateTime? reportedRunTime,
         CancellationToken ct)
     {
@@ -288,14 +276,13 @@ public sealed class OpenMeteoClient
         await using var stream = await resp.Content.ReadAsStreamAsync(ct);
         using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
 
-        return Parse(doc.RootElement, location.Name, modelId, isHistorical, reportedRunTime);
+        return Parse(doc.RootElement, location.Name, modelId, reportedRunTime);
     }
 
     internal static List<ForecastRow> Parse(
         JsonElement root,
         string locationName,
         string modelId,
-        bool isHistorical,
         DateTime? reportedRunTime = null)
     {
         if (!root.TryGetProperty("hourly", out var hourly))
@@ -332,28 +319,20 @@ public sealed class OpenMeteoClient
         var vis   = Col("visibility");
 
         // Run-time strategy (see Models/ForecastRow.RunTimeSource for canonical values):
-        //   - Historical endpoint always synthesises: API returns best-available per
-        //     valid-time, not a specific run. RunTime = midnight of valid day, so
-        //     LeadHours = hour-of-day [0..23] and partitions split cleanly by valid date.
-        //   - Live endpoint: if caller supplied a reportedRunTime (from the model's
-        //     /data/{model}/static/meta.json `last_run_initialisation_time`), use it
-        //     and tag "reported". Otherwise fall back to wall-clock-floored-to-hour
-        //     and tag "synthesised" (older behaviour; rows a few hours old land with
-        //     negative LeadHours, filter WHERE LeadHours>=0 for analysis).
-        var liveRunTime = isHistorical
-            ? default
-            : (reportedRunTime ?? NowUtcFloorToHour());
-
-        string runTimeSource;
-        if (isHistorical) runTimeSource = RunTimeSources.Synthesised;
-        else if (reportedRunTime.HasValue) runTimeSource = RunTimeSources.Reported;
-        else runTimeSource = RunTimeSources.Synthesised;
+        // Live endpoint: if the caller supplied a reportedRunTime (from the model's
+        // /data/{model}/static/meta.json `last_run_initialisation_time`), use it and
+        // tag "reported". Otherwise fall back to wall-clock-floored-to-hour and tag
+        // "synthesised" — rows a few hours old land with negative LeadHours, so
+        // filter WHERE LeadHours>=0 for analysis.
+        var runTime = reportedRunTime ?? NowUtcFloorToHour();
+        var runTimeSource = reportedRunTime.HasValue
+            ? RunTimeSources.Reported
+            : RunTimeSources.Synthesised;
 
         var rows = new List<ForecastRow>(times.Length);
         for (int i = 0; i < times.Length; i++)
         {
             var valid = times[i];
-            var runTime = isHistorical ? valid.Date : liveRunTime;
             var lead = (int)Math.Round((valid - runTime).TotalHours);
             rows.Add(new ForecastRow
             {

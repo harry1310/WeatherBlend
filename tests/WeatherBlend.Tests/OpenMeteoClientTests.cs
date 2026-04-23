@@ -14,32 +14,6 @@ public class OpenMeteoClientTests
         => JsonDocument.Parse(json).RootElement;
 
     [Fact]
-    public void Parse_historical_sets_run_time_to_midnight_of_valid_day_and_lead_to_hour()
-    {
-        var json = """
-        {
-          "hourly": {
-            "time": ["2025-06-10T00:00","2025-06-10T06:00","2025-06-10T23:00"],
-            "temperature_2m": [10.0, 12.5, 11.0]
-          }
-        }
-        """;
-
-        var rows = OpenMeteoClient.Parse(Payload(json), Loc, Model, isHistorical: true);
-
-        rows.Should().HaveCount(3);
-        foreach (var r in rows)
-        {
-            r.RunTimeUtc.Should().Be(new DateTime(2025, 6, 10, 0, 0, 0, DateTimeKind.Utc));
-            r.RunTimeUtc.Kind.Should().Be(DateTimeKind.Utc);
-            r.ValidTimeUtc.Kind.Should().Be(DateTimeKind.Utc);
-        }
-        rows[0].LeadHours.Should().Be(0);
-        rows[1].LeadHours.Should().Be(6);
-        rows[2].LeadHours.Should().Be(23);
-    }
-
-    [Fact]
     public void Parse_maps_temperature_and_other_columns()
     {
         var json = """
@@ -60,7 +34,7 @@ public class OpenMeteoClientTests
         }
         """;
 
-        var rows = OpenMeteoClient.Parse(Payload(json), Loc, Model, isHistorical: true);
+        var rows = OpenMeteoClient.Parse(Payload(json), Loc, Model);
 
         rows.Should().HaveCount(1);
         var r = rows[0];
@@ -90,7 +64,7 @@ public class OpenMeteoClientTests
         }
         """;
 
-        var rows = OpenMeteoClient.Parse(Payload(json), Loc, Model, isHistorical: true);
+        var rows = OpenMeteoClient.Parse(Payload(json), Loc, Model);
 
         rows.Should().HaveCount(2);
         rows[0].Temperature2m.Should().BeNull();
@@ -102,7 +76,7 @@ public class OpenMeteoClientTests
     {
         var json = """{ "latitude": 50.5, "longitude": -3.7 }""";
 
-        var rows = OpenMeteoClient.Parse(Payload(json), Loc, Model, isHistorical: true);
+        var rows = OpenMeteoClient.Parse(Payload(json), Loc, Model);
 
         rows.Should().BeEmpty();
     }
@@ -120,7 +94,7 @@ public class OpenMeteoClientTests
         }
         """;
 
-        var rows = OpenMeteoClient.Parse(Payload(json), Loc, Model, isHistorical: true);
+        var rows = OpenMeteoClient.Parse(Payload(json), Loc, Model);
 
         rows.Should().HaveCount(2);
         rows.All(r => r.Temperature2m is null).Should().BeTrue();
@@ -129,18 +103,10 @@ public class OpenMeteoClientTests
     }
 
     [Fact]
-    public void Parse_historical_tags_run_time_source_synthesised()
-    {
-        var json = """{ "hourly": { "time": ["2025-06-10T06:00"], "temperature_2m": [12.0] } }""";
-        var rows = OpenMeteoClient.Parse(Payload(json), Loc, Model, isHistorical: true);
-        rows.Single().RunTimeSource.Should().Be(WeatherBlend.Models.RunTimeSources.Synthesised);
-    }
-
-    [Fact]
     public void Parse_live_without_reported_time_tags_synthesised()
     {
         var json = """{ "hourly": { "time": ["2025-06-10T06:00"], "temperature_2m": [12.0] } }""";
-        var rows = OpenMeteoClient.Parse(Payload(json), Loc, Model, isHistorical: false);
+        var rows = OpenMeteoClient.Parse(Payload(json), Loc, Model);
         rows.Single().RunTimeSource.Should().Be(WeatherBlend.Models.RunTimeSources.Synthesised);
     }
 
@@ -157,7 +123,7 @@ public class OpenMeteoClientTests
         }
         """;
 
-        var rows = OpenMeteoClient.Parse(Payload(json), Loc, Model, isHistorical: false, reportedRunTime: reported);
+        var rows = OpenMeteoClient.Parse(Payload(json), Loc, Model, reportedRunTime: reported);
 
         rows.Should().HaveCount(3);
         foreach (var r in rows)
@@ -300,7 +266,7 @@ public class OpenMeteoClientTests
         }
         """;
 
-        var rows = OpenMeteoClient.Parse(Payload(json), Loc, Model, isHistorical: false);
+        var rows = OpenMeteoClient.Parse(Payload(json), Loc, Model);
 
         rows.Should().HaveCount(3);
         var r0 = rows[0].RunTimeUtc;

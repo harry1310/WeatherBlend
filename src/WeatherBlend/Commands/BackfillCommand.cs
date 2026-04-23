@@ -7,17 +7,16 @@ namespace WeatherBlend.Commands;
 
 /// <summary>
 /// Backfill historical data from one or more sources:
-///   forecasts     - Open-Meteo historical-forecast API (per model, monthly chunks)
 ///   previous-runs - Open-Meteo Previous Runs API (per model, monthly chunks):
-///                   same six models, but returns separate columns per 24h-lead bucket
-///                   (1..7 days), so we get real per-lead training signal at 24-167h.
-///                   Rows tagged RunTimeSource=offset_day, LeadHours in {24,48,...,168}.
+///                   returns separate columns per 24h-lead bucket (1..7 days), so we
+///                   get real per-lead training signal at 24-167h. Rows tagged
+///                   RunTimeSource=offset_day, LeadHours in {24,48,...,168}.
 ///   era5          - Open-Meteo ERA5 reanalysis archive (gapless training truth)
 ///   metar         - OGIMET historical METAR archive (verification truth, gappy)
 ///   rainfall      - EA Hydrology 15-min rainfall totals (precip verification truth)
 ///   all           - everything above
 ///
-/// Forecasts/previous-runs/ERA5 hit Open-Meteo (generous limits, 2s polite delay).
+/// Previous-runs/ERA5 hit Open-Meteo (generous limits, 2s polite delay).
 /// METAR hits OGIMET, which is rate-limited to ~5s between requests; one
 /// request per (station, day). For 3 years × 2 stations that's ~2.5 hours.
 /// </summary>
@@ -54,52 +53,18 @@ public sealed class BackfillCommand
         var src = source.ToLowerInvariant();
         var errors = 0;
 
-        if (src is "forecasts" or "all")     errors += await BackfillForecastsAsync(start, end, ct);
         if (src is "previous-runs" or "all") errors += await BackfillPreviousRunsAsync(start, end, ct);
         if (src is "era5" or "all")          errors += await BackfillEra5Async(start, end, ct);
         if (src is "metar" or "all")         errors += await BackfillMetarAsync(start, end, ct);
         if (src is "rainfall" or "all")      errors += await BackfillRainfallAsync(start, end, ct);
 
-        if (src is not ("forecasts" or "previous-runs" or "era5" or "metar" or "rainfall" or "all"))
+        if (src is not ("previous-runs" or "era5" or "metar" or "rainfall" or "all"))
         {
-            _log.LogError("Unknown source '{Source}'. Use: forecasts | previous-runs | era5 | metar | rainfall | all", source);
+            _log.LogError("Unknown source '{Source}'. Use: previous-runs | era5 | metar | rainfall | all", source);
             return 2;
         }
 
         return errors == 0 ? 0 : 1;
-    }
-
-    // ---- Forecasts (per model, monthly chunks) -----------------------------------
-
-    private async Task<int> BackfillForecastsAsync(DateOnly start, DateOnly end, CancellationToken ct)
-    {
-        var errors = 0;
-        foreach (var model in _cfg.Models)
-        {
-            var cursor = start;
-            while (cursor <= end)
-            {
-                var chunkEnd = cursor.AddMonths(1).AddDays(-1);
-                if (chunkEnd > end) chunkEnd = end;
-                try
-                {
-                    var rows = await _forecasts.FetchHistoricalAsync(
-                        _cfg.Location, model.Id, _cfg.Variables, cursor, chunkEnd, ct);
-                    await ParquetWriter.WriteHistoricalForecastsAsync(_cfg.Storage.ForecastsPath, rows, ct);
-                    _log.LogInformation("  forecasts/{Model} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd}: {Rows} rows",
-                        model.Id, cursor, chunkEnd, rows.Count);
-                }
-                catch (Exception ex)
-                {
-                    errors++;
-                    _log.LogError(ex, "  forecasts/{Model} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} FAILED",
-                        model.Id, cursor, chunkEnd);
-                }
-                await Task.Delay(TimeSpan.FromSeconds(2), ct);
-                cursor = chunkEnd.AddDays(1);
-            }
-        }
-        return errors;
     }
 
     // ---- Previous Runs (per model, monthly chunks) -------------------------------

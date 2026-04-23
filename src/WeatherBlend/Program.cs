@@ -140,9 +140,9 @@ public static class Program
             getDefaultValue: () => DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-1)));
         var sourceOpt = new Option<string>(
             name: "--source",
-            description: "forecasts | previous-runs | era5 | metar | rainfall | all",
+            description: "previous-runs | era5 | metar | rainfall | all",
             getDefaultValue: () => "all");
-        var backfill = new Command("backfill", "Fetch historical data (forecasts, ERA5, OGIMET METAR, EA rainfall)")
+        var backfill = new Command("backfill", "Fetch historical data (previous-runs forecasts, ERA5, OGIMET METAR, EA rainfall)")
             { sourceOpt, startOpt, endOpt };
         backfill.SetHandler(async (source, start, end) =>
         {
