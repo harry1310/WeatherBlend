@@ -1,11 +1,13 @@
 name: predict
 
-# Daily: collect a fresh forecast cycle, run the blender, push predictions to R2.
-# 08:00 UTC picks up the overnight 00z ECMWF/GFS/ICON/GEM runs plus UKMO's ~02z,
-# matching the PredictCommand backfill anchor.
+# 4× daily: run the blender against the latest collected forecasts, push predictions to R2.
+# 02:45, 08:45, 14:45, 20:45 UTC — 30 min after each `collect` cron (:15) so predict picks
+# up the NWP run that collect just pushed. The `weatherblend-data` concurrency group
+# serialises against any in-flight collect, so predict never races a mid-flight push.
+# Each run produces 3 rows (lead 24/48/72) anchored to UtcNow truncated to top-of-hour.
 on:
   schedule:
-    - cron: "5 8 * * *"
+    - cron: "45 2,8,14,20 * * *"
   workflow_dispatch:
     inputs:
       for_date:
@@ -51,13 +53,20 @@ jobs:
           acl = private
           EOF
 
-      - name: Pull model artefacts + existing predictions from R2
+      - name: Pull model artefacts, forecasts + existing predictions from R2
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
           # Blender artefacts — predict can't run without the per-lead zips + MANIFEST.
           mkdir -p data/models
           rclone copy "r2:${R2_BUCKET}/data/models" ./data/models --fast-list --transfers 16 --checkers 32 --progress
+
+          # Forecasts — produced by the `collect` workflow on its own cron (:15),
+          # consumed here 30 min later. Concurrency group `weatherblend-data` guarantees
+          # predict queues behind any still-running collect, so the pull sees the pushed
+          # state. We no longer re-run collect inside this workflow.
+          mkdir -p data/forecasts
+          rclone copy "r2:${R2_BUCKET}/data/forecasts" ./data/forecasts --fast-list --transfers 16 --checkers 32 --progress
 
           # Existing predictions for today's partition (read-modify-write dedupe
           # on PredictCommand side needs the current file if it exists). Pulling
@@ -68,11 +77,6 @@ jobs:
       - name: Build
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
 
-      - name: Collect latest forecasts
-        # Predict needs fresh live-forecast rows covering +24/+48/+72h. `collect`
-        # writes run-date partitioned files whose ValidTimeUtc columns extend 168h.
-        run: dotnet run --project src/WeatherBlend --no-build -c Release -- collect
-
       - name: Predict
         run: |
           FOR_DATE="${{ github.event.inputs.for_date }}"
@@ -82,14 +86,13 @@ jobs:
             dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature
           fi
 
-      - name: Push predictions + refreshed forecasts to R2
+      - name: Push predictions to R2
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
-          # copy (not sync) — additive only, never deletes remote files. Keeps
-          # both new forecast rows and new prediction rows in lock-step.
+          # copy (not sync) — additive only, never deletes remote files. Forecasts
+          # are no longer modified here (the collect workflow owns that subtree).
           rclone copy ./data/predictions "r2:${R2_BUCKET}/data/predictions" --fast-list --transfers 16 --checkers 32 --progress
-          rclone copy ./data/forecasts   "r2:${R2_BUCKET}/data/forecasts"   --fast-list --transfers 16 --checkers 32 --progress
 
       - name: Upload logs as artifact
         if: always()
