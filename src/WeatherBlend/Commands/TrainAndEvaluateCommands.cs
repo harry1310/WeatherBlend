@@ -219,12 +219,14 @@ public sealed class TrainCommand
             primaryStation = match.Name;
         }
 
-        // Each station gets its own training artefact so we can compare blenders
-        // without them clobbering one another. Station slug goes into the version suffix.
-        var stationSlug = Slugify(primaryStation);
+        // Each station gets its own subtree under data/models/precipitation/{station}/v{ts}/
+        // so the manifest can track a separate "current" pointer per truth source.
+        // Slug is prefixed with the provider ("ea_") so a future Met Office Princetown
+        // collector can live alongside the EA one without colliding.
+        var stationSlug = "ea_" + Slugify(primaryStation);
         var now = DateTime.UtcNow;
         var modelsRoot = Path.Combine("data", "models");
-        var versionDir = ModelArtifact.BuildVersionDir(modelsRoot, "precipitation", now, stationSlug);
+        var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "precipitation", stationSlug, now);
         var versionName = Path.GetFileName(versionDir);
 
         var hp = new PrecipOccurrenceTrainer.Hyperparameters();
@@ -235,6 +237,7 @@ public sealed class TrainCommand
 
         var perLead = new Dictionary<string, ModelArtifact.PerLeadStats>();
         var importanceByLead = new Dictionary<int, IEnumerable<(string Name, double Gain)>>();
+        PrecipClimatology? climatology = null;
 
         foreach (var lead in leads)
         {
@@ -262,6 +265,10 @@ public sealed class TrainCommand
             }
 
             var ds = PrecipDataset.Split(rows);
+            // Climatology is a base-rate lookup over (month, hour) and so is essentially
+            // identical across leads — one copy per version is enough. Build from the
+            // first lead's train partition; predict/verify will reuse it.
+            climatology ??= PrecipClimatology.BuildFromTraining(ds.Train);
             _log.LogInformation("Split → train {TN} (wet {TW}), val {VN} (wet {VW}), test {EN} (wet {EW})",
                 ds.Train.Count, ds.TrainWet,
                 ds.Val.Count,   ds.ValWet,
@@ -282,8 +289,8 @@ public sealed class TrainCommand
             var bestValBrier = PrecipMetrics.Brier(
                 PrecipBaselines.SingleModelWet(ds.Val, best),
                 ds.Val.Select(r => r.WetBinary ? 1.0 : 0.0).ToArray());
-            var climatology = PrecipBaselines.Climatology(ds.Train, ds.Test);
-            var climBrier = PrecipMetrics.Brier(climatology, truthTest);
+            var climPred = PrecipBaselines.Climatology(ds.Train, ds.Test);
+            var climBrier = PrecipMetrics.Brier(climPred, truthTest);
             var bss = PrecipMetrics.BrierSkillScore(blendBrier, climBrier);
 
             // Frequency bias at 0.5 decision threshold — quick sanity check that
@@ -321,6 +328,10 @@ public sealed class TrainCommand
 
         ModelArtifact.SaveFeatureSchema(versionDir, PrecipFeatureBuilder.OccurrenceFeatureNames);
         ModelArtifact.SavePerLeadFeatureImportance(versionDir, importanceByLead);
+        // Persist climatology alongside the model zips so predict/verify can reach
+        // for a P(wet) baseline without re-scanning the training rainfall tree.
+        if (climatology is not null)
+            climatology.SaveTo(Path.Combine(versionDir, ModelArtifact.ClimatologyFileName));
 
         var metadata = new ModelArtifact.TrainingMetadata
         {
@@ -342,7 +353,7 @@ public sealed class TrainCommand
             },
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
-        ModelArtifact.UpdateManifest(modelsRoot, "precipitation", versionName);
+        ModelArtifact.UpdateStationManifest(modelsRoot, "precipitation", stationSlug, versionName);
 
         _log.LogInformation("Phase 3a artefacts → {Dir}", versionDir);
         _log.LogInformation("Summary — {Summary}",

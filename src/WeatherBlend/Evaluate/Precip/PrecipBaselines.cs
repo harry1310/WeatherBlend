@@ -45,23 +45,10 @@ public static class PrecipBaselines
         IReadOnlyList<PrecipTrainingRow> trainRows,
         IReadOnlyList<PrecipTrainingRow> targetRows)
     {
-        var sums = new Dictionary<(int Month, int Hour), (int Wet, int N)>();
-        foreach (var r in trainRows)
-        {
-            var k = (r.ValidTimeUtc.Month, r.ValidTimeUtc.Hour);
-            sums.TryGetValue(k, out var cur);
-            sums[k] = (cur.Wet + (r.WetBinary ? 1 : 0), cur.N + 1);
-        }
-        var means = sums.ToDictionary(kv => kv.Key, kv => (double)kv.Value.Wet / kv.Value.N);
-        var globalMean = trainRows.Count == 0 ? double.NaN
-            : (double)trainRows.Count(r => r.WetBinary) / trainRows.Count;
-
+        var clim = PrecipClimatology.BuildFromTraining(trainRows);
         var p = new double[targetRows.Count];
         for (int i = 0; i < targetRows.Count; i++)
-        {
-            var k = (targetRows[i].ValidTimeUtc.Month, targetRows[i].ValidTimeUtc.Hour);
-            p[i] = means.TryGetValue(k, out var m) ? m : globalMean;
-        }
+            p[i] = clim.Predict(targetRows[i].ValidTimeUtc);
         return p;
     }
 

@@ -170,9 +170,10 @@ def compute_baseline_metrics(train_df: pd.DataFrame, test_df: pd.DataFrame) -> d
     return rows
 
 
-def station_section(station: str, station_slug: str, version_dirs: list[Path]) -> str:
-    # Newest version with this slug.
-    matches = [d for d in version_dirs if d.name.endswith("_" + station_slug)]
+def station_section(station: str, station_slug: str) -> str:
+    # Newest v… directory under data/models/precipitation/{station_slug}/.
+    station_root = MODELS_ROOT / station_slug
+    matches = sorted(station_root.glob("v*")) if station_root.exists() else []
     if not matches:
         return f"### {station}\n\n(No trained artefact found for this station.)\n"
     latest = sorted(matches, key=lambda p: p.name)[-1]
@@ -332,10 +333,9 @@ def class_balance_section() -> str:
 
 
 def main():
-    versions = sorted([p for p in MODELS_ROOT.iterdir() if p.is_dir()])
-    bellever_ver = [v for v in versions if v.name.endswith("_bellever_dartmoor")]
-    princetown_ver = [v for v in versions if v.name.endswith("_princetown")]
-    if not bellever_ver or not princetown_ver:
+    bellever_root = MODELS_ROOT / "ea_bellever_dartmoor"
+    princetown_root = MODELS_ROOT / "ea_princetown"
+    if not bellever_root.exists() or not princetown_root.exists():
         print("Missing station artefacts — run `train --target precipitation --station <name>` first.", file=sys.stderr)
         sys.exit(2)
 
@@ -372,8 +372,8 @@ def main():
 
     parts.append("## Results per station")
     parts.append("")
-    parts.append(station_section("Bellever Dartmoor", "bellever_dartmoor", versions))
-    parts.append(station_section("Princetown", "princetown", versions))
+    parts.append(station_section("Bellever Dartmoor", "ea_bellever_dartmoor"))
+    parts.append(station_section("Princetown", "ea_princetown"))
 
     parts.append("## Deviations from brief")
     parts.append("")

@@ -22,13 +22,32 @@ public static class ModelArtifact
     public const string FeatureSchemaFileName = "feature_schema.json";
     public const string TrainingMetadataFileName = "training_metadata.json";
     public const string FeatureImportanceFileName = "feature_importance.json";
+    public const string ClimatologyFileName = "climatology.json";
 
     /// <summary>Per-lead artifact name, e.g. LeadModelFileName(24) → "lead_24h.zip".</summary>
     public static string LeadModelFileName(int leadHours) => $"lead_{leadHours}h.zip";
 
+    /// <summary>
+    /// MANIFEST.json for a target. Temperature uses the flat
+    /// <see cref="Current"/>/<see cref="Versions"/> fields; precipitation uses
+    /// <see cref="Stations"/> (one entry per truth source, e.g. <c>ea_bellever_dartmoor</c>)
+    /// because each station is a distinct blender. Exactly one of the two sides
+    /// is populated for a given target; the other stays at its default.
+    /// </summary>
     public sealed class Manifest
     {
         public string Target { get; set; } = "";
+
+        // Flat layout (temperature).
+        public string Current { get; set; } = "";
+        public List<string> Versions { get; set; } = new();
+
+        // Per-station layout (precipitation).
+        public Dictionary<string, StationEntry> Stations { get; set; } = new();
+    }
+
+    public sealed class StationEntry
+    {
         public string Current { get; set; } = "";
         public List<string> Versions { get; set; } = new();
     }
@@ -84,6 +103,17 @@ public static class ModelArtifact
         var ts = nowUtc.ToString("yyyy-MM-dd_HHmmss");
         var name = string.IsNullOrEmpty(suffix) ? $"v{ts}" : $"v{ts}_{suffix}";
         return Path.Combine(modelsRoot, target, name).Replace('\\', '/');
+    }
+
+    /// <summary>
+    /// Station-scoped version dir: <c>{modelsRoot}/{target}/{station}/v{ts}/</c>.
+    /// Used by precipitation so per-station blenders live in parallel trees rather
+    /// than sharing a flat folder with station-suffixed version names.
+    /// </summary>
+    public static string BuildStationVersionDir(string modelsRoot, string target, string station, DateTime nowUtc)
+    {
+        var ts = nowUtc.ToString("yyyy-MM-dd_HHmmss");
+        return Path.Combine(modelsRoot, target, station, $"v{ts}").Replace('\\', '/');
     }
 
     /// <summary>Save one pipeline for a specific lead bucket.</summary>
@@ -209,6 +239,64 @@ public static class ModelArtifact
         if (string.IsNullOrWhiteSpace(manifest.Current))
             throw new InvalidOperationException("Manifest has no current pointer.");
         return Path.Combine(dir, manifest.Current);
+    }
+
+    /// <summary>
+    /// Update the per-station entry in the target manifest. Atomic write via
+    /// temp+move. Safe to call concurrently-ish (not truly thread-safe, but
+    /// training runs are serialised).
+    /// </summary>
+    public static void UpdateStationManifest(string modelsRoot, string target, string station, string versionDirName)
+    {
+        var dir = Path.Combine(modelsRoot, target);
+        Directory.CreateDirectory(dir);
+        var manifestPath = Path.Combine(dir, ManifestFileName);
+
+        var manifest = File.Exists(manifestPath)
+            ? ReadJson<Manifest>(manifestPath) ?? new Manifest()
+            : new Manifest();
+
+        manifest.Target = target;
+        if (!manifest.Stations.TryGetValue(station, out var entry))
+        {
+            entry = new StationEntry();
+            manifest.Stations[station] = entry;
+        }
+        entry.Current = versionDirName;
+        if (!entry.Versions.Contains(versionDirName))
+            entry.Versions.Add(versionDirName);
+
+        var tmp = manifestPath + ".tmp";
+        WriteJson(tmp, manifest);
+        if (File.Exists(manifestPath)) File.Delete(manifestPath);
+        File.Move(tmp, manifestPath);
+    }
+
+    /// <summary>
+    /// Resolve a per-station version dir: <c>"current"</c> reads the station's
+    /// current pointer from MANIFEST.json; any other string is treated as an
+    /// explicit <c>v…</c> folder name. Returned path always points inside the
+    /// <c>{target}/{station}/</c> subtree.
+    /// </summary>
+    public static string ResolveStationVersionDir(string modelsRoot, string target, string station, string versionOrCurrent)
+    {
+        var stationDir = Path.Combine(modelsRoot, target, station);
+        if (!string.Equals(versionOrCurrent, "current", StringComparison.OrdinalIgnoreCase))
+            return Path.Combine(stationDir, versionOrCurrent);
+
+        var manifest = ReadJson<Manifest>(Path.Combine(modelsRoot, target, ManifestFileName))
+            ?? throw new InvalidOperationException($"No manifest for target '{target}' — train a model first.");
+        if (!manifest.Stations.TryGetValue(station, out var entry) || string.IsNullOrWhiteSpace(entry.Current))
+            throw new InvalidOperationException($"Manifest has no current pointer for station '{station}'.");
+        return Path.Combine(stationDir, entry.Current);
+    }
+
+    /// <summary>Stations currently recorded in the manifest for this target. Empty when the manifest is absent or flat-layout.</summary>
+    public static IReadOnlyList<string> ListStations(string modelsRoot, string target)
+    {
+        var manifest = ReadJson<Manifest>(Path.Combine(modelsRoot, target, ManifestFileName));
+        if (manifest is null) return Array.Empty<string>();
+        return manifest.Stations.Keys.OrderBy(s => s, StringComparer.Ordinal).ToArray();
     }
 
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
