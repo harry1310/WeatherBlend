@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
 using WeatherBlend.Models;
 using WeatherBlend.Site;
+using WeatherBlend.Train;
 
 namespace WeatherBlend.Commands;
 
@@ -69,6 +70,17 @@ public sealed class RenderSiteCommand
 
         var rolling = ComputeRollingMae(predictions, truth, rollingWindowDays);
 
+        var phaseByVersion = LoadPhaseByVersion(predictions);
+        _log.LogInformation("Phase map: {Entries}",
+            string.Join(", ", phaseByVersion.Select(kv => $"{kv.Key}→{kv.Value}")));
+
+        var rainfall = LoadRainfallTruth(windowStart, now, precip, ct);
+        _log.LogInformation("Rainfall truth: {N} stations loaded.", rainfall.Count);
+
+        var currentVersion = LoadCurrentTemperatureVersion();
+        _log.LogInformation("Champion (temperature): {Version}",
+            string.IsNullOrEmpty(currentVersion) ? "(none)" : currentVersion);
+
         var input = new SitePages.SiteInputs
         {
             LocationDisplay = string.IsNullOrWhiteSpace(_cfg.Location.DisplayName) ? _cfg.Location.Name : _cfg.Location.DisplayName,
@@ -84,6 +96,9 @@ public sealed class RenderSiteCommand
             RollingMae = rolling,
             PrecipPredictions = precip,
             DryWindowPredictions = dryWindow,
+            PhaseByVersion = phaseByVersion,
+            RainfallTruth = rainfall,
+            CurrentVersion = currentVersion,
         };
 
         Directory.CreateDirectory(outputDir);
@@ -92,11 +107,157 @@ public sealed class RenderSiteCommand
         await File.WriteAllTextAsync(Path.Combine(outputDir, "precipitation.html"),SitePages.RenderPrecipitation(input), ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "dry-window.html"),   SitePages.RenderDryWindow(input),     ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "verify.html"),       SitePages.RenderVerify(input),        ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "forecast-vs-truth.html"), SitePages.RenderForecastVsTruth(input), ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "about.html"),        SitePages.RenderAbout(input),         ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "styles.css"),        SitePages.Stylesheet(),               ct);
 
-        _log.LogInformation("Site rendered → {Dir} ({Files} files)", outputDir, 7);
+        _log.LogInformation("Site rendered → {Dir} ({Files} files)", outputDir, 8);
         return 0;
+    }
+
+    private string LoadCurrentTemperatureVersion()
+    {
+        // Reads MANIFEST.json directly rather than calling ResolveVersionDir("current"),
+        // which throws when the manifest is absent — on a fresh checkout the home page
+        // should still render, just without a champion filter.
+        var manifestPath = Path.Combine("data", "models", "temperature", ModelArtifact.ManifestFileName);
+        if (!File.Exists(manifestPath)) return "";
+        try
+        {
+            var json = File.ReadAllText(manifestPath);
+            var manifest = System.Text.Json.JsonSerializer.Deserialize<ModelArtifact.Manifest>(json);
+            return manifest?.Current ?? "";
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning("Failed to read temperature manifest: {Msg}", ex.Message);
+            return "";
+        }
+    }
+
+    private Dictionary<string, string> LoadPhaseByVersion(IReadOnlyList<PredictionRow> predictions)
+    {
+        // Only the versions that actually produced predictions are worth reading.
+        // Missing training_metadata.json is non-fatal — the caller treats empty phase
+        // as "other" and renders the row outside the 2b/2c charts.
+        var modelsRoot = Path.Combine("data", "models");
+        var phases = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var v in predictions.Select(p => p.ModelVersion).Distinct())
+        {
+            try
+            {
+                var dir = ModelArtifact.ResolveVersionDir(modelsRoot, "temperature", v);
+                if (!Directory.Exists(dir)) continue;
+                var metadataPath = Path.Combine(dir, ModelArtifact.TrainingMetadataFileName);
+                if (!File.Exists(metadataPath)) continue;
+                var metadata = ModelArtifact.LoadTrainingMetadata(dir);
+                if (!string.IsNullOrWhiteSpace(metadata.Phase))
+                    phases[v] = metadata.Phase;
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning("Phase lookup failed for {Version}: {Msg}", v, ex.Message);
+            }
+        }
+        return phases;
+    }
+
+    private IReadOnlyDictionary<string, IReadOnlyDictionary<DateTime, double>> LoadRainfallTruth(
+        DateTime start, DateTime end,
+        IReadOnlyList<SitePages.PrecipForecastPoint> precip,
+        CancellationToken ct)
+    {
+        // Only load truth for stations that actually produced precip predictions in the
+        // window. Mirrors PrecipVerifyCommand's slug → StationName mapping so the filter
+        // resolves to the exact StationName stored in the truth parquet.
+        var stations = precip.Select(p => p.Station).Distinct().ToList();
+        if (stations.Count == 0)
+            return new Dictionary<string, IReadOnlyDictionary<DateTime, double>>();
+
+        var stationNamesBySlug = _cfg.Location.Rainfall.Stations.ToDictionary(
+            s => "ea_" + Slugify(s.Name),
+            s => s.Name,
+            StringComparer.OrdinalIgnoreCase);
+
+        var result = new Dictionary<string, IReadOnlyDictionary<DateTime, double>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var slug in stations)
+        {
+            if (!stationNamesBySlug.TryGetValue(slug, out var stationName))
+            {
+                _log.LogWarning("Rainfall truth: no config station for slug {Slug}.", slug);
+                result[slug] = new Dictionary<DateTime, double>();
+                continue;
+            }
+            result[slug] = QueryHourlyRainfall(stationName, start, end, ct);
+        }
+        return result;
+    }
+
+    private IReadOnlyDictionary<DateTime, double> QueryHourlyRainfall(
+        string stationName, DateTime start, DateTime end, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        var glob = Path.Combine(_cfg.Storage.RainfallPath, "**", "*.parquet")
+            .Replace('\\', '/').Replace("'", "''");
+
+        // Same 4-of-4 aggregation as PrecipVerify so a partial hour can't flip wet↔dry.
+        var sql = $@"
+SELECT date_trunc('hour', ObservedTimeUtc) AS valid_time,
+       SUM(Value15MinMm) AS mm_hour
+FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
+  AND StationName  = '{stationName.Replace("'", "''")}'
+  AND Value15MinMm IS NOT NULL
+  AND ObservedTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
+  AND ObservedTimeUtc <= TIMESTAMP '{end.AddHours(1):yyyy-MM-dd HH:mm:ss}'
+GROUP BY 1
+HAVING COUNT(*) = 4
+ORDER BY 1";
+
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+
+        var hourly = new Dictionary<DateTime, double>();
+        try
+        {
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                ct.ThrowIfCancellationRequested();
+                hourly[r.GetDateTime(0)] = r.GetDouble(1);
+            }
+        }
+        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
+        {
+            _log.LogWarning("Rainfall tree empty for {Station}.", stationName);
+        }
+        return hourly;
+    }
+
+    // Kept local (rather than importing Slugify from PrecipVerifyCommand) so this file
+    // doesn't depend on that command's internals. The rule is simple: lowercase,
+    // non-alphanumeric → underscore, collapse repeats.
+    private static string Slugify(string input)
+    {
+        var sb = new System.Text.StringBuilder(input.Length);
+        var lastWasUnderscore = false;
+        foreach (var c in input.ToLowerInvariant())
+        {
+            if (char.IsLetterOrDigit(c))
+            {
+                sb.Append(c);
+                lastWasUnderscore = false;
+            }
+            else if (!lastWasUnderscore)
+            {
+                sb.Append('_');
+                lastWasUnderscore = true;
+            }
+        }
+        return sb.ToString().Trim('_');
     }
 
     /// <summary>
