@@ -87,6 +87,86 @@ public class SitePagesTests
         result.Should().BeEmpty();
     }
 
+    [Fact]
+    public void RenderPrecipitation_renders_a_section_per_phase_present()
+    {
+        // Three predictions for one station, one per phase, all tagged via PhaseByVersion.
+        var input = MakePrecipInput(new[]
+        {
+            ("v_3a",  "3a"),
+            ("v_iso", "3a_isotonic"),
+            ("v_3c",  "3c"),
+        });
+
+        var html = SitePages.RenderPrecipitation(input);
+
+        html.Should().Contain("Phase 3a — lean (27 features)");
+        html.Should().Contain("Phase 3a_isotonic — lean + post-hoc calibration");
+        html.Should().Contain("Phase 3c — rich (55 features)");
+        // The intro paragraph names all three blenders.
+        html.Should().Contain("Phase 3a_isotonic");
+    }
+
+    [Fact]
+    public void RenderPrecipitation_buckets_version_with_no_phase_into_other()
+    {
+        // PhaseByVersion is empty so the version falls into the "other" bucket.
+        var input = MakePrecipInput(new (string, string)[] { ("v_legacy", "") });
+
+        var html = SitePages.RenderPrecipitation(input);
+
+        html.Should().Contain("Other versions");
+        // Phase-specific sections should not render when no rows match that phase.
+        html.Should().NotContain("Phase 3a_isotonic — lean + post-hoc calibration");
+        html.Should().NotContain("Phase 3c — rich (55 features)");
+    }
+
+    [Fact]
+    public void RenderPrecipitation_omits_phase_sections_with_no_rows()
+    {
+        // Only 3a_isotonic is present — neither raw 3a nor 3c sections should appear.
+        var input = MakePrecipInput(new[] { ("v_iso", "3a_isotonic") });
+
+        var html = SitePages.RenderPrecipitation(input);
+
+        html.Should().Contain("Phase 3a_isotonic — lean + post-hoc calibration");
+        html.Should().NotContain("Phase 3a — lean (27 features)");
+        html.Should().NotContain("Phase 3c — rich (55 features)");
+        html.Should().NotContain("Other versions");
+    }
+
+    private static SitePages.SiteInputs MakePrecipInput((string Version, string Phase)[] versions)
+    {
+        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
+        var validTime = generatedAt.AddHours(24);
+
+        var preds = versions
+            .Select(v => new SitePages.PrecipForecastPoint(
+                Station, v.Version, generatedAt, validTime, 24, 0.42, 0.18))
+            .ToArray();
+
+        var phaseByVersion = versions
+            .Where(v => !string.IsNullOrEmpty(v.Phase))
+            .ToDictionary(v => v.Version, v => v.Phase);
+
+        return new SitePages.SiteInputs
+        {
+            LocationDisplay = "Test",
+            Latitude = 0, Longitude = 0, ElevationMeters = 0,
+            MetarStation = "",
+            GeneratedAtUtc = generatedAt,
+            WindowStartUtc = generatedAt.AddDays(-30),
+            Predictions = Array.Empty<PredictionRow>(),
+            TruthByTime = new Dictionary<DateTime, double>(),
+            MetarByTime = Array.Empty<(DateTime, double)>(),
+            RollingMae = Array.Empty<SitePages.RollingMaePoint>(),
+            PrecipPredictions = preds,
+            PhaseByVersion = phaseByVersion,
+            DryWindowPredictions = Array.Empty<SitePages.DryWindowForecastPoint>(),
+            RainfallTruth = new Dictionary<string, IReadOnlyDictionary<DateTime, double>>(),
+        };
+    }
+
     private static Dictionary<DateTime, double> BuildHourly(DateTime day, Func<int, double> mmForHour)
     {
         var dict = new Dictionary<DateTime, double>();
