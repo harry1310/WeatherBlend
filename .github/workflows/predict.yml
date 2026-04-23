@@ -101,6 +101,20 @@ jobs:
           # Neither is fatal for the overall predict job.
           if [ -n "${code:-}" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then exit "$code"; fi
 
+      - name: Predict dry-window
+        # Runs P(∃ dry window ≥ N hours in target day) for every (station, window)
+        # in the dry_window manifest (3/4/6h × 24/48/72h leads × Bellever + Princetown).
+        # Same exit-code semantics as precipitation: 2 = no dry-window model yet,
+        # 3 = no forecast rows for targets — both non-fatal for the overall predict job.
+        run: |
+          FOR_DATE="${{ github.event.inputs.for_date }}"
+          if [ -n "$FOR_DATE" ]; then
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target dry-window --truth-station all --window all --for-date "$FOR_DATE" || code=$?
+          else
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target dry-window --truth-station all --window all || code=$?
+          fi
+          if [ -n "${code:-}" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then exit "$code"; fi
+
       - name: Push predictions to R2
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}

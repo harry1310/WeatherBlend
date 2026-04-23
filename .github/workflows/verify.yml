@@ -127,6 +127,23 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- verify $ARGS
           echo "exit=$?" >> "$GITHUB_OUTPUT"
 
+      - name: Verify dry-window
+        # Independent exit code. 30-day default window matches precip; same drift
+        # semantics. --window all walks every (station, window) entry in the
+        # dry_window manifest (Bellever + Princetown × 3/4/6h).
+        id: verify_dry_window_run
+        run: |
+          AS_OF="${{ github.event.inputs.as_of }}"
+          WINDOW="${{ github.event.inputs.window_days }}"
+          DRIFT="${{ github.event.inputs.drift }}"
+          ARGS="--target dry-window --truth-station all --window all"
+          if [ -n "$AS_OF" ]; then ARGS="$ARGS --as-of $AS_OF"; fi
+          if [ -n "$WINDOW" ]; then ARGS="$ARGS --window-days $WINDOW"; fi
+          if [ -n "$DRIFT" ]; then ARGS="$ARGS --drift $DRIFT"; fi
+          set +e
+          dotnet run --project src/WeatherBlend --no-build -c Release -- verify $ARGS
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+
       - name: Push refreshed reports to R2
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
@@ -149,6 +166,7 @@ jobs:
         run: |
           T_EXIT="${{ steps.verify_run.outputs.exit }}"
           P_EXIT="${{ steps.verify_precip_run.outputs.exit }}"
+          D_EXIT="${{ steps.verify_dry_window_run.outputs.exit }}"
           drift=0
           fail=0
           case "$T_EXIT" in
@@ -160,6 +178,11 @@ jobs:
             0) ;;
             4) echo "::warning::Precipitation drift detected — see verify report."; drift=1 ;;
             *) echo "::error::Precipitation verify step exited $P_EXIT (non-drift failure)."; fail=1 ;;
+          esac
+          case "$D_EXIT" in
+            0) ;;
+            4) echo "::warning::Dry-window drift detected — see verify report."; drift=1 ;;
+            *) echo "::error::Dry-window verify step exited $D_EXIT (non-drift failure)."; fail=1 ;;
           esac
           if [ "$drift" = "1" ]; then
             echo "**Drift detected.** See attached \`verify_*.md\` report(s)." >> "$GITHUB_STEP_SUMMARY"
