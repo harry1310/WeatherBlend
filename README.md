@@ -209,6 +209,7 @@ SELECT * FROM read_parquet(
 
 - **Phase 1:** collector, storage, status tooling, 12-month backfill. **Done.**
 - **Phase 2:** temperature blender - LightGBM per lead-time bucket, beat best single model. **Done (phase 2b, rolling verify shipped).**
+- **Phase 2c:** rich-feature temperature blender — expands from 13 to 88 features (lean + per-model dew/RH/cloud/wind/pressure secondaries + 9 cross-model aggregates). Trains via `--feature-set rich`, saves alongside 2b as a champion/challenger pair: both versions live in `MANIFEST.Active` and produce predictions every cycle; rolling verify reports a 2b-vs-2c MAE delta per lead. **Done — on held-out test, rich beats lean by 0.01–0.05°C at 24/48/72h.**
 - **Phase 3a:** precip occurrence blender. Per-station P(wet≥0.1mm/h) classifier trained on EA Hydrology gauges (Bellever, Princetown). Per-lead, same temperature pipeline. **Done — predict + verify live.**
 - **Phase 3b:** per-station dry-window classifier — P(at least one contiguous N-hour dry block in target UTC day) for N ∈ {3, 4, 6} at leads 24/48/72h. Replaces the original intensity-regressor plan after the user pivot to "is there time to walk the dog dry?". Per-station per-window LightGBM, climatology baseline, predict + verify wired into the daily/weekly CI alongside temperature + precipitation. **Done — predict + verify live.**
 - **Phase 3c:** intensity regression / quantile regressions deferred indefinitely — the dry-window framing covers the user-facing probabilistic question without the calibration headaches of conditional precip.

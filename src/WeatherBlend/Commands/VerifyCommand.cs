@@ -83,7 +83,7 @@ public sealed class VerifyCommand
             DriftThreshold = driftThreshold,
         });
 
-        var md = VerifyReporter.BuildMarkdown(asOfUtc, windowDays, era5LatencyDays, driftThreshold, rows);
+        var md = VerifyReporter.BuildMarkdown(asOfUtc, windowDays, era5LatencyDays, driftThreshold, rows, metadata);
 
         Directory.CreateDirectory(_cfg.Storage.ReportsPath);
         var outPath = Path.Combine(_cfg.Storage.ReportsPath,
@@ -111,7 +111,10 @@ public sealed class VerifyCommand
     {
         ct.ThrowIfCancellationRequested();
 
-        var glob = Path.Combine(_cfg.Storage.PredictionsPath, "**", "*.parquet")
+        // Scope to the temperature subtree only — precipitation / dry-window predictions
+        // live alongside and don't share the temperature schema, so a top-level glob
+        // would pull rows missing TempGfs/…/BlendTemperature and fail the query.
+        var glob = Path.Combine(_cfg.Storage.PredictionsPath, "temperature", "**", "*.parquet")
             .Replace('\\', '/').Replace("'", "''");
 
         // hive_partitioning=false — the `model_version=` hive key collides with the

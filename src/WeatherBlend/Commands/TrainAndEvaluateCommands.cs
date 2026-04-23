@@ -29,7 +29,7 @@ public sealed class TrainCommand
         _dryWindow = dryWindow;
     }
 
-    public async Task<int> RunAsync(string target, string lead, string? station, string? window, CancellationToken ct)
+    public async Task<int> RunAsync(string target, string lead, string? station, string? window, string featureSet, CancellationToken ct)
     {
         var t = target.ToLowerInvariant();
         if (t is not ("temperature" or "precipitation" or "dry-window"))
@@ -45,9 +45,23 @@ public sealed class TrainCommand
             return 2;
         }
 
+        var fs = (featureSet ?? "lean").ToLowerInvariant();
+        if (fs is not ("lean" or "rich"))
+        {
+            _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich.", featureSet);
+            return 2;
+        }
+        if (fs == "rich" && t != "temperature")
+        {
+            _log.LogError("--feature-set rich is only supported for target=temperature (Phase 2c).");
+            return 2;
+        }
+
         return t switch
         {
-            "temperature"   => await RunPhase2bAsync(leads, ct),
+            "temperature"   => fs == "rich"
+                                  ? await RunPhase2cAsync(leads, ct)
+                                  : await RunPhase2bAsync(leads, ct),
             "precipitation" => await RunPhase3aAsync(leads, station, ct),
             "dry-window"    => await _dryWindow.RunAsync(station ?? "all", window ?? "all", leads, ct),
             _ => 2,
@@ -172,6 +186,138 @@ public sealed class TrainCommand
         ModelArtifact.UpdateManifest(modelsRoot, "temperature", versionName);
 
         _log.LogInformation("Phase 2b artefacts → {Dir}", versionDir);
+        _log.LogInformation("Summary — {Summary}",
+            string.Join("; ", perLead.Select(kv =>
+                $"lead {kv.Key}h: blend MAE {kv.Value.BlendTestMae:0.000}°C vs {kv.Value.BestSingle} val MAE {kv.Value.BestSingleValMae:0.000}°C")));
+
+        await Task.CompletedTask;
+        return 0;
+    }
+
+    // ---- Phase 2c: rich-feature temperature blender (champion/challenger) ----------
+
+    private async Task<int> RunPhase2cAsync(int[] leads, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        var modelsRoot = Path.Combine("data", "models");
+        var versionDir = ModelArtifact.BuildVersionDir(modelsRoot, "temperature", now, suffix: "phase2c");
+        var versionName = Path.GetFileName(versionDir);
+
+        var hp = new TemperatureTrainer.Hyperparameters();
+        _log.LogInformation("Phase 2c — rich-feature blender (88 features), leads [{Leads}]",
+            string.Join(",", leads));
+        _log.LogInformation("Hyperparameters: iter={Iter} lr={Lr} leaves={Leaves} esr={Esr} seed={Seed} (identical to Phase 2b — feature richness is the only variable)",
+            hp.NumberOfIterations, hp.LearningRate, hp.NumberOfLeaves, hp.EarlyStoppingRound, hp.Seed);
+
+        var perLead = new Dictionary<string, ModelArtifact.PerLeadStats>();
+        var importanceByLead = new Dictionary<int, IEnumerable<(string Name, double Gain)>>();
+        var featureCols = TemperatureTrainer.RichFeatureColumnInternalNames();
+
+        foreach (var lead in leads)
+        {
+            ct.ThrowIfCancellationRequested();
+            _log.LogInformation("--- Lead {Lead}h ---", lead);
+
+            var rows = RichFeatureBuilder.BuildForLead(
+                _cfg.Storage.ForecastsPath,
+                _cfg.Storage.Era5Path,
+                _cfg.Location.Name,
+                lead,
+                ct);
+            _log.LogInformation("Loaded {N} rich rows spanning {S:yyyy-MM-dd} → {E:yyyy-MM-dd}",
+                rows.Count,
+                rows.Count == 0 ? DateTime.MinValue : rows[0].ValidTimeUtc,
+                rows.Count == 0 ? DateTime.MinValue : rows[^1].ValidTimeUtc);
+
+            if (rows.Count < 500)
+            {
+                _log.LogError("Only {N} rows for lead {Lead}h — too few to train.", rows.Count, lead);
+                return 3;
+            }
+
+            // Reuse the 2b chronological split logic; covariance lets us pass the rich rows
+            // as IReadOnlyList<TrainingRow> and recover them downstream via Cast<>.
+            var ds = TrainingDataset.Split(rows);
+            var richTrain = ds.Train.Cast<RichTrainingRow>().ToList();
+            var richVal   = ds.Val.Cast<RichTrainingRow>().ToList();
+            var richTest  = ds.Test.Cast<RichTrainingRow>().ToList();
+            _log.LogInformation("Split → train {TN} ({T0:yyyy-MM-dd}..{T1:yyyy-MM-dd}), " +
+                                "val {VN} ({V0:yyyy-MM-dd}..{V1:yyyy-MM-dd}), " +
+                                "test {EN} ({E0:yyyy-MM-dd}..{E1:yyyy-MM-dd})",
+                ds.Train.Count, ds.TrainStart, ds.TrainEnd,
+                ds.Val.Count,   ds.ValStart,   ds.ValEnd,
+                ds.Test.Count,  ds.TestStart,  ds.TestEnd);
+
+            var trained = TemperatureTrainer.Train(richTrain, richVal, featureCols, hp);
+
+            var testActual = richTest.Select(x => (double)x.Era5Temp).ToArray();
+            var testPred   = TemperatureTrainer.Predict(trained.Ml, trained.Model, richTest);
+            var blendStats = Metrics.Compute(testPred, testActual);
+
+            // Best-single picked on val MAE — same baseline as 2b for like-for-like comparison.
+            var best = Baselines.BestSingle(ds.Val);
+            var bestValMae = Metrics.Compute(Baselines.SingleModel(ds.Val, best),
+                                             ds.Val.Select(x => (double)x.Era5Temp).ToArray()).Mae;
+
+            ModelArtifact.SaveLeadModel(trained.Ml, trained.Model, trained.InputSchema, versionDir, lead);
+            importanceByLead[lead] = trained.FeatureImportance;
+
+            var testMonths = ds.Test.Select(r => new DateTime(r.ValidTimeUtc.Year, r.ValidTimeUtc.Month, 1))
+                                    .Distinct().Count();
+
+            perLead[lead.ToString()] = new ModelArtifact.PerLeadStats
+            {
+                LeadHours = lead,
+                DataRangeTrain = $"{ds.TrainStart:yyyy-MM-dd HH:mm}Z → {ds.TrainEnd:yyyy-MM-dd HH:mm}Z",
+                DataRangeVal   = $"{ds.ValStart:yyyy-MM-dd HH:mm}Z → {ds.ValEnd:yyyy-MM-dd HH:mm}Z",
+                DataRangeTest  = $"{ds.TestStart:yyyy-MM-dd HH:mm}Z → {ds.TestEnd:yyyy-MM-dd HH:mm}Z",
+                TrainRows = ds.Train.Count,
+                ValRows   = ds.Val.Count,
+                TestRows  = ds.Test.Count,
+                TestCalendarMonths = testMonths,
+                BestSingle = best,
+                BestSingleValMae = bestValMae,
+                BlendTestMae  = blendStats.Mae,
+                BlendTestRmse = blendStats.Rmse,
+                BlendTestBias = blendStats.Bias,
+            };
+
+            _log.LogInformation("Lead {Lead}h headline — blend MAE={Blend:0.000}°C, best_single[{Best}] val MAE={BestMae:0.000}°C, test months={M}",
+                lead, blendStats.Mae, best, bestValMae, testMonths);
+        }
+
+        ModelArtifact.SaveFeatureSchema(versionDir, RichFeatureBuilder.FeatureNames);
+        ModelArtifact.SavePerLeadFeatureImportance(versionDir, importanceByLead);
+
+        var metadata = new ModelArtifact.TrainingMetadata
+        {
+            Version = versionName,
+            Target = "temperature",
+            Phase = "2c",
+            DataSource = "previous_runs_api",
+            TrainedAtUtc = now,
+            Hyperparameters = BuildHpDict(hp),
+            TestMae = perLead.ToDictionary(kv => $"lead_{kv.Key}h_blend", kv => kv.Value.BlendTestMae),
+            PerLead = perLead,
+            DeviationsFromBrief = new List<string>
+            {
+                "Objective is L2 (squared error); MAE used only as early-stopping metric. Microsoft.ML.LightGbm 4.0 does not expose regression_l1.",
+                "No monotone constraints on per-model temperature inputs. Microsoft.ML.LightGbm 4.0 does not expose monotone_constraints.",
+                "Persistence features (era5_temp_24h_ago, era5_temp_168h_ago) deliberately omitted: ERA5 has a ~5d release lag, so neither lookback exists at predict time for the 24/48/72h leads. Including them would teach the model to lean on data unavailable in production.",
+                "Per-lead model artefacts named lead_{N}h.zip (ML.NET ITransformer pipeline). Same hyperparameters as Phase 2b — feature richness is the isolated variable.",
+            },
+        };
+        ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
+
+        // Champion/challenger: 2c is added to the active set without unseating 2b as
+        // the default. Predict + verify will iterate both versions every cycle.
+        ModelArtifact.AppendVersion(modelsRoot, "temperature", versionName);
+        var existingActive = ModelArtifact.ResolveActive(modelsRoot, "temperature");
+        var newActive = existingActive.Concat(new[] { versionName }).Distinct().ToList();
+        ModelArtifact.SetActive(modelsRoot, "temperature", newActive);
+
+        _log.LogInformation("Phase 2c artefacts → {Dir}", versionDir);
+        _log.LogInformation("Active versions now: [{Active}]", string.Join(", ", newActive));
         _log.LogInformation("Summary — {Summary}",
             string.Join("; ", perLead.Select(kv =>
                 $"lead {kv.Key}h: blend MAE {kv.Value.BlendTestMae:0.000}°C vs {kv.Value.BestSingle} val MAE {kv.Value.BestSingleValMae:0.000}°C")));

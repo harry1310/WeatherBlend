@@ -197,15 +197,24 @@ public static class Program
             name: "--window",
             description: "Dry-window target only: window length in hours (3, 4, 6, or all). Default: all.",
             getDefaultValue: () => null);
+        var featureSetOpt = new Option<string>(
+            name: "--feature-set",
+            description: "Temperature target only: 'lean' (Phase 2b — 13 features) or 'rich' (Phase 2c — 88 features incl. per-model dew/RH/cloud/wind/pressure secondaries).",
+            getDefaultValue: () => "lean");
         var train = new Command("train", "Train the blender (phase 2b temperature / phase 3a precipitation / phase 3b dry-window)")
         {
-            targetOpt, leadOpt, stationOpt, windowOpt,
+            targetOpt, leadOpt, stationOpt, windowOpt, featureSetOpt,
         };
-        train.SetHandler(async (target, lead, station, window) =>
+        train.SetHandler(async (ctx) =>
         {
+            var target = ctx.ParseResult.GetValueForOption(targetOpt)!;
+            var lead = ctx.ParseResult.GetValueForOption(leadOpt)!;
+            var station = ctx.ParseResult.GetValueForOption(stationOpt);
+            var window = ctx.ParseResult.GetValueForOption(windowOpt);
+            var featureSet = ctx.ParseResult.GetValueForOption(featureSetOpt)!;
             var cmd = host.Services.GetRequiredService<TrainCommand>();
-            await cmd.RunAsync(target, lead, station, window, CancellationToken.None);
-        }, targetOpt, leadOpt, stationOpt, windowOpt);
+            ctx.ExitCode = await cmd.RunAsync(target, lead, station, window, featureSet, ctx.GetCancellationToken());
+        });
         root.AddCommand(train);
 
         var evalTargetOpt = new Option<string>(

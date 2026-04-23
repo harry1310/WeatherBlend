@@ -74,6 +74,90 @@ public class ModelArtifactTests : IDisposable
             "temp file should be moved over the manifest, not left behind");
     }
 
+    // ---- Active-list semantics (champion/challenger) ---------------------------
+
+    [Fact]
+    public void UpdateManifest_resets_Active_to_single_entry_for_legacy_single_version_flow()
+    {
+        ModelArtifact.UpdateManifest(_root, "temperature", "v1");
+
+        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
+            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
+
+        manifest.Active.Should().ContainSingle().Which.Should().Be("v1");
+    }
+
+    [Fact]
+    public void AppendVersion_adds_to_Versions_without_changing_Current_or_Active()
+    {
+        ModelArtifact.UpdateManifest(_root, "temperature", "v1");
+        ModelArtifact.AppendVersion(_root, "temperature", "v2-challenger");
+
+        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
+            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
+
+        manifest.Current.Should().Be("v1");
+        manifest.Versions.Should().Equal("v1", "v2-challenger");
+        manifest.Active.Should().ContainSingle().Which.Should().Be("v1",
+            "AppendVersion must not touch Active — training a challenger doesn't promote it");
+    }
+
+    [Fact]
+    public void SetActive_overrides_Active_list_without_touching_Current()
+    {
+        ModelArtifact.UpdateManifest(_root, "temperature", "v1");
+        ModelArtifact.AppendVersion(_root, "temperature", "v2");
+        ModelArtifact.SetActive(_root, "temperature", new[] { "v1", "v2" });
+
+        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
+            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
+
+        manifest.Current.Should().Be("v1");
+        manifest.Active.Should().Equal("v1", "v2");
+    }
+
+    [Fact]
+    public void SetActive_deduplicates_repeated_entries()
+    {
+        ModelArtifact.UpdateManifest(_root, "temperature", "v1");
+        ModelArtifact.SetActive(_root, "temperature", new[] { "v1", "v1", "v2", "v2" });
+
+        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
+            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
+
+        manifest.Active.Should().Equal("v1", "v2");
+    }
+
+    [Fact]
+    public void ResolveActive_returns_the_explicit_list_when_set()
+    {
+        ModelArtifact.UpdateManifest(_root, "temperature", "v1");
+        ModelArtifact.AppendVersion(_root, "temperature", "v2");
+        ModelArtifact.SetActive(_root, "temperature", new[] { "v1", "v2" });
+
+        ModelArtifact.ResolveActive(_root, "temperature").Should().Equal("v1", "v2");
+    }
+
+    [Fact]
+    public void ResolveActive_falls_back_to_Current_when_Active_empty_legacy_manifest()
+    {
+        // Simulate a manifest written by an older build that predates the Active field.
+        var dir = Path.Combine(_root, "temperature");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(
+            Path.Combine(dir, ModelArtifact.ManifestFileName),
+            """{"Target":"temperature","Current":"v-legacy","Versions":["v-legacy"],"Active":[],"Stations":{}}""");
+
+        ModelArtifact.ResolveActive(_root, "temperature").Should()
+            .ContainSingle().Which.Should().Be("v-legacy");
+    }
+
+    [Fact]
+    public void ResolveActive_returns_empty_when_manifest_absent()
+    {
+        ModelArtifact.ResolveActive(_root, "temperature").Should().BeEmpty();
+    }
+
     // ---- ResolveVersionDir ------------------------------------------------------
 
     [Fact]

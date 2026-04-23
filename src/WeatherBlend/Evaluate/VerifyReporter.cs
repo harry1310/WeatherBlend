@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using WeatherBlend.Train;
 
 namespace WeatherBlend.Evaluate;
 
@@ -15,7 +16,8 @@ public static class VerifyReporter
         int windowDays,
         int era5LatencyDays,
         double driftThreshold,
-        IReadOnlyList<Verifier.VerifyRow> rows)
+        IReadOnlyList<Verifier.VerifyRow> rows,
+        IReadOnlyDictionary<string, ModelArtifact.TrainingMetadata>? metadataByVersion = null)
     {
         var sb = new StringBuilder();
         var ci = CultureInfo.InvariantCulture;
@@ -78,6 +80,57 @@ public static class VerifyReporter
         }
         sb.AppendLine();
 
+        // Champion/challenger delta: when both a Phase 2b (lean, 13 features) and a
+        // Phase 2c (rich, ~88 features) version have rows at the same lead, show the
+        // MAE difference. Negative → rich wins. Only rendered when both phases are
+        // present; otherwise the section is silently skipped.
+        if (metadataByVersion is not null && metadataByVersion.Count > 0)
+        {
+            var phaseByVersion = metadataByVersion.ToDictionary(
+                kv => kv.Key,
+                kv => kv.Value.Phase ?? "",
+                StringComparer.Ordinal);
+
+            var byLead = rows
+                .Where(r => phaseByVersion.TryGetValue(r.ModelVersion, out var p) && (p == "2b" || p == "2c"))
+                .GroupBy(r => r.LeadHours)
+                .OrderBy(g => g.Key)
+                .Select(g => new
+                {
+                    Lead = g.Key,
+                    Lean = g.FirstOrDefault(r => phaseByVersion[r.ModelVersion] == "2b"),
+                    Rich = g.FirstOrDefault(r => phaseByVersion[r.ModelVersion] == "2c"),
+                })
+                .Where(x => x.Lean is not null && x.Rich is not null)
+                .ToList();
+
+            if (byLead.Count > 0)
+            {
+                sb.AppendLine("## Champion vs challenger (Phase 2b lean vs 2c rich)");
+                sb.AppendLine();
+                sb.AppendLine("| Lead | Lean version | Rich version | Lean MAE | Rich MAE | Δ MAE (rich−lean) | Lean bias | Rich bias | Winner |");
+                sb.AppendLine("|---:|---|---|---:|---:|---:|---:|---:|---|");
+                foreach (var row in byLead)
+                {
+                    var lean = row.Lean!;
+                    var rich = row.Rich!;
+                    var delta = rich.BlendMae - lean.BlendMae;
+                    var winner = double.IsNaN(delta)
+                        ? "—"
+                        : delta < -0.001 ? "rich"
+                        : delta >  0.001 ? "lean"
+                        : "tie";
+                    sb.AppendLine(
+                        $"| {row.Lead}h | `{lean.ModelVersion}` | `{rich.ModelVersion}` | " +
+                        $"{Fmt(lean.BlendMae, ci)} | {Fmt(rich.BlendMae, ci)} | " +
+                        $"{FmtSignedDelta(delta, ci)} | " +
+                        $"{FmtBias(lean.BlendBias, ci)} | {FmtBias(rich.BlendBias, ci)} | " +
+                        $"{winner} |");
+                }
+                sb.AppendLine();
+            }
+        }
+
         // Persistence drop accounting — a sudden spike would hint at ERA5 gaps that
         // should be investigated separately.
         var totalDropped = rows.Sum(r => r.PersistenceDropped);
@@ -98,4 +151,7 @@ public static class VerifyReporter
 
     private static string FmtNullable(double? v, CultureInfo ci)
         => v.HasValue ? Fmt(v.Value, ci) : "—";
+
+    private static string FmtSignedDelta(double v, CultureInfo ci)
+        => double.IsNaN(v) ? "—" : v.ToString("+0.000;-0.000;0.000", ci);
 }

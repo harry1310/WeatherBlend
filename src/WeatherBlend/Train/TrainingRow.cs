@@ -6,8 +6,12 @@ namespace WeatherBlend.Train;
 /// One training row: 13 features + label (ERA5 temperature at valid time).
 /// Feature ordering is load-bearing — matches <see cref="FeatureBuilder.FeatureNames"/>
 /// and is persisted in feature_schema.json so inference uses the same order.
+///
+/// Not sealed: <see cref="RichTrainingRow"/> derives from this with the Phase 2c
+/// secondary-variable feature set. <see cref="TrainingDataset"/> + the lean trainer
+/// only ever read the base properties so the inheritance is invisible to 2b.
 /// </summary>
-public sealed class TrainingRow
+public class TrainingRow
 {
     public DateTime ValidTimeUtc { get; set; }
 

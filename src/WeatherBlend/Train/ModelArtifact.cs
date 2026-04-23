@@ -42,6 +42,14 @@ public static class ModelArtifact
         public string Current { get; set; } = "";
         public List<string> Versions { get; set; } = new();
 
+        /// <summary>
+        /// Versions that predict + verify should treat as live. Empty means "fall back
+        /// to [Current]" (back-compat for manifests written before Phase 2c). Used by
+        /// the champion/challenger pattern: 2b stays as Current, 2c is added to Active
+        /// alongside it so both produce predictions every cycle.
+        /// </summary>
+        public List<string> Active { get; set; } = new();
+
         // Per-station layout (precipitation).
         public Dictionary<string, StationEntry> Stations { get; set; } = new();
     }
@@ -205,8 +213,60 @@ public static class ModelArtifact
     /// <summary>
     /// Write/update MANIFEST.json under data/models/{target}/. Atomic:
     /// serialize to temp file, then move over the existing manifest.
+    /// Sets Current and resets Active = [Current] — single-active legacy semantics.
+    /// Use <see cref="AppendVersion"/> + <see cref="SetActive"/> for champion/challenger
+    /// flows where multiple versions should stay live concurrently.
     /// </summary>
     public static void UpdateManifest(string modelsRoot, string target, string versionDirName)
+    {
+        MutateManifest(modelsRoot, target, m =>
+        {
+            m.Current = versionDirName;
+            if (!m.Versions.Contains(versionDirName))
+                m.Versions.Add(versionDirName);
+            m.Active = new List<string> { versionDirName };
+        });
+    }
+
+    /// <summary>
+    /// Append a version to the history list without touching Current or Active.
+    /// Used by champion/challenger trainers that want to register a new artefact
+    /// without making it the default pick.
+    /// </summary>
+    public static void AppendVersion(string modelsRoot, string target, string versionDirName)
+    {
+        MutateManifest(modelsRoot, target, m =>
+        {
+            if (!m.Versions.Contains(versionDirName))
+                m.Versions.Add(versionDirName);
+        });
+    }
+
+    /// <summary>
+    /// Replace the Active list explicitly. Predict + verify iterate this list when
+    /// no specific version is requested. Caller is responsible for ensuring every
+    /// listed version exists under <c>{modelsRoot}/{target}/</c>.
+    /// </summary>
+    public static void SetActive(string modelsRoot, string target, IEnumerable<string> activeVersions)
+    {
+        var list = activeVersions.Distinct().ToList();
+        MutateManifest(modelsRoot, target, m => m.Active = list);
+    }
+
+    /// <summary>
+    /// Versions that should produce predictions/verify rows. Falls back to [Current]
+    /// when Active is empty (legacy manifests). Returns empty if neither is populated.
+    /// </summary>
+    public static IReadOnlyList<string> ResolveActive(string modelsRoot, string target)
+    {
+        var manifest = ReadJson<Manifest>(Path.Combine(modelsRoot, target, ManifestFileName));
+        if (manifest is null) return Array.Empty<string>();
+        if (manifest.Active.Count > 0) return manifest.Active;
+        if (!string.IsNullOrWhiteSpace(manifest.Current)) return new[] { manifest.Current };
+        return Array.Empty<string>();
+    }
+
+    private static void MutateManifest(string modelsRoot, string target, Action<Manifest> mutate)
     {
         var dir = Path.Combine(modelsRoot, target);
         Directory.CreateDirectory(dir);
@@ -217,9 +277,7 @@ public static class ModelArtifact
             : new Manifest();
 
         manifest.Target = target;
-        manifest.Current = versionDirName;
-        if (!manifest.Versions.Contains(versionDirName))
-            manifest.Versions.Add(versionDirName);
+        mutate(manifest);
 
         var tmp = manifestPath + ".tmp";
         WriteJson(tmp, manifest);

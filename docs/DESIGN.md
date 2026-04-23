@@ -47,6 +47,31 @@ Alternatives considered:
 - **ngboost / EMOS / BMA**: better for probabilistic precip but thin tooling in
   .NET. Plan to shell out to Python for this specific step in phase 5.
 
+## Champion/challenger for feature-set experiments (phase 2c)
+
+Feature-engineering ablations are hard to judge off a single training-time test
+MAE — the real question is "does the new feature set generalise better in
+production?", which can only be answered by running both models in parallel on
+live forecasts and comparing against ERA5 over several weeks.
+
+The manifest encodes this directly. `MANIFEST.Active` is a list of version dir
+names (not a single pointer like `Current`), and `predict --model-version
+current` iterates that list, writing one parquet partition per version under
+`data/predictions/temperature/model_version=<v>/date=<d>/`. Verify reads the
+whole tree, stratifies by `(version, lead)`, and — when two active versions have
+different `Phase` tags (e.g. `2b` lean vs `2c` rich) — renders a direct MAE delta
+section in the weekly report. The winner is whichever version has the smaller
+rolling blend MAE at each lead; promotion is then a one-line manifest edit
+(`SetActive` with the chosen version).
+
+Two consequences to be aware of:
+
+- Storage is linear in `|Active|` — each version materialises its own predictions
+  parquet. At ~6 rows/day per version this is fine at PoC scale.
+- `Current` is frozen while a challenger is running. Dropping a challenger from
+  `Active` doesn't delete its predictions — they stay on disk as part of the
+  historical record, just no new ones are written.
+
 ## Why per-lead-time models and not one big model?
 
 Forecast skill characteristics change dramatically with lead time:

@@ -39,21 +39,36 @@ public sealed class TemperatureTrainer
         IReadOnlyList<(string Name, double Gain)> FeatureImportance);
 
     /// <summary>
-    /// Fit on the train split, use the val split for early stopping. The test split
-    /// is deliberately not touched here — it's for the final report only.
+    /// Phase 2b call site: fit on the lean 13-feature TrainingDataset.
+    /// Thin wrapper over the generic <see cref="Train{T}"/> with the lean feature list.
     /// </summary>
     public static TrainedBlender Train(TrainingDataset ds, Hyperparameters hp)
+        => Train(ds.Train, ds.Val, LeanFeatureColumnInternalNames(), hp);
+
+    /// <summary>
+    /// Generic LightGBM fit over arbitrary rows + feature column list. Used by
+    /// Phase 2b (lean 13 cols) and Phase 2c (rich 88 cols) without further changes.
+    /// Each named column must exist as a public property of <typeparamref name="T"/>;
+    /// the type must also expose <c>[ColumnName("Label")]</c> on the regression target
+    /// — both the lean and rich row types inherit this from <see cref="TrainingRow"/>.
+    /// </summary>
+    public static TrainedBlender Train<T>(
+        IReadOnlyList<T> train,
+        IReadOnlyList<T> val,
+        IReadOnlyList<string> featureColumnNames,
+        Hyperparameters hp)
+        where T : class
     {
         var ml = new MLContext(seed: hp.Seed);
 
-        var trainDv = ml.Data.LoadFromEnumerable(ds.Train);
-        var valDv   = ml.Data.LoadFromEnumerable(ds.Val);
+        var trainDv = ml.Data.LoadFromEnumerable(train);
+        var valDv   = ml.Data.LoadFromEnumerable(val);
 
-        var featureNames = FeatureBuilder.FeatureNames.ToArray();
+        var featureNames = featureColumnNames.ToArray();
 
         // Microsoft.ML normalises to the "Features" + "Label" convention; we've
         // already set [ColumnName("Label")] on Era5Temp in TrainingRow.
-        var featurize = ml.Transforms.Concatenate("Features", FeatureColumnInternalNames());
+        var featurize = ml.Transforms.Concatenate("Features", featureNames);
         var featModel = featurize.Fit(trainDv);
         var trainFeat = featModel.Transform(trainDv);
         var valFeat   = featModel.Transform(valDv);
@@ -79,7 +94,7 @@ public sealed class TemperatureTrainer
         var trainer = ml.Regression.Trainers.LightGbm(options);
         var predictor = trainer.Fit(trainFeat, valFeat);
 
-        // Compose feat-model + predictor so the saved .zip accepts raw TrainingRow-shaped input.
+        // Compose feat-model + predictor so the saved .zip accepts raw row-shaped input.
         var fullModel = featModel.Append(predictor);
 
         // Gain-based feature importance from the LightGBM booster.
@@ -100,7 +115,8 @@ public sealed class TemperatureTrainer
     }
 
     /// <summary>Run the trained model over rows, return predicted values as a double[].</summary>
-    public static double[] Predict(MLContext ml, ITransformer model, IReadOnlyList<TrainingRow> rows)
+    public static double[] Predict<T>(MLContext ml, ITransformer model, IReadOnlyList<T> rows)
+        where T : class
     {
         if (rows.Count == 0) return Array.Empty<double>();
         var dv = ml.Data.LoadFromEnumerable(rows);
@@ -111,9 +127,10 @@ public sealed class TemperatureTrainer
         return result;
     }
 
-    // TrainingRow property names (C# identifiers) map 1:1 to DataView columns.
-    // Note we exclude ValidTimeUtc, WindDirMean (diagnostic only) and Label.
-    private static string[] FeatureColumnInternalNames() => new[]
+    // Lean (Phase 2b) feature property names. Maps 1:1 to the 13-entry
+    // FeatureBuilder.FeatureNames list. ValidTimeUtc, WindDirMean (diagnostic) and
+    // Label are deliberately excluded.
+    private static string[] LeanFeatureColumnInternalNames() => new[]
     {
         nameof(TrainingRow.TempGfs),
         nameof(TrainingRow.TempEcmwf),
@@ -128,5 +145,61 @@ public sealed class TemperatureTrainer
         nameof(TrainingRow.HourCos),
         nameof(TrainingRow.DoySin),
         nameof(TrainingRow.DoyCos),
+    };
+
+    /// <summary>
+    /// Rich (Phase 2c) feature property names. Maps 1:1 to RichFeatureBuilder.FeatureNames
+    /// and the 88 RichTrainingRow public properties (lean 13 + 66 secondaries + 9 aggregates).
+    /// </summary>
+    public static string[] RichFeatureColumnInternalNames() => new[]
+    {
+        // 13 lean (must match LeanFeatureColumnInternalNames order).
+        nameof(TrainingRow.TempGfs), nameof(TrainingRow.TempEcmwf), nameof(TrainingRow.TempIcon),
+        nameof(TrainingRow.TempMf), nameof(TrainingRow.TempUkmo), nameof(TrainingRow.TempGem),
+        nameof(TrainingRow.TempMean), nameof(TrainingRow.TempStd), nameof(TrainingRow.TempRange),
+        nameof(TrainingRow.HourSin), nameof(TrainingRow.HourCos),
+        nameof(TrainingRow.DoySin), nameof(TrainingRow.DoyCos),
+
+        // 6 per-model secondaries × 10 vars (wind dir is sin+cos = 11 effective per model,
+        // so 60 columns for the non-direction vars + 12 for sin/cos).
+        nameof(RichTrainingRow.DewGfs), nameof(RichTrainingRow.DewEcmwf), nameof(RichTrainingRow.DewIcon),
+        nameof(RichTrainingRow.DewMf), nameof(RichTrainingRow.DewUkmo), nameof(RichTrainingRow.DewGem),
+
+        nameof(RichTrainingRow.RhGfs), nameof(RichTrainingRow.RhEcmwf), nameof(RichTrainingRow.RhIcon),
+        nameof(RichTrainingRow.RhMf), nameof(RichTrainingRow.RhUkmo), nameof(RichTrainingRow.RhGem),
+
+        nameof(RichTrainingRow.CloudGfs), nameof(RichTrainingRow.CloudEcmwf), nameof(RichTrainingRow.CloudIcon),
+        nameof(RichTrainingRow.CloudMf), nameof(RichTrainingRow.CloudUkmo), nameof(RichTrainingRow.CloudGem),
+
+        nameof(RichTrainingRow.CloudLowGfs), nameof(RichTrainingRow.CloudLowEcmwf), nameof(RichTrainingRow.CloudLowIcon),
+        nameof(RichTrainingRow.CloudLowMf), nameof(RichTrainingRow.CloudLowUkmo), nameof(RichTrainingRow.CloudLowGem),
+
+        nameof(RichTrainingRow.CloudMidGfs), nameof(RichTrainingRow.CloudMidEcmwf), nameof(RichTrainingRow.CloudMidIcon),
+        nameof(RichTrainingRow.CloudMidMf), nameof(RichTrainingRow.CloudMidUkmo), nameof(RichTrainingRow.CloudMidGem),
+
+        nameof(RichTrainingRow.CloudHighGfs), nameof(RichTrainingRow.CloudHighEcmwf), nameof(RichTrainingRow.CloudHighIcon),
+        nameof(RichTrainingRow.CloudHighMf), nameof(RichTrainingRow.CloudHighUkmo), nameof(RichTrainingRow.CloudHighGem),
+
+        nameof(RichTrainingRow.WindSpeedGfs), nameof(RichTrainingRow.WindSpeedEcmwf), nameof(RichTrainingRow.WindSpeedIcon),
+        nameof(RichTrainingRow.WindSpeedMf), nameof(RichTrainingRow.WindSpeedUkmo), nameof(RichTrainingRow.WindSpeedGem),
+
+        nameof(RichTrainingRow.WindDirSinGfs), nameof(RichTrainingRow.WindDirSinEcmwf), nameof(RichTrainingRow.WindDirSinIcon),
+        nameof(RichTrainingRow.WindDirSinMf), nameof(RichTrainingRow.WindDirSinUkmo), nameof(RichTrainingRow.WindDirSinGem),
+
+        nameof(RichTrainingRow.WindDirCosGfs), nameof(RichTrainingRow.WindDirCosEcmwf), nameof(RichTrainingRow.WindDirCosIcon),
+        nameof(RichTrainingRow.WindDirCosMf), nameof(RichTrainingRow.WindDirCosUkmo), nameof(RichTrainingRow.WindDirCosGem),
+
+        nameof(RichTrainingRow.WindGustsGfs), nameof(RichTrainingRow.WindGustsEcmwf), nameof(RichTrainingRow.WindGustsIcon),
+        nameof(RichTrainingRow.WindGustsMf), nameof(RichTrainingRow.WindGustsUkmo), nameof(RichTrainingRow.WindGustsGem),
+
+        nameof(RichTrainingRow.PressureGfs), nameof(RichTrainingRow.PressureEcmwf), nameof(RichTrainingRow.PressureIcon),
+        nameof(RichTrainingRow.PressureMf), nameof(RichTrainingRow.PressureUkmo), nameof(RichTrainingRow.PressureGem),
+
+        // 9 cross-model aggregates.
+        nameof(RichTrainingRow.DewMean), nameof(RichTrainingRow.DewStd),
+        nameof(RichTrainingRow.RhMean), nameof(RichTrainingRow.RhStd),
+        nameof(RichTrainingRow.CloudMean),
+        nameof(RichTrainingRow.WindSpeedMean), nameof(RichTrainingRow.WindSpeedStd),
+        nameof(RichTrainingRow.PressureMean), nameof(RichTrainingRow.PressureStd),
     };
 }
