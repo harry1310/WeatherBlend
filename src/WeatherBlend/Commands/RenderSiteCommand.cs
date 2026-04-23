@@ -81,6 +81,12 @@ public sealed class RenderSiteCommand
         _log.LogInformation("Champion (temperature): {Version}",
             string.IsNullOrEmpty(currentVersion) ? "(none)" : currentVersion);
 
+        var precipCurrentByStation = LoadCurrentPrecipByStation();
+        _log.LogInformation("Champion (precipitation): {Entries}",
+            precipCurrentByStation.Count == 0
+                ? "(none)"
+                : string.Join(", ", precipCurrentByStation.Select(kv => $"{kv.Key}→{kv.Value}")));
+
         var input = new SitePages.SiteInputs
         {
             LocationDisplay = string.IsNullOrWhiteSpace(_cfg.Location.DisplayName) ? _cfg.Location.Name : _cfg.Location.DisplayName,
@@ -99,6 +105,7 @@ public sealed class RenderSiteCommand
             PhaseByVersion = phaseByVersion,
             RainfallTruth = rainfall,
             CurrentVersion = currentVersion,
+            PrecipCurrentByStation = precipCurrentByStation,
         };
 
         Directory.CreateDirectory(outputDir);
@@ -132,6 +139,29 @@ public sealed class RenderSiteCommand
         {
             _log.LogWarning("Failed to read temperature manifest: {Msg}", ex.Message);
             return "";
+        }
+    }
+
+    private Dictionary<string, string> LoadCurrentPrecipByStation()
+    {
+        // Precipitation uses the per-station manifest layout: one StationEntry per EA
+        // station slug, each with its own Current. Missing manifest → no champion,
+        // home page skips the P(wet) chip rather than falling back to "latest anywhere".
+        var manifestPath = Path.Combine("data", "models", "precipitation", ModelArtifact.ManifestFileName);
+        if (!File.Exists(manifestPath)) return new(StringComparer.Ordinal);
+        try
+        {
+            var json = File.ReadAllText(manifestPath);
+            var manifest = System.Text.Json.JsonSerializer.Deserialize<ModelArtifact.Manifest>(json);
+            if (manifest?.Stations is null) return new(StringComparer.Ordinal);
+            return manifest.Stations
+                .Where(kv => !string.IsNullOrEmpty(kv.Value.Current))
+                .ToDictionary(kv => kv.Key, kv => kv.Value.Current, StringComparer.Ordinal);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning("Failed to read precipitation manifest: {Msg}", ex.Message);
+            return new(StringComparer.Ordinal);
         }
     }
 
@@ -437,7 +467,8 @@ ORDER BY PredictionMadeAtUtc DESC, LeadHours";
 
         var sql = $@"
 SELECT TruthStation, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
-       ProbWet, ClimatologyPWet
+       ProbWet, ClimatologyPWet,
+       PrecipGfs, PrecipEcmwf, PrecipIcon, PrecipMf, PrecipUkmo, PrecipGem
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
 WHERE LocationName = '{_cfg.Location.Name}'
   AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
@@ -457,13 +488,19 @@ ORDER BY TruthStation, LeadHours, ValidTimeUtc";
             {
                 ct.ThrowIfCancellationRequested();
                 rows.Add(new SitePages.PrecipForecastPoint(
-                    Station:        r.GetString(0),
-                    Version:        r.GetString(1),
-                    PredictedAtUtc: r.GetDateTime(2),
-                    ValidTimeUtc:   r.GetDateTime(3),
-                    LeadHours:      r.GetInt32(4),
-                    ProbWet:        r.GetDouble(5),
-                    ClimatologyPWet: r.GetDouble(6)));
+                    Station:         r.GetString(0),
+                    Version:         r.GetString(1),
+                    PredictedAtUtc:  r.GetDateTime(2),
+                    ValidTimeUtc:    r.GetDateTime(3),
+                    LeadHours:       r.GetInt32(4),
+                    ProbWet:         r.GetDouble(5),
+                    ClimatologyPWet: r.GetDouble(6),
+                    PrecipGfs:       r.IsDBNull(7)  ? null : r.GetDouble(7),
+                    PrecipEcmwf:     r.IsDBNull(8)  ? null : r.GetDouble(8),
+                    PrecipIcon:      r.IsDBNull(9)  ? null : r.GetDouble(9),
+                    PrecipMf:        r.IsDBNull(10) ? null : r.GetDouble(10),
+                    PrecipUkmo:      r.IsDBNull(11) ? null : r.GetDouble(11),
+                    PrecipGem:       r.IsDBNull(12) ? null : r.GetDouble(12)));
             }
         }
         catch (DuckDBException ex) when (ex.Message.Contains("No files found"))

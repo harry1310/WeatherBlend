@@ -120,6 +120,7 @@ public static class Program
                 services.AddTransient<DryWindowAblateCommand>();
                 services.AddTransient<DryWindowPredictCommand>();
                 services.AddTransient<DryWindowVerifyCommand>();
+                services.AddTransient<ScoreHistoricalCommand>();
             })
             .Build();
 
@@ -455,6 +456,23 @@ public static class Program
             ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
         });
         root.AddCommand(dryWindowAblate);
+
+        var scoreTargetOpt = new Option<string>(
+            name: "--target",
+            description: "Target variable: temperature | precipitation | dry-window | all",
+            getDefaultValue: () => "all");
+        var scoreHistorical = new Command(
+            "score-historical",
+            "Compute per-NWP-model test-set accuracy (MAE / Brier) for every active artefact and persist per_model_test.json next to the model.")
+        {
+            scoreTargetOpt,
+        };
+        scoreHistorical.SetHandler(async (target) =>
+        {
+            var cmd = host.Services.GetRequiredService<ScoreHistoricalCommand>();
+            Environment.ExitCode = await cmd.RunAsync(target, CancellationToken.None);
+        }, scoreTargetOpt);
+        root.AddCommand(scoreHistorical);
 
         var globOpt = new Option<string>("--glob", "Parquet glob across models for one run") { IsRequired = true };
         var compare = new Command("compare", "Cross-model agreement summary for a run") { globOpt };

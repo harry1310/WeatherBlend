@@ -142,7 +142,9 @@ public class SitePagesTests
 
         var preds = versions
             .Select(v => new SitePages.PrecipForecastPoint(
-                Station, v.Version, generatedAt, validTime, 24, 0.42, 0.18))
+                Station, v.Version, generatedAt, validTime, 24, 0.42, 0.18,
+                PrecipGfs: null, PrecipEcmwf: null, PrecipIcon: null,
+                PrecipMf: null, PrecipUkmo: null, PrecipGem: null))
             .ToArray();
 
         var phaseByVersion = versions

@@ -17,15 +17,48 @@ public static partial class SitePages
             .GroupBy(p => p.LeadHours)
             .ToDictionary(g => g.Key, g => g.OrderByDescending(p => p.PredictionMadeAtUtc).First());
 
+        // Phase 3a P(wet) companion: Bellever champion only. Precip predictions are
+        // emitted on their own NWP-run grid (typically :00Z of each run), which rarely
+        // lines up exactly with the temperature card's ValidTime. Match on the same
+        // lead bucket and pick the precip ValidTime closest to the temp card's, within
+        // ±12h so a random 24h-lead row from the opposite side of the day can't leak in.
+        const string PwetStation = "ea_bellever_dartmoor";
+        input.PrecipCurrentByStation.TryGetValue(PwetStation, out var pwetChampion);
+        var pwetByLead = input.PrecipPredictions
+            .Where(r => r.Station == PwetStation
+                        && !string.IsNullOrEmpty(pwetChampion)
+                        && r.Version == pwetChampion)
+            // Deduplicate: same (lead, valid_time) appears twice when two runs pick
+            // the same hour — keep the freshest.
+            .GroupBy(r => (r.LeadHours, r.ValidTimeUtc))
+            .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
+            .GroupBy(r => r.LeadHours)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
         var cards = new StringBuilder();
         foreach (var lead in new[] { 24, 48, 72 })
         {
             if (latestByLead.TryGetValue(lead, out var p))
             {
+                string pwetCell = "";
+                if (pwetByLead.TryGetValue(lead, out var pwRows))
+                {
+                    var closest = pwRows
+                        .Select(r => (Row: r, Delta: Math.Abs((r.ValidTimeUtc - p.ValidTimeUtc).TotalHours)))
+                        .Where(x => x.Delta <= 12)
+                        .OrderBy(x => x.Delta)
+                        .FirstOrDefault();
+                    if (closest.Row is not null)
+                    {
+                        pwetCell = $"<div class=\"pwet\">P(wet) <strong>{(closest.Row.ProbWet * 100).ToString("0", Ci)}%</strong> <small>Bellever {closest.Row.ValidTimeUtc:HH:mm}Z</small></div>";
+                    }
+                }
+
                 cards.Append(Ci, $"""
                     <article class="forecast-card">
                       <header><h3>+{lead}h</h3><small>{p.ValidTimeUtc:yyyy-MM-dd HH:mm}Z</small></header>
                       <div class="temp">{p.BlendTemperature.ToString("0.0", Ci)}°C</div>
+                      {pwetCell}
                       <footer>
                         <small>Made {p.PredictionMadeAtUtc:yyyy-MM-dd HH:mm}Z</small><br/>
                         <small>Model: <code>{Escape(p.ModelVersion)}</code></small>

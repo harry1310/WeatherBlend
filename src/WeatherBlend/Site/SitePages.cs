@@ -75,6 +75,15 @@ public static partial class SitePages
         /// "latest by PredictionMadeAt" across all versions).
         /// </summary>
         public string CurrentVersion { get; init; } = "";
+
+        /// <summary>
+        /// Per-station precipitation champion (<c>StationEntry.Current</c>) keyed by EA
+        /// station slug (e.g. <c>ea_bellever_dartmoor</c>). The home page pulls the P(wet)
+        /// chip from this version only, so a challenger that happens to write the same
+        /// (lead, valid_time) never leaks onto the headline card.
+        /// </summary>
+        public IReadOnlyDictionary<string, string> PrecipCurrentByStation { get; init; }
+            = new Dictionary<string, string>();
     }
 
     public sealed record RollingMaePoint(string ModelVersion, int LeadHours, DateTime WindowEndUtc, double BlendMae, int N);
@@ -86,7 +95,13 @@ public static partial class SitePages
         DateTime ValidTimeUtc,
         int LeadHours,
         double ProbWet,
-        double ClimatologyPWet);
+        double ClimatologyPWet,
+        double? PrecipGfs,
+        double? PrecipEcmwf,
+        double? PrecipIcon,
+        double? PrecipMf,
+        double? PrecipUkmo,
+        double? PrecipGem);
 
     public sealed record DryWindowForecastPoint(
         string Station,
@@ -100,7 +115,7 @@ public static partial class SitePages
         double? AgreementHasDryWindow);
 
     public static string Stylesheet() => """
-        :root { --brand: #7c4dff; }
+        :root { --brand: #7c4dff; --pwet: #0288d1; }
         body > main { padding-top: 1rem; padding-bottom: 3rem; }
         nav.site-nav { padding: 0.5rem 0 1rem; border-bottom: 1px solid var(--pico-muted-border-color); margin-bottom: 1.5rem; }
         nav.site-nav ul { display: flex; gap: 1rem; list-style: none; padding: 0; margin: 0; }
@@ -110,8 +125,11 @@ public static partial class SitePages
         .forecast-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
         .forecast-card { padding: 1rem; }
         .forecast-card h3 { margin: 0 0 0.25rem; }
-        .forecast-card .temp { font-size: 2.5rem; font-weight: 700; color: var(--brand); line-height: 1.1; margin: 0.5rem 0; }
+        .forecast-card .temp { font-size: 2.5rem; font-weight: 700; color: var(--brand); line-height: 1.1; margin: 0.5rem 0 0.25rem; }
         .forecast-card-empty .temp { color: var(--pico-muted-color); }
+        .forecast-card .pwet { font-size: 0.95rem; color: var(--pwet); margin: 0 0 0.5rem; font-variant-numeric: tabular-nums; }
+        .forecast-card .pwet strong { font-weight: 700; }
+        .forecast-card .pwet small { color: var(--pico-muted-color); margin-left: 0.35rem; }
 
         .skill-line { font-style: italic; color: var(--pico-muted-color); }
 
