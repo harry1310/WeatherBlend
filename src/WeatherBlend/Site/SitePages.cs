@@ -39,9 +39,35 @@ public static class SitePages
 
         /// <summary>Rolling MAE per (version, lead) for the verify chart.</summary>
         public required IReadOnlyList<RollingMaePoint> RollingMae { get; init; }
+
+        /// <summary>Phase 3a P(wet) predictions across all stations / versions in the window.</summary>
+        public required IReadOnlyList<PrecipForecastPoint> PrecipPredictions { get; init; }
+
+        /// <summary>Phase 3b P(dry-window) predictions across all (station, window) blenders.</summary>
+        public required IReadOnlyList<DryWindowForecastPoint> DryWindowPredictions { get; init; }
     }
 
     public sealed record RollingMaePoint(string ModelVersion, int LeadHours, DateTime WindowEndUtc, double BlendMae, int N);
+
+    public sealed record PrecipForecastPoint(
+        string Station,
+        string Version,
+        DateTime PredictedAtUtc,
+        DateTime ValidTimeUtc,
+        int LeadHours,
+        double ProbWet,
+        double ClimatologyPWet);
+
+    public sealed record DryWindowForecastPoint(
+        string Station,
+        int WindowHours,
+        string Version,
+        DateTime PredictedAtUtc,
+        DateTime TargetDateUtc,
+        int LeadHours,
+        double ProbHasDryWindow,
+        double ClimatologyProbHasDryWindow,
+        double? AgreementHasDryWindow);
 
     public static string RenderIndex(SiteInputs input)
     {
@@ -240,6 +266,276 @@ public static class SitePages
         return WrapPage(input, "Predictions", "predictions", body.ToString());
     }
 
+    public static string RenderPrecipitation(SiteInputs input)
+    {
+        var content = new StringBuilder();
+        content.Append("""
+            <section>
+              <hgroup>
+                <h2>Precipitation — P(wet ≥ 0.1 mm/h)</h2>
+                <p>Phase 3a per-station hourly occurrence blender. EA Hydrology gauges as truth; LightGBM per lead-time bucket.</p>
+              </hgroup>
+            """);
+
+        if (input.PrecipPredictions.Count == 0)
+        {
+            content.Append("<p><em>No precipitation predictions in window. Run <code>predict --target precipitation --truth-station all</code>.</em></p>");
+            content.Append("</section>");
+            return WrapPage(input, "Precipitation", "precipitation", content.ToString());
+        }
+
+        var stations = input.PrecipPredictions.Select(p => p.Station).Distinct().OrderBy(s => s, StringComparer.Ordinal).ToList();
+
+        // Lead-bucket palette matches the temperature overview chart.
+        (int lead, string color)[] leadSpecs =
+        {
+            (24, "#b39ddb"),
+            (48, "#7c4dff"),
+            (72, "#4527a0"),
+        };
+
+        foreach (var station in stations)
+        {
+            var stationRows = input.PrecipPredictions.Where(p => p.Station == station).ToList();
+
+            // For each lead, take the latest forecast trajectory: most recent
+            // PredictedAtUtc per (lead, valid_time) keeps things simple — at the
+            // typical cadence each (lead, valid_time) is produced by one cycle.
+            var latestPerLead = stationRows
+                .GroupBy(r => (r.LeadHours, r.ValidTimeUtc))
+                .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
+                .ToList();
+
+            var series = new List<LineSeries>();
+            foreach (var (lead, color) in leadSpecs)
+            {
+                var pts = latestPerLead
+                    .Where(r => r.LeadHours == lead && r.ValidTimeUtc >= input.GeneratedAtUtc.AddHours(-1))
+                    .OrderBy(r => r.ValidTimeUtc)
+                    .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet))
+                    .ToList();
+                if (pts.Count > 0)
+                    series.Add(new LineSeries($"Blend +{lead}h", color, pts));
+            }
+
+            // Climatology baseline — same trace for every lead at a given valid time, so just
+            // pull it from one lead and render as a flat reference.
+            var climPts = latestPerLead
+                .Where(r => r.LeadHours == 24 && r.ValidTimeUtc >= input.GeneratedAtUtc.AddHours(-1))
+                .OrderBy(r => r.ValidTimeUtc)
+                .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ClimatologyPWet))
+                .ToList();
+            if (climPts.Count > 0)
+                series.Add(new LineSeries("Climatology", "#9e9e9e", climPts));
+
+            // Headline: peak P(wet) at lead 24h over the next 72h.
+            var lead24Future = latestPerLead.Where(r => r.LeadHours == 24 && r.ValidTimeUtc >= input.GeneratedAtUtc).ToList();
+            string headline;
+            if (lead24Future.Count > 0)
+            {
+                var peak = lead24Future.OrderByDescending(r => r.ProbWet).First();
+                var meanP = lead24Future.Average(r => r.ProbWet);
+                headline = $"Next {lead24Future.Count}h at +24h: mean P(wet) = {meanP.ToString("0.00", Ci)}, peak {peak.ProbWet.ToString("0.00", Ci)} at {peak.ValidTimeUtc:yyyy-MM-dd HH:mm}Z.";
+            }
+            else
+            {
+                headline = "No +24h-lead forecast in the future window.";
+            }
+
+            content.Append(Ci, $"""
+                <article>
+                  <hgroup>
+                    <h3>{Escape(PrettyStation(station))}</h3>
+                    <p class="skill-line">{Escape(headline)}</p>
+                  </hgroup>
+                """);
+
+            if (series.Count == 0)
+            {
+                content.Append(RenderEmptyChart($"P(wet) — {station}", "No forecast valid times in the future window."));
+            }
+            else
+            {
+                content.Append(LineChartRenderer.Render(new LineChartSpec
+                {
+                    Title = $"P(wet ≥ 0.1 mm/h) — {PrettyStation(station)}",
+                    XLabel = "Valid time (UTC)",
+                    YLabel = "Probability",
+                    Series = series,
+                    Height = 320,
+                    FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
+                    FormatY = v => v.ToString("0.00", Ci),
+                }));
+            }
+
+            content.Append("</article>");
+        }
+
+        // Latest-per-(station, lead, valid_time) detail table, capped to the next
+        // 96h forward of generation to keep page weight reasonable.
+        var future = input.PrecipPredictions
+            .Where(p => p.ValidTimeUtc >= input.GeneratedAtUtc.AddHours(-1) && p.ValidTimeUtc <= input.GeneratedAtUtc.AddHours(96))
+            .GroupBy(p => (p.Station, p.LeadHours, p.ValidTimeUtc))
+            .Select(g => g.OrderByDescending(p => p.PredictedAtUtc).First())
+            .OrderBy(p => p.Station, StringComparer.Ordinal)
+            .ThenBy(p => p.ValidTimeUtc)
+            .ThenBy(p => p.LeadHours)
+            .ToList();
+
+        if (future.Count > 0)
+        {
+            var tbody = new StringBuilder();
+            foreach (var p in future)
+            {
+                tbody.Append(Ci, $"""
+                    <tr>
+                      <td>{Escape(PrettyStation(p.Station))}</td>
+                      <td><time>{p.ValidTimeUtc:yyyy-MM-dd HH:mm}Z</time></td>
+                      <td>{p.LeadHours}h</td>
+                      <td class="num"><strong>{p.ProbWet.ToString("0.00", Ci)}</strong></td>
+                      <td class="num">{p.ClimatologyPWet.ToString("0.00", Ci)}</td>
+                      <td><small><code>{Escape(p.Version)}</code></small></td>
+                    </tr>
+                    """);
+            }
+
+            content.Append(Ci, $"""
+                <h3>Hourly detail (next 96h)</h3>
+                <figure>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Station</th>
+                        <th>Valid time</th>
+                        <th>Lead</th>
+                        <th class="num">P(wet)</th>
+                        <th class="num">Climatology</th>
+                        <th>Version</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                {tbody}    </tbody>
+                  </table>
+                </figure>
+                """);
+        }
+
+        content.Append("</section>");
+        return WrapPage(input, "Precipitation", "precipitation", content.ToString());
+    }
+
+    public static string RenderDryWindow(SiteInputs input)
+    {
+        var content = new StringBuilder();
+        content.Append("""
+            <section>
+              <hgroup>
+                <h2>Dry window — P(∃ N-hour dry block in target UTC day)</h2>
+                <p>Phase 3b per-station, per-window blender. 18 LightGBM classifiers (Bellever + Princetown × {3, 4, 6}h × leads 24/48/72h). Truth from EA Hydrology gauges with a 4-of-4 hourly gate.</p>
+              </hgroup>
+            """);
+
+        if (input.DryWindowPredictions.Count == 0)
+        {
+            content.Append("<p><em>No dry-window predictions in window. Run <code>predict --target dry-window --truth-station all --window all</code>.</em></p>");
+            content.Append("</section>");
+            return WrapPage(input, "Dry window", "dry-window", content.ToString());
+        }
+
+        var stations = input.DryWindowPredictions.Select(d => d.Station).Distinct().OrderBy(s => s, StringComparer.Ordinal).ToList();
+        var windows = input.DryWindowPredictions.Select(d => d.WindowHours).Distinct().OrderBy(w => w).ToList();
+        var leadOrder = new[] { 24, 48, 72 };
+
+        foreach (var station in stations)
+        {
+            content.Append(Ci, $"<h3>{Escape(PrettyStation(station))}</h3>");
+
+            foreach (var window in windows)
+            {
+                // Latest prediction per (target_date, lead). Keep target dates strictly
+                // forward of "yesterday" to avoid stale rows dominating the view.
+                var cutoff = input.GeneratedAtUtc.Date.AddDays(-1);
+                var latest = input.DryWindowPredictions
+                    .Where(d => d.Station == station && d.WindowHours == window && d.TargetDateUtc >= cutoff)
+                    .GroupBy(d => (d.TargetDateUtc, d.LeadHours))
+                    .Select(g => g.OrderByDescending(d => d.PredictedAtUtc).First())
+                    .ToList();
+
+                if (latest.Count == 0)
+                {
+                    content.Append(Ci, $"<h4>{window}-hour dry window</h4><p><em>No predictions on or after {cutoff:yyyy-MM-dd}.</em></p>");
+                    continue;
+                }
+
+                var dates = latest.Select(d => d.TargetDateUtc).Distinct().OrderBy(d => d).ToList();
+
+                var tbody = new StringBuilder();
+                foreach (var date in dates)
+                {
+                    var byLead = latest.Where(d => d.TargetDateUtc == date).ToDictionary(d => d.LeadHours);
+                    var anyClim = byLead.Values.FirstOrDefault();
+                    var clim = anyClim is null ? "—" : anyClim.ClimatologyProbHasDryWindow.ToString("0.00", Ci);
+
+                    var leadCells = new StringBuilder();
+                    foreach (var lead in leadOrder)
+                    {
+                        if (byLead.TryGetValue(lead, out var d))
+                        {
+                            // Bold cell when the blender meaningfully diverges from climatology.
+                            var diff = d.ProbHasDryWindow - d.ClimatologyProbHasDryWindow;
+                            var cls = Math.Abs(diff) >= 0.10 ? " class=\"num strong\"" : " class=\"num\"";
+                            leadCells.Append(Ci, $"<td{cls}>{d.ProbHasDryWindow.ToString("0.00", Ci)}</td>");
+                        }
+                        else
+                        {
+                            leadCells.Append("<td class=\"num\">—</td>");
+                        }
+                    }
+
+                    var agreementCell = byLead.Values
+                        .Select(d => d.AgreementHasDryWindow)
+                        .FirstOrDefault(a => a.HasValue);
+                    var agreement = agreementCell.HasValue ? agreementCell.Value.ToString("0.00", Ci) : "—";
+
+                    tbody.Append(Ci, $"""
+                        <tr>
+                          <td><time>{date:yyyy-MM-dd}</time></td>
+                          {leadCells}
+                          <td class="num">{clim}</td>
+                          <td class="num">{agreement}</td>
+                        </tr>
+                        """);
+                }
+
+                content.Append(Ci, $"""
+                    <h4>{window}-hour dry window</h4>
+                    <figure>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Target date (UTC)</th>
+                            <th class="num">+24h</th>
+                            <th class="num">+48h</th>
+                            <th class="num">+72h</th>
+                            <th class="num">Climatology</th>
+                            <th class="num">Model agreement</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                    {tbody}    </tbody>
+                      </table>
+                    </figure>
+                    """);
+            }
+        }
+
+        content.Append("""
+            <p class="skill-line">A dry "hour" requires all four 15-min EA gauge readings to be ≤ 0.1 mm. Cross-midnight dry stretches are not credited (UTC-day boundary). Daylight filtering is deferred to the application layer.</p>
+            </section>
+            """);
+        return WrapPage(input, "Dry window", "dry-window", content.ToString());
+    }
+
     public static string RenderVerify(SiteInputs input)
     {
         var content = new StringBuilder();
@@ -320,15 +616,21 @@ public static class SitePages
 
               <h3>Scope</h3>
               <p>
-                This PoC targets temperature at lead times <strong>24h, 48h and 72h</strong>.
-                Shorter and longer horizons are out of scope. Precipitation is a future phase.
+                This PoC targets <strong>temperature</strong>, <strong>hourly precipitation occurrence
+                P(wet ≥ 0.1 mm/h)</strong>, and <strong>per-day dry-window probability</strong>
+                (P(∃ contiguous N-hour dry block in target UTC day) for N = 3, 4, or 6 hours) at lead times
+                <strong>24h, 48h, and 72h</strong>. Shorter and longer horizons are out of scope.
+                Quantitative precipitation intensity (mm) is deferred indefinitely — the dry-window
+                framing covers the user-facing question without the calibration headaches of
+                conditional intensity regression.
               </p>
 
               <h3>Data sources</h3>
               <ul>
                 <li><strong>Forecasts:</strong> Open-Meteo (live + historical-forecast API).</li>
-                <li><strong>Training truth:</strong> ERA5 reanalysis via Open-Meteo (gapless, quantitative).</li>
-                <li><strong>Verification truth:</strong> METAR from aviationweather.gov and OGIMET, used as a real-observation sanity check.</li>
+                <li><strong>Training truth (temperature):</strong> ERA5 reanalysis via Open-Meteo (gapless, quantitative).</li>
+                <li><strong>Training + verification truth (precipitation, dry window):</strong> Environment Agency Hydrology rainfall gauges (Bellever Dartmoor, Princetown), 15-min tips aggregated to hourly with a 4-of-4 reading gate.</li>
+                <li><strong>Verification truth (temperature):</strong> METAR from aviationweather.gov and OGIMET, used as a real-observation sanity check.</li>
               </ul>
 
               <h3>Caveats</h3>
@@ -362,6 +664,7 @@ public static class SitePages
         .skill-line { font-style: italic; color: var(--pico-muted-color); }
 
         table td.num, table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+        table td.num.strong { font-weight: 700; color: var(--brand); }
         table small { color: var(--pico-muted-color); }
 
         svg.chart { width: 100%; height: auto; max-width: 100%; background: var(--pico-card-background-color); border-radius: 4px; margin: 0.5rem 0 1.5rem; }
@@ -399,7 +702,9 @@ public static class SitePages
                   <nav class="site-nav">
                     <ul>
                       <li><a href="index.html"{{NavActive(pageId, "index")}}>Home</a></li>
-                      <li><a href="predictions.html"{{NavActive(pageId, "predictions")}}>Predictions</a></li>
+                      <li><a href="predictions.html"{{NavActive(pageId, "predictions")}}>Temperature</a></li>
+                      <li><a href="precipitation.html"{{NavActive(pageId, "precipitation")}}>Precipitation</a></li>
+                      <li><a href="dry-window.html"{{NavActive(pageId, "dry-window")}}>Dry window</a></li>
                       <li><a href="verify.html"{{NavActive(pageId, "verify")}}>Verification</a></li>
                       <li><a href="about.html"{{NavActive(pageId, "about")}}>About</a></li>
                     </ul>
@@ -475,6 +780,18 @@ public static class SitePages
 
     private static string FmtNullable(double? v, string fmt = "0.00")
         => v.HasValue ? v.Value.ToString(fmt, Ci) : "—";
+
+    /// <summary>
+    /// Map a station slug (e.g. <c>ea_bellever_dartmoor</c>) to a display name.
+    /// Strips the data-source prefix and title-cases the rest.
+    /// </summary>
+    private static string PrettyStation(string slug)
+    {
+        if (string.IsNullOrWhiteSpace(slug)) return slug;
+        var trimmed = slug.StartsWith("ea_", StringComparison.Ordinal) ? slug[3..] : slug;
+        var parts = trimmed.Split('_', StringSplitOptions.RemoveEmptyEntries);
+        return string.Join(' ', parts.Select(p => p.Length == 0 ? p : char.ToUpperInvariant(p[0]) + p[1..]));
+    }
 
     private static string RenderEmptyChart(string title, string message) =>
         $"""<div class="chart-empty-box"><strong>{Escape(title)}</strong><p><em>{Escape(message)}</em></p></div>""";

@@ -49,7 +49,13 @@ public sealed class RenderSiteCommand
             windowStart, predictionEnd, rollingWindowDays, outputDir);
 
         var predictions = QueryPredictions(windowStart, predictionEnd, ct);
-        _log.LogInformation("Loaded {N} prediction rows.", predictions.Count);
+        _log.LogInformation("Loaded {N} temperature prediction rows.", predictions.Count);
+
+        var precip = QueryPrecipPredictions(windowStart, predictionEnd, ct);
+        _log.LogInformation("Loaded {N} precipitation prediction rows.", precip.Count);
+
+        var dryWindow = QueryDryWindowPredictions(windowStart, predictionEnd, ct);
+        _log.LogInformation("Loaded {N} dry-window prediction rows.", dryWindow.Count);
 
         // ERA5 is gapless-for-past, but only past — query up to the clock time.
         // Persistence-lookback headroom (up to 72h before the earliest prediction)
@@ -76,16 +82,20 @@ public sealed class RenderSiteCommand
             TruthByTime = truth,
             MetarByTime = metar,
             RollingMae = rolling,
+            PrecipPredictions = precip,
+            DryWindowPredictions = dryWindow,
         };
 
         Directory.CreateDirectory(outputDir);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "index.html"),       SitePages.RenderIndex(input),       ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "predictions.html"), SitePages.RenderPredictions(input), ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "verify.html"),      SitePages.RenderVerify(input),      ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "about.html"),       SitePages.RenderAbout(input),       ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "styles.css"),       SitePages.Stylesheet(),             ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "index.html"),        SitePages.RenderIndex(input),         ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "predictions.html"),  SitePages.RenderPredictions(input),   ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "precipitation.html"),SitePages.RenderPrecipitation(input), ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "dry-window.html"),   SitePages.RenderDryWindow(input),     ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "verify.html"),       SitePages.RenderVerify(input),        ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "about.html"),        SitePages.RenderAbout(input),         ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "styles.css"),        SitePages.Stylesheet(),               ct);
 
-        _log.LogInformation("Site rendered → {Dir} ({Files} files)", outputDir, 5);
+        _log.LogInformation("Site rendered → {Dir} ({Files} files)", outputDir, 7);
         return 0;
     }
 
@@ -138,7 +148,10 @@ public sealed class RenderSiteCommand
     {
         ct.ThrowIfCancellationRequested();
 
-        var glob = Path.Combine(_cfg.Storage.PredictionsPath, "**", "*.parquet")
+        // Scope to the temperature subtree only — sibling subtrees (precipitation,
+        // dry_window) have different schemas and would surface as nulls or wrong
+        // columns under union_by_name.
+        var glob = Path.Combine(_cfg.Storage.PredictionsPath, "temperature", "**", "*.parquet")
             .Replace('\\', '/').Replace("'", "''");
 
         var sql = $@"
@@ -197,6 +210,104 @@ ORDER BY PredictionMadeAtUtc DESC, LeadHours";
         {
             _log.LogWarning("Predictions tree empty — rendering an empty-state site.");
             return Array.Empty<PredictionRow>();
+        }
+        return rows;
+    }
+
+    private IReadOnlyList<SitePages.PrecipForecastPoint> QueryPrecipPredictions(
+        DateTime start, DateTime end, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        var glob = Path.Combine(_cfg.Storage.PredictionsPath, "precipitation", "**", "*.parquet")
+            .Replace('\\', '/').Replace("'", "''");
+
+        var sql = $@"
+SELECT TruthStation, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
+       ProbWet, ClimatologyPWet
+FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+WHERE LocationName = '{_cfg.Location.Name}'
+  AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
+  AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+ORDER BY TruthStation, LeadHours, ValidTimeUtc";
+
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+
+        var rows = new List<SitePages.PrecipForecastPoint>();
+        try
+        {
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                ct.ThrowIfCancellationRequested();
+                rows.Add(new SitePages.PrecipForecastPoint(
+                    Station:        r.GetString(0),
+                    Version:        r.GetString(1),
+                    PredictedAtUtc: r.GetDateTime(2),
+                    ValidTimeUtc:   r.GetDateTime(3),
+                    LeadHours:      r.GetInt32(4),
+                    ProbWet:        r.GetDouble(5),
+                    ClimatologyPWet: r.GetDouble(6)));
+            }
+        }
+        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
+        {
+            _log.LogWarning("Precipitation predictions tree empty — precip page will render an empty state.");
+            return Array.Empty<SitePages.PrecipForecastPoint>();
+        }
+        return rows;
+    }
+
+    private IReadOnlyList<SitePages.DryWindowForecastPoint> QueryDryWindowPredictions(
+        DateTime start, DateTime end, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        var glob = Path.Combine(_cfg.Storage.PredictionsPath, "dry_window", "**", "*.parquet")
+            .Replace('\\', '/').Replace("'", "''");
+
+        // Dry-window predictions are anchored on TargetDateUtc (UTC midnight of the
+        // labelled day), not ValidTimeUtc. Bound on TargetDate instead.
+        var sql = $@"
+SELECT TruthStation, WindowHours, ModelVersion, PredictionMadeAtUtc, TargetDateUtc, LeadHours,
+       ProbHasDryWindow, ClimatologyProbHasDryWindow, AgreementHasDryWindow
+FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+WHERE LocationName = '{_cfg.Location.Name}'
+  AND TargetDateUtc >= TIMESTAMP '{start.Date:yyyy-MM-dd HH:mm:ss}'
+  AND TargetDateUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+ORDER BY TruthStation, WindowHours, LeadHours, TargetDateUtc";
+
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+
+        var rows = new List<SitePages.DryWindowForecastPoint>();
+        try
+        {
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                ct.ThrowIfCancellationRequested();
+                rows.Add(new SitePages.DryWindowForecastPoint(
+                    Station:                     r.GetString(0),
+                    WindowHours:                 r.GetInt32(1),
+                    Version:                     r.GetString(2),
+                    PredictedAtUtc:              r.GetDateTime(3),
+                    TargetDateUtc:               r.GetDateTime(4),
+                    LeadHours:                   r.GetInt32(5),
+                    ProbHasDryWindow:            r.GetDouble(6),
+                    ClimatologyProbHasDryWindow: r.GetDouble(7),
+                    AgreementHasDryWindow:       r.IsDBNull(8) ? null : r.GetDouble(8)));
+            }
+        }
+        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
+        {
+            _log.LogWarning("Dry-window predictions tree empty — dry-window page will render an empty state.");
+            return Array.Empty<SitePages.DryWindowForecastPoint>();
         }
         return rows;
     }
