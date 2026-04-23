@@ -77,7 +77,7 @@ jobs:
       - name: Build
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
 
-      - name: Predict
+      - name: Predict temperature
         run: |
           FOR_DATE="${{ github.event.inputs.for_date }}"
           if [ -n "$FOR_DATE" ]; then
@@ -85,6 +85,21 @@ jobs:
           else
             dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature
           fi
+
+      - name: Predict precipitation
+        # Runs per-station P(wet) for every station in the precipitation manifest.
+        # Skipped gracefully (exit 2) when no precipitation blender is present yet —
+        # e.g. on a fresh deployment before the first phase 3a train.
+        run: |
+          FOR_DATE="${{ github.event.inputs.for_date }}"
+          if [ -n "$FOR_DATE" ]; then
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target precipitation --truth-station all --for-date "$FOR_DATE" || code=$?
+          else
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target precipitation --truth-station all || code=$?
+          fi
+          # Exit 2 = no precip model yet; exit 3 = no forecast rows for targets.
+          # Neither is fatal for the overall predict job.
+          if [ -n "${code:-}" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then exit "$code"; fi
 
       - name: Push predictions to R2
         env:

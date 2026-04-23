@@ -72,9 +72,14 @@ jobs:
           mkdir -p data/predictions
           rclone copy "r2:${R2_BUCKET}/data/predictions" ./data/predictions --fast-list --transfers 16 --checkers 32 --progress
 
-          # ERA5 truth: join key. Pulling the whole tree is fine at PoC scale.
+          # ERA5 truth: join key for temperature verify. Pulling the whole tree is fine at PoC scale.
           mkdir -p data/truth/era5
           rclone copy "r2:${R2_BUCKET}/data/truth/era5" ./data/truth/era5 --fast-list --transfers 16 --checkers 32 --progress
+
+          # EA rainfall truth: join key for precipitation verify. 15-min readings
+          # aggregated to hourly inside the verify command (HAVING COUNT(*)=4).
+          mkdir -p data/truth/rainfall
+          rclone copy "r2:${R2_BUCKET}/data/truth/rainfall" ./data/truth/rainfall --fast-list --transfers 16 --checkers 32 --progress
 
           # Model metadata (training_metadata.json + MANIFEST.json) for the drift
           # threshold reference. We don't need the .zip artefacts for verify but
@@ -89,7 +94,7 @@ jobs:
       - name: Build
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
 
-      - name: Verify
+      - name: Verify temperature
         # Exit code 4 = drift detected. Keep the step non-fatal (|| true) but
         # propagate the exit to a separate step so the job is still visibly
         # orange in the run list.
@@ -99,6 +104,22 @@ jobs:
           WINDOW="${{ github.event.inputs.window_days }}"
           DRIFT="${{ github.event.inputs.drift }}"
           ARGS="--target temperature"
+          if [ -n "$AS_OF" ]; then ARGS="$ARGS --as-of $AS_OF"; fi
+          if [ -n "$WINDOW" ]; then ARGS="$ARGS --window-days $WINDOW"; fi
+          if [ -n "$DRIFT" ]; then ARGS="$ARGS --drift $DRIFT"; fi
+          set +e
+          dotnet run --project src/WeatherBlend --no-build -c Release -- verify $ARGS
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Verify precipitation
+        # Independent exit code from the temperature verify. Uses the precip-specific
+        # default window (30d) unless the workflow_dispatch window_days override is set.
+        id: verify_precip_run
+        run: |
+          AS_OF="${{ github.event.inputs.as_of }}"
+          WINDOW="${{ github.event.inputs.window_days }}"
+          DRIFT="${{ github.event.inputs.drift }}"
+          ARGS="--target precipitation --truth-station all"
           if [ -n "$AS_OF" ]; then ARGS="$ARGS --as-of $AS_OF"; fi
           if [ -n "$WINDOW" ]; then ARGS="$ARGS --window-days $WINDOW"; fi
           if [ -n "$DRIFT" ]; then ARGS="$ARGS --drift $DRIFT"; fi
@@ -126,11 +147,21 @@ jobs:
       - name: Flag drift in job summary
         if: always()
         run: |
-          EXIT="${{ steps.verify_run.outputs.exit }}"
-          if [ "$EXIT" = "4" ]; then
-            echo "::warning::Drift detected — see verify report."
-            echo "**Drift detected.** See attached \`verify_*.md\` report." >> "$GITHUB_STEP_SUMMARY"
-          elif [ "$EXIT" != "0" ]; then
-            echo "::error::Verify step exited $EXIT (non-drift failure)."
-            exit 1
+          T_EXIT="${{ steps.verify_run.outputs.exit }}"
+          P_EXIT="${{ steps.verify_precip_run.outputs.exit }}"
+          drift=0
+          fail=0
+          case "$T_EXIT" in
+            0) ;;
+            4) echo "::warning::Temperature drift detected — see verify report."; drift=1 ;;
+            *) echo "::error::Temperature verify step exited $T_EXIT (non-drift failure)."; fail=1 ;;
+          esac
+          case "$P_EXIT" in
+            0) ;;
+            4) echo "::warning::Precipitation drift detected — see verify report."; drift=1 ;;
+            *) echo "::error::Precipitation verify step exited $P_EXIT (non-drift failure)."; fail=1 ;;
+          esac
+          if [ "$drift" = "1" ]; then
+            echo "**Drift detected.** See attached \`verify_*.md\` report(s)." >> "$GITHUB_STEP_SUMMARY"
           fi
+          if [ "$fail" = "1" ]; then exit 1; fi

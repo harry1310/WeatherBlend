@@ -44,7 +44,26 @@ dotnet run --project src/WeatherBlend -- backfill --start 2024-11-01 --end 2025-
 # Phase 2 commands (stubs for now)
 dotnet run --project src/WeatherBlend -- train --target temperature
 dotnet run --project src/WeatherBlend -- evaluate
+
+# Phase 3a: per-station precipitation occurrence blender (P(wet>=0.1mm/hour))
+dotnet run --project src/WeatherBlend -- train --target precipitation --station "Bellever Dartmoor"
+dotnet run --project src/WeatherBlend -- predict --target precipitation --truth-station all
+dotnet run --project src/WeatherBlend -- verify --target precipitation --truth-station all
 ```
+
+### Precipitation target specifics
+
+- Truth comes from EA Hydrology rainfall gauges (15-min tips aggregated to hourly,
+  dropping hours with fewer than 4 readings) rather than ERA5 or METAR.
+- One blender per station because each site has its own orographic skill profile;
+  artefacts live under `data/models/precipitation/{station_slug}/v{ts}/`. The slug
+  is always prefixed `ea_` so a future Met Office Princetown station can coexist.
+- Predict output: `data/predictions/precipitation/{station}/model_version={v}/date={yyyy-MM-dd}/predictions.parquet`
+  with P(wet), per-model inputs, ensemble aggregates, run-times, and a SHA-256
+  feature-vector hash for provenance.
+- Verify stratifies by (station, version, lead) and reports Brier, climatology Brier,
+  BSS, mean-of-models, best-single, persistence, frequency bias @0.5, and a 10-bin
+  reliability table. Drift flags fire when rolling Brier > 1.5× training-test Brier.
 
 ## Scheduling on Windows
 
@@ -93,6 +112,21 @@ data/observations/
     station=EGTE/
       date=2025-11-15/
         observations.parquet      appended through the day, deduped by time
+data/truth/rainfall/
+  location=bonehill_rocks/
+    station=Bellever Dartmoor/
+      date=2025-11-15/
+        rainfall.parquet          EA Hydrology 15-min tips
+data/models/precipitation/
+  ea_bellever_dartmoor/
+    v2026-04-23_071842/
+      lead_24h.zip lead_48h.zip lead_72h.zip
+      training_metadata.json climatology.json
+data/predictions/precipitation/
+  ea_bellever_dartmoor/
+    model_version=v2026-04-23_071842/
+      date=2026-04-23/
+        predictions.parquet       P(wet) per lead, deduped by (predicted-at, lead)
 ```
 
 DuckDB reads this natively:
@@ -122,12 +156,12 @@ SELECT * FROM read_parquet(
 
 ## Roadmap
 
-- **Phase 1 (current):** collector, storage, status tooling. Accumulate data.
-- **Phase 2:** temperature blender - LightGBM per lead-time bucket, beat best single model.
-- **Phase 3:** quantitative precip data source (Met Office DataHub / Nimrod radar).
-- **Phase 4:** precip occurrence classifier.
-- **Phase 5:** precip intensity + probabilistic thresholds (P>0.1mm, P>1mm, P>5mm, P>10mm).
-- **Phase 6:** add ML models as inputs (GraphCast, AIFS - both now published by ECMWF).
+- **Phase 1:** collector, storage, status tooling, 12-month backfill. **Done.**
+- **Phase 2:** temperature blender - LightGBM per lead-time bucket, beat best single model. **Done (phase 2b, rolling verify shipped).**
+- **Phase 3a:** precip occurrence blender. Per-station P(wet≥0.1mm/h) classifier trained on EA Hydrology gauges (Bellever, Princetown). Per-lead, same temperature pipeline. **Done — predict + verify live.**
+- **Phase 3b:** precip intensity regression E[mm | wet] per station, combined to expected_precip = P(wet)·E[mm|wet].
+- **Phase 3c:** quantile regressions for probabilistic thresholds (P>1mm, P>5mm, P>10mm); CRPS reporting.
+- **Phase 4:** add ML models as inputs (GraphCast, AIFS - both now published by ECMWF).
 
 ## License
 

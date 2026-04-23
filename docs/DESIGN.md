@@ -60,19 +60,27 @@ horizon or overfits the easy ones. Separate per-bucket models each see a
 more homogeneous problem. Buckets: [1-3h], [6-12h], [24-36h], [48-72h],
 [96-120h], [144-168h].
 
-## Precipitation architecture (phase 5)
+## Precipitation architecture (phase 3)
 
 Don't train a single regression on precip (mm/h). You'll get near-zero predictions
 most of the time that score well on MAE and are useless.
 
 Two-stage:
 
-1. **Occurrence classifier**: P(precip > 0.1mm) in hour H, per lead time.
-   Target: binary from METAR present-weather codes (phase 1) or gauge data (phase 3).
-   Metrics: Brier score, reliability diagram, AUC.
+1. **Occurrence classifier (phase 3a, shipped)**: P(precip ≥ 0.1mm) in hour H, per
+   lead time. Target: binary from EA Hydrology gauge (15-min tips summed to hourly;
+   hours with fewer than 4 readings are dropped to avoid boundary flips). **One
+   blender per truth station** because Dartmoor stations differ enough in micro-
+   climate that a single model would underfit both; slugs are `ea_bellever_dartmoor`,
+   `ea_princetown` (the `ea_` prefix reserves space for a future Met Office Princetown).
+   Metrics: Brier, BSS vs climatology, frequency bias @0.5, reliability diagram,
+   persistence + best-single + mean-of-models baselines. Climatology baseline is
+   P(wet) per (month, hour-of-day) from training rows, persisted as
+   `climatology.json` alongside each version so predict/verify never need the
+   training tree again.
 
-2. **Intensity regression**: E[precip | precip > threshold], conditional on
-   the classifier firing. Train only on hours with observed precip.
+2. **Intensity regression (phase 3b)**: E[precip | precip > threshold], conditional
+   on the classifier firing. Train only on hours with observed precip.
 
 Combine: `expected_precip = P(precip) * E[precip | precip > 0]`.
 
@@ -95,6 +103,11 @@ Best -> worst for training a precip model:
 
 Decision: ship phase 1 with METAR, tag phase 3 as "source quantitative precip
 truth" before touching the precip model. Don't train precip on phase 1 truth.
+
+Phase 3a shipped with **EA Hydrology** (free, OGL v3, 15-min resolution, 1998+
+at Bellever and Princetown) rather than Met Office DataHub — quality is close
+enough for Dartmoor-scale verification and avoids DataHub's rate limits and
+paid tier. Nimrod radar is still the right next step for convective events.
 
 ## Verification: the bit that matters most
 
