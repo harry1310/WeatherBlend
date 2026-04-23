@@ -113,6 +113,7 @@ public static class Program
                 services.AddTransient<RenderSiteCommand>();
                 services.AddTransient<DryWindowDiagnosticCommand>();
                 services.AddTransient<DryWindowTrainCommand>();
+                services.AddTransient<DryWindowReportCommand>();
             })
             .Build();
 
@@ -348,6 +349,16 @@ public static class Program
             ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
         });
         root.AddCommand(dryWindowDiag);
+
+        var dryWindowReport = new Command(
+            "dry-window-report",
+            "Phase 3b post-training evaluation: reload current artefacts, score on test partition, write markdown report");
+        dryWindowReport.SetHandler(async ctx =>
+        {
+            var cmd = host.Services.GetRequiredService<DryWindowReportCommand>();
+            ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
+        });
+        root.AddCommand(dryWindowReport);
 
         var globOpt = new Option<string>("--glob", "Parquet glob across models for one run") { IsRequired = true };
         var compare = new Command("compare", "Cross-model agreement summary for a run") { globOpt };
