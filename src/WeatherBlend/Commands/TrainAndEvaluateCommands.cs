@@ -18,21 +18,23 @@ public sealed class TrainCommand
 {
     private readonly ILogger<TrainCommand> _log;
     private readonly AppConfig _cfg;
+    private readonly DryWindowTrainCommand _dryWindow;
 
     private static readonly int[] DefaultLeads = { 24, 48, 72 };
 
-    public TrainCommand(ILogger<TrainCommand> log, AppConfig cfg)
+    public TrainCommand(ILogger<TrainCommand> log, AppConfig cfg, DryWindowTrainCommand dryWindow)
     {
         _log = log;
         _cfg = cfg;
+        _dryWindow = dryWindow;
     }
 
-    public async Task<int> RunAsync(string target, string lead, string? station, CancellationToken ct)
+    public async Task<int> RunAsync(string target, string lead, string? station, string? window, CancellationToken ct)
     {
         var t = target.ToLowerInvariant();
-        if (t is not ("temperature" or "precipitation"))
+        if (t is not ("temperature" or "precipitation" or "dry-window"))
         {
-            _log.LogError("target must be 'temperature' or 'precipitation' (got '{Target}')", target);
+            _log.LogError("target must be 'temperature' | 'precipitation' | 'dry-window' (got '{Target}')", target);
             return 2;
         }
 
@@ -47,6 +49,7 @@ public sealed class TrainCommand
         {
             "temperature"   => await RunPhase2bAsync(leads, ct),
             "precipitation" => await RunPhase3aAsync(leads, station, ct),
+            "dry-window"    => await _dryWindow.RunAsync(station ?? "all", window ?? "all", leads, ct),
             _ => 2,
         };
     }

@@ -112,6 +112,7 @@ public static class Program
                 services.AddTransient<PrecipVerifyCommand>();
                 services.AddTransient<RenderSiteCommand>();
                 services.AddTransient<DryWindowDiagnosticCommand>();
+                services.AddTransient<DryWindowTrainCommand>();
             })
             .Build();
 
@@ -179,7 +180,7 @@ public static class Program
 
         var targetOpt = new Option<string>(
             name: "--target",
-            description: "Target variable: temperature | precipitation",
+            description: "Target variable: temperature | precipitation | dry-window",
             getDefaultValue: () => "temperature");
         var leadOpt = new Option<string>(
             name: "--lead",
@@ -187,14 +188,21 @@ public static class Program
             getDefaultValue: () => "all");
         var stationOpt = new Option<string?>(
             name: "--station",
-            description: "Rainfall station name (precipitation target only). Defaults to the first station in config.",
+            description: "Rainfall station name (precipitation / dry-window targets). Defaults to the first station (precipitation) or all phase-3b stations (dry-window).",
             getDefaultValue: () => null);
-        var train = new Command("train", "Train the blender (phase 2b temperature / phase 3a precipitation, per-lead)") { targetOpt, leadOpt, stationOpt };
-        train.SetHandler(async (target, lead, station) =>
+        var windowOpt = new Option<string?>(
+            name: "--window",
+            description: "Dry-window target only: window length in hours (3, 4, 6, or all). Default: all.",
+            getDefaultValue: () => null);
+        var train = new Command("train", "Train the blender (phase 2b temperature / phase 3a precipitation / phase 3b dry-window)")
+        {
+            targetOpt, leadOpt, stationOpt, windowOpt,
+        };
+        train.SetHandler(async (target, lead, station, window) =>
         {
             var cmd = host.Services.GetRequiredService<TrainCommand>();
-            await cmd.RunAsync(target, lead, station, CancellationToken.None);
-        }, targetOpt, leadOpt, stationOpt);
+            await cmd.RunAsync(target, lead, station, window, CancellationToken.None);
+        }, targetOpt, leadOpt, stationOpt, windowOpt);
         root.AddCommand(train);
 
         var evalTargetOpt = new Option<string>(
