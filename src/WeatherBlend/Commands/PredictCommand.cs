@@ -1,11 +1,10 @@
-using System.Globalization;
-using System.Security.Cryptography;
 using DuckDB.NET.Data;
 using Microsoft.Extensions.Logging;
 using Microsoft.ML;
 using Parquet.Serialization;
 using WeatherBlend.Config;
 using WeatherBlend.Models;
+using WeatherBlend.Predict;
 using WeatherBlend.Train;
 
 namespace WeatherBlend.Commands;
@@ -29,11 +28,6 @@ public sealed class PredictCommand
     private readonly AppConfig _cfg;
 
     private static readonly int[] DefaultLeads = { 24, 48, 72 };
-
-    // Standard anchor time for --for-date retroactive fills. 08:00 UTC mirrors the
-    // daily workflow schedule and is late enough that the major model cycles (00z,
-    // 06z GFS; 00z ECMWF) will typically have landed.
-    private static readonly TimeSpan BackfillAnchor = new(8, 0, 0);
 
     public PredictCommand(ILogger<PredictCommand> log, AppConfig cfg)
     {
@@ -62,14 +56,9 @@ public sealed class PredictCommand
         _log.LogInformation("Using blender version {V} (phase={Phase})", metadata.Version, metadata.Phase);
 
         // predictionMadeAt = real wall-clock UTC (provenance).
-        // anchor = the hour we compute lead offsets from. For a live run, anchor is
-        // now truncated to top-of-hour. For --for-date backfill, anchor is the given
-        // date at 08:00 UTC.
+        // anchor = the hour we compute lead offsets from (see PredictAnchor).
         var predictionMadeAt = DateTime.UtcNow;
-        var anchor = forDate.HasValue
-            ? forDate.Value.ToDateTime(TimeOnly.FromTimeSpan(BackfillAnchor), DateTimeKind.Utc)
-            : new DateTime(predictionMadeAt.Year, predictionMadeAt.Month, predictionMadeAt.Day,
-                           predictionMadeAt.Hour, 0, 0, DateTimeKind.Utc);
+        var anchor = PredictAnchor.Compute(predictionMadeAt, forDate);
 
         var targets = DefaultLeads.Select(L => (Lead: L, Valid: anchor.AddHours(L))).ToArray();
 
@@ -204,6 +193,8 @@ public sealed class PredictCommand
         ct.ThrowIfCancellationRequested();
 
         var fcGlob = Path.Combine(forecastsPath, "**", "*.parquet").Replace('\\', '/').Replace("'", "''");
+        var liveCycleFilter = PredictForecastFilters.LiveCycleAsOf(
+            locationName, asOfRunTime, earliestValid, latestValid);
 
         // Keep per-model rows — do NOT pivot in SQL. Pivoting in .NET lets us carry
         // each model's RunTimeUtc through to the output (provenance). "Latest" per
@@ -216,12 +207,8 @@ WITH latest AS (
                ORDER BY RunTimeUtc DESC
            ) AS rn
     FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
-    WHERE LocationName = '{locationName}'
+    WHERE {liveCycleFilter}
       AND Temperature2m IS NOT NULL
-      AND (RunTimeSource IS NULL OR RunTimeSource <> 'offset_day')
-      AND RunTimeUtc <= TIMESTAMP '{asOfRunTime:yyyy-MM-dd HH:mm:ss}'
-      AND ValidTimeUtc BETWEEN TIMESTAMP '{earliestValid:yyyy-MM-dd HH:mm:ss}'
-                           AND TIMESTAMP '{latestValid:yyyy-MM-dd HH:mm:ss}'
 )
 SELECT ValidTimeUtc, Model, RunTimeUtc, Temperature2m, WindDirection10m
 FROM latest
@@ -274,34 +261,12 @@ ORDER BY ValidTimeUtc, Model;";
 
     /// <summary>SHA-256 hex of the 13 feature floats in FeatureNames order.
     /// Deterministic — re-running predict on identical inputs produces identical hashes.</summary>
-    public static string HashFeatures(TrainingRow row)
+    public static string HashFeatures(TrainingRow row) => FeatureHashing.HashFloats(new[]
     {
-        Span<byte> buf = stackalloc byte[13 * sizeof(float)];
-        var i = 0;
-        WriteFloat(buf, ref i, row.TempGfs);
-        WriteFloat(buf, ref i, row.TempEcmwf);
-        WriteFloat(buf, ref i, row.TempIcon);
-        WriteFloat(buf, ref i, row.TempMf);
-        WriteFloat(buf, ref i, row.TempUkmo);
-        WriteFloat(buf, ref i, row.TempGem);
-        WriteFloat(buf, ref i, row.TempMean);
-        WriteFloat(buf, ref i, row.TempStd);
-        WriteFloat(buf, ref i, row.TempRange);
-        WriteFloat(buf, ref i, row.HourSin);
-        WriteFloat(buf, ref i, row.HourCos);
-        WriteFloat(buf, ref i, row.DoySin);
-        WriteFloat(buf, ref i, row.DoyCos);
-
-        Span<byte> hash = stackalloc byte[32];
-        SHA256.HashData(buf, hash);
-        return Convert.ToHexString(hash).ToLowerInvariant();
-
-        static void WriteFloat(Span<byte> dst, ref int offset, float v)
-        {
-            BitConverter.TryWriteBytes(dst.Slice(offset, sizeof(float)), v);
-            offset += sizeof(float);
-        }
-    }
+        row.TempGfs, row.TempEcmwf, row.TempIcon, row.TempMf, row.TempUkmo, row.TempGem,
+        row.TempMean, row.TempStd, row.TempRange,
+        row.HourSin, row.HourCos, row.DoySin, row.DoyCos,
+    });
 
     private static string FormatRunTimes(DateTime?[] runs)
     {
