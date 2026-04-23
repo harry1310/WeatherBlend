@@ -5,6 +5,7 @@ using Parquet.Serialization;
 using WeatherBlend.Config;
 using WeatherBlend.Models;
 using WeatherBlend.Predict;
+using WeatherBlend.Site;
 using WeatherBlend.Train;
 
 namespace WeatherBlend.Commands;
@@ -131,8 +132,8 @@ public sealed class PrecipPredictCommand
         _log.LogInformation("Station {Station}: using blender version {V} (phase={Phase})",
             station, metadata.Version, metadata.Phase);
 
-        var isRich = string.Equals(metadata.Phase, "3c", StringComparison.OrdinalIgnoreCase);
-        var isIsotonic = string.Equals(metadata.Phase, "3a_isotonic", StringComparison.OrdinalIgnoreCase);
+        var isRich = PrecipPhases.IsRich(metadata.Phase);
+        var isIsotonic = PrecipPhases.IsIsotonic(metadata.Phase);
 
         PrecipIsotonicCalibration? calibration = null;
         if (isIsotonic)
