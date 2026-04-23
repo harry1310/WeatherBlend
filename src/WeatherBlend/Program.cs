@@ -111,6 +111,7 @@ public static class Program
                 services.AddTransient<VerifyCommand>();
                 services.AddTransient<PrecipVerifyCommand>();
                 services.AddTransient<RenderSiteCommand>();
+                services.AddTransient<DryWindowDiagnosticCommand>();
             })
             .Build();
 
@@ -329,6 +330,16 @@ public static class Program
             Environment.ExitCode = await cmd.RunAsync(output, window, rolling, CancellationToken.None);
         }, siteOutputOpt, siteWindowOpt, siteRollingOpt);
         root.AddCommand(renderSite);
+
+        var dryWindowDiag = new Command(
+            "dry-window-diagnostic",
+            "Phase 3b pre-training label diagnostic (per-station, per-window rates + sanity checks)");
+        dryWindowDiag.SetHandler(async ctx =>
+        {
+            var cmd = host.Services.GetRequiredService<DryWindowDiagnosticCommand>();
+            ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
+        });
+        root.AddCommand(dryWindowDiag);
 
         var globOpt = new Option<string>("--glob", "Parquet glob across models for one run") { IsRequired = true };
         var compare = new Command("compare", "Cross-model agreement summary for a run") { globOpt };
