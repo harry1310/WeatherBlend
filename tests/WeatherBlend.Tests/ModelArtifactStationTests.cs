@@ -102,4 +102,87 @@ public class ModelArtifactStationTests
 
         ModelArtifact.ListStations(root, "precipitation").Should().BeEmpty();
     }
+
+    [Fact]
+    public void UpdateStationManifest_seeds_Active_as_single_current_for_backcompat()
+    {
+        var root = FreshRoot();
+        try
+        {
+            ModelArtifact.UpdateStationManifest(root, "precipitation", "ea_bellever_dartmoor", "v2026-04-22_071842");
+
+            ModelArtifact.ResolveStationActive(root, "precipitation", "ea_bellever_dartmoor")
+                .Should().Equal("v2026-04-22_071842");
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void SetStationActive_replaces_list_independently_of_Current()
+    {
+        var root = FreshRoot();
+        try
+        {
+            ModelArtifact.UpdateStationManifest(root, "precipitation", "ea_bellever_dartmoor", "v3a_lean");
+            ModelArtifact.AppendStationVersion(root, "precipitation", "ea_bellever_dartmoor", "v3c_rich");
+            ModelArtifact.SetStationActive(root, "precipitation", "ea_bellever_dartmoor",
+                new[] { "v3a_lean", "v3c_rich" });
+
+            ModelArtifact.ResolveStationActive(root, "precipitation", "ea_bellever_dartmoor")
+                .Should().Equal("v3a_lean", "v3c_rich");
+
+            // Current is unchanged by SetStationActive — the lean 3a remains the champion.
+            var dir = ModelArtifact.ResolveStationVersionDir(root, "precipitation", "ea_bellever_dartmoor", "current");
+            Norm(dir).Should().EndWith("ea_bellever_dartmoor/v3a_lean");
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void ResolveStationActive_falls_back_to_Current_when_Active_empty()
+    {
+        var root = FreshRoot();
+        try
+        {
+            ModelArtifact.UpdateStationManifest(root, "precipitation", "ea_princetown", "v_legacy");
+            // Simulate a legacy manifest: clear Active so we fall back to [Current].
+            ModelArtifact.SetStationActive(root, "precipitation", "ea_princetown", Array.Empty<string>());
+
+            ModelArtifact.ResolveStationActive(root, "precipitation", "ea_princetown")
+                .Should().Equal("v_legacy");
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void ResolveStationActive_returns_empty_when_station_absent()
+    {
+        var root = FreshRoot();
+        try
+        {
+            ModelArtifact.UpdateStationManifest(root, "precipitation", "ea_bellever_dartmoor", "v1");
+
+            ModelArtifact.ResolveStationActive(root, "precipitation", "ea_never_trained")
+                .Should().BeEmpty();
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void AppendStationVersion_creates_entry_with_empty_Current_and_Active()
+    {
+        // Mirrors the temperature AppendVersion semantics: registers a version in history
+        // without making it the champion or adding it to Active.
+        var root = FreshRoot();
+        try
+        {
+            ModelArtifact.AppendStationVersion(root, "precipitation", "ea_princetown", "v_future_challenger");
+
+            ModelArtifact.ResolveStationActive(root, "precipitation", "ea_princetown")
+                .Should().BeEmpty();
+            var act = () => ModelArtifact.ResolveStationVersionDir(root, "precipitation", "ea_princetown", "current");
+            act.Should().Throw<InvalidOperationException>();
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
 }

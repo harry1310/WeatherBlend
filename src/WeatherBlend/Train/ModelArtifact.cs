@@ -58,6 +58,14 @@ public static class ModelArtifact
     {
         public string Current { get; set; } = "";
         public List<string> Versions { get; set; } = new();
+
+        /// <summary>
+        /// Versions that should produce predictions/verify rows for this station. Empty
+        /// means "fall back to [Current]" (back-compat). Used by Phase 3c champion/
+        /// challenger: the 3a-lean stays as Current while 3c-rich is appended to Active
+        /// so both versions emit predictions every cycle.
+        /// </summary>
+        public List<string> Active { get; set; } = new();
     }
 
     public sealed class FeatureSchema
@@ -323,11 +331,67 @@ public static class ModelArtifact
         entry.Current = versionDirName;
         if (!entry.Versions.Contains(versionDirName))
             entry.Versions.Add(versionDirName);
+        // Single-active legacy semantics (mirrors the flat-layout UpdateManifest): a
+        // plain UpdateStationManifest resets Active to [Current]. For Phase 3c
+        // champion/challenger, call SetStationActive afterwards with the full list.
+        entry.Active = new List<string> { versionDirName };
 
         var tmp = manifestPath + ".tmp";
         WriteJson(tmp, manifest);
         if (File.Exists(manifestPath)) File.Delete(manifestPath);
         File.Move(tmp, manifestPath);
+    }
+
+    /// <summary>
+    /// Append a station version to its history list without touching Current or Active.
+    /// Mirrors <see cref="AppendVersion"/> for per-station manifests.
+    /// </summary>
+    public static void AppendStationVersion(string modelsRoot, string target, string station, string versionDirName)
+    {
+        MutateManifest(modelsRoot, target, m =>
+        {
+            if (!m.Stations.TryGetValue(station, out var entry))
+            {
+                entry = new StationEntry();
+                m.Stations[station] = entry;
+            }
+            if (!entry.Versions.Contains(versionDirName))
+                entry.Versions.Add(versionDirName);
+        });
+    }
+
+    /// <summary>
+    /// Replace the Active list for a specific station. Predict + verify iterate this
+    /// list when no specific version is requested. Caller is responsible for ensuring
+    /// every listed version exists under <c>{modelsRoot}/{target}/{station}/</c>.
+    /// </summary>
+    public static void SetStationActive(string modelsRoot, string target, string station, IEnumerable<string> activeVersions)
+    {
+        var list = activeVersions.Distinct().ToList();
+        MutateManifest(modelsRoot, target, m =>
+        {
+            if (!m.Stations.TryGetValue(station, out var entry))
+            {
+                entry = new StationEntry();
+                m.Stations[station] = entry;
+            }
+            entry.Active = list;
+        });
+    }
+
+    /// <summary>
+    /// Versions that should produce predictions/verify rows for this station. Falls
+    /// back to [Current] when Active is empty (legacy per-station entries written
+    /// before Phase 3c). Returns empty if neither is populated.
+    /// </summary>
+    public static IReadOnlyList<string> ResolveStationActive(string modelsRoot, string target, string station)
+    {
+        var manifest = ReadJson<Manifest>(Path.Combine(modelsRoot, target, ManifestFileName));
+        if (manifest is null) return Array.Empty<string>();
+        if (!manifest.Stations.TryGetValue(station, out var entry)) return Array.Empty<string>();
+        if (entry.Active.Count > 0) return entry.Active;
+        if (!string.IsNullOrWhiteSpace(entry.Current)) return new[] { entry.Current };
+        return Array.Empty<string>();
     }
 
     /// <summary>

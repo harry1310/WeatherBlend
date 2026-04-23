@@ -76,12 +76,29 @@ public sealed class PrecipPredictCommand
         foreach (var station in stationsToRun)
         {
             ct.ThrowIfCancellationRequested();
-            var wrote = await RunStationAsync(
-                modelsRoot, station, modelVersion, predictionMadeAt, anchor, targets, perValid, ct);
-            anyWritten |= wrote;
+            foreach (var version in ResolveRequestedVersions(modelsRoot, station, modelVersion))
+            {
+                var wrote = await RunStationAsync(
+                    modelsRoot, station, version, predictionMadeAt, anchor, targets, perValid, ct);
+                anyWritten |= wrote;
+            }
         }
 
         return anyWritten ? 0 : 3;
+    }
+
+    private IReadOnlyList<string> ResolveRequestedVersions(string modelsRoot, string station, string modelVersion)
+    {
+        // Mirrors PredictCommand.ResolveRequestedVersions for the per-station layout:
+        // "current"/"all" → iterate every active version for this station (Phase 3c
+        // champion/challenger). Anything else is an explicit version dir name.
+        var v = modelVersion?.ToLowerInvariant() ?? "current";
+        if (v is "current" or "all")
+        {
+            var active = ModelArtifact.ResolveStationActive(modelsRoot, "precipitation", station);
+            return active.Count == 0 ? new[] { "current" } : active.ToList();
+        }
+        return new[] { modelVersion! };
     }
 
     private async Task<bool> RunStationAsync(
