@@ -24,7 +24,13 @@ namespace WeatherBlend.Train.DryWindow;
 /// </summary>
 public static class DryWindowFeatureBuilder
 {
-    /// <summary>Fixed feature-column order — persisted in feature_schema.json.</summary>
+    /// <summary>
+    /// Fixed feature-column order for the Phase 3b base set (53 columns).
+    /// Persisted in <c>feature_schema.json</c> for any 3b artefact and inherited
+    /// unchanged by 3d-calibrated (which just re-maps 3b's output through PAV).
+    /// Phase 3d-shape extends this list with <see cref="ShapeFeatureNames"/> —
+    /// callers must use <see cref="FeatureNamesForPhase"/> to get the right set.
+    /// </summary>
     public static readonly IReadOnlyList<string> FeatureNames = new[]
     {
         // Per-model day totals.
@@ -49,6 +55,34 @@ public static class DryWindowFeatureBuilder
         // Calendar.
         "doy_sin", "doy_cos",
     };
+
+    /// <summary>
+    /// Phase 3d-shape adds 7 within-day rain-structure features derived from the
+    /// ensemble-mean hourly precip vector. Layered on top of <see cref="FeatureNames"/>
+    /// — never used standalone.
+    /// </summary>
+    public static readonly IReadOnlyList<string> ShapeFeatureNames = new[]
+    {
+        "first_wet_hour", "last_wet_hour",
+        "longest_forecast_dry_run_hours", "longest_forecast_wet_run_hours",
+        "n_rain_events",
+        "morning_precip_sum", "afternoon_precip_sum",
+    };
+
+    /// <summary>Phase identifier strings persisted in <c>training_metadata.Phase</c>.</summary>
+    public const string Phase3b = "3b";
+    public const string Phase3dShape = "3d-shape";
+    public const string Phase3dCalibrated = "3d-calibrated";
+
+    /// <summary>
+    /// Resolve the feature-column ordering for a given training phase. 3b and
+    /// 3d-calibrated reuse the base 53 columns (calibrated re-maps 3b's output);
+    /// 3d-shape appends the 7 shape columns. Unknown phases default to base.
+    /// </summary>
+    public static IReadOnlyList<string> FeatureNamesForPhase(string phase)
+        => phase == Phase3dShape
+            ? FeatureNames.Concat(ShapeFeatureNames).ToArray()
+            : FeatureNames;
 
     /// <summary>Model identifier order aligned with per-model feature suffixes.</summary>
     public static readonly IReadOnlyList<string> ModelIds = new[]
@@ -191,6 +225,9 @@ public static class DryWindowFeatureBuilder
         // Covariates from the ensemble-mean time series across the 24 hours.
         var env = EnvelopeCovariates(modelDays);
 
+        // Shape features (Phase 3d) — derived from the ensemble-mean hourly precip vector.
+        var shape = ShapeFeatures(modelDays);
+
         var doyAngle = 2.0 * Math.PI * (targetDate.DayOfYear - 1) / 365.0;
 
         return new DryWindowTrainingRow
@@ -259,6 +296,14 @@ public static class DryWindowFeatureBuilder
 
             DoySin = (float)Math.Sin(doyAngle),
             DoyCos = (float)Math.Cos(doyAngle),
+
+            FirstWetHour = (float)shape.FirstWetHour,
+            LastWetHour  = (float)shape.LastWetHour,
+            LongestForecastDryRunHours = (float)shape.LongestDryRun,
+            LongestForecastWetRunHours = (float)shape.LongestWetRun,
+            NRainEvents       = (float)shape.NRainEvents,
+            MorningPrecipSum   = (float)shape.MorningPrecipSum,
+            AfternoonPrecipSum = (float)shape.AfternoonPrecipSum,
 
             HasDryWindow = label,
             PrecipMmDay = (float)truthMmDay,
@@ -512,6 +557,94 @@ ORDER BY ValidTimeUtc, Model;";
             CapeMax:  double.IsNegativeInfinity(capeMax) ? double.NaN : capeMax,
             WindMean: windCount == 0 ? double.NaN : windSum / windCount,
             WindMax:  double.IsNegativeInfinity(windMax) ? double.NaN : windMax);
+    }
+
+    internal readonly record struct ShapeResult(
+        double FirstWetHour, double LastWetHour,
+        double LongestDryRun, double LongestWetRun,
+        double NRainEvents,
+        double MorningPrecipSum, double AfternoonPrecipSum);
+
+    /// <summary>
+    /// Phase 3d shape features. Builds an ensemble-mean hourly precip vector
+    /// (NaN-skip across models per hour, treating "no model supplied this hour"
+    /// as zero — same convention as per-model walks in <see cref="ComposeRow"/>),
+    /// then derives within-day rain structure summaries:
+    ///   first/last wet hour (sentinels 24/-1 when fully dry),
+    ///   longest contiguous dry/wet runs in hours,
+    ///   number of rain events (maximal wet runs separated by ≥1 dry hour),
+    ///   morning (06–11) and afternoon (12–17) precip totals.
+    /// Returns NaN for every feature if no model contributed any hour.
+    /// </summary>
+    internal static ShapeResult ShapeFeatures(IReadOnlyList<ForecastDay?> modelDays)
+    {
+        var meanPrecip = new double[24];
+        var present = new bool[24];
+        bool any = false;
+        for (int h = 0; h < 24; h++)
+        {
+            double sum = 0;
+            int n = 0;
+            foreach (var day in modelDays)
+            {
+                if (day is null) continue;
+                if (day.Precip[h].HasValue) { sum += day.Precip[h]!.Value; n++; }
+            }
+            if (n > 0)
+            {
+                meanPrecip[h] = sum / n;
+                present[h] = true;
+                any = true;
+            }
+            else
+            {
+                meanPrecip[h] = 0.0; // matches per-model "p ?? 0.0" convention
+            }
+        }
+
+        if (!any)
+        {
+            var nan = double.NaN;
+            return new ShapeResult(nan, nan, nan, nan, nan, nan, nan);
+        }
+
+        int firstWet = -1, lastWet = -1;
+        int dryRun = 0, wetRun = 0, longestDry = 0, longestWet = 0;
+        int nEvents = 0;
+        bool inWet = false;
+        for (int h = 0; h < 24; h++)
+        {
+            bool wet = meanPrecip[h] >= WetThresholdMm;
+            if (wet)
+            {
+                if (firstWet < 0) firstWet = h;
+                lastWet = h;
+                wetRun++;
+                if (wetRun > longestWet) longestWet = wetRun;
+                dryRun = 0;
+                if (!inWet) { nEvents++; inWet = true; }
+            }
+            else
+            {
+                dryRun++;
+                if (dryRun > longestDry) longestDry = dryRun;
+                wetRun = 0;
+                inWet = false;
+            }
+        }
+
+        double morning = 0, afternoon = 0;
+        for (int h = 6; h <= 11; h++) morning   += meanPrecip[h];
+        for (int h = 12; h <= 17; h++) afternoon += meanPrecip[h];
+
+        return new ShapeResult(
+            FirstWetHour: firstWet < 0 ? 24.0 : firstWet,
+            LastWetHour:  lastWet,
+            LongestDryRun: longestDry,
+            LongestWetRun: longestWet,
+            NRainEvents: nEvents,
+            MorningPrecipSum: morning,
+            AfternoonPrecipSum: afternoon);
     }
 
     private static string NormaliseGlob(string path)

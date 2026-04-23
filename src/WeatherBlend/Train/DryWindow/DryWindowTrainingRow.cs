@@ -93,6 +93,18 @@ public sealed class DryWindowTrainingRow
     public float DoySin { get; set; }
     public float DoyCos { get; set; }
 
+    // ---- Shape features (7, Phase 3d) --------------------------------------
+    // Derived from the ensemble-mean hourly precip vector for the target day.
+    // first_wet_hour uses sentinel 24 when the day is fully dry; last_wet_hour
+    // uses -1. Both are monotonic in dryness so LightGBM can split on them.
+    public float FirstWetHour { get; set; }
+    public float LastWetHour  { get; set; }
+    public float LongestForecastDryRunHours { get; set; }
+    public float LongestForecastWetRunHours { get; set; }
+    public float NRainEvents { get; set; }
+    public float MorningPrecipSum   { get; set; }
+    public float AfternoonPrecipSum { get; set; }
+
     // ---- Label -------------------------------------------------------------
     [ColumnName("Label")]
     public bool HasDryWindow { get; set; }

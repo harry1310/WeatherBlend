@@ -89,95 +89,163 @@ public sealed class DryWindowPredictCommand
             }
             var (stationSlug, windowHours) = parsed.Value;
 
-            var versionDir = ModelArtifact.ResolveStationVersionDir(
-                modelsRoot, "dry_window", compositeKey, modelVersion);
-            var metadata = ModelArtifact.LoadTrainingMetadata(versionDir);
-            var climPath = Path.Combine(versionDir, "dry_window_climatology.json");
-            if (!File.Exists(climPath))
+            // Active versions for this composite — typically 3b champion plus
+            // any 3d-shape / 3d-calibrated challengers. When the user pins
+            // --model-version we honour it and skip the manifest list.
+            var activeVersions = string.Equals(modelVersion, "current", StringComparison.OrdinalIgnoreCase)
+                ? ModelArtifact.ResolveStationActive(modelsRoot, "dry_window", compositeKey)
+                : new[] { modelVersion };
+
+            if (activeVersions.Count == 0)
             {
-                _log.LogWarning("Missing climatology at {P}. Skipping {K}.", climPath, compositeKey);
+                _log.LogWarning("{Key}: no active versions in manifest; skipping.", compositeKey);
                 continue;
             }
-            var climatology = DryWindowClimatology.LoadFrom(climPath);
 
-            _log.LogInformation("{Key}: model version {V}, window {W}h", compositeKey, metadata.Version, windowHours);
-
-            var ml = new MLContext(seed: 42);
-            var predictions = new List<DryWindowPredictionRow>();
-
-            foreach (var (lead, targetDate) in targets)
+            foreach (var versionName in activeVersions)
             {
                 ct.ThrowIfCancellationRequested();
-                if (!perDayPerModel.TryGetValue(DateOnly.FromDateTime(targetDate), out var modelDayList))
+                if (await RunCompositeVersionAsync(
+                    modelsRoot, compositeKey, stationSlug, windowHours, versionName,
+                    targets, perDayPerModel, anchorDate, predictionMadeAt, ct))
                 {
-                    _log.LogWarning("{Key} lead {Lead}h: no forecast rows for {D:yyyy-MM-dd}; skipping.",
-                        compositeKey, lead, targetDate);
-                    continue;
+                    anyWritten = true;
                 }
-                if (!modelDayList.Any(d => d is { AnyPresent: true }))
-                {
-                    _log.LogWarning("{Key} lead {Lead}h: forecast rows exist for {D:yyyy-MM-dd} but no model is populated; skipping.",
-                        compositeKey, lead, targetDate);
-                    continue;
-                }
-
-                var row = DryWindowFeatureBuilder.ComposeRow(
-                    DateOnly.FromDateTime(targetDate),
-                    windowHours,
-                    modelDayList,
-                    label: false,
-                    truthMmDay: 0.0);
-
-                var model = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
-                var probs = DryWindowTrainer.PredictProbability(ml, model, new[] { row });
-                var climProb = climatology.Predict(targetDate);
-
-                predictions.Add(new DryWindowPredictionRow
-                {
-                    LocationName = _cfg.Location.Name,
-                    TruthStation = stationSlug,
-                    WindowHours = windowHours,
-                    ModelVersion = metadata.Version,
-                    PredictionMadeAtUtc = predictionMadeAt,
-                    TargetDateUtc = targetDate,
-                    LeadHours = lead,
-                    ProbHasDryWindow = probs[0],
-                    ClimatologyProbHasDryWindow = climProb,
-                    AgreementHasDryWindow = NanToNull(row.AgreementHasDryWindow),
-                    PrecipSumMean = NanToNull(row.PrecipSumMean),
-                    LongestDryRunMean = NanToNull(row.LongestDryRunMean),
-                    WetHourCountMean = NanToNull(row.WetHourCountMean),
-                    HasDryWindowGfs   = NanToNull(row.HasDryWindowGfs),
-                    HasDryWindowEcmwf = NanToNull(row.HasDryWindowEcmwf),
-                    HasDryWindowIcon  = NanToNull(row.HasDryWindowIcon),
-                    HasDryWindowMf    = NanToNull(row.HasDryWindowMf),
-                    HasDryWindowUkmo  = NanToNull(row.HasDryWindowUkmo),
-                    HasDryWindowGem   = NanToNull(row.HasDryWindowGem),
-                    PrecipSumGfs   = NanToNull(row.PrecipSumGfs),
-                    PrecipSumEcmwf = NanToNull(row.PrecipSumEcmwf),
-                    PrecipSumIcon  = NanToNull(row.PrecipSumIcon),
-                    PrecipSumMf    = NanToNull(row.PrecipSumMf),
-                    PrecipSumUkmo  = NanToNull(row.PrecipSumUkmo),
-                    PrecipSumGem   = NanToNull(row.PrecipSumGem),
-                    FeatureVectorHash = HashFeatures(row),
-                });
-
-                _log.LogInformation(
-                    "  lead {Lead}h ({Date:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (clim {C:0.000}, agreement {A:0.00})",
-                    lead, targetDate, windowHours, probs[0], climProb, row.AgreementHasDryWindow);
             }
-
-            if (predictions.Count == 0)
-            {
-                _log.LogWarning("{Key}: no predictions produced.", compositeKey);
-                continue;
-            }
-
-            await WritePredictionsAsync(predictions, stationSlug, windowHours, anchorDate, metadata.Version, ct);
-            anyWritten = true;
         }
 
         return anyWritten ? 0 : 3;
+    }
+
+    private async Task<bool> RunCompositeVersionAsync(
+        string modelsRoot, string compositeKey, string stationSlug, int windowHours,
+        string versionName,
+        IReadOnlyList<(int Lead, DateTime Date)> targets,
+        IReadOnlyDictionary<DateOnly, List<DryWindowFeatureBuilder.ForecastDay?>> perDayPerModel,
+        DateTime anchorDate, DateTime predictionMadeAt, CancellationToken ct)
+    {
+        var versionDir = Path.Combine(modelsRoot, "dry_window", compositeKey, versionName);
+        if (!Directory.Exists(versionDir))
+        {
+            _log.LogWarning("{Key}: version dir missing → {Dir}; skipping.", compositeKey, versionDir);
+            return false;
+        }
+        var metadata = ModelArtifact.LoadTrainingMetadata(versionDir);
+        var climPath = Path.Combine(versionDir, "dry_window_climatology.json");
+        if (!File.Exists(climPath))
+        {
+            _log.LogWarning("{Key} {V}: missing climatology at {P}; skipping.", compositeKey, versionName, climPath);
+            return false;
+        }
+        var climatology = DryWindowClimatology.LoadFrom(climPath);
+
+        // 3d-calibrated wraps a 3b model with a per-lead PAV calibrator. Load
+        // the calibration container once per version; null means "no remap".
+        PrecipIsotonicCalibration? calibration = null;
+        var isCalibrated = string.Equals(metadata.Phase, DryWindowFeatureBuilder.Phase3dCalibrated, StringComparison.OrdinalIgnoreCase);
+        if (isCalibrated)
+        {
+            var calPath = Path.Combine(versionDir, PrecipIsotonicCalibration.FileName);
+            if (!File.Exists(calPath))
+            {
+                _log.LogWarning("{Key} {V}: phase=3d-calibrated but {File} missing; skipping.",
+                    compositeKey, versionName, PrecipIsotonicCalibration.FileName);
+                return false;
+            }
+            calibration = PrecipIsotonicCalibration.LoadFrom(calPath);
+        }
+
+        _log.LogInformation("{Key}: version {V} (phase {P}), window {W}h",
+            compositeKey, metadata.Version, metadata.Phase, windowHours);
+
+        var ml = new MLContext(seed: 42);
+        var predictions = new List<DryWindowPredictionRow>();
+
+        foreach (var (lead, targetDate) in targets)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!perDayPerModel.TryGetValue(DateOnly.FromDateTime(targetDate), out var modelDayList))
+            {
+                _log.LogWarning("{Key} {V} lead {Lead}h: no forecast rows for {D:yyyy-MM-dd}; skipping.",
+                    compositeKey, versionName, lead, targetDate);
+                continue;
+            }
+            if (!modelDayList.Any(d => d is { AnyPresent: true }))
+            {
+                _log.LogWarning("{Key} {V} lead {Lead}h: forecast rows exist for {D:yyyy-MM-dd} but no model is populated; skipping.",
+                    compositeKey, versionName, lead, targetDate);
+                continue;
+            }
+
+            var row = DryWindowFeatureBuilder.ComposeRow(
+                DateOnly.FromDateTime(targetDate),
+                windowHours,
+                modelDayList,
+                label: false,
+                truthMmDay: 0.0);
+
+            var model = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
+            var probs = DryWindowTrainer.PredictProbability(ml, model, new[] { row });
+            var rawProb = probs[0];
+            var prob = rawProb;
+            if (calibration is not null && calibration.ByLead.TryGetValue(lead.ToString(), out var leadCal))
+            {
+                prob = leadCal.Apply(rawProb);
+            }
+            var climProb = climatology.Predict(targetDate);
+
+            predictions.Add(new DryWindowPredictionRow
+            {
+                LocationName = _cfg.Location.Name,
+                TruthStation = stationSlug,
+                WindowHours = windowHours,
+                ModelVersion = metadata.Version,
+                PredictionMadeAtUtc = predictionMadeAt,
+                TargetDateUtc = targetDate,
+                LeadHours = lead,
+                ProbHasDryWindow = prob,
+                ClimatologyProbHasDryWindow = climProb,
+                AgreementHasDryWindow = NanToNull(row.AgreementHasDryWindow),
+                PrecipSumMean = NanToNull(row.PrecipSumMean),
+                LongestDryRunMean = NanToNull(row.LongestDryRunMean),
+                WetHourCountMean = NanToNull(row.WetHourCountMean),
+                HasDryWindowGfs   = NanToNull(row.HasDryWindowGfs),
+                HasDryWindowEcmwf = NanToNull(row.HasDryWindowEcmwf),
+                HasDryWindowIcon  = NanToNull(row.HasDryWindowIcon),
+                HasDryWindowMf    = NanToNull(row.HasDryWindowMf),
+                HasDryWindowUkmo  = NanToNull(row.HasDryWindowUkmo),
+                HasDryWindowGem   = NanToNull(row.HasDryWindowGem),
+                PrecipSumGfs   = NanToNull(row.PrecipSumGfs),
+                PrecipSumEcmwf = NanToNull(row.PrecipSumEcmwf),
+                PrecipSumIcon  = NanToNull(row.PrecipSumIcon),
+                PrecipSumMf    = NanToNull(row.PrecipSumMf),
+                PrecipSumUkmo  = NanToNull(row.PrecipSumUkmo),
+                PrecipSumGem   = NanToNull(row.PrecipSumGem),
+                FeatureVectorHash = HashFeatures(row, metadata.Phase),
+            });
+
+            if (isCalibrated)
+            {
+                _log.LogInformation(
+                    "  lead {Lead}h ({Date:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (raw {R:0.000}, clim {C:0.000}, agreement {A:0.00})",
+                    lead, targetDate, windowHours, prob, rawProb, climProb, row.AgreementHasDryWindow);
+            }
+            else
+            {
+                _log.LogInformation(
+                    "  lead {Lead}h ({Date:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (clim {C:0.000}, agreement {A:0.00})",
+                    lead, targetDate, windowHours, prob, climProb, row.AgreementHasDryWindow);
+            }
+        }
+
+        if (predictions.Count == 0)
+        {
+            _log.LogWarning("{Key} {V}: no predictions produced.", compositeKey, versionName);
+            return false;
+        }
+
+        await WritePredictionsAsync(predictions, stationSlug, windowHours, anchorDate, metadata.Version, ct);
+        return true;
     }
 
     private List<KeyValuePair<string, ModelArtifact.StationEntry>> FilterEntries(
@@ -334,22 +402,41 @@ ORDER BY ValidTimeUtc, Model;";
 
     private static double? NanToNull(float v) => float.IsNaN(v) ? null : v;
 
-    /// <summary>SHA-256 hex of the 53 feature floats in DryWindowFeatureBuilder order.</summary>
-    public static string HashFeatures(DryWindowTrainingRow row) => FeatureHashing.HashFloats(new[]
+    /// <summary>
+    /// SHA-256 hex of the feature floats in DryWindowFeatureBuilder order.
+    /// 3b and 3d-calibrated hash 53 floats (the base feature set; 3d-calibrated
+    /// reuses the 3b model unchanged so its feature vector is identical).
+    /// 3d-shape hashes 60 floats (base + 7 shape columns).
+    /// </summary>
+    public static string HashFeatures(DryWindowTrainingRow row, string? phase = null)
     {
-        row.PrecipSumGfs, row.PrecipSumEcmwf, row.PrecipSumIcon, row.PrecipSumMf, row.PrecipSumUkmo, row.PrecipSumGem,
-        row.PrecipMaxHourGfs, row.PrecipMaxHourEcmwf, row.PrecipMaxHourIcon, row.PrecipMaxHourMf, row.PrecipMaxHourUkmo, row.PrecipMaxHourGem,
-        row.WetHourCountGfs, row.WetHourCountEcmwf, row.WetHourCountIcon, row.WetHourCountMf, row.WetHourCountUkmo, row.WetHourCountGem,
-        row.LongestDryRunGfs, row.LongestDryRunEcmwf, row.LongestDryRunIcon, row.LongestDryRunMf, row.LongestDryRunUkmo, row.LongestDryRunGem,
-        row.HasDryWindowGfs, row.HasDryWindowEcmwf, row.HasDryWindowIcon, row.HasDryWindowMf, row.HasDryWindowUkmo, row.HasDryWindowGem,
-        row.ProbMaxGfs, row.ProbMaxEcmwf, row.ProbMaxIcon, row.ProbMaxMf, row.ProbMaxUkmo, row.ProbMaxGem,
-        row.PrecipSumMean, row.PrecipSumStd, row.PrecipSumMax,
-        row.AgreementHasDryWindow, row.LongestDryRunMean, row.WetHourCountMean,
-        row.RhMean, row.RhMin, row.DewDepressionMax,
-        row.CloudLowMean, row.CloudMidMean, row.CloudHighMean,
-        row.CapeMax, row.WindMean, row.WindMax,
-        row.DoySin, row.DoyCos,
-    });
+        var floats = new List<float>(60)
+        {
+            row.PrecipSumGfs, row.PrecipSumEcmwf, row.PrecipSumIcon, row.PrecipSumMf, row.PrecipSumUkmo, row.PrecipSumGem,
+            row.PrecipMaxHourGfs, row.PrecipMaxHourEcmwf, row.PrecipMaxHourIcon, row.PrecipMaxHourMf, row.PrecipMaxHourUkmo, row.PrecipMaxHourGem,
+            row.WetHourCountGfs, row.WetHourCountEcmwf, row.WetHourCountIcon, row.WetHourCountMf, row.WetHourCountUkmo, row.WetHourCountGem,
+            row.LongestDryRunGfs, row.LongestDryRunEcmwf, row.LongestDryRunIcon, row.LongestDryRunMf, row.LongestDryRunUkmo, row.LongestDryRunGem,
+            row.HasDryWindowGfs, row.HasDryWindowEcmwf, row.HasDryWindowIcon, row.HasDryWindowMf, row.HasDryWindowUkmo, row.HasDryWindowGem,
+            row.ProbMaxGfs, row.ProbMaxEcmwf, row.ProbMaxIcon, row.ProbMaxMf, row.ProbMaxUkmo, row.ProbMaxGem,
+            row.PrecipSumMean, row.PrecipSumStd, row.PrecipSumMax,
+            row.AgreementHasDryWindow, row.LongestDryRunMean, row.WetHourCountMean,
+            row.RhMean, row.RhMin, row.DewDepressionMax,
+            row.CloudLowMean, row.CloudMidMean, row.CloudHighMean,
+            row.CapeMax, row.WindMean, row.WindMax,
+            row.DoySin, row.DoyCos,
+        };
+        if (string.Equals(phase, DryWindowFeatureBuilder.Phase3dShape, StringComparison.OrdinalIgnoreCase))
+        {
+            floats.Add(row.FirstWetHour);
+            floats.Add(row.LastWetHour);
+            floats.Add(row.LongestForecastDryRunHours);
+            floats.Add(row.LongestForecastWetRunHours);
+            floats.Add(row.NRainEvents);
+            floats.Add(row.MorningPrecipSum);
+            floats.Add(row.AfternoonPrecipSum);
+        }
+        return FeatureHashing.HashFloats(floats.ToArray());
+    }
 
     private static string Slugify(string s) => s.ToLowerInvariant()
         .Replace(' ', '_').Replace('-', '_').Replace(',', '_');

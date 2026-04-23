@@ -32,15 +32,23 @@ public sealed class DryWindowTrainer
         IReadOnlyList<(string Name, double Gain)> FeatureImportance);
 
     public static TrainedClassifier Train(DryWindowDataset ds, Hyperparameters hp)
+        => Train(ds, hp, DryWindowFeatureBuilder.Phase3b);
+
+    /// <summary>
+    /// Train a dry-window classifier under the named phase. <c>3b</c> and
+    /// <c>3d-calibrated</c> use the 53-column base feature set; <c>3d-shape</c>
+    /// adds the 7 ensemble-mean shape columns.
+    /// </summary>
+    public static TrainedClassifier Train(DryWindowDataset ds, Hyperparameters hp, string phase)
     {
         var ml = new MLContext(seed: hp.Seed);
 
         var trainDv = ml.Data.LoadFromEnumerable(ds.Train);
         var valDv   = ml.Data.LoadFromEnumerable(ds.Val);
 
-        var featureNames = DryWindowFeatureBuilder.FeatureNames.ToArray();
+        var featureNames = DryWindowFeatureBuilder.FeatureNamesForPhase(phase).ToArray();
 
-        var featurize = ml.Transforms.Concatenate("Features", FeatureColumnInternalNames());
+        var featurize = ml.Transforms.Concatenate("Features", FeatureColumnInternalNames(phase));
         var featModel = featurize.Fit(trainDv);
         var trainFeat = featModel.Transform(trainDv);
         var valFeat   = featModel.Transform(valDv);
@@ -94,10 +102,28 @@ public sealed class DryWindowTrainer
     }
 
     /// <summary>
-    /// Internal ML.NET column names for the 53 features in schema order.
-    /// Must match <see cref="DryWindowFeatureBuilder.FeatureNames"/>.
+    /// Internal ML.NET column names in schema order for the given phase. 3b /
+    /// 3d-calibrated emit the 53-column base; 3d-shape appends the 7 shape
+    /// columns. Must stay aligned with
+    /// <see cref="DryWindowFeatureBuilder.FeatureNamesForPhase"/>.
     /// </summary>
-    private static string[] FeatureColumnInternalNames() => new[]
+    private static string[] FeatureColumnInternalNames(string phase)
+    {
+        var baseCols = BaseFeatureColumnInternalNames();
+        if (phase != DryWindowFeatureBuilder.Phase3dShape) return baseCols;
+        return baseCols.Concat(new[]
+        {
+            nameof(DryWindowTrainingRow.FirstWetHour),
+            nameof(DryWindowTrainingRow.LastWetHour),
+            nameof(DryWindowTrainingRow.LongestForecastDryRunHours),
+            nameof(DryWindowTrainingRow.LongestForecastWetRunHours),
+            nameof(DryWindowTrainingRow.NRainEvents),
+            nameof(DryWindowTrainingRow.MorningPrecipSum),
+            nameof(DryWindowTrainingRow.AfternoonPrecipSum),
+        }).ToArray();
+    }
+
+    private static string[] BaseFeatureColumnInternalNames() => new[]
     {
         nameof(DryWindowTrainingRow.PrecipSumGfs),
         nameof(DryWindowTrainingRow.PrecipSumEcmwf),

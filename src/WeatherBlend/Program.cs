@@ -115,7 +115,9 @@ public static class Program
                 services.AddTransient<RenderSiteCommand>();
                 services.AddTransient<DryWindowDiagnosticCommand>();
                 services.AddTransient<DryWindowTrainCommand>();
+                services.AddTransient<DryWindowCalibrateCommand>();
                 services.AddTransient<DryWindowReportCommand>();
+                services.AddTransient<DryWindowAblateCommand>();
                 services.AddTransient<DryWindowPredictCommand>();
                 services.AddTransient<DryWindowVerifyCommand>();
             })
@@ -397,6 +399,23 @@ public static class Program
         }, calibrateStationOpt);
         root.AddCommand(precipCalibrate);
 
+        var dwCalibrateStationOpt = new Option<string>(
+            name: "--truth-station",
+            description: "Station slug, config name, or 'all' — fit isotonic calibration for each matching 3b (station, window) pair",
+            getDefaultValue: () => "all");
+        var dryWindowCalibrate = new Command(
+            "dry-window-calibrate",
+            "Phase 3d-calibrated: post-hoc isotonic (PAV) calibration of the 3b dry-window classifier; registers as a challenger alongside 3b and 3d-shape")
+        {
+            dwCalibrateStationOpt,
+        };
+        dryWindowCalibrate.SetHandler(async (truthStation) =>
+        {
+            var cmd = host.Services.GetRequiredService<DryWindowCalibrateCommand>();
+            Environment.ExitCode = await cmd.RunAsync(truthStation, CancellationToken.None);
+        }, dwCalibrateStationOpt);
+        root.AddCommand(dryWindowCalibrate);
+
         var precipAblate = new Command(
             "precip-ablate",
             "Phase 3c diagnostic: tabulate 3a vs 3c test-set Brier + run 24h feature-tier ablation");
@@ -426,6 +445,16 @@ public static class Program
             ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
         });
         root.AddCommand(dryWindowReport);
+
+        var dryWindowAblate = new Command(
+            "dry-window-ablate",
+            "Phase 3d diagnostic: tabulate 3b vs 3d-shape vs 3d-calibrated test-set Brier/BSS/freq-bias + shape-feature gain importance");
+        dryWindowAblate.SetHandler(async ctx =>
+        {
+            var cmd = host.Services.GetRequiredService<DryWindowAblateCommand>();
+            ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
+        });
+        root.AddCommand(dryWindowAblate);
 
         var globOpt = new Option<string>("--glob", "Parquet glob across models for one run") { IsRequired = true };
         var compare = new Command("compare", "Cross-model agreement summary for a run") { globOpt };

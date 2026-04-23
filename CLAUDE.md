@@ -57,7 +57,12 @@ also reasonable).
    contiguous N-hour dry block in target UTC day) for N ∈ {3, 4, 6} at leads 24/48/72h.
    Replaces the original intensity-regressor plan after the user pivot to "is there
    time to walk the dog dry?". **Done — predict + verify live, 18 models in CI.**
-5. **Phase 4:** add ML models (GraphCast, AIFS) as inputs.
+5. **Phase 3d:** dry-window improvements alongside 3b. **3d-shape** adds 7 within-day
+   shape features (60-feature variant, `--feature-set rich`); **3d-calibrated** wraps
+   each saved 3b model with per-lead PAV isotonic calibration via `dry-window-calibrate`.
+   Both register as challengers in the per-(station, window) `Active` list; predict +
+   verify score all three side by side; `dry-window-ablate` emits the comparison report.
+6. **Phase 4:** add ML models (GraphCast, AIFS) as inputs.
 
 ## Key design decisions (see docs/DESIGN.md for full reasoning)
 

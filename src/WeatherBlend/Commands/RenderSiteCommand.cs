@@ -70,7 +70,7 @@ public sealed class RenderSiteCommand
 
         var rolling = ComputeRollingMae(predictions, truth, rollingWindowDays);
 
-        var phaseByVersion = LoadPhaseByVersion(predictions, precip);
+        var phaseByVersion = LoadPhaseByVersion(predictions, precip, dryWindow);
         _log.LogInformation("Phase map: {Entries}",
             string.Join(", ", phaseByVersion.Select(kv => $"{kv.Key}→{kv.Value}")));
 
@@ -137,7 +137,8 @@ public sealed class RenderSiteCommand
 
     private Dictionary<string, string> LoadPhaseByVersion(
         IReadOnlyList<PredictionRow> predictions,
-        IReadOnlyList<SitePages.PrecipForecastPoint> precip)
+        IReadOnlyList<SitePages.PrecipForecastPoint> precip,
+        IReadOnlyList<SitePages.DryWindowForecastPoint> dryWindow)
     {
         // Only the versions that actually produced predictions are worth reading.
         // Missing training_metadata.json is non-fatal — the caller treats empty phase
@@ -184,6 +185,28 @@ public sealed class RenderSiteCommand
             catch (Exception ex)
             {
                 _log.LogWarning("Phase lookup failed for precipitation {Station}/{Version}: {Msg}", station, version, ex.Message);
+            }
+        }
+
+        // Dry-window: per-(station, window) tree data/models/dry_window/{station}/window_{N}h/{version}/.
+        // Phase 3d artefacts have phase-suffixed version dirs ("..._phase3d_shape", "..._phase3d_calibrated"),
+        // so version strings don't collide across composites — a flat version→phase map is safe.
+        foreach (var (station, window, version) in dryWindow.Select(d => (d.Station, d.WindowHours, d.Version)).Distinct())
+        {
+            try
+            {
+                var dir = Path.Combine(modelsRoot, "dry_window", station, $"window_{window}h", version);
+                if (!Directory.Exists(dir)) continue;
+                var metadataPath = Path.Combine(dir, ModelArtifact.TrainingMetadataFileName);
+                if (!File.Exists(metadataPath)) continue;
+                var metadata = ModelArtifact.LoadTrainingMetadata(dir);
+                if (!string.IsNullOrWhiteSpace(metadata.Phase))
+                    phases[version] = metadata.Phase;
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning("Phase lookup failed for dry-window {Station}/{Window}h/{Version}: {Msg}",
+                    station, window, version, ex.Message);
             }
         }
 

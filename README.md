@@ -62,6 +62,14 @@ dotnet run --project src/WeatherBlend -- train --target dry-window --station "Be
 dotnet run --project src/WeatherBlend -- dry-window-report
 dotnet run --project src/WeatherBlend -- predict --target dry-window --truth-station all --window all
 dotnet run --project src/WeatherBlend -- verify --target dry-window --truth-station all --window all
+
+# Phase 3d: dry-window improvements alongside 3b. 3d-shape adds 7 within-day
+# rain-structure features (60-feature variant); 3d-calibrated wraps each saved
+# 3b model with isotonic (PAV) calibration. Both register as challengers via
+# the per-(station, window) Active list.
+dotnet run --project src/WeatherBlend -- train --target dry-window --feature-set rich --window all --lead all
+dotnet run --project src/WeatherBlend -- dry-window-calibrate --truth-station all
+dotnet run --project src/WeatherBlend -- dry-window-ablate          # 3b vs 3d-shape vs 3d-cal table + shape gain importance
 ```
 
 ### Precipitation target specifics
@@ -92,7 +100,12 @@ dotnet run --project src/WeatherBlend -- verify --target dry-window --truth-stat
 - Per-row feature vector is **53 floats** in a frozen schema (per-model day
   aggregates: precip-sum / max-hour / wet-hour-count / longest-dry-run /
   has-dry-window self-prediction / max prob; ensemble agreement; day-level
-  meteorology means + extremes; doy sin/cos).
+  meteorology means + extremes; doy sin/cos). The Phase 3d-shape variant
+  extends this to **60 floats** by appending 7 within-day shape features
+  derived from the ensemble-mean hourly precip vector
+  (`first_wet_hour`, `last_wet_hour`, `longest_forecast_dry_run_hours`,
+  `longest_forecast_wet_run_hours`, `n_rain_events`, `morning_precip_sum`,
+  `afternoon_precip_sum`).
 - Predict output: `data/predictions/dry_window/{station}/window_{N}h/model_version={v}/date={yyyy-MM-dd}/predictions.parquet`
   with `ProbHasDryWindow`, climatology baseline, agreement, per-model
   self-predictions + day totals (so verify can recompute mean-of-models without
@@ -100,7 +113,17 @@ dotnet run --project src/WeatherBlend -- verify --target dry-window --truth-stat
 - Verify pairs predictions against the truth labels rebuilt from EA hourly
   rainfall via `DryWindowLabelBuilder`, stratifies by (station, window, version,
   lead), and reports blend Brier vs climatology vs mean-of-models, BSS, freq
-  bias, drift flag (rolling Brier > 1.5× training Brier).
+  bias, drift flag (rolling Brier > 1.5× training Brier). When more than one
+  phase is present at a slice, the report also emits a "Phase comparison"
+  headline section showing 3b / 3d-shape / 3d-cal Brier + BSS side by side.
+- **Phase 3d champion/challenger:** `Phase 3d-shape` and `Phase 3d-calibrated`
+  versions are appended to each composite manifest entry's `Active` list rather
+  than replacing 3b. Predict iterates over every Active version per cycle
+  (writing one parquet per version), and 3d-calibrated lookups load the
+  per-lead `calibration.json` saved at `dry-window-calibrate` time and apply
+  the PAV mapping to the raw 3b probability before writing the row.
+  `dry-window-ablate` produces a side-by-side training-time comparison report
+  reading each phase's `training_metadata.json`.
 - **Train/predict distribution mismatch (known caveat):** training pulls
   `RunTimeSource='offset_day'` rows so each lead has an exact target-anchor
   pairing; live inference uses the most-recent live-cycle row per (valid-time,
@@ -218,7 +241,8 @@ SELECT * FROM read_parquet(
 - **Phase 3a:** precip occurrence blender. Per-station P(wet≥0.1mm/h) classifier trained on EA Hydrology gauges (Bellever, Princetown). Per-lead, same temperature pipeline. **Done — predict + verify live.**
 - **Phase 3b:** per-station dry-window classifier — P(at least one contiguous N-hour dry block in target UTC day) for N ∈ {3, 4, 6} at leads 24/48/72h. Replaces the original intensity-regressor plan after the user pivot to "is there time to walk the dog dry?". Per-station per-window LightGBM, climatology baseline, predict + verify wired into the daily/weekly CI alongside temperature + precipitation. **Done — predict + verify live.**
 - **Phase 3c:** rich-feature precipitation occurrence blender — 27 lean + 28 extras (18 per-model humidity, 6 per-model surface pressure, 4 EA-observation trailing-rainfall persistence) = 55 features. Same hyperparameters and split as 3a so feature richness is the isolated variable; saved as challenger alongside 3a via the per-station `Active` manifest. Forecast-time precip-persistence and pressure-tendency tiers were dropped — the training parquet only stores leads {24,48,72} per `offset_day` run, so the H-1/H-2/H-3 cells those tiers need don't exist. **Done — Bellever 24/48/72h Brier drops 0.006/0.014/0.013; Princetown 0.002/0.008/0.011 vs 3a. Tier ablation (`precip-ablate`) shows the gains are modest — dropping any one tier costs at most ~0.002 Brier points, and dropping EA persistence actually _improves_ Brier at Bellever + Hexworthy.**
-- **Phase 3d (deferred):** intensity regression / quantile regressions — the dry-window framing covers the user-facing probabilistic question without the calibration headaches of conditional precip.
+- **Phase 3d:** dry-window improvements alongside the 3b champion. Two challengers, both registered via the per-(station, window) `Active` list so 3b stays in production and the rolling verify scores all three side by side. (1) **3d-shape** — same hyperparameters, same split as 3b, but the 53-feature row is extended with 7 within-day shape features computed from the ensemble-mean hourly precip vector (first/last wet hour, longest dry/wet runs, n rain events, morning/afternoon precip sums) so the blender can see _when_ the rain falls inside a UTC day rather than only daily aggregates. (2) **3d-calibrated** — the 3b model is reused unchanged; a per-lead PAV isotonic regression fit on the validation partition is saved as `calibration.json` and applied at predict time as a strict reweighting of the raw probability. Lessons from the 3a → 3a_isotonic experiment carry over: PAV is risk insurance against miscalibration, not a skill increase. **Done — predict + verify + ablate live.**
+- **Intensity regression (deferred indefinitely):** `expected_precip = P(precip) × E[precip | precip > 0]` is the original phase-3 plan — the dry-window framing covers the user-facing probabilistic question without the calibration headaches of conditional precip, so it is unlikely to be revisited.
 - **Phase 4:** add ML models as inputs (GraphCast, AIFS - both now published by ECMWF).
 
 ## License

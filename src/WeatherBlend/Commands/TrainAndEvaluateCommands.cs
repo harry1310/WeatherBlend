@@ -51,12 +51,6 @@ public sealed class TrainCommand
             _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich.", featureSet);
             return 2;
         }
-        if (fs == "rich" && t == "dry-window")
-        {
-            _log.LogError("--feature-set rich is not yet supported for target=dry-window.");
-            return 2;
-        }
-
         return t switch
         {
             "temperature"   => fs == "rich"
@@ -65,7 +59,13 @@ public sealed class TrainCommand
             "precipitation" => fs == "rich"
                                   ? await RunPhase3cAsync(leads, station, ct)
                                   : await RunPhase3aAsync(leads, station, ct),
-            "dry-window"    => await _dryWindow.RunAsync(station ?? "all", window ?? "all", leads, ct),
+            // dry-window: lean → Phase 3b (53 features), rich → Phase 3d-shape
+            // (3b + 7 ensemble-mean within-day rain-structure columns).
+            "dry-window"    => await _dryWindow.RunAsync(
+                                   station ?? "all", window ?? "all", leads,
+                                   fs == "rich" ? Train.DryWindow.DryWindowFeatureBuilder.Phase3dShape
+                                                : Train.DryWindow.DryWindowFeatureBuilder.Phase3b,
+                                   ct),
             _ => 2,
         };
     }

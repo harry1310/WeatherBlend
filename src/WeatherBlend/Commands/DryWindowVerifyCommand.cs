@@ -129,7 +129,10 @@ public sealed class DryWindowVerifyCommand
 
             // Drift baseline: blend Brier on the training test partition, stored
             // in PerLeadStats.BlendTestMae (reused field — see training metadata).
+            // Phase tag from the same metadata so the headline can group 3b vs
+            // 3d-shape vs 3d-calibrated.
             double? trainingBrier = null;
+            string phase = "";
             try
             {
                 var versionDir = ModelArtifact.ResolveStationVersionDir(
@@ -139,6 +142,7 @@ public sealed class DryWindowVerifyCommand
                 var metadata = ModelArtifact.LoadTrainingMetadata(versionDir);
                 if (metadata.PerLead.TryGetValue(g.Key.LeadHours.ToString(CultureInfo.InvariantCulture), out var pl))
                     trainingBrier = pl.BlendTestMae;
+                phase = metadata.Phase ?? "";
             }
             catch (Exception ex)
             {
@@ -150,7 +154,7 @@ public sealed class DryWindowVerifyCommand
                 && blendBrier > trainingBrier.Value * driftThreshold;
 
             resultRows.Add(new VerifyRow(
-                g.Key.TruthStation, g.Key.WindowHours, g.Key.ModelVersion, g.Key.LeadHours,
+                g.Key.TruthStation, g.Key.WindowHours, g.Key.ModelVersion, phase, g.Key.LeadHours,
                 paired.Count, paired.Count(x => x.Truth),
                 blendBrier, climBrier, meanBrier, bss, fbias, trainingBrier, drift));
         }
@@ -173,7 +177,7 @@ public sealed class DryWindowVerifyCommand
     }
 
     private sealed record VerifyRow(
-        string Station, int WindowHours, string Version, int LeadHours,
+        string Station, int WindowHours, string Version, string Phase, int LeadHours,
         int N, int Positives,
         double BlendBrier, double ClimBrier, double MeanBrier,
         double Bss, double FreqBias,
@@ -399,6 +403,8 @@ ORDER BY 1";
             return sb.ToString();
         }
 
+        AppendPhaseComparison(sb, rows);
+
         foreach (var stationGroup in rows.GroupBy(r => r.Station).OrderBy(g => g.Key, StringComparer.Ordinal))
         {
             sb.AppendLine($"## {stationGroup.Key}");
@@ -407,11 +413,11 @@ ORDER BY 1";
             {
                 sb.AppendLine($"### Window {winGroup.Key}h");
                 sb.AppendLine();
-                sb.AppendLine("| Version | Lead | n | pos | Blend Brier | Clim Brier | Mean-of-models Brier | BSS | Freq bias | Training Brier | Drift |");
-                sb.AppendLine("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|:---:|");
+                sb.AppendLine("| Version | Phase | Lead | n | pos | Blend Brier | Clim Brier | Mean-of-models Brier | BSS | Freq bias | Training Brier | Drift |");
+                sb.AppendLine("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|:---:|");
                 foreach (var r in winGroup.OrderBy(r => r.Version).ThenBy(r => r.LeadHours))
                 {
-                    sb.AppendLine($"| `{r.Version}` | {r.LeadHours}h | {r.N} | {r.Positives} | "
+                    sb.AppendLine($"| `{r.Version}` | {(string.IsNullOrEmpty(r.Phase) ? "—" : r.Phase)} | {r.LeadHours}h | {r.N} | {r.Positives} | "
                         + $"{r.BlendBrier:0.0000} | {r.ClimBrier:0.0000} | "
                         + $"{(double.IsNaN(r.MeanBrier) ? "—" : r.MeanBrier.ToString("0.0000"))} | "
                         + $"{r.Bss:+0.0000;-0.0000;0.0000} | "
@@ -431,5 +437,56 @@ ORDER BY 1";
         sb.AppendLine();
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Side-by-side Brier comparison across phases (3b vs 3d-shape vs
+    /// 3d-calibrated) for every (station, window, lead) slice that has more
+    /// than one phase represented in the verification window. Channels the
+    /// champion/challenger pattern: only the phases present at the slice are
+    /// shown so the table stays readable when one phase hasn't trained yet.
+    /// </summary>
+    private static void AppendPhaseComparison(StringBuilder sb, IReadOnlyList<VerifyRow> rows)
+    {
+        var multiPhase = rows
+            .Where(r => !string.IsNullOrEmpty(r.Phase))
+            .GroupBy(r => (r.Station, r.WindowHours, r.LeadHours))
+            .Where(g => g.Select(r => r.Phase).Distinct(StringComparer.Ordinal).Count() > 1)
+            .ToList();
+        if (multiPhase.Count == 0) return;
+
+        var phases = multiPhase
+            .SelectMany(g => g.Select(r => r.Phase))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .ToList();
+
+        sb.AppendLine("## Phase comparison");
+        sb.AppendLine();
+        sb.Append("| Station | Window | Lead | n |");
+        foreach (var p in phases) sb.Append($" {p} Brier | {p} BSS |");
+        sb.AppendLine();
+        sb.Append("|---|---:|---:|---:|");
+        foreach (var _ in phases) sb.Append("---:|---:|");
+        sb.AppendLine();
+
+        foreach (var g in multiPhase
+            .OrderBy(g => g.Key.Station, StringComparer.Ordinal)
+            .ThenBy(g => g.Key.WindowHours)
+            .ThenBy(g => g.Key.LeadHours))
+        {
+            // n may differ across phases when a model is missing predictions on
+            // some target dates — show the median so the headline stays sane.
+            var nMedian = (int)g.Select(r => (double)r.N).OrderBy(v => v).Skip(g.Count() / 2).First();
+            sb.Append($"| {g.Key.Station} | {g.Key.WindowHours}h | {g.Key.LeadHours}h | ~{nMedian} |");
+            foreach (var p in phases)
+            {
+                var row = g.FirstOrDefault(r => string.Equals(r.Phase, p, StringComparison.Ordinal));
+                if (row is null) sb.Append(" — | — |");
+                else sb.Append($" {row.BlendBrier:0.0000} | {row.Bss:+0.0000;-0.0000;0.0000} |");
+            }
+            sb.AppendLine();
+        }
+        sb.AppendLine();
     }
 }

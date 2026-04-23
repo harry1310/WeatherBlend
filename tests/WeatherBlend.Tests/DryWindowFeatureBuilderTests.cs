@@ -207,4 +207,162 @@ public class DryWindowFeatureBuilderTests
         row.DoySin.Should().BeApproximately((float)expSin, 0.05f);
         row.DoyCos.Should().BeApproximately((float)expCos, 0.05f);
     }
+
+    // ---- Phase 3d shape features --------------------------------------------
+
+    [Fact]
+    public void ShapeFeatureNames_count_matches_expected_seven_and_phase_lookup_returns_60()
+    {
+        DryWindowFeatureBuilder.ShapeFeatureNames.Should().HaveCount(7);
+        DryWindowFeatureBuilder.FeatureNamesForPhase(DryWindowFeatureBuilder.Phase3b)
+            .Should().HaveCount(53);
+        DryWindowFeatureBuilder.FeatureNamesForPhase(DryWindowFeatureBuilder.Phase3dShape)
+            .Should().HaveCount(60);
+        // 3d-calibrated reuses the 3b feature set (only the post-hoc mapping changes).
+        DryWindowFeatureBuilder.FeatureNamesForPhase(DryWindowFeatureBuilder.Phase3dCalibrated)
+            .Should().HaveCount(53);
+    }
+
+    [Fact]
+    public void ShapeFeatures_all_dry_returns_sentinel_first_and_last_wet()
+    {
+        var dry = DayOf(_ => 0.0);
+        var modelDays = new List<DryWindowFeatureBuilder.ForecastDay?> { dry, dry, dry, dry, dry, dry };
+
+        var shape = DryWindowFeatureBuilder.ShapeFeatures(modelDays);
+
+        shape.FirstWetHour.Should().Be(24.0);   // sentinel: nothing wet
+        shape.LastWetHour.Should().Be(-1.0);    // sentinel: nothing wet
+        shape.LongestDryRun.Should().Be(24.0);
+        shape.LongestWetRun.Should().Be(0.0);
+        shape.NRainEvents.Should().Be(0.0);
+        shape.MorningPrecipSum.Should().Be(0.0);
+        shape.AfternoonPrecipSum.Should().Be(0.0);
+    }
+
+    [Fact]
+    public void ShapeFeatures_all_wet_makes_one_event_spanning_the_day()
+    {
+        var wet = DayOf(_ => 0.5);
+        var modelDays = new List<DryWindowFeatureBuilder.ForecastDay?> { wet, wet };
+
+        var shape = DryWindowFeatureBuilder.ShapeFeatures(modelDays);
+
+        shape.FirstWetHour.Should().Be(0.0);
+        shape.LastWetHour.Should().Be(23.0);
+        shape.LongestDryRun.Should().Be(0.0);
+        shape.LongestWetRun.Should().Be(24.0);
+        shape.NRainEvents.Should().Be(1.0);
+        shape.MorningPrecipSum.Should().BeApproximately(3.0, 1e-9);    // 6 hours × 0.5
+        shape.AfternoonPrecipSum.Should().BeApproximately(3.0, 1e-9);  // 6 hours × 0.5
+    }
+
+    [Fact]
+    public void ShapeFeatures_two_distinct_events_counts_them_separately_and_keeps_longest_wet()
+    {
+        // Wet 03–05 (3h), dry 06–09 (4h), wet 10–14 (5h), dry rest.
+        var d = DayOf(h => (h >= 3 && h <= 5) || (h >= 10 && h <= 14) ? 0.4 : 0.0);
+        var modelDays = new List<DryWindowFeatureBuilder.ForecastDay?> { d };
+
+        var shape = DryWindowFeatureBuilder.ShapeFeatures(modelDays);
+
+        shape.NRainEvents.Should().Be(2.0);
+        shape.LongestWetRun.Should().Be(5.0);  // the second event is longer
+        shape.LongestDryRun.Should().BeGreaterThanOrEqualTo(9.0); // 9-hour tail run after hour 14
+        shape.FirstWetHour.Should().Be(3.0);
+        shape.LastWetHour.Should().Be(14.0);
+    }
+
+    [Fact]
+    public void ShapeFeatures_morning_and_afternoon_buckets_only_count_their_hours()
+    {
+        // Wet only in hours 6, 12 (one in morning bucket, one in afternoon bucket).
+        var d = DayOf(h => (h == 6 || h == 12) ? 1.5 : 0.0);
+        var shape = DryWindowFeatureBuilder.ShapeFeatures(new List<DryWindowFeatureBuilder.ForecastDay?> { d });
+
+        shape.MorningPrecipSum.Should().BeApproximately(1.5, 1e-9);
+        shape.AfternoonPrecipSum.Should().BeApproximately(1.5, 1e-9);
+        // Hour-2 wet would not contribute to either bucket — verify exclusivity.
+        var d2 = DayOf(h => (h == 2) ? 1.0 : 0.0);
+        var shape2 = DryWindowFeatureBuilder.ShapeFeatures(new List<DryWindowFeatureBuilder.ForecastDay?> { d2 });
+        shape2.MorningPrecipSum.Should().Be(0.0);
+        shape2.AfternoonPrecipSum.Should().Be(0.0);
+    }
+
+    [Fact]
+    public void ShapeFeatures_threshold_uses_inclusive_zero_point_one_mm()
+    {
+        // Hour 10 sits exactly on threshold (0.1 mm) — should count as wet.
+        var atThreshold = DayOf(h => h == 10 ? 0.1 : 0.0);
+        var shapeAt = DryWindowFeatureBuilder.ShapeFeatures(new List<DryWindowFeatureBuilder.ForecastDay?> { atThreshold });
+        shapeAt.NRainEvents.Should().Be(1.0);
+        shapeAt.FirstWetHour.Should().Be(10.0);
+
+        // Hour 10 below threshold (0.099) — no wet hour at all.
+        var below = DayOf(h => h == 10 ? 0.099 : 0.0);
+        var shapeBelow = DryWindowFeatureBuilder.ShapeFeatures(new List<DryWindowFeatureBuilder.ForecastDay?> { below });
+        shapeBelow.NRainEvents.Should().Be(0.0);
+        shapeBelow.FirstWetHour.Should().Be(24.0);
+    }
+
+    [Fact]
+    public void ShapeFeatures_no_models_present_returns_all_nan()
+    {
+        var modelDays = new List<DryWindowFeatureBuilder.ForecastDay?> { null, null, null, null, null, null };
+        var shape = DryWindowFeatureBuilder.ShapeFeatures(modelDays);
+
+        double.IsNaN(shape.FirstWetHour).Should().BeTrue();
+        double.IsNaN(shape.LastWetHour).Should().BeTrue();
+        double.IsNaN(shape.LongestDryRun).Should().BeTrue();
+        double.IsNaN(shape.LongestWetRun).Should().BeTrue();
+        double.IsNaN(shape.NRainEvents).Should().BeTrue();
+        double.IsNaN(shape.MorningPrecipSum).Should().BeTrue();
+        double.IsNaN(shape.AfternoonPrecipSum).Should().BeTrue();
+    }
+
+    [Fact]
+    public void ShapeFeatures_partial_model_coverage_uses_present_models_only_per_hour()
+    {
+        // Model A has hours 0–11 only with 0.5 mm/h; model B has hours 12–23 only with 0.5 mm/h.
+        // Ensemble mean per hour stays 0.5 (single contributor each), so the day looks fully wet.
+        var dayA = new DryWindowFeatureBuilder.ForecastDay();
+        var dayB = new DryWindowFeatureBuilder.ForecastDay();
+        for (int h = 0; h < 24; h++)
+        {
+            var which = h < 12 ? dayA : dayB;
+            which.SetHour(h, new DryWindowFeatureBuilder.ForecastRow(
+                new DateTime(2026, 3, 1, h, 0, 0, DateTimeKind.Utc),
+                "gfs_seamless", Precip: 0.5, Prob: 0.0,
+                Rh: 80, T: 10, Td: 8,
+                CloudLow: 50, CloudMid: 30, CloudHigh: 20,
+                Cape: 100, Wind: 5));
+        }
+        var shape = DryWindowFeatureBuilder.ShapeFeatures(new List<DryWindowFeatureBuilder.ForecastDay?> { dayA, dayB });
+        shape.LongestWetRun.Should().Be(24.0);
+        shape.NRainEvents.Should().Be(1.0);
+    }
+
+    [Fact]
+    public void ComposeRow_populates_seven_shape_features_on_training_row()
+    {
+        // Wet 09–11 only; everything else dry. Single model populated, the
+        // remaining five slots are null (per-model features go NaN, but the
+        // ensemble-mean shape vector still resolves over the present model).
+        var d = DayOf(h => (h >= 9 && h <= 11) ? 0.5 : 0.0);
+        var modelDays = new List<DryWindowFeatureBuilder.ForecastDay?>
+        {
+            d, null, null, null, null, null,
+        };
+
+        var row = DryWindowFeatureBuilder.ComposeRow(
+            new DateOnly(2026, 3, 1), windowHours: 3, modelDays, label: false, truthMmDay: 1.5);
+
+        row.FirstWetHour.Should().Be(9f);
+        row.LastWetHour.Should().Be(11f);
+        row.LongestForecastDryRunHours.Should().BeGreaterThanOrEqualTo(12f); // tail dry run
+        row.LongestForecastWetRunHours.Should().Be(3f);
+        row.NRainEvents.Should().Be(1f);
+        row.MorningPrecipSum.Should().BeApproximately(1.5f, 1e-4f);  // 0.5 + 0.5 + 0.5 over hours 9–11
+        row.AfternoonPrecipSum.Should().Be(0f);
+    }
 }

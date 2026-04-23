@@ -30,8 +30,17 @@ public sealed class DryWindowTrainCommand
         _cfg = cfg;
     }
 
-    public async Task<int> RunAsync(string stationArg, string windowArg, int[] leads, CancellationToken ct)
+    public Task<int> RunAsync(string stationArg, string windowArg, int[] leads, CancellationToken ct)
+        => RunAsync(stationArg, windowArg, leads, DryWindowFeatureBuilder.Phase3b, ct);
+
+    public async Task<int> RunAsync(string stationArg, string windowArg, int[] leads, string phase, CancellationToken ct)
     {
+        if (phase != DryWindowFeatureBuilder.Phase3b && phase != DryWindowFeatureBuilder.Phase3dShape)
+        {
+            _log.LogError("Unsupported dry-window training phase '{Phase}'. Expected '3b' or '3d-shape'.", phase);
+            return 2;
+        }
+
         var stations = ResolveStations(stationArg);
         if (stations is null) return 2;
 
@@ -48,8 +57,8 @@ public sealed class DryWindowTrainCommand
             return 2;
         }
 
-        _log.LogInformation("Phase 3b — stations=[{Stations}] windows=[{W}] leads=[{L}]",
-            string.Join(", ", stations), string.Join(",", windows), string.Join(",", leads));
+        _log.LogInformation("Phase {Phase} — stations=[{Stations}] windows=[{W}] leads=[{L}]",
+            phase, string.Join(", ", stations), string.Join(",", windows), string.Join(",", leads));
 
         var modelsRoot = Path.Combine("data", "models");
         var hp = new DryWindowTrainer.Hyperparameters();
@@ -66,7 +75,10 @@ public sealed class DryWindowTrainCommand
                 ct.ThrowIfCancellationRequested();
                 var compositeKey = $"ea_{Slugify(stationName)}/window_{window}h";
                 var now = DateTime.UtcNow;
-                var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "dry_window", compositeKey, now);
+                // 3b → v{ts} (champion, no suffix). 3d-shape → v{ts}_phase3d_shape so
+                // the manifest's Active list visually distinguishes the variants.
+                var suffix = phase == DryWindowFeatureBuilder.Phase3dShape ? "phase3d_shape" : null;
+                var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "dry_window", compositeKey, now, suffix);
                 var versionName = Path.GetFileName(versionDir);
 
                 _log.LogInformation("=== Station '{Station}', window {W}h → {Key} ===",
@@ -117,7 +129,7 @@ public sealed class DryWindowTrainCommand
                                         "val {V0:yyyy-MM-dd}..{V1:yyyy-MM-dd}, test {E0:yyyy-MM-dd}..{E1:yyyy-MM-dd}",
                         ds.TrainStart, ds.TrainEnd, ds.ValStart, ds.ValEnd, ds.TestStart, ds.TestEnd);
 
-                    var trained = DryWindowTrainer.Train(ds, hp);
+                    var trained = DryWindowTrainer.Train(ds, hp, phase);
 
                     var truthTest = ds.Test.Select(r => r.HasDryWindow ? 1.0 : 0.0).ToArray();
                     var blendProb = DryWindowTrainer.PredictProbability(trained.Ml, trained.Model, ds.Test);
@@ -175,7 +187,7 @@ public sealed class DryWindowTrainCommand
                     continue;
                 }
 
-                ModelArtifact.SaveFeatureSchema(versionDir, DryWindowFeatureBuilder.FeatureNames);
+                ModelArtifact.SaveFeatureSchema(versionDir, DryWindowFeatureBuilder.FeatureNamesForPhase(phase));
                 ModelArtifact.SavePerLeadFeatureImportance(versionDir, importanceByLead);
                 if (climatology is not null)
                 {
@@ -186,7 +198,7 @@ public sealed class DryWindowTrainCommand
                 {
                     Version = versionName,
                     Target = "dry_window",
-                    Phase = "3b",
+                    Phase = phase,
                     DataSource = "previous_runs_api+ea_rainfall",
                     TrainedAtUtc = now,
                     Hyperparameters = BuildHpDict(hp, window),
@@ -201,7 +213,23 @@ public sealed class DryWindowTrainCommand
                     },
                 };
                 ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
-                ModelArtifact.UpdateStationManifest(modelsRoot, "dry_window", compositeKey, versionName);
+                if (phase == DryWindowFeatureBuilder.Phase3b)
+                {
+                    // 3b is the champion — replace Current and reset Active to just this version.
+                    ModelArtifact.UpdateStationManifest(modelsRoot, "dry_window", compositeKey, versionName);
+                }
+                else
+                {
+                    // 3d-shape (challenger) — keep 3b's Current pointer, extend Active so
+                    // predict/verify produce rows for both. Stale 3d-shape entries get
+                    // dropped so each train run leaves at most one of each phase active.
+                    ModelArtifact.AppendStationVersion(modelsRoot, "dry_window", compositeKey, versionName);
+                    var existing = ModelArtifact.ResolveStationActive(modelsRoot, "dry_window", compositeKey);
+                    var nextActive = existing
+                        .Where(v => !v.Contains("phase3d_shape", StringComparison.Ordinal))
+                        .Append(versionName);
+                    ModelArtifact.SetStationActive(modelsRoot, "dry_window", compositeKey, nextActive);
+                }
 
                 _log.LogInformation("Saved artefacts → {Dir}", versionDir);
             }

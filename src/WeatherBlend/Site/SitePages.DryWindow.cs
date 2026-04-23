@@ -11,7 +11,11 @@ public static partial class SitePages
             <section>
               <hgroup>
                 <h2>Dry window — P(∃ N-hour dry block in target UTC day)</h2>
-                <p>Phase 3b per-station, per-window blender. 18 LightGBM classifiers (Bellever + Princetown × {3, 4, 6}h × leads 24/48/72h). Truth from EA Hydrology gauges with a 4-of-4 hourly gate.</p>
+                <p>Per-station, per-window blender. Bellever + Princetown × {3, 4, 6}h × leads 24/48/72h. Truth from EA Hydrology gauges with a 4-of-4 hourly gate.
+                   Three phases run side-by-side via the per-composite <code>Active</code> manifest list — <strong>Phase 3b (lean, 53 features)</strong> as the production champion,
+                   <strong>Phase 3d-shape (60 features)</strong> adding 7 within-day shape features derived from the ensemble-mean hourly precip vector,
+                   and <strong>Phase 3d-calibrated</strong> wrapping 3b's saved model in a per-lead pool-adjacent-violators isotonic remapping.
+                   Tables below are grouped by phase so feature-richness vs post-hoc calibration deltas are visible at a glance.</p>
               </hgroup>
             """);
 
@@ -25,6 +29,8 @@ public static partial class SitePages
         var stations = input.DryWindowPredictions.Select(d => d.Station).Distinct().OrderBy(s => s, StringComparer.Ordinal).ToList();
         var windows = input.DryWindowPredictions.Select(d => d.WindowHours).Distinct().OrderBy(w => w).ToList();
         var leadOrder = new[] { 24, 48, 72 };
+        // Forward of "yesterday" so stale rows can't dominate the view.
+        var cutoff = input.GeneratedAtUtc.Date.AddDays(-1);
 
         foreach (var station in stations)
         {
@@ -32,80 +38,99 @@ public static partial class SitePages
 
             foreach (var window in windows)
             {
-                // Latest prediction per (target_date, lead). Keep target dates strictly
-                // forward of "yesterday" to avoid stale rows dominating the view.
-                var cutoff = input.GeneratedAtUtc.Date.AddDays(-1);
-                var latest = input.DryWindowPredictions
+                var windowRows = input.DryWindowPredictions
                     .Where(d => d.Station == station && d.WindowHours == window && d.TargetDateUtc >= cutoff)
-                    .GroupBy(d => (d.TargetDateUtc, d.LeadHours))
-                    .Select(g => g.OrderByDescending(d => d.PredictedAtUtc).First())
                     .ToList();
 
-                if (latest.Count == 0)
+                if (windowRows.Count == 0)
                 {
                     content.Append(Ci, $"<h4>{window}-hour dry window</h4><p><em>No predictions on or after {cutoff:yyyy-MM-dd}.</em></p>");
                     continue;
                 }
 
-                var dates = latest.Select(d => d.TargetDateUtc).Distinct().OrderBy(d => d).ToList();
+                content.Append(Ci, $"<h4>{window}-hour dry window</h4>");
 
-                var tbody = new StringBuilder();
-                foreach (var date in dates)
+                bool anyRendered = false;
+                foreach (var phase in DryWindowPhases.All)
                 {
-                    var byLead = latest.Where(d => d.TargetDateUtc == date).ToDictionary(d => d.LeadHours);
-                    var anyClim = byLead.Values.FirstOrDefault();
-                    var clim = anyClim is null ? "—" : anyClim.ClimatologyProbHasDryWindow.ToString("0.00", Ci);
+                    var phaseRows = windowRows
+                        .Where(d => DryWindowPhases.Bucket(input.PhaseByVersion, d.Version) == phase)
+                        .ToList();
+                    if (phaseRows.Count == 0) continue;
+                    anyRendered = true;
 
-                    var leadCells = new StringBuilder();
-                    foreach (var lead in leadOrder)
+                    // Latest prediction per (target_date, lead) within this phase bucket.
+                    var latest = phaseRows
+                        .GroupBy(d => (d.TargetDateUtc, d.LeadHours))
+                        .Select(g => g.OrderByDescending(d => d.PredictedAtUtc).First())
+                        .ToList();
+
+                    var dates = latest.Select(d => d.TargetDateUtc).Distinct().OrderBy(d => d).ToList();
+
+                    var tbody = new StringBuilder();
+                    foreach (var date in dates)
                     {
-                        if (byLead.TryGetValue(lead, out var d))
+                        var byLead = latest.Where(d => d.TargetDateUtc == date).ToDictionary(d => d.LeadHours);
+                        var anyClim = byLead.Values.FirstOrDefault();
+                        var clim = anyClim is null ? "—" : anyClim.ClimatologyProbHasDryWindow.ToString("0.00", Ci);
+
+                        var leadCells = new StringBuilder();
+                        foreach (var lead in leadOrder)
                         {
-                            // Bold cell when the blender meaningfully diverges from climatology.
-                            var diff = d.ProbHasDryWindow - d.ClimatologyProbHasDryWindow;
-                            var cls = Math.Abs(diff) >= 0.10 ? " class=\"num strong\"" : " class=\"num\"";
-                            leadCells.Append(Ci, $"<td{cls}>{d.ProbHasDryWindow.ToString("0.00", Ci)}</td>");
+                            if (byLead.TryGetValue(lead, out var d))
+                            {
+                                // Bold cell when the blender meaningfully diverges from climatology.
+                                var diff = d.ProbHasDryWindow - d.ClimatologyProbHasDryWindow;
+                                var cls = Math.Abs(diff) >= 0.10 ? " class=\"num strong\"" : " class=\"num\"";
+                                leadCells.Append(Ci, $"<td{cls}>{d.ProbHasDryWindow.ToString("0.00", Ci)}</td>");
+                            }
+                            else
+                            {
+                                leadCells.Append("<td class=\"num\">—</td>");
+                            }
                         }
-                        else
-                        {
-                            leadCells.Append("<td class=\"num\">—</td>");
-                        }
+
+                        var agreementCell = byLead.Values
+                            .Select(d => d.AgreementHasDryWindow)
+                            .FirstOrDefault(a => a.HasValue);
+                        var agreement = agreementCell.HasValue ? agreementCell.Value.ToString("0.00", Ci) : "—";
+
+                        tbody.Append(Ci, $"""
+                            <tr>
+                              <td><time>{date:yyyy-MM-dd}</time></td>
+                              {leadCells}
+                              <td class="num">{clim}</td>
+                              <td class="num">{agreement}</td>
+                            </tr>
+                            """);
                     }
 
-                    var agreementCell = byLead.Values
-                        .Select(d => d.AgreementHasDryWindow)
-                        .FirstOrDefault(a => a.HasValue);
-                    var agreement = agreementCell.HasValue ? agreementCell.Value.ToString("0.00", Ci) : "—";
-
-                    tbody.Append(Ci, $"""
-                        <tr>
-                          <td><time>{date:yyyy-MM-dd}</time></td>
-                          {leadCells}
-                          <td class="num">{clim}</td>
-                          <td class="num">{agreement}</td>
-                        </tr>
+                    content.Append(Ci, $"""
+                        <h5>{Escape(phase.LongTitle)}</h5>
+                        <p class="skill-line">{Escape(phase.Description)}</p>
+                        <figure>
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Target date (UTC)</th>
+                                <th class="num">+24h</th>
+                                <th class="num">+48h</th>
+                                <th class="num">+72h</th>
+                                <th class="num">Climatology</th>
+                                <th class="num">Model agreement</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                        {tbody}    </tbody>
+                          </table>
+                        </figure>
                         """);
                 }
 
-                content.Append(Ci, $"""
-                    <h4>{window}-hour dry window</h4>
-                    <figure>
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Target date (UTC)</th>
-                            <th class="num">+24h</th>
-                            <th class="num">+48h</th>
-                            <th class="num">+72h</th>
-                            <th class="num">Climatology</th>
-                            <th class="num">Model agreement</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                    {tbody}    </tbody>
-                      </table>
-                    </figure>
-                    """);
+                if (!anyRendered)
+                {
+                    content.Append("<p><em>No predictions in known phase buckets for this window.</em></p>");
+                }
             }
         }
 
