@@ -9,6 +9,7 @@ public sealed class AppConfig
     public int ForecastDays { get; set; } = 7;
     public StorageConfig Storage { get; set; } = new();
     public HttpConfig Http { get; set; } = new();
+    public MetOfficeConfig MetOffice { get; set; } = new();
 }
 
 public sealed class LocationConfig
@@ -53,6 +54,29 @@ public sealed class StorageConfig
     public string RainfallPath { get; set; } = "data/truth/rainfall";
     public string PredictionsPath { get; set; } = "data/predictions";
     public string ReportsPath { get; set; } = "data/reports";
+    public string MetOfficeObsPath { get; set; } = "data/truth/met_office_obs";
+}
+
+public sealed class MetOfficeConfig
+{
+    public bool Enabled { get; set; } = true;
+    public string SpotModelTag { get; set; } = "met_office_spot";
+    public string SpotKeyEnvVar { get; set; } = "MET_OFFICE_SPOT_API_KEY";
+    public string SpotKeyFile { get; set; } = @"C:\Projects\WeatherBlend\MetOfficeSpotKey.txt";
+    public string ObsKeyEnvVar { get; set; } = "MET_OFFICE_OBS_API_KEY";
+    public string ObsKeyFile { get; set; } = @"C:\Projects\WeatherBlend\MetOfficeObsKey.txt";
+
+    /// <summary>
+    /// Geohash of the Land Observations location nearest our site. The DataHub
+    /// Land Observations API is geohash-addressed (not station-id) — call
+    /// <c>/nearest?lat=...&amp;lon=...</c> once, pin the result here, and reuse.
+    /// Left null until a bootstrap run fills it in; leaving it null simply skips
+    /// obs collection without blocking the rest of the cycle.
+    /// </summary>
+    public string? ObsGeohash { get; set; }
+
+    /// <summary>Human-readable area the geohash resolves to (e.g. "Devon"). Informational.</summary>
+    public string? ObsArea { get; set; }
 }
 
 public sealed class HttpConfig

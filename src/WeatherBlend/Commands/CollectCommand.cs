@@ -17,6 +17,8 @@ public sealed class CollectCommand
     private readonly OpenMeteoClient _forecasts;
     private readonly MetarClient _metar;
     private readonly EaHydrologyClient _rainfall;
+    private readonly MetOfficeSpotClient _metOfficeSpot;
+    private readonly MetOfficeObservationsClient _metOfficeObs;
     private readonly ILogger<CollectCommand> _log;
 
     public CollectCommand(
@@ -24,12 +26,16 @@ public sealed class CollectCommand
         OpenMeteoClient forecasts,
         MetarClient metar,
         EaHydrologyClient rainfall,
+        MetOfficeSpotClient metOfficeSpot,
+        MetOfficeObservationsClient metOfficeObs,
         ILogger<CollectCommand> log)
     {
         _cfg = cfg;
         _forecasts = forecasts;
         _metar = metar;
         _rainfall = rainfall;
+        _metOfficeSpot = metOfficeSpot;
+        _metOfficeObs = metOfficeObs;
         _log = log;
     }
 
@@ -102,7 +108,70 @@ public sealed class CollectCommand
             }
         }
 
-        if (forecastErrors > 0 || rainfallErrors > 0) return 1;
+        var metOfficeErrors = await CollectMetOfficeAsync(ct);
+
+        if (forecastErrors > 0 || rainfallErrors > 0 || metOfficeErrors > 0) return 1;
         return 0;
+    }
+
+    private async Task<int> CollectMetOfficeAsync(CancellationToken ct)
+    {
+        var mo = _cfg.MetOffice;
+        if (!mo.Enabled)
+        {
+            _log.LogInformation("  Met Office: disabled via config");
+            return 0;
+        }
+
+        var errors = 0;
+
+        try
+        {
+            var spotKey = MetOfficeSecrets.TryLoad(mo.SpotKeyEnvVar, mo.SpotKeyFile);
+            if (string.IsNullOrWhiteSpace(spotKey))
+            {
+                _log.LogWarning("  Met Office Spot: no API key ({Env} / {File}); skipping",
+                    mo.SpotKeyEnvVar, mo.SpotKeyFile);
+            }
+            else
+            {
+                var rows = await _metOfficeSpot.FetchAsync(_cfg.Location, mo.SpotModelTag, spotKey, ct);
+                await ParquetWriter.WriteForecastsAsync(_cfg.Storage.ForecastsPath, rows, ct);
+                _log.LogInformation("  Met Office Spot: wrote {Rows} rows", rows.Count);
+            }
+        }
+        catch (Exception ex)
+        {
+            errors++;
+            _log.LogError(ex, "  Met Office Spot: FAILED");
+        }
+
+        try
+        {
+            var obsKey = MetOfficeSecrets.TryLoad(mo.ObsKeyEnvVar, mo.ObsKeyFile);
+            if (string.IsNullOrWhiteSpace(obsKey))
+            {
+                _log.LogInformation("  Met Office Obs: no API key ({Env} / {File}); skipping",
+                    mo.ObsKeyEnvVar, mo.ObsKeyFile);
+            }
+            else if (string.IsNullOrWhiteSpace(mo.ObsGeohash))
+            {
+                _log.LogInformation("  Met Office Obs: geohash not configured (run met-office-bootstrap); skipping");
+            }
+            else
+            {
+                var rows = await _metOfficeObs.FetchAsync(
+                    _cfg.Location.Name, mo.ObsGeohash, mo.ObsArea ?? "", obsKey, ct);
+                await ParquetWriter.WriteMetOfficeObservationsAsync(_cfg.Storage.MetOfficeObsPath, rows, ct);
+                _log.LogInformation("  Met Office Obs: wrote {Rows} rows", rows.Count);
+            }
+        }
+        catch (Exception ex)
+        {
+            errors++;
+            _log.LogError(ex, "  Met Office Obs: FAILED");
+        }
+
+        return errors;
     }
 }

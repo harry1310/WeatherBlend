@@ -122,6 +122,46 @@ public static class ParquetWriter
         }
     }
 
+    /// <summary>
+    /// Met Office Land Observations writer. Partitioned by location/geohash/date so
+    /// each file holds at most 24 hourly rows. Merges with any existing partition
+    /// file, deduping on ObservedTimeUtc with last-write-wins — rolling 48h fetches
+    /// overlap heavily so repeated runs must be idempotent.
+    /// Path: location=.../geohash=&lt;hash&gt;/date=&lt;yyyy-MM-dd&gt;/observations.parquet
+    /// </summary>
+    public static async Task WriteMetOfficeObservationsAsync(
+        string basePath,
+        IReadOnlyList<MetOfficeObservationRow> rows,
+        CancellationToken ct = default)
+    {
+        if (rows.Count == 0) return;
+
+        foreach (var group in rows.GroupBy(r => new { r.LocationName, r.Geohash, Date = r.ObservedTimeUtc.Date }))
+        {
+            var dateStr = group.Key.Date.ToString("yyyy-MM-dd");
+            var dir = Path.Combine(
+                basePath,
+                $"location={group.Key.LocationName}",
+                $"geohash={group.Key.Geohash}",
+                $"date={dateStr}");
+            Directory.CreateDirectory(dir);
+
+            var file = Path.Combine(dir, "observations.parquet");
+            var existing = File.Exists(file)
+                ? (await ParquetSerializer.DeserializeAsync<MetOfficeObservationRow>(file, cancellationToken: ct)).ToList()
+                : new List<MetOfficeObservationRow>();
+
+            var merged = existing
+                .Concat(group)
+                .GroupBy(r => r.ObservedTimeUtc)
+                .Select(g => g.Last())
+                .OrderBy(r => r.ObservedTimeUtc)
+                .ToList();
+
+            await ParquetSerializer.SerializeAsync(merged, file, cancellationToken: ct);
+        }
+    }
+
     public static async Task WriteObservationsAsync(
         string basePath,
         IReadOnlyList<ObservationRow> rows,

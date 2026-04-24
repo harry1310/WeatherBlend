@@ -93,6 +93,26 @@ storage:
   rainfallPath: "data/truth/rainfall"
   predictionsPath: "data/predictions"
   reportsPath: "data/reports"
+  metOfficeObsPath: "data/truth/met_office_obs"
+
+# Met Office DataHub benchmark capture.
+# Global Spot forecasts are written into the standard forecasts tree under
+# model=met_office_spot so existing compare/verify tooling picks them up for free.
+# Land Observations go to metOfficeObsPath (rolling 48h window, dedup on observed time).
+# Keys live outside the repo; env var wins, file is the fallback (same pattern as R2).
+# Free tier: 360 calls/day per product; one collect cycle uses ~1 call per product.
+metOffice:
+  enabled: true
+  spotModelTag: "met_office_spot"
+  spotKeyEnvVar: "MET_OFFICE_SPOT_API_KEY"
+  spotKeyFile: "C:\\Projects\\WeatherBlend\\MetOfficeSpotKey.txt"
+  obsKeyEnvVar: "MET_OFFICE_OBS_API_KEY"
+  obsKeyFile: "C:\\Projects\\WeatherBlend\\MetOfficeObsKey.txt"
+  # Land Observations is geohash-addressed (API v1.0): GET /nearest?lat=...&lon=...
+  # returned gcj0z3 for Bonehill (lat=50.58, lon=-3.79 at 2dp). Pinned here so
+  # cycles skip the /nearest lookup — the spec asks callers to cache it.
+  obsGeohash: "gcj0z3"
+  obsArea: "Devon"
 
 # HTTP client settings.
 http:

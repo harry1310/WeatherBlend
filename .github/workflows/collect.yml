@@ -45,24 +45,29 @@ jobs:
           acl = private
           EOF
 
-      - name: Pull existing METAR + rainfall from R2
+      - name: Pull existing METAR + rainfall + Met Office obs from R2
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
           # Forecasts/ERA5 writers are append-only at the file level (unique
           # run=HH.parquet / date=... paths per cycle), so we don't need the
           # existing tree locally. The read-modify-write writers are
-          # WriteObservationsAsync (METAR) and WriteRainfallAsync (EA) — each
-          # reads the day's parquet, merges new rows, dedupes by timestamp,
-          # rewrites. Those subtrees we pull; everything else is wasted IO.
-          mkdir -p data/truth/metar data/truth/rainfall
-          rclone copy "r2:${R2_BUCKET}/data/truth/metar"    ./data/truth/metar    --fast-list --transfers 16 --checkers 32 --progress
-          rclone copy "r2:${R2_BUCKET}/data/truth/rainfall" ./data/truth/rainfall --fast-list --transfers 16 --checkers 32 --progress
+          # WriteObservationsAsync (METAR), WriteRainfallAsync (EA), and
+          # WriteMetOfficeObservationsAsync — each reads the day's parquet,
+          # merges new rows, dedupes by timestamp, rewrites. Those subtrees we
+          # pull; everything else is wasted IO.
+          mkdir -p data/truth/metar data/truth/rainfall data/truth/met_office_obs
+          rclone copy "r2:${R2_BUCKET}/data/truth/metar"           ./data/truth/metar           --fast-list --transfers 16 --checkers 32 --progress
+          rclone copy "r2:${R2_BUCKET}/data/truth/rainfall"        ./data/truth/rainfall        --fast-list --transfers 16 --checkers 32 --progress
+          rclone copy "r2:${R2_BUCKET}/data/truth/met_office_obs"  ./data/truth/met_office_obs  --fast-list --transfers 16 --checkers 32 --progress
 
       - name: Build
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
 
       - name: Collect
+        env:
+          MET_OFFICE_SPOT_API_KEY: ${{ secrets.MET_OFFICE_SPOT_API_KEY }}
+          MET_OFFICE_OBS_API_KEY: ${{ secrets.MET_OFFICE_OBS_API_KEY }}
         run: dotnet run --project src/WeatherBlend --no-build -c Release -- collect
 
       - name: Push new/updated data to R2

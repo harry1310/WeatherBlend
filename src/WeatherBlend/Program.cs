@@ -69,6 +69,20 @@ public static class Program
                 })
                 .AddStandardResilienceHandler();
 
+                services.AddHttpClient<MetOfficeSpotClient>(c =>
+                {
+                    c.Timeout = TimeSpan.FromSeconds(cfg.Http.TimeoutSeconds);
+                    c.DefaultRequestHeaders.UserAgent.ParseAdd(cfg.Http.UserAgent);
+                })
+                .AddStandardResilienceHandler();
+
+                services.AddHttpClient<MetOfficeObservationsClient>(c =>
+                {
+                    c.Timeout = TimeSpan.FromSeconds(cfg.Http.TimeoutSeconds);
+                    c.DefaultRequestHeaders.UserAgent.ParseAdd(cfg.Http.UserAgent);
+                })
+                .AddStandardResilienceHandler();
+
                 // OGIMET: longer timeout, no aggressive retry — the rate limit means
                 // a hammered retry loop is the fastest way to get the IP blocked.
                 services.AddHttpClient<OgimetClient>(c =>
@@ -99,6 +113,7 @@ public static class Program
                 });
 
                 services.AddTransient<CollectCommand>();
+                services.AddTransient<MetOfficeBootstrapCommand>();
                 services.AddTransient<BackfillCommand>();
                 services.AddTransient<GfsBackfillCommand>();
                 services.AddTransient<StatusCommand>();
@@ -134,6 +149,16 @@ public static class Program
             ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
         });
         root.AddCommand(collect);
+
+        var metOfficeBootstrap = new Command(
+            "met-office-bootstrap",
+            "One-off: pull the current Met Office Spot forecast + last 48h of Land Observations. Run once at the start of the capture window; normal 'collect' handles every cycle after that.");
+        metOfficeBootstrap.SetHandler(async ctx =>
+        {
+            var cmd = host.Services.GetRequiredService<MetOfficeBootstrapCommand>();
+            ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
+        });
+        root.AddCommand(metOfficeBootstrap);
 
         var startOpt = new Option<DateOnly>("--start", "Start date (yyyy-MM-dd), UTC")
             { IsRequired = true };
