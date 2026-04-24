@@ -121,21 +121,26 @@ public sealed class RenderSiteCommand
         await File.WriteAllTextAsync(Path.Combine(outputDir, "about.html"),         SitePages.RenderAbout(input),          ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "styles.css"),         SitePages.Stylesheet(),                ct);
 
-        // Skill page is per-station — one "canonical" file (no slug) plus one per
-        // non-first station. The per-station set is the union of precip + dry-window
-        // stations, so even if a station has only one of the two, it gets a tab.
-        var skillStations = SitePages.GetPerStationSkillStations(input);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "skill.html"), SitePages.RenderSkill(input, null), ct);
-        for (int i = 1; i < skillStations.Count; i++)
+        // Temp skill is single-file — temperature has no station axis.
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "skill-temperature.html"),
+            SitePages.RenderTempSkill(input), ct);
+
+        // Rain skill is per-station — one canonical file plus one per non-first station.
+        // Stations set is the union of precip + dry-window stations, so even if a station
+        // has only one of the two, it gets its own tab.
+        var rainStations = SitePages.GetRainSkillStations(input);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "skill-rainfall.html"),
+            SitePages.RenderRainSkill(input, null), ct);
+        for (int i = 1; i < rainStations.Count; i++)
         {
-            var slug = SitePages.StationSlug(skillStations[i]);
+            var slug = SitePages.StationSlug(rainStations[i]);
             await File.WriteAllTextAsync(
-                Path.Combine(outputDir, $"skill-{slug}.html"),
-                SitePages.RenderSkill(input, slug), ct);
+                Path.Combine(outputDir, $"skill-rainfall-{slug}.html"),
+                SitePages.RenderRainSkill(input, slug), ct);
         }
 
         // Dry-window page is per-station too. Dry-window-only stations are a subset
-        // of skill stations (it's currently Bellever + Princetown, no Hexworthy).
+        // of rain-skill stations (it's currently Bellever + Princetown, no Hexworthy).
         var dryStations = input.DryWindowPredictions.Select(d => d.Station).Distinct().OrderBy(s => s, StringComparer.Ordinal).ToList();
         await File.WriteAllTextAsync(Path.Combine(outputDir, "dry-window.html"), SitePages.RenderDryWindow(input, null), ct);
         for (int i = 1; i < dryStations.Count; i++)
@@ -146,7 +151,7 @@ public sealed class RenderSiteCommand
                 SitePages.RenderDryWindow(input, slug), ct);
         }
 
-        var totalFiles = 7 + Math.Max(1, skillStations.Count) + Math.Max(1, dryStations.Count);
+        var totalFiles = 7 + 1 + Math.Max(1, rainStations.Count) + Math.Max(1, dryStations.Count);
         _log.LogInformation("Site rendered → {Dir} ({Files} files)", outputDir, totalFiles);
         return 0;
     }

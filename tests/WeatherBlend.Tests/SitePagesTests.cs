@@ -88,9 +88,9 @@ public class SitePagesTests
     }
 
     [Fact]
-    public void RenderSkill_renders_a_precipitation_chart_per_phase_present()
+    public void RenderRainSkill_renders_a_precipitation_chart_per_phase_present()
     {
-        // Three predictions for one station, one per phase. Skill page groups per phase.
+        // Three predictions for one station, one per phase. Rain-skill page groups per phase.
         var input = MakePrecipInput(new[]
         {
             ("v_3a",  "3a"),
@@ -98,7 +98,7 @@ public class SitePagesTests
             ("v_3c",  "3c"),
         });
 
-        var html = SitePages.RenderSkill(input);
+        var html = SitePages.RenderRainSkill(input);
 
         html.Should().Contain("Phase 3a (lean)");
         html.Should().Contain("Phase 3a_isotonic (lean + PAV calibration)");
@@ -347,9 +347,9 @@ public class SitePagesTests
     }
 
     [Fact]
-    public void RenderSkill_renders_only_requested_station_when_slug_provided()
+    public void RenderRainSkill_renders_only_requested_station_when_slug_provided()
     {
-        // Skill page variants ship one file per station; each variant should render the
+        // Rain skill page variants ship one file per station; each variant should render the
         // precip chart headings for *its* station only, not every station.
         var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
         var validTime = generatedAt.AddHours(24);
@@ -369,8 +369,8 @@ public class SitePagesTests
             PhaseByVersion = new Dictionary<string, string> { ["v3a"] = "3a" },
         };
 
-        var bellever = SitePages.RenderSkill(input, null);
-        var princetown = SitePages.RenderSkill(input, "princetown");
+        var bellever = SitePages.RenderRainSkill(input, null);
+        var princetown = SitePages.RenderRainSkill(input, "princetown");
 
         // The chart card heading (<h4>Station name</h4>) is the one that's per-station.
         // The sub-nav always mentions every station, so we look for the chart heading
@@ -382,10 +382,10 @@ public class SitePagesTests
     }
 
     [Fact]
-    public void RenderSkill_emits_station_subnav_when_more_than_one_station()
+    public void RenderRainSkill_emits_station_subnav_when_more_than_one_station()
     {
         // The sub-nav is the UI control that lets readers flip between station variants.
-        // With multiple stations present, every skill variant must carry one.
+        // With multiple stations present, every rain-skill variant must carry one.
         var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
         var validTime = generatedAt.AddHours(24);
         var precipPreds = new[]
@@ -404,10 +404,40 @@ public class SitePagesTests
             PhaseByVersion = new Dictionary<string, string> { ["v3a"] = "3a" },
         };
 
-        var html = SitePages.RenderSkill(input, null);
+        var html = SitePages.RenderRainSkill(input, null);
 
-        html.Should().Contain("skill.html")
-            .And.Contain("skill-princetown.html");
+        html.Should().Contain("skill-rainfall.html")
+            .And.Contain("skill-rainfall-princetown.html");
+    }
+
+    [Fact]
+    public void RenderTempSkill_is_station_agnostic_and_has_no_station_subnav()
+    {
+        // Temperature is a single-location quantity; the temp-skill page should not
+        // surface a station sub-nav even when rainfall data for multiple stations
+        // is present in the same SiteInputs.
+        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
+        var validTime = generatedAt.AddHours(24);
+        var precipPreds = new[]
+        {
+            new SitePages.PrecipForecastPoint(
+                "ea_bellever_dartmoor", "v3a", generatedAt, validTime, 24, 0.4, 0.2,
+                null, null, null, null, null, null),
+            new SitePages.PrecipForecastPoint(
+                "ea_princetown", "v3a", generatedAt, validTime, 24, 0.5, 0.2,
+                null, null, null, null, null, null),
+        };
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            PrecipPredictions = precipPreds,
+            PhaseByVersion = new Dictionary<string, string> { ["v3a"] = "3a" },
+        };
+
+        var html = SitePages.RenderTempSkill(input);
+
+        html.Should().NotContain("skill-rainfall-princetown.html");
+        html.Should().NotContain("<h4>Bellever Dartmoor</h4>");
     }
 
     [Fact]

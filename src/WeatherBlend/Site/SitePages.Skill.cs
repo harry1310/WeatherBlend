@@ -6,49 +6,65 @@ namespace WeatherBlend.Site;
 public static partial class SitePages
 {
     /// <summary>
-    /// Merged skill view: "eyeball" side-by-side plots of every active version against
-    /// truth, plus rolling quantitative MAE per lead for the temperature blender. The
-    /// two used to live on separate pages (forecast-vs-truth + verify) but the reader
-    /// ends up cross-checking them anyway, so a single page keeps the story — how good
-    /// is each blender vs reality? — in one place.
-    ///
-    /// <paramref name="stationSlug"/> picks which station the per-station sections
-    /// (precip vs truth, dry-window vs truth) render for. <c>null</c> means the
-    /// canonical first station — this variant ships as <c>skill.html</c>; the others
-    /// ship as <c>skill-{slug}.html</c>. Temperature sections are the same on every
-    /// variant.
+    /// Temperature skill page: eyeball plot of each active blender vs ERA5 truth,
+    /// followed by rolling MAE per lead. No station axis — temperature is a
+    /// single-location quantity, so this page is the same whatever station the
+    /// reader is interested in.
     /// </summary>
-    public static string RenderSkill(SiteInputs input, string? stationSlug = null)
+    public static string RenderTempSkill(SiteInputs input)
     {
-        var stations = GetPerStationSkillStations(input);
+        var content = new StringBuilder();
+        content.Append("""
+            <section>
+              <hgroup>
+                <h2>Temperature skill</h2>
+                <p>Eyeball comparison first — each active blender's temperature trajectory plotted against
+                   ERA5 + METAR truth. Rolling quantitative MAE by lead follows, so you can see whether the
+                   visual impression holds up under aggregation.</p>
+              </hgroup>
+            """);
+
+        content.Append("<h3>Vs truth</h3>");
+        content.Append(RenderTempVsTruthBlock(input));
+
+        content.Append("<hr/><h3>Rolling MAE</h3>");
+        content.Append(RenderRollingMaeBlock(input));
+
+        content.Append("</section>");
+        return WrapPage(input, "Temperature skill", "skill-temperature", content.ToString());
+    }
+
+    /// <summary>
+    /// Rainfall skill page: per-station eyeball plots of P(wet) vs observed wet-hour,
+    /// followed by the dry-window prediction vs observed-verdict table. Station is
+    /// the primary axis here — stations live on separate gauges with wildly different
+    /// climatologies, so each gets its own HTML variant.
+    ///
+    /// <paramref name="stationSlug"/> picks which station to render. <c>null</c>
+    /// means the canonical first station — this variant ships as
+    /// <c>skill-rainfall.html</c>; the others ship as
+    /// <c>skill-rainfall-{slug}.html</c>.
+    /// </summary>
+    public static string RenderRainSkill(SiteInputs input, string? stationSlug = null)
+    {
+        var stations = GetRainSkillStations(input);
         var currentStation = ResolveStationFromSlug(stations, stationSlug);
 
         var content = new StringBuilder();
         content.Append("""
             <section>
               <hgroup>
-                <h2>Skill</h2>
-                <p>Eyeball comparisons first — each active blender's trajectory plotted against
-                   observed truth. Rolling quantitative MAE by lead follows, so you can see
-                   whether the visual impression holds up under aggregation.</p>
+                <h2>Rainfall skill</h2>
+                <p>Eyeball first: P(wet) trajectories against a 0/1 wet-hour indicator from the same
+                   ≥ 0.1 mm threshold the blender was trained on. Dry-window predicted vs observed verdict
+                   follows. Stations sit on separate EA gauges, so flip between them via the sub-nav.</p>
               </hgroup>
             """);
 
-        content.Append("<h3>Temperature — vs truth</h3>");
-        content.Append(RenderTempVsTruthBlock(input));
-
-        content.Append("<hr/><h3>Temperature — rolling MAE</h3>");
-        content.Append(RenderRollingMaeBlock(input));
-
-        // Station sub-nav gates the two per-station sections below. One sub-nav steering
-        // both avoids the surprise of precip showing Bellever while dry-window shows all.
         if (currentStation is not null)
-        {
-            content.Append("<hr/>");
-            content.Append(RenderStationSubNav("skill", stations, currentStation));
-        }
+            content.Append(RenderStationSubNav("skill-rainfall", stations, currentStation));
 
-        content.Append("<h3>Precipitation — P(wet) vs observed wet-hour</h3>");
+        content.Append("<h3>P(wet) vs observed wet-hour</h3>");
         content.Append(RenderPrecipVsTruthBlock(input, currentStation));
 
         content.Append("<hr/><h3>Dry window — predicted vs observed</h3>");
@@ -59,15 +75,15 @@ public static partial class SitePages
         content.Append(RenderDryWindowVsTruthTable(input, currentStation));
 
         content.Append("</section>");
-        return WrapPage(input, "Skill", "skill", content.ToString());
+        return WrapPage(input, "Rainfall skill", "skill-rainfall", content.ToString());
     }
 
     /// <summary>
-    /// Station set used by both per-station skill sections. Union of precip and
-    /// dry-window stations so the sub-nav shows every station the reader might care
-    /// about, even if one of the sections has no data for it.
+    /// Station set used by the rainfall-skill sub-nav. Union of precip and dry-window
+    /// stations so the sub-nav shows every station the reader might care about, even
+    /// if one of the two sections has no data for it.
     /// </summary>
-    internal static IReadOnlyList<string> GetPerStationSkillStations(SiteInputs input)
+    internal static IReadOnlyList<string> GetRainSkillStations(SiteInputs input)
     {
         var set = new HashSet<string>(StringComparer.Ordinal);
         foreach (var p in input.PrecipPredictions) set.Add(p.Station);
