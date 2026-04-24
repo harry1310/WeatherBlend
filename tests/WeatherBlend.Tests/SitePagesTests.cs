@@ -88,9 +88,9 @@ public class SitePagesTests
     }
 
     [Fact]
-    public void RenderPrecipitation_renders_a_section_per_phase_present()
+    public void RenderSkill_renders_a_precipitation_chart_per_phase_present()
     {
-        // Three predictions for one station, one per phase, all tagged via PhaseByVersion.
+        // Three predictions for one station, one per phase. Skill page groups per phase.
         var input = MakePrecipInput(new[]
         {
             ("v_3a",  "3a"),
@@ -98,41 +98,48 @@ public class SitePagesTests
             ("v_3c",  "3c"),
         });
 
-        var html = SitePages.RenderPrecipitation(input);
+        var html = SitePages.RenderSkill(input);
 
-        html.Should().Contain("Phase 3a — lean (27 features)");
-        html.Should().Contain("Phase 3a_isotonic — lean + post-hoc calibration");
-        html.Should().Contain("Phase 3c — rich (55 features)");
-        // The intro paragraph names all three blenders.
-        html.Should().Contain("Phase 3a_isotonic");
+        html.Should().Contain("Phase 3a (lean)");
+        html.Should().Contain("Phase 3a_isotonic (lean + PAV calibration)");
+        html.Should().Contain("Phase 3c (rich)");
     }
 
     [Fact]
-    public void RenderPrecipitation_buckets_version_with_no_phase_into_other()
+    public void RenderForecasts_renders_only_the_requested_lead()
     {
-        // PhaseByVersion is empty so the version falls into the "other" bucket.
-        var input = MakePrecipInput(new (string, string)[] { ("v_legacy", "") });
+        // Predictions at every lead (24/48/72) for one station. RenderForecasts(input, 48)
+        // should surface +48h content only, not the other leads' headline.
+        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
+        var preds = new[] { 24, 48, 72 }.Select(lead =>
+            new SitePages.PrecipForecastPoint(
+                Station, "v_3a", generatedAt, generatedAt.AddHours(lead), lead, 0.42, 0.18,
+                PrecipGfs: null, PrecipEcmwf: null, PrecipIcon: null,
+                PrecipMf: null, PrecipUkmo: null, PrecipGem: null)).ToArray();
 
-        var html = SitePages.RenderPrecipitation(input);
+        var input = new SitePages.SiteInputs
+        {
+            LocationDisplay = "Test",
+            Latitude = 0, Longitude = 0, ElevationMeters = 0,
+            MetarStation = "",
+            GeneratedAtUtc = generatedAt,
+            WindowStartUtc = generatedAt.AddDays(-30),
+            Predictions = Array.Empty<PredictionRow>(),
+            TruthByTime = new Dictionary<DateTime, double>(),
+            MetarByTime = Array.Empty<(DateTime, double)>(),
+            RollingMae = Array.Empty<SitePages.RollingMaePoint>(),
+            PrecipPredictions = preds,
+            DryWindowPredictions = Array.Empty<SitePages.DryWindowForecastPoint>(),
+            RainfallTruth = new Dictionary<string, IReadOnlyDictionary<DateTime, double>>(),
+            PrecipCurrentByStation = new Dictionary<string, string> { [Station] = "v_3a" },
+        };
 
-        html.Should().Contain("Other versions");
-        // Phase-specific sections should not render when no rows match that phase.
-        html.Should().NotContain("Phase 3a_isotonic — lean + post-hoc calibration");
-        html.Should().NotContain("Phase 3c — rich (55 features)");
-    }
+        var html = SitePages.RenderForecasts(input, 48);
 
-    [Fact]
-    public void RenderPrecipitation_omits_phase_sections_with_no_rows()
-    {
-        // Only 3a_isotonic is present — neither raw 3a nor 3c sections should appear.
-        var input = MakePrecipInput(new[] { ("v_iso", "3a_isotonic") });
-
-        var html = SitePages.RenderPrecipitation(input);
-
-        html.Should().Contain("Phase 3a_isotonic — lean + post-hoc calibration");
-        html.Should().NotContain("Phase 3a — lean (27 features)");
-        html.Should().NotContain("Phase 3c — rich (55 features)");
-        html.Should().NotContain("Other versions");
+        html.Should().Contain("+48h forecast");
+        // Sub-nav still links to other leads, but the page body doesn't render +24h's chart.
+        html.Should().NotContain("+24h forecast");
+        html.Should().NotContain("+72h forecast");
     }
 
     private static SitePages.SiteInputs MakePrecipInput((string Version, string Phase)[] versions)

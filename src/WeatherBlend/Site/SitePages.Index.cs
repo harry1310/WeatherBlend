@@ -54,10 +54,11 @@ public static partial class SitePages
                     }
                 }
 
+                var tempColor = TemperatureColor(p.BlendTemperature);
                 cards.Append(Ci, $"""
                     <article class="forecast-card">
                       <header><h3>+{lead}h</h3><small>{p.ValidTimeUtc:yyyy-MM-dd HH:mm}Z</small></header>
-                      <div class="temp">{p.BlendTemperature.ToString("0.0", Ci)}°C</div>
+                      <div class="temp" style="color: {tempColor}">{p.BlendTemperature.ToString("0.0", Ci)}°C</div>
                       {pwetCell}
                       <footer>
                         <small>Made {p.PredictionMadeAtUtc:yyyy-MM-dd HH:mm}Z</small><br/>
@@ -81,7 +82,7 @@ public static partial class SitePages
         var skill = ComputeHeadlineSkill(input);
         var versionNote = string.IsNullOrEmpty(input.CurrentVersion)
             ? "No champion pinned in MANIFEST — cards may drift between active versions."
-            : $"Champion version: <code>{Escape(input.CurrentVersion)}</code>. Charts comparing every active version against truth live on the <a href=\"forecast-vs-truth.html\">forecast vs truth page</a>.";
+            : $"Champion version: <code>{Escape(input.CurrentVersion)}</code>. Charts comparing every active version against truth live on the <a href=\"skill.html\">skill page</a>.";
 
         var body = new StringBuilder();
         body.Append(Ci, $"""

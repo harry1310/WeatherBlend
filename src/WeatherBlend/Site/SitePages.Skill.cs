@@ -6,32 +6,56 @@ namespace WeatherBlend.Site;
 public static partial class SitePages
 {
     /// <summary>
-    /// Dedicated page that plots blend forecasts against observed truth, so the user can
-    /// eyeball whether a given model version is actually tracking reality. Temperature is
-    /// split into two charts (one per phase: 2b lean vs 2c rich) so champion/challenger
-    /// lines don't overlap and the user can compare at a glance. Precipitation gets one
-    /// chart per station with observed hourly rainfall overlaid on the P(wet) forecasts.
-    /// Dry-window is a grid of observed-vs-predicted for completed target days.
+    /// Merged skill view: "eyeball" side-by-side plots of every active version against
+    /// truth, plus rolling quantitative MAE per lead for the temperature blender. The
+    /// two used to live on separate pages (forecast-vs-truth + verify) but the reader
+    /// ends up cross-checking them anyway, so a single page keeps the story — how good
+    /// is each blender vs reality? — in one place.
     /// </summary>
-    public static string RenderForecastVsTruth(SiteInputs input)
+    public static string RenderSkill(SiteInputs input)
     {
         var content = new StringBuilder();
-        content.Append(Ci, $"""
+        content.Append("""
             <section>
               <hgroup>
-                <h2>Forecast vs truth</h2>
-                <p>Side-by-side view of what each active blender predicted vs what actually happened.
-                   Temperature lines run forward past "now" because the blend projects 24/48/72h ahead;
-                   truth (ERA5, METAR, rainfall) stops at the last observation.</p>
+                <h2>Skill</h2>
+                <p>Eyeball comparisons first — each active blender's trajectory plotted against
+                   observed truth. Rolling quantitative MAE by lead follows, so you can see
+                   whether the visual impression holds up under aggregation.</p>
               </hgroup>
             """);
 
-        // --- Temperature by phase --------------------------------------------------
+        content.Append("<h3>Temperature — vs truth</h3>");
+        content.Append(RenderTempVsTruthBlock(input));
+
+        content.Append("<hr/><h3>Temperature — rolling MAE</h3>");
+        content.Append(RenderRollingMaeBlock(input));
+
+        content.Append("<hr/><h3>Precipitation — P(wet) vs observed rainfall</h3>");
+        content.Append(RenderPrecipVsTruthBlock(input));
+
+        content.Append("<hr/><h3>Dry window — predicted vs observed</h3>");
+        content.Append(Ci, $"""
+            <p class="skill-line">One row per target UTC day × window length. The "observed" column is blank for dates
+               beyond the last full rainfall day.</p>
+            """);
+        content.Append(RenderDryWindowVsTruthTable(input));
+
+        content.Append("</section>");
+        return WrapPage(input, "Skill", "skill", content.ToString());
+    }
+
+    // -------------------------------------------------------------------------------
+    // Eyeball: temperature vs truth, grouped by phase so champion/challenger lines at
+    // different leads don't pile up in one unreadable chart.
+    // -------------------------------------------------------------------------------
+    private static string RenderTempVsTruthBlock(SiteInputs input)
+    {
+        var content = new StringBuilder();
+
         var versionsByPhase = input.PhaseByVersion
             .GroupBy(kv => BucketPhase(kv.Value))
             .ToDictionary(g => g.Key, g => g.Select(kv => kv.Key).ToHashSet(StringComparer.Ordinal));
-        // Versions in predictions but with no metadata phase go to "other" — at least
-        // they still get rendered somewhere rather than being silently dropped.
         var untagged = input.Predictions
             .Select(p => p.ModelVersion).Distinct()
             .Where(v => !input.PhaseByVersion.ContainsKey(v))
@@ -46,23 +70,24 @@ public static partial class SitePages
 
         (string Key, string Title, string Description)[] phaseSpecs =
         {
-            ("2b", "Temperature — Phase 2b lean (13 features)",
+            ("2b", "Phase 2b lean (13 features)",
                 "Six per-model temperatures, their mean/std/range, and cyclical hour/day-of-year encodings. The original champion."),
-            ("2c", "Temperature — Phase 2c rich (88 features)",
-                "Adds per-model dew point, RH, cloud {total/low/mid/high}, wind speed/dir/gusts, surface pressure, plus cross-model aggregates. Trained to challenge 2b."),
-            ("other", "Temperature — other versions",
+            ("2c", "Phase 2c rich (88 features)",
+                "Adds per-model dew point, RH, cloud {total/low/mid/high}, wind speed/dir/gusts, surface pressure, plus cross-model aggregates. Challenger."),
+            ("other", "Other versions",
                 "Versions with no training metadata on disk — typically pre-2b experiments left in the manifest."),
         };
+        bool anyDrawn = false;
         foreach (var spec in phaseSpecs)
         {
             if (!versionsByPhase.TryGetValue(spec.Key, out var versions) || versions.Count == 0)
                 continue;
-
+            anyDrawn = true;
             var filtered = input.Predictions.Where(p => versions.Contains(p.ModelVersion)).ToList();
             content.Append(Ci, $"""
                 <article>
                   <hgroup>
-                    <h3>{Escape(spec.Title)}</h3>
+                    <h4>{Escape(spec.Title)}</h4>
                     <p class="skill-line">{Escape(spec.Description)}</p>
                   </hgroup>
                 """);
@@ -70,48 +95,10 @@ public static partial class SitePages
             content.Append("</article>");
         }
 
-        if (versionsByPhase.Count == 0)
-        {
-            content.Append("<p><em>No temperature predictions with metadata — run <code>train</code> and <code>predict</code>.</em></p>");
-        }
+        if (!anyDrawn)
+            content.Append("<p><em>No temperature predictions in window — run <code>predict</code>.</em></p>");
 
-        // --- Precipitation per station ---------------------------------------------
-        content.Append("<hr/>");
-        content.Append(Ci, $"""
-            <h3>Precipitation — P(wet) vs observed rainfall</h3>
-            <p class="skill-line">P(wet) is the blender's probability that the next hour sees ≥ 0.1 mm. The rainfall line is the same 4-of-4 hourly aggregation used for verification — partial hours are dropped to avoid flipping wet↔dry at the boundary.</p>
-            """);
-        var precipStations = input.PrecipPredictions.Select(p => p.Station).Distinct().OrderBy(s => s, StringComparer.Ordinal).ToList();
-        if (precipStations.Count == 0)
-        {
-            content.Append("<p><em>No precipitation predictions in window.</em></p>");
-        }
-        else
-        {
-            foreach (var station in precipStations)
-                content.Append(RenderPrecipVsTruthChart(input, station));
-        }
-
-        // --- Dry-window per station × window --------------------------------------
-        content.Append("<hr/>");
-        content.Append(Ci, $"""
-            <h3>Dry window — predicted probability vs (eventual) observation</h3>
-            <p class="skill-line">One row per target UTC day × window length. The "observed" column is blank for dates beyond the last full rainfall day. Rolling Brier skill scores are on the <a href="verify.html">verification page</a>.</p>
-            """);
-        content.Append(RenderDryWindowVsTruthTable(input));
-
-        content.Append("</section>");
-        return WrapPage(input, "Forecast vs truth", "forecast-vs-truth", content.ToString());
-    }
-
-    private static string BucketPhase(string? phase)
-    {
-        if (string.IsNullOrWhiteSpace(phase)) return "other";
-        // "2b" and "2b_redo" both belong in the lean bucket. "2c" is rich. Anything else
-        // that isn't one of those two is shown in the "other" bucket.
-        if (phase.StartsWith("2b", StringComparison.OrdinalIgnoreCase)) return "2b";
-        if (phase.Equals("2c", StringComparison.OrdinalIgnoreCase)) return "2c";
-        return "other";
+        return content.ToString();
     }
 
     private static string RenderTempVsTruthChart(
@@ -148,9 +135,6 @@ public static partial class SitePages
         };
         foreach (var (lead, color) in leadSpecs)
         {
-            // Latest prediction per valid-time — if the same (lead, valid_time) was
-            // produced by two same-phase versions (rare, but possible across a retrain)
-            // the newer PredictionMadeAtUtc wins.
             var pts = filtered
                 .Where(p => p.LeadHours == lead)
                 .GroupBy(p => p.ValidTimeUtc)
@@ -177,6 +161,83 @@ public static partial class SitePages
         });
     }
 
+    // -------------------------------------------------------------------------------
+    // Rolling quantitative MAE per (version, lead). One chart per lead — one line per
+    // version. This is the "does the eyeball match the numbers?" cross-check.
+    // -------------------------------------------------------------------------------
+    private static string RenderRollingMaeBlock(SiteInputs input)
+    {
+        if (input.RollingMae.Count == 0)
+            return "<p><em>No rolling MAE points computed — the window is too short or there's no matching ERA5 truth yet.</em></p>";
+
+        var content = new StringBuilder();
+        foreach (var lead in new[] { 24, 48, 72 })
+        {
+            var versions = input.RollingMae.Where(r => r.LeadHours == lead)
+                .Select(r => r.ModelVersion).Distinct().OrderBy(v => v, StringComparer.Ordinal).ToList();
+
+            var series = new List<LineSeries>();
+            var palette = new[] { "#7c4dff", "#26a69a", "#ef5350", "#ffa726", "#42a5f5" };
+            for (int i = 0; i < versions.Count; i++)
+            {
+                var v = versions[i];
+                var pts = input.RollingMae
+                    .Where(r => r.LeadHours == lead && r.ModelVersion == v)
+                    .OrderBy(r => r.WindowEndUtc)
+                    .Select(r => (X: r.WindowEndUtc.ToOADate(), Y: r.BlendMae))
+                    .ToList();
+                if (pts.Count > 0)
+                    series.Add(new LineSeries(v, palette[i % palette.Length], pts));
+            }
+
+            content.Append(Ci, $"<h4>Lead +{lead}h</h4>");
+            if (series.Count == 0)
+            {
+                content.Append(RenderEmptyChart($"Rolling MAE — lead {lead}h", "No scored predictions at this lead."));
+                continue;
+            }
+
+            content.Append(LineChartRenderer.Render(new LineChartSpec
+            {
+                Title = $"Rolling MAE — lead +{lead}h",
+                XLabel = "Window end (UTC)",
+                YLabel = "MAE (°C)",
+                Series = series,
+                FormatX = v => DateTime.FromOADate(v).ToString("MM-dd", Ci),
+                FormatY = v => v.ToString("0.00", Ci),
+            }));
+        }
+        return content.ToString();
+    }
+
+    // -------------------------------------------------------------------------------
+    // Eyeball: precipitation vs observed rainfall. Overlays observed hourly rainfall
+    // (capped at 1 mm/h so it shares the 0-1 probability axis) on a per-phase P(wet)
+    // line, then a three-way 24h comparison of every phase against truth.
+    // -------------------------------------------------------------------------------
+    private static string RenderPrecipVsTruthBlock(SiteInputs input)
+    {
+        var content = new StringBuilder();
+        content.Append("""
+            <p class="skill-line">P(wet) is the blender's probability that the next hour sees ≥ 0.1 mm.
+               The rainfall line is the same 4-of-4 hourly aggregation used for verification — partial
+               hours are dropped to avoid flipping wet↔dry at the boundary.</p>
+            """);
+
+        var stations = input.PrecipPredictions.Select(p => p.Station).Distinct()
+            .OrderBy(s => s, StringComparer.Ordinal).ToList();
+        if (stations.Count == 0)
+        {
+            content.Append("<p><em>No precipitation predictions in window.</em></p>");
+            return content.ToString();
+        }
+
+        foreach (var station in stations)
+            content.Append(RenderPrecipVsTruthChart(input, station));
+
+        return content.ToString();
+    }
+
     private static string RenderPrecipVsTruthChart(SiteInputs input, string station)
     {
         var content = new StringBuilder();
@@ -184,7 +245,6 @@ public static partial class SitePages
 
         var stationPredictions = input.PrecipPredictions.Where(p => p.Station == station).ToList();
 
-        // Precompute the observed-rainfall series once; it overlays on every phase chart.
         List<(double X, double Y)> truthPts = new();
         if (input.RainfallTruth.TryGetValue(station, out var truth) && truth.Count > 0)
         {
@@ -226,9 +286,6 @@ public static partial class SitePages
                 if (pts.Count > 0)
                     series.Add(new LineSeries($"P(wet) +{lead}h", color, pts));
             }
-
-            // Rainfall truth: same 0–1 axis by capping at 1. The capped line functions
-            // as "was it meaningfully raining?" without a second Y-axis.
             if (truthPts.Count > 0)
                 series.Add(new LineSeries("Observed mm/h (capped at 1)", "#ef5350", truthPts));
 
@@ -253,10 +310,7 @@ public static partial class SitePages
             }));
         }
 
-        // Champion-vs-challenger overlay at +24h with observed truth so the reader can
-        // see which phase tracked reality better for the lead that matters most.
         var cvc = BuildChampionVsChallengerSeries(stationPredictions, input.PhaseByVersion, input.WindowStartUtc, leadHours: 24);
-        // Drop the generatedAt clamp above — for forecast-vs-truth we want history too.
         if (cvc.Count >= 2)
         {
             if (truthPts.Count > 0)
@@ -280,18 +334,19 @@ public static partial class SitePages
         return content.ToString();
     }
 
+    // -------------------------------------------------------------------------------
+    // Dry-window vs observed. One table per station × window length showing each
+    // lead's predicted probability alongside the observed verdict (dry / wet / —).
+    // -------------------------------------------------------------------------------
     private static string RenderDryWindowVsTruthTable(SiteInputs input)
     {
         if (input.DryWindowPredictions.Count == 0)
             return "<p><em>No dry-window predictions in window.</em></p>";
 
-        // "Observed dry window existed?" per (station, date, window). Use the same
-        // rainfall truth we already loaded for the precip chart — a dry hour is one
-        // where the 4-of-4 hourly SUM is ≤ 0.1 mm, and a dry window is N consecutive
-        // such hours all within the same UTC day.
         var observed = ComputeObservedDryWindows(input);
 
-        var stations = input.DryWindowPredictions.Select(d => d.Station).Distinct().OrderBy(s => s, StringComparer.Ordinal).ToList();
+        var stations = input.DryWindowPredictions.Select(d => d.Station).Distinct()
+            .OrderBy(s => s, StringComparer.Ordinal).ToList();
         var windows = input.DryWindowPredictions.Select(d => d.WindowHours).Distinct().OrderBy(w => w).ToList();
         var leadOrder = new[] { 24, 48, 72 };
 
@@ -365,17 +420,58 @@ public static partial class SitePages
         return content.ToString();
     }
 
+    // -------------------------------------------------------------------------------
+    // Shared helpers — used to live on the old forecast-vs-truth / precipitation
+    // pages. Kept as internal statics because SitePagesTests reaches for them.
+    // -------------------------------------------------------------------------------
+
+    private static string BucketPhase(string? phase)
+    {
+        if (string.IsNullOrWhiteSpace(phase)) return "other";
+        if (phase.StartsWith("2b", StringComparison.OrdinalIgnoreCase)) return "2b";
+        if (phase.Equals("2c", StringComparison.OrdinalIgnoreCase)) return "2c";
+        return "other";
+    }
+
+    /// <summary>
+    /// Build a champion-vs-challenger line series at a single lead for one station,
+    /// one entry per phase in <see cref="PrecipPhases.Comparable"/>. Caller sets the
+    /// earliest valid time to include.
+    /// </summary>
+    private static List<LineSeries> BuildChampionVsChallengerSeries(
+        IReadOnlyList<PrecipForecastPoint> stationRows,
+        IReadOnlyDictionary<string, string> phaseByVersion,
+        DateTime minValidTimeUtc,
+        int leadHours)
+    {
+        var series = new List<LineSeries>();
+        foreach (var phase in PrecipPhases.Comparable)
+        {
+            var pts = stationRows
+                .Where(r => r.LeadHours == leadHours
+                         && PrecipPhases.Bucket(phaseByVersion, r.Version) == phase
+                         && r.ValidTimeUtc >= minValidTimeUtc)
+                .GroupBy(r => r.ValidTimeUtc)
+                .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
+                .OrderBy(r => r.ValidTimeUtc)
+                .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet))
+                .ToList();
+            if (pts.Count > 0)
+                series.Add(new LineSeries(phase.ChampionVsChallengerLabel!, phase.Color!, pts));
+        }
+        return series;
+    }
+
     /// <summary>
     /// For every (station, window, target-date) triple referenced by a prediction, walk
     /// that day's hourly rainfall and check whether at least <c>window</c> consecutive
-    /// hours are ≤ 0.1 mm within the UTC day. Returns null for days with no complete
+    /// hours are ≤ 0.1 mm within the UTC day. Returns no entry for days with incomplete
     /// 24-hour coverage.
     /// </summary>
     internal static IReadOnlyDictionary<(string Station, int WindowHours, DateTime TargetDate), bool>
         ComputeObservedDryWindows(SiteInputs input)
     {
         var result = new Dictionary<(string, int, DateTime), bool>();
-        // Group by (station, date) so we only walk each day once.
         var triples = input.DryWindowPredictions
             .Select(d => (d.Station, d.WindowHours, d.TargetDateUtc.Date))
             .Distinct();
@@ -385,8 +481,6 @@ public static partial class SitePages
             if (!input.RainfallTruth.TryGetValue(station, out var hourly) || hourly.Count == 0)
                 continue;
 
-            // Need all 24 hourly buckets for a fair verdict. If any are missing we
-            // don't emit a row — this leaves the table cell as "—".
             var hours = new double?[24];
             bool complete = true;
             for (int h = 0; h < 24; h++)

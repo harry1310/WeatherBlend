@@ -87,6 +87,9 @@ public sealed class RenderSiteCommand
                 ? "(none)"
                 : string.Join(", ", precipCurrentByStation.Select(kv => $"{kv.Key}→{kv.Value}")));
 
+        var modelSummaries = LoadModelSummaries(predictions, precip, dryWindow);
+        _log.LogInformation("Loaded {N} model summaries for Models page.", modelSummaries.Count);
+
         var input = new SitePages.SiteInputs
         {
             LocationDisplay = string.IsNullOrWhiteSpace(_cfg.Location.DisplayName) ? _cfg.Location.Name : _cfg.Location.DisplayName,
@@ -106,20 +109,98 @@ public sealed class RenderSiteCommand
             RainfallTruth = rainfall,
             CurrentVersion = currentVersion,
             PrecipCurrentByStation = precipCurrentByStation,
+            ModelSummaries = modelSummaries,
         };
 
         Directory.CreateDirectory(outputDir);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "index.html"),        SitePages.RenderIndex(input),         ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "predictions.html"),  SitePages.RenderPredictions(input),   ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "precipitation.html"),SitePages.RenderPrecipitation(input), ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "dry-window.html"),   SitePages.RenderDryWindow(input),     ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "verify.html"),       SitePages.RenderVerify(input),        ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "forecast-vs-truth.html"), SitePages.RenderForecastVsTruth(input), ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "about.html"),        SitePages.RenderAbout(input),         ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "styles.css"),        SitePages.Stylesheet(),               ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "index.html"),         SitePages.RenderIndex(input),          ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "forecasts-24h.html"), SitePages.RenderForecasts(input, 24),  ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "forecasts-48h.html"), SitePages.RenderForecasts(input, 48),  ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "forecasts-72h.html"), SitePages.RenderForecasts(input, 72),  ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "dry-window.html"),    SitePages.RenderDryWindow(input),      ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "skill.html"),         SitePages.RenderSkill(input),          ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "models.html"),        SitePages.RenderModels(input),         ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "about.html"),         SitePages.RenderAbout(input),          ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "styles.css"),         SitePages.Stylesheet(),                ct);
 
-        _log.LogInformation("Site rendered → {Dir} ({Files} files)", outputDir, 8);
+        _log.LogInformation("Site rendered → {Dir} ({Files} files)", outputDir, 9);
         return 0;
+    }
+
+    private IReadOnlyList<SitePages.ModelSummary> LoadModelSummaries(
+        IReadOnlyList<PredictionRow> predictions,
+        IReadOnlyList<SitePages.PrecipForecastPoint> precip,
+        IReadOnlyList<SitePages.DryWindowForecastPoint> dryWindow)
+    {
+        // Only load metadata for versions that actually emitted predictions in the
+        // window. Anything else is stale / experimental / deleted and the Models page
+        // would list it with no corresponding forecast activity.
+        var modelsRoot = Path.Combine("data", "models");
+        var summaries = new List<SitePages.ModelSummary>();
+
+        foreach (var version in predictions.Select(p => p.ModelVersion).Distinct())
+        {
+            var dir = Path.Combine(modelsRoot, "temperature", version);
+            var summary = TryLoadSummary(dir, composite: "temperature", version, metricLabel: "Test MAE (°C)");
+            if (summary is not null) summaries.Add(summary);
+        }
+
+        foreach (var (station, version) in precip.Select(p => (p.Station, p.Version)).Distinct())
+        {
+            var dir = Path.Combine(modelsRoot, "precipitation", station, version);
+            var composite = $"precipitation/{station}";
+            var summary = TryLoadSummary(dir, composite, version, metricLabel: "Test Brier");
+            if (summary is not null) summaries.Add(summary);
+        }
+
+        foreach (var (station, window, version) in dryWindow.Select(d => (d.Station, d.WindowHours, d.Version)).Distinct())
+        {
+            var dir = Path.Combine(modelsRoot, "dry_window", station, $"window_{window}h", version);
+            var composite = $"dry_window/{station}/{window}h";
+            var summary = TryLoadSummary(dir, composite, version, metricLabel: "Test Brier");
+            if (summary is not null) summaries.Add(summary);
+        }
+
+        return summaries;
+    }
+
+    private SitePages.ModelSummary? TryLoadSummary(string versionDir, string composite, string version, string metricLabel)
+    {
+        try
+        {
+            if (!Directory.Exists(versionDir)) return null;
+            var metadataPath = Path.Combine(versionDir, ModelArtifact.TrainingMetadataFileName);
+            if (!File.Exists(metadataPath)) return null;
+
+            var metadata = ModelArtifact.LoadTrainingMetadata(versionDir);
+            var perLead = metadata.PerLead
+                .Where(kv => int.TryParse(kv.Key, out _))
+                .ToDictionary(
+                    kv => int.Parse(kv.Key),
+                    kv => new SitePages.PerLeadMetric(
+                        LeadHours:          kv.Value.LeadHours,
+                        BestSingle:         kv.Value.BestSingle,
+                        BestSingleValMae:   kv.Value.BestSingleValMae,
+                        BlendTestScore:     kv.Value.BlendTestMae,
+                        BlendTestRmse:      kv.Value.BlendTestRmse,
+                        BlendTestBias:      kv.Value.BlendTestBias,
+                        TestRows:           kv.Value.TestRows,
+                        TestCalendarMonths: kv.Value.TestCalendarMonths));
+
+            return new SitePages.ModelSummary(
+                Composite:     composite,
+                Version:       version,
+                Phase:         metadata.Phase,
+                DataSource:    metadata.DataSource,
+                TrainedAtUtc:  metadata.TrainedAtUtc,
+                MetricLabel:   metricLabel,
+                PerLead:       perLead);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning("Failed to load model summary for {Composite}/{Version}: {Msg}", composite, version, ex.Message);
+            return null;
+        }
     }
 
     private string LoadCurrentTemperatureVersion()

@@ -8,9 +8,9 @@ namespace WeatherBlend.Site;
 /// model objects and returns strings. Callers (see <c>RenderSiteCommand</c>) own the
 /// query-and-write orchestration.
 ///
-/// Split across partial files by page: index, predictions, precipitation, dry-window,
-/// verify, forecast-vs-truth, about. This file holds the shared input contract,
-/// page-chrome (<see cref="WrapPage"/>, <see cref="Stylesheet"/>) and small helpers.
+/// Split across partial files by page: index, forecasts (per lead), dry-window,
+/// skill (merged eyeball + rolling), models, about. This file holds the shared input
+/// contract, page-chrome (<see cref="WrapPage"/>, <see cref="Stylesheet"/>) and small helpers.
 /// </summary>
 public static partial class SitePages
 {
@@ -84,7 +84,48 @@ public static partial class SitePages
         /// </summary>
         public IReadOnlyDictionary<string, string> PrecipCurrentByStation { get; init; }
             = new Dictionary<string, string>();
+
+        /// <summary>
+        /// Per-model held-out test scores (Blend vs ERA5 / EA rainfall) for every active
+        /// blender, grouped by composite. One entry per (target, optional station, optional
+        /// window) × version. Drives the Models page; empty when no training metadata is
+        /// on disk (first-render, missing rclone sync, etc.).
+        /// </summary>
+        public IReadOnlyList<ModelSummary> ModelSummaries { get; init; }
+            = Array.Empty<ModelSummary>();
     }
+
+    /// <summary>
+    /// Composite-neutral blender metric snapshot for the Models page. Pulls the subset
+    /// of fields from <c>training_metadata.json</c> that actually appear in the site; the
+    /// rest (hyperparameters, deviations-from-brief) are skipped to keep the Site layer
+    /// from depending on <c>WeatherBlend.Train</c>.
+    ///
+    /// <c>Composite</c> names the (target, station?, window?) triple in a format the
+    /// Models page can sort by: "temperature", "precipitation / bellever_dartmoor",
+    /// "dry_window / bellever_dartmoor / 6h". Scoring metric per target: temperature is
+    /// MAE (°C); precipitation is Brier score; dry-window is Brier score. The
+    /// <see cref="MetricLabel"/> string identifies which.
+    /// </summary>
+    public sealed record ModelSummary(
+        string Composite,
+        string Version,
+        string Phase,
+        string DataSource,
+        DateTime TrainedAtUtc,
+        string MetricLabel,
+        IReadOnlyDictionary<int, PerLeadMetric> PerLead);
+
+    /// <summary>One (lead → metric) entry, kept neutral so the Site layer doesn't import Train types.</summary>
+    public sealed record PerLeadMetric(
+        int LeadHours,
+        string BestSingle,
+        double BestSingleValMae,
+        double BlendTestScore,
+        double BlendTestRmse,
+        double BlendTestBias,
+        int TestRows,
+        int TestCalendarMonths);
 
     public sealed record RollingMaePoint(string ModelVersion, int LeadHours, DateTime WindowEndUtc, double BlendMae, int N);
 
@@ -131,6 +172,11 @@ public static partial class SitePages
         .forecast-card .pwet strong { font-weight: 700; }
         .forecast-card .pwet small { color: var(--pico-muted-color); margin-left: 0.35rem; }
 
+        nav.lead-nav { margin: 0 0 1.25rem; padding: 0; }
+        nav.lead-nav ul { display: flex; gap: 0.75rem; list-style: none; padding: 0; margin: 0; }
+        nav.lead-nav a { text-decoration: none; padding: 0.25rem 0.75rem; border-radius: 4px; background: var(--pico-card-background-color); }
+        nav.lead-nav a.active { background: var(--brand); color: white; font-weight: 600; }
+
         .skill-line { font-style: italic; color: var(--pico-muted-color); }
 
         table td.num, table th.num { text-align: right; font-variant-numeric: tabular-nums; }
@@ -172,11 +218,10 @@ public static partial class SitePages
                   <nav class="site-nav">
                     <ul>
                       <li><a href="index.html"{{NavActive(pageId, "index")}}>Home</a></li>
-                      <li><a href="predictions.html"{{NavActive(pageId, "predictions")}}>Temperature</a></li>
-                      <li><a href="precipitation.html"{{NavActive(pageId, "precipitation")}}>Precipitation</a></li>
+                      <li><a href="forecasts-24h.html"{{NavActive(pageId, "forecasts")}}>Forecasts</a></li>
                       <li><a href="dry-window.html"{{NavActive(pageId, "dry-window")}}>Dry window</a></li>
-                      <li><a href="forecast-vs-truth.html"{{NavActive(pageId, "forecast-vs-truth")}}>Forecast vs truth</a></li>
-                      <li><a href="verify.html"{{NavActive(pageId, "verify")}}>Verification</a></li>
+                      <li><a href="skill.html"{{NavActive(pageId, "skill")}}>Skill</a></li>
+                      <li><a href="models.html"{{NavActive(pageId, "models")}}>Models</a></li>
                       <li><a href="about.html"{{NavActive(pageId, "about")}}>About</a></li>
                     </ul>
                   </nav>
@@ -218,4 +263,48 @@ public static partial class SitePages
 
     private static string Escape(string s) =>
         s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;");
+
+    /// <summary>
+    /// CSS colour for a displayed temperature. RGB-interpolated between explicit
+    /// anchors so the gradient walks directly from indigo (cold) through the brand
+    /// purple (mild) to orange and red (warm/hot), without the HSL shortest-arc
+    /// trap of passing through magenta at 14°C. Anchors chosen by eye for the
+    /// Dartmoor climate: sub-zero is rare but plausible, 12°C is a typical spring
+    /// afternoon (the brand colour), and values above 25°C are heatwave territory.
+    /// </summary>
+    internal static string TemperatureColor(double celsius)
+    {
+        // (t, r, g, b) anchors — values chosen so cold feels cold without going
+        // washed-out and warm feels warm without going crimson.
+        (double t, int r, int g, int b)[] anchors =
+        {
+            (-5,  57,  73, 171),  // indigo #3949ab
+            ( 5,  98,  85, 255),  // blue-purple #6255ff
+            (12, 124,  77, 255),  // brand purple #7c4dff
+            (18, 255, 143,   0),  // orange #ff8f00
+            (25, 229,  57,  53),  // red #e53935
+            (32, 183,  28,  28),  // deep red #b71c1c
+        };
+        if (double.IsNaN(celsius)) return "var(--pico-muted-color)";
+        if (celsius <= anchors[0].t) return FormatRgb(anchors[0].r, anchors[0].g, anchors[0].b);
+        if (celsius >= anchors[^1].t) return FormatRgb(anchors[^1].r, anchors[^1].g, anchors[^1].b);
+        for (int i = 0; i < anchors.Length - 1; i++)
+        {
+            var a = anchors[i];
+            var b = anchors[i + 1];
+            if (celsius >= a.t && celsius <= b.t)
+            {
+                var k = (celsius - a.t) / (b.t - a.t);
+                int r = (int)Math.Round(a.r + (b.r - a.r) * k);
+                int g = (int)Math.Round(a.g + (b.g - a.g) * k);
+                int bl = (int)Math.Round(a.b + (b.b - a.b) * k);
+                return FormatRgb(r, g, bl);
+            }
+        }
+        var last = anchors[^1];
+        return FormatRgb(last.r, last.g, last.b);
+    }
+
+    private static string FormatRgb(int r, int g, int b)
+        => $"rgb({r.ToString(Ci)} {g.ToString(Ci)} {b.ToString(Ci)})";
 }
