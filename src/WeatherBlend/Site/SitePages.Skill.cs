@@ -48,7 +48,7 @@ public static partial class SitePages
             content.Append(RenderStationSubNav("skill", stations, currentStation));
         }
 
-        content.Append("<h3>Precipitation — P(wet) vs observed rainfall</h3>");
+        content.Append("<h3>Precipitation — P(wet) vs observed wet-hour</h3>");
         content.Append(RenderPrecipVsTruthBlock(input, currentStation));
 
         content.Append("<hr/><h3>Dry window — predicted vs observed</h3>");
@@ -251,9 +251,10 @@ public static partial class SitePages
     {
         var content = new StringBuilder();
         content.Append("""
-            <p class="skill-line">P(wet) is the blender's probability that the next hour sees ≥ 0.1 mm.
-               The rainfall line is the same 4-of-4 hourly aggregation used for verification — partial
-               hours are dropped to avoid flipping wet↔dry at the boundary.</p>
+            <p class="skill-line">P(wet) is the blender's probability that the next hour sees ≥ 0.1 mm. The truth line
+               is that same 0.1 mm threshold applied to observed hourly rainfall — 1 when the hour was wet,
+               0 when dry — so P(wet) and the truth sit on the same 0–1 axis and the comparison is apples-to-apples.
+               Hours with fewer than 4 of 4 15-min readings are dropped to avoid flipping wet↔dry at the boundary.</p>
             """);
 
         if (currentStation is null)
@@ -274,13 +275,17 @@ public static partial class SitePages
 
         var stationPredictions = input.PrecipPredictions.Where(p => p.Station == station).ToList();
 
+        // Collapse truth to a 0/1 wet-hour indicator so it shares the 0-1 axis with
+        // P(wet) honestly — plotting capped mm/h against a probability is an apples-
+        // to-oranges overlay. The 0.1 mm threshold is the same one the blender's
+        // training label uses, so the lines are directly comparable point-by-point.
         List<(double X, double Y)> truthPts = new();
         if (input.RainfallTruth.TryGetValue(station, out var truth) && truth.Count > 0)
         {
             truthPts = truth
                 .Where(kv => kv.Key >= input.WindowStartUtc)
                 .OrderBy(kv => kv.Key)
-                .Select(kv => (X: kv.Key.ToOADate(), Y: Math.Min(1.0, kv.Value)))
+                .Select(kv => (X: kv.Key.ToOADate(), Y: kv.Value >= 0.1 ? 1.0 : 0.0))
                 .ToList();
         }
 
@@ -316,7 +321,7 @@ public static partial class SitePages
                     series.Add(new LineSeries($"P(wet) +{lead}h", color, pts));
             }
             if (truthPts.Count > 0)
-                series.Add(new LineSeries("Observed mm/h (capped at 1)", "#ef5350", truthPts));
+                series.Add(new LineSeries("Observed wet hour (≥ 0.1 mm)", "#ef5350", truthPts));
 
             if (series.Count == 0)
             {
@@ -329,9 +334,9 @@ public static partial class SitePages
             content.Append(Ci, $"<h5>{Escape(spec.ShortTitle)}</h5>");
             content.Append(LineChartRenderer.Render(new LineChartSpec
             {
-                Title = $"P(wet) vs observed rainfall — {PrettyStation(station)} — Phase {spec.Key}",
+                Title = $"P(wet) vs observed wet-hour — {PrettyStation(station)} — Phase {spec.Key}",
                 XLabel = "Time (UTC)",
-                YLabel = "Probability / mm·h⁻¹ (capped)",
+                YLabel = "P(wet) / observed wet-hour",
                 Series = series,
                 Height = 280,
                 FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
@@ -343,13 +348,13 @@ public static partial class SitePages
         if (cvc.Count >= 2)
         {
             if (truthPts.Count > 0)
-                cvc.Add(new LineSeries("Observed mm/h (capped at 1)", "#ef5350", truthPts));
+                cvc.Add(new LineSeries("Observed wet hour (≥ 0.1 mm)", "#ef5350", truthPts));
             content.Append("<h5>Three-way comparison — +24h lead</h5>");
             content.Append(LineChartRenderer.Render(new LineChartSpec
             {
                 Title = $"3a vs 3a_isotonic vs 3c vs observed — {PrettyStation(station)} — +24h",
                 XLabel = "Time (UTC)",
-                YLabel = "Probability / mm·h⁻¹ (capped)",
+                YLabel = "P(wet) / observed wet-hour",
                 Series = cvc,
                 Height = 280,
                 FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
