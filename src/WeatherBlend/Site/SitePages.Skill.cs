@@ -267,10 +267,11 @@ public static partial class SitePages
     {
         var content = new StringBuilder();
         content.Append("""
-            <p class="skill-line">P(wet) is the blender's probability that the next hour sees ≥ 0.1 mm. The truth line
-               is that same 0.1 mm threshold applied to observed hourly rainfall — 1 when the hour was wet,
-               0 when dry — so P(wet) and the truth sit on the same 0–1 axis and the comparison is apples-to-apples.
-               Hours with fewer than 4 of 4 15-min readings are dropped to avoid flipping wet↔dry at the boundary.</p>
+            <p class="skill-line">P(wet) is the blender's probability that the next hour sees ≥ 0.1 mm. Truth is plotted
+               as discrete dots at 0 (dry) or 1 (wet) using that same 0.1 mm threshold, so the only meaningful comparison
+               at any hour is where P(wet) sits relative to the dot — a connecting line would imply non-existent
+               intermediate states. Hours with fewer than 4 of 4 15-min readings are dropped to avoid flipping wet↔dry
+               at the boundary.</p>
             """);
 
         if (currentStation is null)
@@ -337,7 +338,7 @@ public static partial class SitePages
                     series.Add(new LineSeries($"P(wet) +{lead}h", color, pts));
             }
             if (truthPts.Count > 0)
-                series.Add(new LineSeries("Observed wet hour (≥ 0.1 mm)", "#ef5350", truthPts));
+                series.Add(new LineSeries("Observed wet hour (≥ 0.1 mm)", "#ef5350", truthPts, PointsOnly: true));
 
             if (series.Count == 0)
             {
@@ -364,7 +365,7 @@ public static partial class SitePages
         if (cvc.Count >= 2)
         {
             if (truthPts.Count > 0)
-                cvc.Add(new LineSeries("Observed wet hour (≥ 0.1 mm)", "#ef5350", truthPts));
+                cvc.Add(new LineSeries("Observed wet hour (≥ 0.1 mm)", "#ef5350", truthPts, PointsOnly: true));
             content.Append("<h5>Three-way comparison — +24h lead</h5>");
             content.Append(LineChartRenderer.Render(new LineChartSpec
             {

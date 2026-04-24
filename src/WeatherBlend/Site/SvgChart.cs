@@ -6,8 +6,16 @@ namespace WeatherBlend.Site;
 /// <summary>
 /// One series on a <see cref="LineChartSpec"/>. Points are plotted in the order given;
 /// X values should be monotonically increasing for sensible line rendering.
+///
+/// <paramref name="PointsOnly"/> renders markers only, no connecting polyline — used
+/// for discrete-valued truth series (e.g. the 0/1 wet-hour indicator) where a line
+/// between 0 and 1 would imply non-existent intermediate values.
 /// </summary>
-public sealed record LineSeries(string Name, string Color, IReadOnlyList<(double X, double Y)> Points);
+public sealed record LineSeries(
+    string Name,
+    string Color,
+    IReadOnlyList<(double X, double Y)> Points,
+    bool PointsOnly = false);
 
 public sealed record LineChartSpec
 {
@@ -96,11 +104,22 @@ public static class LineChartRenderer
 
         // Series — polylines, plus point markers on sparse series only. Dense
         // series (e.g. hourly truth over 30 days) get just the line; the dots
-        // become a smear at that density and ruin readability.
+        // become a smear at that density and ruin readability. Points-only
+        // series render as dots at every point regardless of density, with a
+        // smaller radius so they stay legible when the series is hourly.
         const int MarkerThreshold = 30;
         foreach (var s in spec.Series)
         {
             if (s.Points.Count == 0) continue;
+
+            if (s.PointsOnly)
+            {
+                foreach (var p in s.Points)
+                {
+                    sb.Append(Ci, $"<circle cx=\"{ScaleX(p.X):0.#}\" cy=\"{ScaleY(p.Y):0.#}\" r=\"2\" fill=\"{s.Color}\" />");
+                }
+                continue;
+            }
 
             var pathPoints = string.Join(" ", s.Points.Select(p => string.Create(Ci, $"{ScaleX(p.X):0.#},{ScaleY(p.Y):0.#}")));
             sb.Append(Ci, $"<polyline points=\"{pathPoints}\" fill=\"none\" stroke=\"{s.Color}\" stroke-width=\"1.75\" class=\"chart-line\" />");

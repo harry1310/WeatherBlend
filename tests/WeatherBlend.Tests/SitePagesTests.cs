@@ -411,6 +411,45 @@ public class SitePagesTests
     }
 
     [Fact]
+    public void RenderRainSkill_plots_observed_wet_hour_as_dots_not_a_line()
+    {
+        // The truth series is a 0/1 wet-hour indicator; a polyline connecting 0 and 1
+        // would imply fractional wet states that don't exist. PointsOnly must be on
+        // so the renderer emits circles only, no polyline, for the truth colour.
+        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
+        var validTime = generatedAt.AddHours(24);
+        var precipPreds = new[]
+        {
+            new SitePages.PrecipForecastPoint(
+                Station, "v3a", generatedAt, validTime, 24, 0.4, 0.2,
+                null, null, null, null, null, null),
+        };
+        // Two truth hours: one wet, one dry — ensures both 0 and 1 land on the chart.
+        var truth = new Dictionary<string, IReadOnlyDictionary<DateTime, double>>(StringComparer.OrdinalIgnoreCase)
+        {
+            [Station] = new Dictionary<DateTime, double>
+            {
+                [generatedAt.AddDays(-30).AddHours(1)] = 0.5, // wet
+                [generatedAt.AddDays(-30).AddHours(2)] = 0.0, // dry
+            },
+        };
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            PrecipPredictions = precipPreds,
+            PhaseByVersion = new Dictionary<string, string> { ["v3a"] = "3a" },
+            RainfallTruth = truth,
+        };
+
+        var html = SitePages.RenderRainSkill(input);
+
+        // The truth colour (#ef5350) appears in the legend swatch and in each truth dot;
+        // it must NOT appear on a <polyline> because that would be the banned connecting line.
+        html.Should().NotContain("<polyline points=\"\" fill=\"none\" stroke=\"#ef5350\"");
+        html.Should().NotMatchRegex(@"<polyline[^>]*stroke=""#ef5350""");
+    }
+
+    [Fact]
     public void RenderTempSkill_is_station_agnostic_and_has_no_station_subnav()
     {
         // Temperature is a single-location quantity; the temp-skill page should not
