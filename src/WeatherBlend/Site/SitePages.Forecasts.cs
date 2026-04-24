@@ -74,7 +74,7 @@ public static partial class SitePages
         s.Append(Ci, $"""
             <article class="forecast-card">
               <header><h4>Blend</h4><small>{latest.ValidTimeUtc:yyyy-MM-dd HH:mm}Z</small></header>
-              <div class="temp" style="color: {tempColor}">{latest.BlendTemperature.ToString("0.0", Ci)}°C</div>
+              <div class="temp" style="--temp-color: {tempColor}">{latest.BlendTemperature.ToString("0.0", Ci)}°C</div>
               <footer>
                 <small>Made {latest.PredictionMadeAtUtc:yyyy-MM-dd HH:mm}Z</small><br/>
                 <small>Model: <code>{Escape(latest.ModelVersion)}</code></small>

@@ -166,7 +166,7 @@ public static partial class SitePages
         .forecast-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
         .forecast-card { padding: 1rem; }
         .forecast-card h3 { margin: 0 0 0.25rem; }
-        .forecast-card .temp { font-size: 2.5rem; font-weight: 700; color: var(--brand); line-height: 1.1; margin: 0.5rem 0 0.25rem; }
+        .forecast-card .temp { font-size: 2.5rem; font-weight: 700; color: var(--temp-color, var(--brand)); line-height: 1.1; margin: 0.5rem 0 0.25rem; }
         .forecast-card-empty .temp { color: var(--pico-muted-color); }
         .forecast-card .pwet { font-size: 0.95rem; color: var(--pwet); margin: 0 0 0.5rem; font-variant-numeric: tabular-nums; }
         .forecast-card .pwet strong { font-weight: 700; }

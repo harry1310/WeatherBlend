@@ -58,7 +58,7 @@ public static partial class SitePages
                 cards.Append(Ci, $"""
                     <article class="forecast-card">
                       <header><h3>+{lead}h</h3><small>{p.ValidTimeUtc:yyyy-MM-dd HH:mm}Z</small></header>
-                      <div class="temp" style="color: {tempColor}">{p.BlendTemperature.ToString("0.0", Ci)}°C</div>
+                      <div class="temp" style="--temp-color: {tempColor}">{p.BlendTemperature.ToString("0.0", Ci)}°C</div>
                       {pwetCell}
                       <footer>
                         <small>Made {p.PredictionMadeAtUtc:yyyy-MM-dd HH:mm}Z</small><br/>

@@ -142,6 +142,142 @@ public class SitePagesTests
         html.Should().NotContain("+72h forecast");
     }
 
+    [Fact]
+    public void RenderForecasts_emits_lead_subnav_linking_to_every_lead()
+    {
+        // Sub-nav is how readers hop between leads. Rendering any lead page should
+        // produce the full three-link nav, with the current lead marked active.
+        var input = MakeEmptyForecastInput();
+
+        var html = SitePages.RenderForecasts(input, 48);
+
+        html.Should().Contain("forecasts-24h.html");
+        html.Should().Contain("forecasts-48h.html");
+        html.Should().Contain("forecasts-72h.html");
+        html.Should().Contain("lead-nav");
+    }
+
+    [Fact]
+    public void RenderForecasts_shows_fallback_text_when_lead_has_no_temperature_forecast()
+    {
+        // No predictions at all — page should still render, with a clear "no forecast" message
+        // rather than blowing up on an empty sequence.
+        var input = MakeEmptyForecastInput();
+
+        var html = SitePages.RenderForecasts(input, 72);
+
+        html.Should().Contain("No +72h temperature forecast available");
+    }
+
+    [Fact]
+    public void RenderModels_shows_empty_state_when_no_training_metadata_loaded()
+    {
+        // First render after a fresh checkout — training_metadata.json isn't on disk yet.
+        // Page should prompt the reader to run train, not crash on an empty list.
+        var input = MakeEmptyForecastInput();
+
+        var html = SitePages.RenderModels(input);
+
+        html.Should().Contain("No training metadata on disk");
+    }
+
+    [Fact]
+    public void RenderModels_groups_rows_under_pretty_composite_headings()
+    {
+        // Two composites, one temperature and one precip-per-station. Pretty-printed
+        // headings must disambiguate them so a reader scanning the page can find the
+        // table they want.
+        var trained = new DateTime(2026, 4, 20, 12, 0, 0, DateTimeKind.Utc);
+        var perLead = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            [24] = new(24, "gfs", 1.23, 0.987, 1.42, +0.05, 420, 6),
+        };
+        var summaries = new[]
+        {
+            new SitePages.ModelSummary(
+                Composite: "temperature",
+                Version: "temp_v2b",
+                Phase: "2b",
+                DataSource: "era5",
+                TrainedAtUtc: trained,
+                MetricLabel: "Test MAE (°C)",
+                PerLead: perLead),
+            new SitePages.ModelSummary(
+                Composite: $"precipitation/{Station}",
+                Version: "precip_v3a",
+                Phase: "3a",
+                DataSource: "ea_hydrology",
+                TrainedAtUtc: trained,
+                MetricLabel: "Test Brier",
+                PerLead: perLead),
+        };
+        var input = MakeEmptyForecastInput() with { ModelSummaries = summaries };
+
+        var html = SitePages.RenderModels(input);
+
+        html.Should().Contain("Temperature");
+        html.Should().Contain("Precipitation — Bellever Dartmoor")
+            .And.NotContain("precipitation/ea_bellever_dartmoor");
+        html.Should().Contain("temp_v2b");
+        html.Should().Contain("precip_v3a");
+    }
+
+    [Theory]
+    [InlineData(-10.0, 57,  73, 171)]  // below the coldest anchor — clamps to indigo
+    [InlineData( -5.0, 57,  73, 171)]  // cold anchor
+    [InlineData( 12.0, 124, 77, 255)]  // brand purple anchor
+    [InlineData( 25.0, 229, 57,  53)]  // red anchor
+    [InlineData( 40.0, 183, 28,  28)]  // above hottest anchor — clamps to deep red
+    public void TemperatureColor_returns_expected_rgb_at_anchors_and_clamps(double celsius, int r, int g, int b)
+    {
+        SitePages.TemperatureColor(celsius).Should().Be($"rgb({r} {g} {b})");
+    }
+
+    [Fact]
+    public void TemperatureColor_interpolates_linearly_between_anchors_for_warming_feel()
+    {
+        // 14°C sits between the 12°C brand-purple anchor and the 18°C orange anchor.
+        // RGB interpolation (not HSL shortest-arc) must not pass through magenta: the
+        // green channel rises as we move off the purple anchor towards orange.
+        var result = SitePages.TemperatureColor(14.0);
+
+        result.Should().StartWith("rgb(");
+        var parts = result["rgb(".Length..^1].Split(' ');
+        int r = int.Parse(parts[0]), g = int.Parse(parts[1]), b = int.Parse(parts[2]);
+
+        r.Should().BeGreaterThan(124, "red channel should rise towards orange");
+        g.Should().BeGreaterThan(77, "green channel should rise — otherwise we'd be passing through magenta");
+        b.Should().BeLessThan(255, "blue channel should fall towards orange");
+    }
+
+    [Fact]
+    public void TemperatureColor_returns_muted_css_var_for_NaN()
+    {
+        // NaN comes from predictions with no temperature value — the stylesheet's muted
+        // colour is the sensible fallback.
+        SitePages.TemperatureColor(double.NaN).Should().Be("var(--pico-muted-color)");
+    }
+
+    private static SitePages.SiteInputs MakeEmptyForecastInput()
+    {
+        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
+        return new SitePages.SiteInputs
+        {
+            LocationDisplay = "Test",
+            Latitude = 0, Longitude = 0, ElevationMeters = 0,
+            MetarStation = "",
+            GeneratedAtUtc = generatedAt,
+            WindowStartUtc = generatedAt.AddDays(-30),
+            Predictions = Array.Empty<PredictionRow>(),
+            TruthByTime = new Dictionary<DateTime, double>(),
+            MetarByTime = Array.Empty<(DateTime, double)>(),
+            RollingMae = Array.Empty<SitePages.RollingMaePoint>(),
+            PrecipPredictions = Array.Empty<SitePages.PrecipForecastPoint>(),
+            DryWindowPredictions = Array.Empty<SitePages.DryWindowForecastPoint>(),
+            RainfallTruth = new Dictionary<string, IReadOnlyDictionary<DateTime, double>>(),
+        };
+    }
+
     private static SitePages.SiteInputs MakePrecipInput((string Version, string Phase)[] versions)
     {
         var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
