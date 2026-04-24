@@ -74,6 +74,13 @@ jobs:
           mkdir -p data/predictions
           rclone copy "r2:${R2_BUCKET}/data/predictions" ./data/predictions --fast-list --transfers 16 --checkers 32 --progress
 
+          # EA rainfall truth: Phase 3c precip predict reads the hourly observation
+          # series to compute persistence features anchored at run_time = valid - lead.
+          # Missing tree → DuckDB "No files found" crash, so this is required even
+          # though predict never writes to it.
+          mkdir -p data/truth/rainfall
+          rclone copy "r2:${R2_BUCKET}/data/truth/rainfall" ./data/truth/rainfall --fast-list --transfers 16 --checkers 32 --progress
+
       - name: Build
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
 
