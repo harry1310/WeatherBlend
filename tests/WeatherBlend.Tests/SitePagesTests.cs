@@ -143,6 +143,102 @@ public class SitePagesTests
     }
 
     [Fact]
+    public void RenderIndex_tags_each_card_header_with_day_of_week()
+    {
+        // Home cards should label each lead with its day name, so readers can map
+        // "+48h" onto "Saturday" without doing mental arithmetic on the UTC timestamp.
+        var generatedAt = new DateTime(2026, 4, 24, 0, 0, 0, DateTimeKind.Utc); // Fri
+        var preds = new[] { 24, 48, 72 }.Select(lead =>
+            new PredictionRow
+            {
+                LocationName = "Test",
+                ModelVersion = "v",
+                PredictionMadeAtUtc = generatedAt,
+                ValidTimeUtc = generatedAt.AddHours(lead),
+                LeadHours = lead,
+                BlendTemperature = 12.0,
+                FeatureVectorHash = "",
+            }).ToArray();
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            Predictions = preds,
+            CurrentVersion = "v",
+        };
+
+        var html = SitePages.RenderIndex(input);
+
+        html.Should().Contain("+24h · Sat");   // Fri + 24h = Sat
+        html.Should().Contain("+48h · Sun");
+        html.Should().Contain("+72h · Mon");
+    }
+
+    [Fact]
+    public void RenderIndex_shows_day_of_week_even_when_lead_has_no_prediction()
+    {
+        // Empty card for a missing lead still tells the reader which day is affected,
+        // derived from GeneratedAtUtc + lead hours.
+        var generatedAt = new DateTime(2026, 4, 24, 0, 0, 0, DateTimeKind.Utc);
+        var input = MakeEmptyForecastInput() with { GeneratedAtUtc = generatedAt };
+
+        var html = SitePages.RenderIndex(input);
+
+        html.Should().Contain("+24h · Sat");
+        html.Should().Contain("No prediction available");
+    }
+
+    [Fact]
+    public void RenderForecasts_does_not_render_blend_champion_card_anymore()
+    {
+        // The champion blend card duplicated the home page, so forecasts pages now
+        // go straight to the per-NWP breakdown table. Guard against the duplicate
+        // card creeping back in — the <h3> says "per-model inputs", not "Blend".
+        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
+        var pred = new PredictionRow
+        {
+            LocationName = "Test",
+            ModelVersion = "v",
+            PredictionMadeAtUtc = generatedAt,
+            ValidTimeUtc = generatedAt.AddHours(24),
+            LeadHours = 24,
+            BlendTemperature = 9.5,
+            TempGfs = 9.7,
+            TempEcmwf = 9.3,
+            TempMean = 9.5,
+            TempStd = 0.2,
+            FeatureVectorHash = "",
+        };
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            Predictions = new[] { pred },
+            CurrentVersion = "v",
+        };
+
+        var html = SitePages.RenderForecasts(input, 24);
+
+        html.Should().Contain("Temperature — per-model inputs");
+        html.Should().NotContain("<h4>Blend</h4>");   // the removed champion card
+        html.Should().Contain("<th class=\"num\">Blend</th>");   // table column kept
+    }
+
+    [Fact]
+    public void RenderSkill_does_not_reference_dead_pre_2b_or_other_versions_section()
+    {
+        // The "Other versions" bucket described "pre-2b experiments left in the manifest".
+        // That code and data are gone — guard against either text leaking back into any
+        // page the Skill renderer produces.
+        var input = MakeEmptyForecastInput();
+
+        var html = SitePages.RenderSkill(input);
+
+        html.Should().NotContain("Other versions")
+            .And.NotContain("pre-2b")
+            .And.NotContain("pre-3a")
+            .And.NotContain("pre-3b");
+    }
+
+    [Fact]
     public void RenderForecasts_emits_lead_subnav_linking_to_every_lead()
     {
         // Sub-nav is how readers hop between leads. Rendering any lead page should

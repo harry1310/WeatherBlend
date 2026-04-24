@@ -56,17 +56,6 @@ public static partial class SitePages
         var versionsByPhase = input.PhaseByVersion
             .GroupBy(kv => BucketPhase(kv.Value))
             .ToDictionary(g => g.Key, g => g.Select(kv => kv.Key).ToHashSet(StringComparer.Ordinal));
-        var untagged = input.Predictions
-            .Select(p => p.ModelVersion).Distinct()
-            .Where(v => !input.PhaseByVersion.ContainsKey(v))
-            .ToHashSet(StringComparer.Ordinal);
-        if (untagged.Count > 0)
-        {
-            if (!versionsByPhase.TryGetValue("other", out var others))
-                versionsByPhase["other"] = new HashSet<string>(untagged, StringComparer.Ordinal);
-            else
-                foreach (var v in untagged) others.Add(v);
-        }
 
         (string Key, string Title, string Description)[] phaseSpecs =
         {
@@ -74,8 +63,6 @@ public static partial class SitePages
                 "Six per-model temperatures, their mean/std/range, and cyclical hour/day-of-year encodings. The original champion."),
             ("2c", "Phase 2c rich (88 features)",
                 "Adds per-model dew point, RH, cloud {total/low/mid/high}, wind speed/dir/gusts, surface pressure, plus cross-model aggregates. Challenger."),
-            ("other", "Other versions",
-                "Versions with no training metadata on disk — typically pre-2b experiments left in the manifest."),
         };
         bool anyDrawn = false;
         foreach (var spec in phaseSpecs)
@@ -457,7 +444,7 @@ public static partial class SitePages
                 .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet))
                 .ToList();
             if (pts.Count > 0)
-                series.Add(new LineSeries(phase.ChampionVsChallengerLabel!, phase.Color!, pts));
+                series.Add(new LineSeries(phase.ChampionVsChallengerLabel, phase.Color, pts));
         }
         return series;
     }

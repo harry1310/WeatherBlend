@@ -10,7 +10,9 @@ public static partial class SitePages
     /// what every active blender is saying for that single horizon. A sub-nav at the top
     /// lets the reader switch between leads without hopping back to the main nav.
     /// Composition per page:
-    ///   1. Temperature — champion card row with per-NWP breakdown below.
+    ///   1. Temperature — per-NWP breakdown table. The champion blend value itself is
+    ///      on the home page; this page exists to show which NWPs drove the blend up
+    ///      or down at this horizon.
     ///   2. Precipitation — one P(wet) chart + hourly-detail table per EA station.
     /// Dry-window sits on its own tab because its display unit is the UTC day, not the
     /// hourly valid-time used by temperature and P(wet).
@@ -51,40 +53,9 @@ public static partial class SitePages
 
     private static string RenderTempSection(SiteInputs input, int lead)
     {
-        // Champion row only. Challenger lines for this lead live on the Skill page.
-        var cardSource = string.IsNullOrEmpty(input.CurrentVersion)
-            ? input.Predictions
-            : input.Predictions.Where(p => p.ModelVersion == input.CurrentVersion).ToList();
-
-        var latest = cardSource
-            .Where(p => p.LeadHours == lead)
-            .OrderByDescending(p => p.PredictionMadeAtUtc)
-            .FirstOrDefault();
-
-        var s = new StringBuilder();
-        s.Append("<h3>Temperature</h3>");
-
-        if (latest is null)
-        {
-            s.Append("<p><em>No +").Append(lead).Append("h temperature forecast available.</em></p>");
-            return s.ToString();
-        }
-
-        var tempColor = TemperatureColor(latest.BlendTemperature);
-        s.Append(Ci, $"""
-            <article class="forecast-card">
-              <header><h4>Blend</h4><small>{latest.ValidTimeUtc:yyyy-MM-dd HH:mm}Z</small></header>
-              <div class="temp" style="--temp-color: {tempColor}">{latest.BlendTemperature.ToString("0.0", Ci)}°C</div>
-              <footer>
-                <small>Made {latest.PredictionMadeAtUtc:yyyy-MM-dd HH:mm}Z</small><br/>
-                <small>Model: <code>{Escape(latest.ModelVersion)}</code></small>
-              </footer>
-            </article>
-            """);
-
-        // Per-NWP breakdown for the next few valid-times at this lead, so the reader can
-        // see which models pulled the blend up or down. Cap at 24 rows — longer tables
-        // push the precip section off-screen.
+        // Per-NWP breakdown table only. The champion blend value itself is on the home
+        // page; repeating it here was duplication. Challenger lines at this lead live on
+        // the Skill page.
         var future = input.Predictions
             .Where(p => p.LeadHours == lead
                         && (string.IsNullOrEmpty(input.CurrentVersion) || p.ModelVersion == input.CurrentVersion)
@@ -95,7 +66,15 @@ public static partial class SitePages
             .Take(24)
             .ToList();
 
-        if (future.Count == 0) return s.ToString();
+        var s = new StringBuilder();
+        s.Append("<h3>Temperature — per-model inputs</h3>");
+        s.Append("<p class=\"skill-line\">Each row is one valid time at this lead. The Blend column is what the home-page card shows; the per-NWP columns are the raw model values the blender saw.</p>");
+
+        if (future.Count == 0)
+        {
+            s.Append("<p><em>No +").Append(lead).Append("h temperature forecast available.</em></p>");
+            return s.ToString();
+        }
 
         var tbody = new StringBuilder();
         foreach (var p in future)
@@ -117,7 +96,6 @@ public static partial class SitePages
         }
 
         s.Append(Ci, $"""
-            <h4>Per-model inputs</h4>
             <figure>
               <table>
                 <thead>

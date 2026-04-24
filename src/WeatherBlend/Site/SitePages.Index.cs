@@ -57,7 +57,7 @@ public static partial class SitePages
                 var tempColor = TemperatureColor(p.BlendTemperature);
                 cards.Append(Ci, $"""
                     <article class="forecast-card">
-                      <header><h3>+{lead}h</h3><small>{p.ValidTimeUtc:yyyy-MM-dd HH:mm}Z</small></header>
+                      <header><h3>+{lead}h · {p.ValidTimeUtc:ddd}</h3><small>{p.ValidTimeUtc:yyyy-MM-dd HH:mm}Z</small></header>
                       <div class="temp" style="--temp-color: {tempColor}">{p.BlendTemperature.ToString("0.0", Ci)}°C</div>
                       {pwetCell}
                       <footer>
@@ -69,9 +69,10 @@ public static partial class SitePages
             }
             else
             {
+                var missingDay = input.GeneratedAtUtc.AddHours(lead);
                 cards.Append(Ci, $"""
                     <article class="forecast-card forecast-card-empty">
-                      <header><h3>+{lead}h</h3></header>
+                      <header><h3>+{lead}h · {missingDay:ddd}</h3></header>
                       <div class="temp">—</div>
                       <footer><small>No prediction available</small></footer>
                     </article>
