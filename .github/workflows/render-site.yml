@@ -68,15 +68,23 @@ jobs:
           acl = private
           EOF
 
-      - name: Pull predictions + ERA5 + METAR from R2
+      - name: Pull predictions + truth + models from R2
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
           # Read-only pulls — render-site never writes back to R2.
-          mkdir -p data/predictions data/truth/era5 data/truth/metar
-          rclone copy "r2:${R2_BUCKET}/data/predictions" ./data/predictions --fast-list --transfers 16 --checkers 32 --progress
-          rclone copy "r2:${R2_BUCKET}/data/truth/era5"  ./data/truth/era5  --fast-list --transfers 16 --checkers 32 --progress
-          rclone copy "r2:${R2_BUCKET}/data/truth/metar" ./data/truth/metar --fast-list --transfers 16 --checkers 32 --progress
+          mkdir -p data/predictions data/truth/era5 data/truth/metar data/truth/rainfall data/models
+          rclone copy "r2:${R2_BUCKET}/data/predictions"     ./data/predictions     --fast-list --transfers 16 --checkers 32 --progress
+          rclone copy "r2:${R2_BUCKET}/data/truth/era5"      ./data/truth/era5      --fast-list --transfers 16 --checkers 32 --progress
+          rclone copy "r2:${R2_BUCKET}/data/truth/metar"     ./data/truth/metar     --fast-list --transfers 16 --checkers 32 --progress
+          # Rainfall truth — used for the precip-verify charts and per-station rainfall
+          # tables. Missing tree degrades silently (empty rainfall series) so this was
+          # easy to overlook pre-WorkflowDataSyncContractTests.
+          rclone copy "r2:${R2_BUCKET}/data/truth/rainfall"  ./data/truth/rainfall  --fast-list --transfers 16 --checkers 32 --progress
+          # Model tree — training_metadata.json drives phase labels on the
+          # forecast-vs-truth page; MANIFEST.json per target drives the champion
+          # filter on the home-page forecast cards.
+          rclone copy "r2:${R2_BUCKET}/data/models"          ./data/models          --fast-list --transfers 16 --checkers 32 --progress
 
       - name: Build
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo

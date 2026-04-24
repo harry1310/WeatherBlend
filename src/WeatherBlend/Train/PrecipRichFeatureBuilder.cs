@@ -381,11 +381,27 @@ ORDER BY 1;
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
         var dict = new Dictionary<DateTime, double>();
-        using var r = cmd.ExecuteReader();
-        while (r.Read())
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            dict[r.GetDateTime(0)] = r.GetDouble(1);
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                ct.ThrowIfCancellationRequested();
+                dict[r.GetDateTime(0)] = r.GetDouble(1);
+            }
+        }
+        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
+        {
+            // DuckDB's raw "No files found" crash is nearly un-diagnosable inside a
+            // CI log — the actual mistake is upstream (workflow didn't sync the
+            // rainfall tree). Translate to a clear InvalidOperationException with the
+            // path that was checked so operators can go straight to the fix.
+            throw new InvalidOperationException(
+                $"Rainfall truth tree is empty at '{rainfallPath}'. " +
+                $"Phase 3c precip requires the hourly EA rainfall observations for " +
+                $"persistence features anchored at run_time = valid_time - leadHours; " +
+                $"sync 'data/truth/rainfall' from R2 before invoking the command.",
+                ex);
         }
         return dict;
     }

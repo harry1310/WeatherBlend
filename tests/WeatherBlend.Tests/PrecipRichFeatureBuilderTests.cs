@@ -198,4 +198,43 @@ public class PrecipRichFeatureBuilderTests
 
         p.DryHoursTrailing.Should().Be(0);
     }
+
+    [Fact]
+    public void LoadHourlyRain_throws_diagnosable_error_when_rainfall_tree_is_empty()
+    {
+        // Regression: predict.yml used to skip 'data/truth/rainfall' in its R2 pull,
+        // so Phase 3c predict would crash deep inside DuckDB with a raw
+        // "No files found" IOException that gave CI operators no clue what tree to
+        // populate. LoadHourlyRain now translates that into a targeted
+        // InvalidOperationException naming the path and the action to take.
+        using var tmp = new TempDirectory();
+        var missingPath = Path.Combine(tmp.Path, "does_not_exist");
+
+        var act = () => PrecipRichFeatureBuilder.LoadHourlyRain(
+            rainfallPath: missingPath,
+            locationName: "Bonehill Rocks, Dartmoor",
+            stationName: "Bellever, Dartmoor",
+            ct: CancellationToken.None);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*Rainfall truth tree is empty*")
+            .WithMessage("*does_not_exist*")   // path fragment we injected, slash-agnostic
+            .WithMessage("*data/truth/rainfall*");
+    }
+
+    private sealed class TempDirectory : IDisposable
+    {
+        public string Path { get; }
+        public TempDirectory()
+        {
+            Path = System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(),
+                "wb_tests_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path);
+        }
+        public void Dispose()
+        {
+            try { Directory.Delete(Path, recursive: true); } catch { /* best-effort */ }
+        }
+    }
 }
