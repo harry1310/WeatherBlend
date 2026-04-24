@@ -150,7 +150,7 @@ the resulting `weatherblend.exe` directly - more robust than `dotnet run`.
 ## Project layout
 
 ```
-WeatherBlend.sln
+WeatherBlend.slnx
 src/WeatherBlend/
   Program.cs                       CLI wiring, DI host
   config.yaml                      all tunables live here
