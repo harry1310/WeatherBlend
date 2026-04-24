@@ -303,6 +303,168 @@ public class SitePagesTests
         SitePages.TemperatureColor(double.NaN).Should().Be("var(--pico-muted-color)");
     }
 
+    [Theory]
+    [InlineData("ea_bellever_dartmoor", "bellever")]
+    [InlineData("ea_princetown", "princetown")]
+    [InlineData("ea_dartmoor_nr_hexworthy", "hexworthy")]
+    public void StationSlug_maps_known_stations_to_short_urls(string station, string expected)
+    {
+        // The slug turns the verbose EA id into a URL path segment — shipping
+        // `skill-bellever.html` is nicer than `skill-ea_bellever_dartmoor.html`.
+        SitePages.StationSlug(station).Should().Be(expected);
+    }
+
+    [Fact]
+    public void RenderStationSubNav_omits_nav_when_only_one_station_present()
+    {
+        // A solo station has nowhere to sub-navigate to — rendering the nav would just
+        // be visual noise around a single item.
+        var html = SitePages.RenderStationSubNav("skill", new[] { "ea_bellever_dartmoor" }, "ea_bellever_dartmoor");
+        html.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void RenderStationSubNav_first_station_uses_bare_page_url_and_others_use_slugged_url()
+    {
+        // The first station's link is the canonical page (matches the top-nav entry),
+        // so it must not have a slug suffix. Non-first stations carry `{page}-{slug}.html`.
+        var html = SitePages.RenderStationSubNav("skill",
+            new[] { "ea_bellever_dartmoor", "ea_princetown" }, "ea_princetown");
+
+        html.Should().Contain("href=\"skill.html\"");
+        html.Should().Contain("href=\"skill-princetown.html\"");
+    }
+
+    [Fact]
+    public void RenderStationSubNav_marks_current_station_active()
+    {
+        // The active class powers the visual "you are here" indicator on the sub-nav.
+        var html = SitePages.RenderStationSubNav("dry-window",
+            new[] { "ea_bellever_dartmoor", "ea_princetown" }, "ea_princetown");
+
+        html.Should().Contain("href=\"dry-window-princetown.html\" class=\"active\"");
+        html.Should().NotContain("href=\"dry-window.html\" class=\"active\"");
+    }
+
+    [Fact]
+    public void RenderSkill_renders_only_requested_station_when_slug_provided()
+    {
+        // Skill page variants ship one file per station; each variant should render the
+        // precip chart headings for *its* station only, not every station.
+        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
+        var validTime = generatedAt.AddHours(24);
+        var precipPreds = new[]
+        {
+            new SitePages.PrecipForecastPoint(
+                "ea_bellever_dartmoor", "v3a", generatedAt, validTime, 24, 0.4, 0.2,
+                null, null, null, null, null, null),
+            new SitePages.PrecipForecastPoint(
+                "ea_princetown", "v3a", generatedAt, validTime, 24, 0.5, 0.2,
+                null, null, null, null, null, null),
+        };
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            PrecipPredictions = precipPreds,
+            PhaseByVersion = new Dictionary<string, string> { ["v3a"] = "3a" },
+        };
+
+        var bellever = SitePages.RenderSkill(input, null);
+        var princetown = SitePages.RenderSkill(input, "princetown");
+
+        // The chart card heading (<h4>Station name</h4>) is the one that's per-station.
+        // The sub-nav always mentions every station, so we look for the chart heading
+        // specifically to confirm which station's chart was rendered.
+        bellever.Should().Contain("<h4>Bellever Dartmoor</h4>")
+            .And.NotContain("<h4>Princetown</h4>");
+        princetown.Should().Contain("<h4>Princetown</h4>")
+            .And.NotContain("<h4>Bellever Dartmoor</h4>");
+    }
+
+    [Fact]
+    public void RenderSkill_emits_station_subnav_when_more_than_one_station()
+    {
+        // The sub-nav is the UI control that lets readers flip between station variants.
+        // With multiple stations present, every skill variant must carry one.
+        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
+        var validTime = generatedAt.AddHours(24);
+        var precipPreds = new[]
+        {
+            new SitePages.PrecipForecastPoint(
+                "ea_bellever_dartmoor", "v3a", generatedAt, validTime, 24, 0.4, 0.2,
+                null, null, null, null, null, null),
+            new SitePages.PrecipForecastPoint(
+                "ea_princetown", "v3a", generatedAt, validTime, 24, 0.5, 0.2,
+                null, null, null, null, null, null),
+        };
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            PrecipPredictions = precipPreds,
+            PhaseByVersion = new Dictionary<string, string> { ["v3a"] = "3a" },
+        };
+
+        var html = SitePages.RenderSkill(input, null);
+
+        html.Should().Contain("skill.html")
+            .And.Contain("skill-princetown.html");
+    }
+
+    [Fact]
+    public void RenderDryWindow_renders_only_requested_station_when_slug_provided()
+    {
+        // Dry-window page variants ship one file per station; each should render its
+        // own station heading and not the others'.
+        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
+        var targetDate = generatedAt.Date;
+        var preds = new[]
+        {
+            new SitePages.DryWindowForecastPoint(
+                "ea_bellever_dartmoor", 3, "v3b", generatedAt, targetDate, 24, 0.6, 0.5, null),
+            new SitePages.DryWindowForecastPoint(
+                "ea_princetown", 3, "v3b", generatedAt, targetDate, 24, 0.7, 0.5, null),
+        };
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            DryWindowPredictions = preds,
+            PhaseByVersion = new Dictionary<string, string> { ["v3b"] = "3b" },
+        };
+
+        var bellever = SitePages.RenderDryWindow(input, null);
+        var princetown = SitePages.RenderDryWindow(input, "princetown");
+
+        // The station heading (<h3>Station name</h3>) is the one that's per-station.
+        // The sub-nav always mentions every station, so we anchor on the h3 heading.
+        bellever.Should().Contain("<h3>Bellever Dartmoor</h3>")
+            .And.NotContain("<h3>Princetown</h3>");
+        princetown.Should().Contain("<h3>Princetown</h3>")
+            .And.NotContain("<h3>Bellever Dartmoor</h3>");
+    }
+
+    [Fact]
+    public void RenderDryWindow_unknown_slug_falls_back_to_first_station()
+    {
+        // An unknown slug shouldn't crash the page; it should render the canonical
+        // (first) station so the URL still produces a meaningful view.
+        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
+        var preds = new[]
+        {
+            new SitePages.DryWindowForecastPoint(
+                "ea_bellever_dartmoor", 3, "v3b", generatedAt, generatedAt.Date, 24, 0.6, 0.5, null),
+        };
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            DryWindowPredictions = preds,
+            PhaseByVersion = new Dictionary<string, string> { ["v3b"] = "3b" },
+        };
+
+        var html = SitePages.RenderDryWindow(input, "does-not-exist");
+
+        html.Should().Contain("Bellever Dartmoor");
+    }
+
     private static SitePages.SiteInputs MakeEmptyForecastInput()
     {
         var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);

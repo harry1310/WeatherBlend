@@ -117,13 +117,37 @@ public sealed class RenderSiteCommand
         await File.WriteAllTextAsync(Path.Combine(outputDir, "forecasts-24h.html"), SitePages.RenderForecasts(input, 24),  ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "forecasts-48h.html"), SitePages.RenderForecasts(input, 48),  ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "forecasts-72h.html"), SitePages.RenderForecasts(input, 72),  ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "dry-window.html"),    SitePages.RenderDryWindow(input),      ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "skill.html"),         SitePages.RenderSkill(input),          ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "models.html"),        SitePages.RenderModels(input),         ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "about.html"),         SitePages.RenderAbout(input),          ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "styles.css"),         SitePages.Stylesheet(),                ct);
 
-        _log.LogInformation("Site rendered → {Dir} ({Files} files)", outputDir, 9);
+        // Skill page is per-station — one "canonical" file (no slug) plus one per
+        // non-first station. The per-station set is the union of precip + dry-window
+        // stations, so even if a station has only one of the two, it gets a tab.
+        var skillStations = SitePages.GetPerStationSkillStations(input);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "skill.html"), SitePages.RenderSkill(input, null), ct);
+        for (int i = 1; i < skillStations.Count; i++)
+        {
+            var slug = SitePages.StationSlug(skillStations[i]);
+            await File.WriteAllTextAsync(
+                Path.Combine(outputDir, $"skill-{slug}.html"),
+                SitePages.RenderSkill(input, slug), ct);
+        }
+
+        // Dry-window page is per-station too. Dry-window-only stations are a subset
+        // of skill stations (it's currently Bellever + Princetown, no Hexworthy).
+        var dryStations = input.DryWindowPredictions.Select(d => d.Station).Distinct().OrderBy(s => s, StringComparer.Ordinal).ToList();
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "dry-window.html"), SitePages.RenderDryWindow(input, null), ct);
+        for (int i = 1; i < dryStations.Count; i++)
+        {
+            var slug = SitePages.StationSlug(dryStations[i]);
+            await File.WriteAllTextAsync(
+                Path.Combine(outputDir, $"dry-window-{slug}.html"),
+                SitePages.RenderDryWindow(input, slug), ct);
+        }
+
+        var totalFiles = 7 + Math.Max(1, skillStations.Count) + Math.Max(1, dryStations.Count);
+        _log.LogInformation("Site rendered → {Dir} ({Files} files)", outputDir, totalFiles);
         return 0;
     }
 

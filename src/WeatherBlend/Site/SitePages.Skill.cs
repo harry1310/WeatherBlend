@@ -11,9 +11,18 @@ public static partial class SitePages
     /// two used to live on separate pages (forecast-vs-truth + verify) but the reader
     /// ends up cross-checking them anyway, so a single page keeps the story — how good
     /// is each blender vs reality? — in one place.
+    ///
+    /// <paramref name="stationSlug"/> picks which station the per-station sections
+    /// (precip vs truth, dry-window vs truth) render for. <c>null</c> means the
+    /// canonical first station — this variant ships as <c>skill.html</c>; the others
+    /// ship as <c>skill-{slug}.html</c>. Temperature sections are the same on every
+    /// variant.
     /// </summary>
-    public static string RenderSkill(SiteInputs input)
+    public static string RenderSkill(SiteInputs input, string? stationSlug = null)
     {
+        var stations = GetPerStationSkillStations(input);
+        var currentStation = ResolveStationFromSlug(stations, stationSlug);
+
         var content = new StringBuilder();
         content.Append("""
             <section>
@@ -31,18 +40,54 @@ public static partial class SitePages
         content.Append("<hr/><h3>Temperature — rolling MAE</h3>");
         content.Append(RenderRollingMaeBlock(input));
 
-        content.Append("<hr/><h3>Precipitation — P(wet) vs observed rainfall</h3>");
-        content.Append(RenderPrecipVsTruthBlock(input));
+        // Station sub-nav gates the two per-station sections below. One sub-nav steering
+        // both avoids the surprise of precip showing Bellever while dry-window shows all.
+        if (currentStation is not null)
+        {
+            content.Append("<hr/>");
+            content.Append(RenderStationSubNav("skill", stations, currentStation));
+        }
+
+        content.Append("<h3>Precipitation — P(wet) vs observed rainfall</h3>");
+        content.Append(RenderPrecipVsTruthBlock(input, currentStation));
 
         content.Append("<hr/><h3>Dry window — predicted vs observed</h3>");
         content.Append(Ci, $"""
             <p class="skill-line">One row per target UTC day × window length. The "observed" column is blank for dates
                beyond the last full rainfall day.</p>
             """);
-        content.Append(RenderDryWindowVsTruthTable(input));
+        content.Append(RenderDryWindowVsTruthTable(input, currentStation));
 
         content.Append("</section>");
         return WrapPage(input, "Skill", "skill", content.ToString());
+    }
+
+    /// <summary>
+    /// Station set used by both per-station skill sections. Union of precip and
+    /// dry-window stations so the sub-nav shows every station the reader might care
+    /// about, even if one of the sections has no data for it.
+    /// </summary>
+    internal static IReadOnlyList<string> GetPerStationSkillStations(SiteInputs input)
+    {
+        var set = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var p in input.PrecipPredictions) set.Add(p.Station);
+        foreach (var d in input.DryWindowPredictions) set.Add(d.Station);
+        return set.OrderBy(s => s, StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>
+    /// Resolve a URL slug to a station id. Unknown or null slug picks the first
+    /// station (canonical landing). Empty station list returns <c>null</c> — callers
+    /// skip the per-station sub-nav entirely in that case.
+    /// </summary>
+    internal static string? ResolveStationFromSlug(IReadOnlyList<string> stations, string? slug)
+    {
+        if (stations.Count == 0) return null;
+        if (string.IsNullOrEmpty(slug)) return stations[0];
+        foreach (var s in stations)
+            if (string.Equals(StationSlug(s), slug, StringComparison.OrdinalIgnoreCase))
+                return s;
+        return stations[0];
     }
 
     // -------------------------------------------------------------------------------
@@ -202,7 +247,7 @@ public static partial class SitePages
     // (capped at 1 mm/h so it shares the 0-1 probability axis) on a per-phase P(wet)
     // line, then a three-way 24h comparison of every phase against truth.
     // -------------------------------------------------------------------------------
-    private static string RenderPrecipVsTruthBlock(SiteInputs input)
+    private static string RenderPrecipVsTruthBlock(SiteInputs input, string? currentStation)
     {
         var content = new StringBuilder();
         content.Append("""
@@ -211,17 +256,14 @@ public static partial class SitePages
                hours are dropped to avoid flipping wet↔dry at the boundary.</p>
             """);
 
-        var stations = input.PrecipPredictions.Select(p => p.Station).Distinct()
-            .OrderBy(s => s, StringComparer.Ordinal).ToList();
-        if (stations.Count == 0)
+        if (currentStation is null)
         {
             content.Append("<p><em>No precipitation predictions in window.</em></p>");
             return content.ToString();
         }
 
-        foreach (var station in stations)
-            content.Append(RenderPrecipVsTruthChart(input, station));
-
+        // Sub-nav above the section selects which station we render for.
+        content.Append(RenderPrecipVsTruthChart(input, currentStation));
         return content.ToString();
     }
 
@@ -325,23 +367,22 @@ public static partial class SitePages
     // Dry-window vs observed. One table per station × window length showing each
     // lead's predicted probability alongside the observed verdict (dry / wet / —).
     // -------------------------------------------------------------------------------
-    private static string RenderDryWindowVsTruthTable(SiteInputs input)
+    private static string RenderDryWindowVsTruthTable(SiteInputs input, string? currentStation)
     {
         if (input.DryWindowPredictions.Count == 0)
             return "<p><em>No dry-window predictions in window.</em></p>";
+        if (currentStation is null || !input.DryWindowPredictions.Any(d => d.Station == currentStation))
+            return $"<p><em>No dry-window predictions for {Escape(PrettyStation(currentStation ?? ""))} in window.</em></p>";
 
+        // Same station sub-nav as precip selects which station we render for here.
         var observed = ComputeObservedDryWindows(input);
-
-        var stations = input.DryWindowPredictions.Select(d => d.Station).Distinct()
-            .OrderBy(s => s, StringComparer.Ordinal).ToList();
         var windows = input.DryWindowPredictions.Select(d => d.WindowHours).Distinct().OrderBy(w => w).ToList();
         var leadOrder = new[] { 24, 48, 72 };
 
         var content = new StringBuilder();
 
-        foreach (var station in stations)
         {
-            content.Append(Ci, $"<h4>{Escape(PrettyStation(station))}</h4>");
+            var station = currentStation;
 
             foreach (var window in windows)
             {

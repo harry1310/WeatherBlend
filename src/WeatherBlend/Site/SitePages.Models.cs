@@ -36,9 +36,19 @@ public static partial class SitePages
             return WrapPage(input, "Models", "models", content.ToString());
         }
 
+        // Order: temperature → precipitation → dry window, then alphabetical within each.
+        // Matches the roadmap and the reader's mental model of "phase 2 → 3a → 3b".
+        static int TargetOrder(string composite) => composite.Split('/')[0] switch
+        {
+            "temperature" => 0,
+            "precipitation" => 1,
+            "dry_window" => 2,
+            _ => 3,
+        };
         var grouped = input.ModelSummaries
             .GroupBy(m => m.Composite, StringComparer.Ordinal)
-            .OrderBy(g => g.Key, StringComparer.Ordinal);
+            .OrderBy(g => TargetOrder(g.Key))
+            .ThenBy(g => g.Key, StringComparer.Ordinal);
 
         foreach (var group in grouped)
         {

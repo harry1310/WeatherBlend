@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using WeatherBlend.Models;
 
 namespace WeatherBlend.Site;
@@ -260,6 +261,40 @@ public static partial class SitePages
 
     private static string RenderEmptyChart(string title, string message) =>
         $"""<div class="chart-empty-box"><strong>{Escape(title)}</strong><p><em>{Escape(message)}</em></p></div>""";
+
+    /// <summary>
+    /// Short URL-safe slug for a station. Used to route <c>skill.html</c> /
+    /// <c>skill-{slug}.html</c> and the dry-window equivalents. Returns the station
+    /// id unchanged for anything we don't recognise — links would still work but
+    /// look less tidy.
+    /// </summary>
+    internal static string StationSlug(string station) => station switch
+    {
+        "ea_bellever_dartmoor" => "bellever",
+        "ea_princetown" => "princetown",
+        "ea_dartmoor_nr_hexworthy" => "hexworthy",
+        _ => station,
+    };
+
+    /// <summary>
+    /// Render a per-station sub-nav for a section. The first station is the canonical
+    /// one (its link is <c>{pageBase}.html</c>, matching the top-nav entry); the rest
+    /// live at <c>{pageBase}-{slug}.html</c>. The current station is marked active.
+    /// </summary>
+    internal static string RenderStationSubNav(string pageBase, IReadOnlyList<string> stations, string currentStation)
+    {
+        if (stations.Count <= 1) return "";   // one station → sub-nav adds nothing
+
+        var items = new StringBuilder();
+        for (int i = 0; i < stations.Count; i++)
+        {
+            var s = stations[i];
+            var href = i == 0 ? $"{pageBase}.html" : $"{pageBase}-{StationSlug(s)}.html";
+            var cls = s == currentStation ? " class=\"active\"" : "";
+            items.Append(Ci, $"""<li><a href="{href}"{cls}>{Escape(PrettyStation(s))}</a></li>""");
+        }
+        return $"""<nav class="lead-nav"><ul>{items}</ul></nav>""";
+    }
 
     private static string Escape(string s) =>
         s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;");
