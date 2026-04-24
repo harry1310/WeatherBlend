@@ -105,9 +105,12 @@ metOffice:
   enabled: true
   spotModelTag: "met_office_spot"
   spotKeyEnvVar: "MET_OFFICE_SPOT_API_KEY"
-  spotKeyFile: "C:\\Projects\\WeatherBlend\\MetOfficeSpotKey.txt"
+  # Relative to cwd (repo root). Keys live one level above the repo, outside git.
+  # Env var wins over file; CI uses env vars only — the file fallback is purely
+  # for local-dev convenience so you don't have to export vars in every shell.
+  spotKeyFile: "../MetOfficeSpotKey.txt"
   obsKeyEnvVar: "MET_OFFICE_OBS_API_KEY"
-  obsKeyFile: "C:\\Projects\\WeatherBlend\\MetOfficeObsKey.txt"
+  obsKeyFile: "../MetOfficeObsKey.txt"
   # Land Observations is geohash-addressed (API v1.0): GET /nearest?lat=...&lon=...
   # returned gcj0z3 for Bonehill (lat=50.58, lon=-3.79 at 2dp). Pinned here so
   # cycles skip the /nearest lookup — the spec asks callers to cache it.

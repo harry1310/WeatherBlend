@@ -62,9 +62,13 @@ public sealed class MetOfficeConfig
     public bool Enabled { get; set; } = true;
     public string SpotModelTag { get; set; } = "met_office_spot";
     public string SpotKeyEnvVar { get; set; } = "MET_OFFICE_SPOT_API_KEY";
-    public string SpotKeyFile { get; set; } = @"C:\Projects\WeatherBlend\MetOfficeSpotKey.txt";
+    // Relative to the process cwd (typically the repo root when `dotnet run` is
+    // invoked there). Keys live one level above the repo, outside version control.
+    // Env var wins over file (see MetOfficeSecrets.TryLoad), and CI uses env vars
+    // exclusively — so this relative path only matters for local dev convenience.
+    public string SpotKeyFile { get; set; } = "../MetOfficeSpotKey.txt";
     public string ObsKeyEnvVar { get; set; } = "MET_OFFICE_OBS_API_KEY";
-    public string ObsKeyFile { get; set; } = @"C:\Projects\WeatherBlend\MetOfficeObsKey.txt";
+    public string ObsKeyFile { get; set; } = "../MetOfficeObsKey.txt";
 
     /// <summary>
     /// Geohash of the Land Observations location nearest our site. The DataHub
