@@ -1,4 +1,5 @@
 <Solution>
   <Project Path="src/WeatherBlend/WeatherBlend.csproj" />
   <Project Path="tests/WeatherBlend.Tests/WeatherBlend.Tests.csproj" />
+  <Project Path="scripts/ShapAnalyze/ShapAnalyze.csproj" />
 </Solution>
