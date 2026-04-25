@@ -16,10 +16,11 @@ namespace WeatherBlend.Commands;
 ///   rainfall      - EA Hydrology 15-min rainfall totals (precip verification truth)
 ///   all           - everything above
 ///
-/// Open-Meteo (previous-runs + era5) is throttled by HttpConfig.OpenMeteoBackfillDelaySeconds;
-/// the endpoint uses an hourly token bucket and a 30 min burst at ~5 calls/min
-/// tipped the limit on 2026-04-25. METAR hits OGIMET, rate-limited to ~30s between
-/// requests (one per station per 7-day chunk; 3y × 2 stations ≈ 2.5h).
+/// Open-Meteo Previous Runs is throttled by HttpConfig.PreviousRunsBackfillDelaySeconds
+/// (default 15s); that endpoint uses an hourly token bucket and a 30 min burst at
+/// ~5 calls/min tipped the limit on 2026-04-25. ERA5 has its own (much smaller) load
+/// profile and uses a hardcoded 2s delay. METAR hits OGIMET, rate-limited to ~30s
+/// between requests (one per station per 7-day chunk; 3y × 2 stations ≈ 2.5h).
 /// </summary>
 public sealed class BackfillCommand
 {
@@ -99,7 +100,7 @@ public sealed class BackfillCommand
                     _log.LogError(ex, "  previous-runs/{Model} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} FAILED",
                         model.Id, cursor, chunkEnd);
                 }
-                await Task.Delay(TimeSpan.FromSeconds(_cfg.Http.OpenMeteoBackfillDelaySeconds), ct);
+                await Task.Delay(TimeSpan.FromSeconds(_cfg.Http.PreviousRunsBackfillDelaySeconds), ct);
                 cursor = chunkEnd.AddDays(1);
             }
         }

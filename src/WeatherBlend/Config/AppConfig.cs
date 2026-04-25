@@ -99,11 +99,12 @@ public sealed class HttpConfig
     public int RetryCount { get; set; } = 3;
 
     /// <summary>
-    /// Delay between consecutive Open-Meteo backfill chunks (Previous Runs + ERA5),
-    /// in seconds. The previous-runs endpoint uses an hourly token bucket — a 30 min
-    /// burst at ~5 calls/min tipped the limit on 2026-04-25 and locked the API for
-    /// the rest of the hour. 15s keeps us at ~4 calls/min, slow enough to let the
-    /// bucket refill while a long backfill is in flight. Tune up if 429s reappear.
+    /// Delay between consecutive Open-Meteo Previous Runs backfill chunks, in seconds.
+    /// That endpoint uses an hourly token bucket — a 30 min burst at ~5 calls/min
+    /// tipped the limit on 2026-04-25 and locked the API for the rest of the hour.
+    /// 15s keeps us at ~4 calls/min, slow enough to let the bucket refill while a
+    /// long backfill is in flight. ERA5 has its own (much smaller) load profile and
+    /// uses a hardcoded 2s delay; tune this knob up if 429s reappear on previous-runs.
     /// </summary>
-    public int OpenMeteoBackfillDelaySeconds { get; set; } = 15;
+    public int PreviousRunsBackfillDelaySeconds { get; set; } = 15;
 }
