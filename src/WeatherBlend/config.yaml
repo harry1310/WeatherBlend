@@ -151,3 +151,7 @@ http:
   userAgent: "WeatherBlend-PoC/0.1 (contact: you@example.com)"
   timeoutSeconds: 60
   retryCount: 3
+  # Delay between consecutive Open-Meteo backfill chunks (previous-runs + era5).
+  # 15s ≈ 4 calls/min, comfortably under the hourly token bucket that bit us on
+  # 2026-04-25. Bump if 429s reappear; lower at your own risk.
+  openMeteoBackfillDelaySeconds: 15

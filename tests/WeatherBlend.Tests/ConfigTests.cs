@@ -43,4 +43,21 @@ public class ConfigTests
         loc.Latitude.Should().BeApproximately(50.5831, 0.0001);
         loc.ElevationMeters.Should().Be(393);
     }
+
+    [Fact]
+    public void HttpConfig_defaults_open_meteo_backfill_delay_to_15s()
+    {
+        // Picked to keep us at ~4 calls/min — under the per-hour token bucket
+        // that bit the 2026-04-25 backfill. Lowering this is the easiest way
+        // to reintroduce 429s, so locking the default down with a test.
+        var c = new HttpConfig();
+        c.OpenMeteoBackfillDelaySeconds.Should().Be(15);
+    }
+
+    [Fact]
+    public void HttpConfig_open_meteo_backfill_delay_is_configurable()
+    {
+        var c = new HttpConfig { OpenMeteoBackfillDelaySeconds = 30 };
+        c.OpenMeteoBackfillDelaySeconds.Should().Be(30);
+    }
 }
