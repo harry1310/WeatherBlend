@@ -195,7 +195,7 @@ Extracted point rows kept on disk:
 Storage trivial; bandwidth is the only real cost (inbound only). ~3–4 GB/day is
 fine on any normal connection. **Optional GFS NCEI 3-year bootstrap: ~1.6 TB one-off**.
 
-## Open questions for Russell
+## Open questions for Harry
 
 1. **Historical depth vs. go-forward.** Accept 6–12 months of go-forward wait for
    ECMWF/ICON/ARPEGE training data, or pay for ECMWF MARS / a commercial archive?
