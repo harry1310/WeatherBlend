@@ -44,4 +44,7 @@ public sealed class ForecastRow
     public double? SurfacePressure { get; init; }
     public double? Cape { get; init; }
     public double? Visibility { get; init; }
+    public double? ShortwaveRadiation { get; init; }
+    public double? DirectRadiation { get; init; }
+    public double? DiffuseRadiation { get; init; }
 }

@@ -4,12 +4,21 @@ public sealed class AppConfig
 {
     public LocationConfig Location { get; set; } = new();
     public List<ModelConfig> Models { get; set; } = new();
-    public List<string> Variables { get; set; } = new();
+    public VariablesConfig Variables { get; set; } = new();
     public List<int> LeadHours { get; set; } = new();
     public int ForecastDays { get; set; } = 7;
     public StorageConfig Storage { get; set; } = new();
     public HttpConfig Http { get; set; } = new();
     public MetOfficeConfig MetOffice { get; set; } = new();
+}
+
+public sealed class VariablesConfig
+{
+    /// <summary>Variables pulled per-model from Open-Meteo (Live + Previous Runs).</summary>
+    public List<string> Forecast { get; set; } = new();
+
+    /// <summary>Variables pulled from the ERA5 archive endpoint as training truth.</summary>
+    public List<string> Era5 { get; set; } = new();
 }
 
 public sealed class LocationConfig

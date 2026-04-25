@@ -87,7 +87,7 @@ public sealed class BackfillCommand
                 try
                 {
                     var rows = await _forecasts.FetchPreviousRunsAsync(
-                        _cfg.Location, model.Id, _cfg.Variables, cursor, chunkEnd, ct);
+                        _cfg.Location, model.Id, _cfg.Variables.Forecast, cursor, chunkEnd, ct);
                     await ParquetWriter.WritePreviousRunsAsync(_cfg.Storage.ForecastsPath, rows, ct);
                     _log.LogInformation("  previous-runs/{Model} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd}: {Rows} rows",
                         model.Id, cursor, chunkEnd, rows.Count);

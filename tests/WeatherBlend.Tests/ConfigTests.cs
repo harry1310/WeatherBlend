@@ -11,8 +11,23 @@ public class ConfigTests
     {
         var c = new AppConfig();
         c.Models.Should().BeEmpty();
-        c.Variables.Should().BeEmpty();
+        c.Variables.Forecast.Should().BeEmpty();
+        c.Variables.Era5.Should().BeEmpty();
         c.LeadHours.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void VariablesConfig_holds_forecast_and_era5_lists_separately()
+    {
+        var v = new VariablesConfig
+        {
+            Forecast = new() { "temperature_2m", "precipitation" },
+            Era5 = new() { "temperature_2m", "shortwave_radiation" },
+        };
+        v.Forecast.Should().Contain("precipitation");
+        v.Era5.Should().Contain("shortwave_radiation");
+        v.Forecast.Should().NotContain("shortwave_radiation");
+        v.Era5.Should().NotContain("precipitation");
     }
 
     [Fact]

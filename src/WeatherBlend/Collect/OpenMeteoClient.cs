@@ -192,6 +192,9 @@ public sealed class OpenMeteoClient
                     SurfacePressure         = Maybe("surface_pressure"),
                     Cape                    = Maybe("cape"),
                     Visibility              = Maybe("visibility"),
+                    ShortwaveRadiation      = Maybe("shortwave_radiation"),
+                    DirectRadiation         = Maybe("direct_radiation"),
+                    DiffuseRadiation        = Maybe("diffuse_radiation"),
                 });
 
                 double? Maybe(string v) => cols.TryGetValue(v, out var byOff) ? byOff[n][i] : null;
@@ -317,6 +320,9 @@ public sealed class OpenMeteoClient
         var sp    = Col("surface_pressure");
         var cape  = Col("cape");
         var vis   = Col("visibility");
+        var swr   = Col("shortwave_radiation");
+        var drr   = Col("direct_radiation");
+        var dfr   = Col("diffuse_radiation");
 
         // Run-time strategy (see Models/ForecastRow.RunTimeSource for canonical values):
         // Live endpoint: if the caller supplied a reportedRunTime (from the model's
@@ -359,7 +365,10 @@ public sealed class OpenMeteoClient
                 WindGusts10m = wg10[i],
                 SurfacePressure = sp[i],
                 Cape = cape[i],
-                Visibility = vis[i]
+                Visibility = vis[i],
+                ShortwaveRadiation = swr[i],
+                DirectRadiation = drr[i],
+                DiffuseRadiation = dfr[i]
             });
         }
         return rows;

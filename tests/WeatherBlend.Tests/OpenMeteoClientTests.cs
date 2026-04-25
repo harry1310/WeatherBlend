@@ -29,7 +29,10 @@ public class OpenMeteoClientTests
             "wind_speed_10m": [5.5],
             "wind_direction_10m": [270],
             "wind_gusts_10m": [9.0],
-            "surface_pressure": [1012.5]
+            "surface_pressure": [1012.5],
+            "shortwave_radiation": [420.1],
+            "direct_radiation": [310.5],
+            "diffuse_radiation": [109.6]
           }
         }
         """;
@@ -50,6 +53,30 @@ public class OpenMeteoClientTests
         r.WindDirection10m.Should().Be(270);
         r.WindGusts10m.Should().Be(9.0);
         r.SurfacePressure.Should().Be(1012.5);
+        r.ShortwaveRadiation.Should().Be(420.1);
+        r.DirectRadiation.Should().Be(310.5);
+        r.DiffuseRadiation.Should().Be(109.6);
+    }
+
+    [Fact]
+    public void Parse_radiation_columns_default_to_null_when_absent()
+    {
+        // Older payloads (or model+date combinations that don't carry radiation)
+        // should leave the new fields null rather than fail to deserialise.
+        var json = """
+        {
+          "hourly": {
+            "time": ["2025-06-10T00:00"],
+            "temperature_2m": [10.0]
+          }
+        }
+        """;
+
+        var rows = OpenMeteoClient.Parse(Payload(json), Loc, Model);
+
+        rows.Single().ShortwaveRadiation.Should().BeNull();
+        rows.Single().DirectRadiation.Should().BeNull();
+        rows.Single().DiffuseRadiation.Should().BeNull();
     }
 
     [Fact]
@@ -242,6 +269,49 @@ public class OpenMeteoClientTests
         r.Temperature2m.Should().Be(10.0);
         r.Precipitation.Should().Be(0.5);
         r.WindSpeed10m.Should().Be(3.2);
+    }
+
+    [Fact]
+    public void ParsePreviousRuns_maps_radiation_columns_per_offset()
+    {
+        var json = """
+        {
+          "hourly": {
+            "time": ["2025-06-10T12:00"],
+            "shortwave_radiation_previous_day1": [501.0],
+            "shortwave_radiation_previous_day2": [null],
+            "shortwave_radiation_previous_day3": [null],
+            "shortwave_radiation_previous_day4": [null],
+            "shortwave_radiation_previous_day5": [null],
+            "shortwave_radiation_previous_day6": [null],
+            "shortwave_radiation_previous_day7": [null],
+            "direct_radiation_previous_day1": [380.0],
+            "direct_radiation_previous_day2": [null],
+            "direct_radiation_previous_day3": [null],
+            "direct_radiation_previous_day4": [null],
+            "direct_radiation_previous_day5": [null],
+            "direct_radiation_previous_day6": [null],
+            "direct_radiation_previous_day7": [null],
+            "diffuse_radiation_previous_day1": [121.0],
+            "diffuse_radiation_previous_day2": [null],
+            "diffuse_radiation_previous_day3": [null],
+            "diffuse_radiation_previous_day4": [null],
+            "diffuse_radiation_previous_day5": [null],
+            "diffuse_radiation_previous_day6": [null],
+            "diffuse_radiation_previous_day7": [null]
+          }
+        }
+        """;
+
+        var rows = OpenMeteoClient.ParsePreviousRuns(
+            Payload(json), Loc, Model, new[] { "shortwave_radiation", "direct_radiation", "diffuse_radiation" });
+
+        rows.Should().HaveCount(1);
+        var r = rows.Single();
+        r.LeadHours.Should().Be(24);
+        r.ShortwaveRadiation.Should().Be(501.0);
+        r.DirectRadiation.Should().Be(380.0);
+        r.DiffuseRadiation.Should().Be(121.0);
     }
 
     [Fact]

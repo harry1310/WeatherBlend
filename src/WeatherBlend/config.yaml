@@ -52,27 +52,56 @@ models:
   - id: "gem_seamless"
     displayName: "Environment Canada GEM"
 
-# Variables to pull for every model, every run.
+# Variables to pull. Two lists because Open-Meteo's per-model forecast endpoint
+# and the ERA5 archive endpoint expose slightly different sets — keeping them
+# separate avoids spurious "variable not available" warnings on either side.
 # Pull everything we might want now — backfilling later is painful.
+#
+# Radiation triplet (shortwave / direct / diffuse) lands on both lists because
+# UTCI / feels-like modelling needs an MRT input. Direct + diffuse split is
+# kept for future flexibility; shortwave alone is enough for a simple MRT.
 variables:
-  - temperature_2m
-  - dew_point_2m
-  - relative_humidity_2m
-  - precipitation
-  - precipitation_probability
-  - rain
-  - showers
-  - snowfall
-  - cloud_cover
-  - cloud_cover_low
-  - cloud_cover_mid
-  - cloud_cover_high
-  - wind_speed_10m
-  - wind_direction_10m
-  - wind_gusts_10m
-  - surface_pressure
-  - cape
-  - visibility
+  forecast:
+    - temperature_2m
+    - dew_point_2m
+    - relative_humidity_2m
+    - precipitation
+    - precipitation_probability
+    - rain
+    - showers
+    - snowfall
+    - cloud_cover
+    - cloud_cover_low
+    - cloud_cover_mid
+    - cloud_cover_high
+    - wind_speed_10m
+    - wind_direction_10m
+    - wind_gusts_10m
+    - surface_pressure
+    - cape
+    - visibility
+    - shortwave_radiation
+    - direct_radiation
+    - diffuse_radiation
+  era5:
+    - temperature_2m
+    - dew_point_2m
+    - relative_humidity_2m
+    - precipitation
+    - rain
+    - snowfall
+    - cloud_cover
+    - cloud_cover_low
+    - cloud_cover_mid
+    - cloud_cover_high
+    - wind_speed_10m
+    - wind_direction_10m
+    - wind_gusts_10m
+    - surface_pressure
+    - visibility
+    - shortwave_radiation
+    - direct_radiation
+    - diffuse_radiation
 
 # Lead times (hours ahead) we care about for evaluation.
 # Collection pulls the full forecast; these are the horizons we train & score on.

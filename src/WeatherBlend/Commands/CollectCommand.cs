@@ -53,7 +53,7 @@ public sealed class CollectCommand
             try
             {
                 var rows = await _forecasts.FetchLiveAsync(
-                    _cfg.Location, model.Id, _cfg.Variables, _cfg.ForecastDays, ct);
+                    _cfg.Location, model.Id, _cfg.Variables.Forecast, _cfg.ForecastDays, ct);
                 await ParquetWriter.WriteForecastsAsync(_cfg.Storage.ForecastsPath, rows, ct);
                 _log.LogInformation("  {Model}: wrote {Rows} rows", model.Id, rows.Count);
             }

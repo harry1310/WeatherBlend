@@ -14,24 +14,15 @@ public sealed class Era5Client
 {
     private const string BaseUrl = "https://archive-api.open-meteo.com/v1/archive";
 
-    // ERA5 doesn't expose the exact same variable set as the forecast models;
-    // these are the ones available on the archive endpoint that overlap.
-    private static readonly string[] Variables =
-    {
-        "temperature_2m", "dew_point_2m", "relative_humidity_2m",
-        "precipitation", "rain", "snowfall",
-        "cloud_cover", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high",
-        "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m",
-        "surface_pressure", "visibility"
-    };
-
     private readonly HttpClient _http;
     private readonly ILogger<Era5Client> _log;
+    private readonly AppConfig _cfg;
 
-    public Era5Client(HttpClient http, ILogger<Era5Client> log)
+    public Era5Client(HttpClient http, ILogger<Era5Client> log, AppConfig cfg)
     {
         _http = http;
         _log = log;
+        _cfg = cfg;
     }
 
     public async Task<List<Era5Row>> FetchAsync(
@@ -40,7 +31,8 @@ public sealed class Era5Client
         DateOnly endDate,
         CancellationToken ct)
     {
-        var hourly = string.Join(",", Variables);
+        var variables = _cfg.Variables.Era5;
+        var hourly = string.Join(",", variables);
         var qs = new[]
         {
             $"latitude={location.Latitude.ToString(System.Globalization.CultureInfo.InvariantCulture)}",
@@ -65,7 +57,7 @@ public sealed class Era5Client
         return Parse(doc.RootElement, location.Name);
     }
 
-    private static List<Era5Row> Parse(JsonElement root, string locationName)
+    internal static List<Era5Row> Parse(JsonElement root, string locationName)
     {
         if (!root.TryGetProperty("hourly", out var hourly)) return new();
 
@@ -86,6 +78,9 @@ public sealed class Era5Client
         var ccm = Col("cloud_cover_mid"); var cch = Col("cloud_cover_high");
         var ws = Col("wind_speed_10m"); var wd = Col("wind_direction_10m"); var wg = Col("wind_gusts_10m");
         var sp = Col("surface_pressure"); var vis = Col("visibility");
+        var swr = Col("shortwave_radiation");
+        var drr = Col("direct_radiation");
+        var dfr = Col("diffuse_radiation");
 
         var rows = new List<Era5Row>(times.Length);
         for (int i = 0; i < times.Length; i++)
@@ -98,7 +93,8 @@ public sealed class Era5Client
                 Precipitation = pr[i], Rain = rn[i], Snowfall = sn[i],
                 CloudCover = cc[i], CloudCoverLow = ccl[i], CloudCoverMid = ccm[i], CloudCoverHigh = cch[i],
                 WindSpeed10m = ws[i], WindDirection10m = wd[i], WindGusts10m = wg[i],
-                SurfacePressure = sp[i], Visibility = vis[i]
+                SurfacePressure = sp[i], Visibility = vis[i],
+                ShortwaveRadiation = swr[i], DirectRadiation = drr[i], DiffuseRadiation = dfr[i]
             });
         }
         return rows;
