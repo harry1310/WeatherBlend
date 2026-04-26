@@ -142,6 +142,24 @@ jobs:
             fi
           done
 
+      - name: Predict UTCI (derived; reads temperature + element predictions for the same anchor)
+        # UTCI joins the temperature lean blender + the four element blender outputs
+        # written by the steps above and runs deterministic Bröde 2012 calculation.
+        # Must run AFTER the others — it's a join, not an independent predict.
+        # Exit 3 = at least one input is missing for the anchor (e.g. radiation
+        # currently absent from the live forecast tree); non-fatal.
+        run: |
+          FOR_DATE="${{ github.event.inputs.for_date }}"
+          code=0
+          if [ -n "$FOR_DATE" ]; then
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target utci --for-date "$FOR_DATE" || code=$?
+          else
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target utci || code=$?
+          fi
+          if [ "$code" != "0" ] && [ "$code" != "3" ]; then
+            echo "predict utci failed with exit $code"; exit "$code"
+          fi
+
       - name: Push predictions to R2
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
