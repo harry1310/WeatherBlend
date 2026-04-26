@@ -14,11 +14,53 @@ namespace WeatherBlend.Train.Element.Wind;
 /// train-time row shapes are byte-for-byte identical), then runs the per-lead
 /// model.zip from <paramref name="versionDir"/>.
 ///
-/// MF is excluded — the trained model has no MF feature columns. The output
-/// <see cref="ElementPredictionRow.ModelMf"/> is therefore always null for wind.
+/// Output ElementPredictionRow has six per-model slots
+/// (Gfs/Ecmwf/Icon/Mf/Ukmo/Gem). Wind has only five accessors (Open-Meteo
+/// Previous Runs ships no MF wind, audit 2026-04-25), so ModelMf and RunTimeMf
+/// are always null in the output. Mapping from accessor-slot index → output
+/// field is done by <see cref="MapToOutputModelFields"/> — keeps the predict-
+/// time output provenance honest about which models the blender actually saw.
 /// </summary>
 public static class WindPredictPipeline
 {
+    /// <summary>Per-model output values projected from the pivoted accessor-
+    /// slot arrays into the six ElementPredictionRow fields. Pure data class
+    /// for unit testing the projection in isolation — see
+    /// `MapToOutputModelFields`.</summary>
+    public readonly record struct OutputModelFields(
+        double? ModelGfs, double? ModelEcmwf, double? ModelIcon,
+        double? ModelMf,  double? ModelUkmo,  double? ModelGem,
+        DateTime? RunTimeGfs, DateTime? RunTimeEcmwf, DateTime? RunTimeIcon,
+        DateTime? RunTimeMf,  DateTime? RunTimeUkmo,  DateTime? RunTimeGem);
+
+    /// <summary>Projects wind's 5-slot accessor arrays
+    /// (gfs, ecmwf, icon, ukmo, gem) into the 6-field ElementPredictionRow
+    /// schema. The single source-of-truth for which output fields wind
+    /// populates from data vs leaves null. Was previously inlined in
+    /// PredictForCycle and got the UKMO mapping wrong (hardcoded null even
+    /// after UKMO restoration); now extracted + tested.</summary>
+    public static OutputModelFields MapToOutputModelFields(
+        IReadOnlyList<float> speeds, IReadOnlyList<DateTime?> runTimes)
+    {
+        if (speeds.Count != WindFeatureBuilder.ModelAccessors.Count)
+            throw new ArgumentException(
+                $"Expected {WindFeatureBuilder.ModelAccessors.Count} per-model speeds, got {speeds.Count}",
+                nameof(speeds));
+        if (runTimes.Count != WindFeatureBuilder.ModelAccessors.Count)
+            throw new ArgumentException(
+                $"Expected {WindFeatureBuilder.ModelAccessors.Count} per-model run times, got {runTimes.Count}",
+                nameof(runTimes));
+
+        // Accessor order: gfs=0, ecmwf=1, icon=2, ukmo=3, gem=4.
+        // Output schema: gfs, ecmwf, icon, mf, ukmo, gem (mf has no source).
+        double? V(int i) => float.IsNaN(speeds[i]) ? null : speeds[i];
+        return new OutputModelFields(
+            ModelGfs: V(0), ModelEcmwf: V(1), ModelIcon: V(2),
+            ModelMf:  null, ModelUkmo:  V(3), ModelGem:  V(4),
+            RunTimeGfs: runTimes[0], RunTimeEcmwf: runTimes[1], RunTimeIcon: runTimes[2],
+            RunTimeMf:  null,        RunTimeUkmo:  runTimes[3], RunTimeGem:  runTimes[4]);
+    }
+
     public static List<ElementPredictionRow> PredictForCycle(
         ILogger log,
         string locationName,
@@ -76,6 +118,7 @@ public static class WindPredictPipeline
             var model = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
             var yhat = TemperatureTrainer.Predict(ml, model, new[] { row })[0];
 
+            var fields = MapToOutputModelFields(p.Speeds, p.RunTimes);
             output.Add(new ElementPredictionRow
             {
                 LocationName = locationName,
@@ -85,21 +128,18 @@ public static class WindPredictPipeline
                 ValidTimeUtc = valid,
                 LeadHours = lead,
                 BlendValue = yhat,
-                // Per-model values — UKMO and MF excluded from the wind blender at every
-                // lead, so always null in the prediction row. Order in p.Speeds matches
-                // the WindFeatureBuilder accessor list: gfs, ecmwf, icon, ukmo, gem.
-                ModelGfs   = p.Speeds[0],
-                ModelEcmwf = p.Speeds[1],
-                ModelIcon  = p.Speeds[2],
-                ModelMf    = null,
-                ModelUkmo  = null,
-                ModelGem   = p.Speeds[4],
-                RunTimeGfs   = p.RunTimes[0],
-                RunTimeEcmwf = p.RunTimes[1],
-                RunTimeIcon  = p.RunTimes[2],
-                RunTimeMf    = null,
-                RunTimeUkmo  = null,
-                RunTimeGem   = p.RunTimes[4],
+                ModelGfs   = fields.ModelGfs,
+                ModelEcmwf = fields.ModelEcmwf,
+                ModelIcon  = fields.ModelIcon,
+                ModelMf    = fields.ModelMf,
+                ModelUkmo  = fields.ModelUkmo,
+                ModelGem   = fields.ModelGem,
+                RunTimeGfs   = fields.RunTimeGfs,
+                RunTimeEcmwf = fields.RunTimeEcmwf,
+                RunTimeIcon  = fields.RunTimeIcon,
+                RunTimeMf    = fields.RunTimeMf,
+                RunTimeUkmo  = fields.RunTimeUkmo,
+                RunTimeGem   = fields.RunTimeGem,
                 Mean = row.SpdMean,
                 Std  = row.SpdStd,
                 Range = row.SpdRange,
