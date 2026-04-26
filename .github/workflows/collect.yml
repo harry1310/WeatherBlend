@@ -34,7 +34,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install Python deps for Met Office Global Det archive
-        run: pip install --no-cache-dir xarray h5netcdf pyarrow pandas requests
+        # h5py is a peer dependency of h5netcdf — `pip install h5netcdf` does
+        # NOT pull it in, and without it h5netcdf raises ImportError at the
+        # first xr.open_dataset call. Pin it explicitly. (Same on local dev
+        # boxes — the WeatherProbabilistic venv has h5py installed too.)
+        run: pip install --no-cache-dir xarray h5netcdf h5py pyarrow pandas requests
 
       - name: Install rclone
         run: |

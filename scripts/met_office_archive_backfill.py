@@ -50,6 +50,19 @@ import pandas as pd
 import requests
 import xarray as xr
 
+# h5py is a peer dep of h5netcdf — h5netcdf opens fine on import but raises
+# ImportError at first xr.open_dataset call if h5py isn't present. Surface
+# that here, once, with a clear actionable message rather than 1500 silent
+# per-variable failures down the line. (Bit us on a GH runner 2026-04-26
+# where `pip install h5netcdf` had silently not pulled h5py.)
+try:
+    import h5py  # noqa: F401  # Used implicitly by h5netcdf engine.
+except ImportError as e:
+    raise SystemExit(
+        f"FATAL: h5py is required (peer dep of h5netcdf) but not installed: {e}\n"
+        "Install with: pip install h5py"
+    ) from e
+
 ROOT = Path(__file__).resolve().parent.parent
 FORECASTS_ROOT = ROOT / "data" / "forecasts" / "location=bonehill_rocks" / "model=met_office_global"
 
