@@ -103,43 +103,46 @@ def _file_url(cycle_dt: datetime, lead_h: int, var: VarSpec) -> str:
     return f"{BUCKET_URL}/{DATASET}/{cycle_str}/{valid_str}-PT{lead_h:04d}H00M-{var.nc_variable_name}.nc"
 
 
-def _extract_cell(nc_bytes: bytes, var: VarSpec, lat: float, lon: float) -> float | None:
-    """Open a NetCDF blob in memory, find the data variable, return the
-    nearest-cell value at (lat, lon). Returns None on any failure."""
+def _extract_cell(nc_bytes: bytes, var: VarSpec, lat: float, lon: float) -> tuple[float | None, str | None]:
+    """Open a NetCDF blob in memory, return (value, error). On success
+    returns (value, None). On failure returns (None, error_string)."""
     try:
         with xr.open_dataset(io.BytesIO(nc_bytes), engine="h5netcdf") as ds:
-            # Met Office files store the data var under its CF standard name.
-            # Some variables may use a slightly different name — fall back to
-            # the largest 2D data var if the expected name isn't present.
             if var.nc_data_var in ds.data_vars:
                 da = ds[var.nc_data_var]
             else:
                 candidates = [v for v in ds.data_vars if ds[v].ndim >= 2 and ds[v].size > 1000]
                 if not candidates:
-                    return None
+                    return (None, f"no 2D data vars (found: {list(ds.data_vars)})")
                 da = ds[candidates[0]]
             sel = da.sel(latitude=lat, longitude=lon, method="nearest")
             v = float(sel.values)
             if not np.isfinite(v):
-                return None
-            return var.convert(v) if var.convert else v
-    except Exception:
-        return None
+                return (None, f"non-finite value: {v}")
+            return (var.convert(v) if var.convert else v, None)
+    except Exception as e:
+        return (None, f"{type(e).__name__}: {e!r}")
 
 
 def _fetch_variable_for_lead(
     session: requests.Session, cycle_dt: datetime, lead_h: int, var: VarSpec,
     lat: float, lon: float,
-) -> tuple[VarSpec, float | None]:
+) -> tuple[VarSpec, float | None, str | None]:
+    """Returns (var, value, error). error is None on success, otherwise a
+    short human-readable string describing what failed."""
     url = _file_url(cycle_dt, lead_h, var)
     try:
         r = session.get(url, timeout=60)
         if r.status_code == 404:
-            return (var, None)
-        r.raise_for_status()
-    except requests.RequestException:
-        return (var, None)
-    return (var, _extract_cell(r.content, var, lat, lon))
+            return (var, None, "HTTP 404")
+        if not r.ok:
+            return (var, None, f"HTTP {r.status_code} ({r.reason})")
+    except requests.RequestException as e:
+        return (var, None, f"{type(e).__name__}: {e!r}")
+    value, extract_err = _extract_cell(r.content, var, lat, lon)
+    if value is None:
+        return (var, None, extract_err or "unknown extract failure")
+    return (var, value, None)
 
 
 def fetch_cycle(
@@ -150,27 +153,48 @@ def fetch_cycle(
     log: callable = print,
 ) -> list[dict]:
     """Pull every (lead, variable) for one cycle and assemble per-lead rows."""
-    session = requests.Session()
+    # requests.Session is documented as thread-safe for plain GETs but to be
+    # safe across runtimes, give each worker its own session via a thread-local.
+    import threading
+    tls = threading.local()
+    def _session():
+        s = getattr(tls, "session", None)
+        if s is None:
+            s = requests.Session()
+            # Some S3 endpoints/CDN edges return 403 to default UA; identify
+            # ourselves so failures are easier to debug from server logs too.
+            s.headers.update({"User-Agent": "WeatherBlend/met-office-archive-backfill (+github.com/harry1310/WeatherBlend)"})
+            tls.session = s
+        return s
     rows: dict[int, dict] = {}
+    errs: dict[int, dict] = {}
     work = [(lead, var) for lead in leads for var in variables]
 
+    def _worker(lead, var):
+        return (lead, var, _fetch_variable_for_lead(_session(), cycle_dt, lead, var, lat, lon))
+
     with ThreadPoolExecutor(max_workers=parallelism) as pool:
-        fut_to_key = {
-            pool.submit(_fetch_variable_for_lead, session, cycle_dt, lead, var, lat, lon): (lead, var)
-            for lead, var in work
-        }
+        fut_to_key = {pool.submit(_worker, lead, var): (lead, var) for lead, var in work}
         for fut in as_completed(fut_to_key):
-            lead, var = fut_to_key[fut]
-            _, value = fut.result()
-            row = rows.setdefault(lead, {})
-            row[var.forecast_row_col] = value
+            lead, var, (_, value, err) = fut.result()
+            rows.setdefault(lead, {})[var.forecast_row_col] = value
+            if err is not None:
+                errs.setdefault(lead, {})[var.forecast_row_col] = err
 
     out: list[dict] = []
     for lead in sorted(rows):
         valid_dt = cycle_dt + pd.Timedelta(hours=lead)
         present = [c for c, v in rows[lead].items() if v is not None]
         if not present:
-            log(f"    lead {lead}h: ALL variables missing, skipping")
+            # Surface the first 3 error reasons so silent failures are
+            # diagnosable. Common patterns: HTTP 404 (cycle not yet published),
+            # HTTP 403 (auth / region), SSLError / ConnectionError (network),
+            # NetCDF parse error (file on S3 but corrupt).
+            err_sample = list(errs.get(lead, {}).items())[:3]
+            err_str = "; ".join(f"{c}={e}" for c, e in err_sample)
+            example_url = _file_url(cycle_dt, lead, variables[0])
+            log(f"    lead {lead}h: ALL {len(variables)} variables missing. First errors: {err_str}")
+            log(f"      example URL: {example_url}")
             continue
         row = {
             "LocationName": LOCATION_NAME,
