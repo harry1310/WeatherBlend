@@ -204,6 +204,84 @@ Pre-commit to:
 - **For precip: Brier + reliability diagrams alongside MAE.** An underconfident
   well-calibrated forecast is more useful than a sharp miscalibrated one.
 
+## Element blenders for non-temperature variables (wind / humidity / radiation / cloud)
+
+The four lean per-variable blenders established in 2026-04-25 follow the same
+architectural pattern as the temperature 2b lean blender: per-lead LightGBM
+regression, ERA5 truth at the Bonehill grid cell, chronological 70/15/15 split,
+identical hyperparameters. The dispatcher (`ElementTrainCommand`,
+`ElementPredictCommand`, `ElementVerifyCommand`) routes by `--target` to a
+per-element pipeline; each pipeline owns its own SQL pivot, row class, and
+feature shape, because the four elements share no useful schema (wind has
+direction sin/cos, humidity has dewpoint, radiation has direct/diffuse, cloud
+has only total available in our data).
+
+**ERA5 truth across all elements (consistency, not convenience).** Using ERA5
+for wind, humidity, radiation, and cloud — same as temperature — keeps the
+training-truth contract identical across blenders. EGTE METAR is ~25 km away
+and ~360 m below Bonehill; for variables where elevation matters (wind: tor
+exposure enhances by 10–30%; cloud: orographic fog often shrouds the tor when
+the surrounding terrain is clear) it would teach the blender to predict EGTE
+rather than Bonehill. ERA5 has its own caveat — ~28×18 km grid cells average
+across regional terrain — but it's the closest gridded estimate of conditions
+at the tor available, and applying the same caveat consistently across all
+five blenders is preferable to per-variable truth-source choices that would
+create unexamined coupling. METAR is reserved for verify-side secondary checks.
+
+**Rich variants deferred pending evidence of need.** This phase ships champion
+lean blenders only. Cloud cover (loses at 72h) and shortwave radiation (wash
+across all leads) underperformed the brief's expectations — both are candidates
+for rich variants if/when investigation shows the lean feature set is the
+problem. The brief's principle stands: "investigate before adding rich features
+blindly". Likely investigation paths: solar-geometry features for radiation,
+layered-cloud features for cloud cover (requires a collector extension first
+since Open-Meteo Previous Runs ships only total cloud).
+
+**Spatial-resolution caveat is inherited.** Same ~28×18 km ERA5 grid resolution
+applies to all element blenders as it does to temperature; consequences vary by
+variable (small for temperature, large for wind/cloud) but the architectural
+choice is the same.
+
+## UKMO handling: per-blender pattern decisions (2026-04-26)
+
+Open-Meteo's Previous Runs API ships UKMO for ~74% of valid times only — same
+26% gap at every lead, every variable. UKMO's *live* forecast coverage is
+~98%, so the gap is a Previous Runs API limitation, not a production problem.
+
+The question for each blender: how to handle UKMO's partial training-time
+presence? Three patterns considered:
+
+| Pattern | Training rows kept | Training noise | Predict robustness |
+|---|---|---|---|
+| **1. Drop UKMO entirely** (UKMO column always NaN in training) | 100% | None — feature is constant | Always works (UKMO masked at predict too) |
+| **2. Require UKMO non-null** (drop training rows where UKMO missing) | 74% | None — UKMO always present in training | Breaks if live UKMO degrades |
+| **3. NaN-tolerant** (keep all rows, UKMO can be NaN) | 100% | Random per-row NaN noise | Always works but miscalibrated |
+
+Apples-to-apples bake-offs (`bakeoff` CLI) on shared UKMO-present test rows
+yielded these per-blender decisions:
+
+| Blender | Family | Best pattern | Reason |
+|---|---|---|---|
+| Element ×4 (wind/humidity/cloud/radiation) | lean | **Pattern 1** | Simple per-model features → UKMO noise dominates |
+| Temperature 2b | lean | **Pattern 1** | 1.3–3.6% MAE win across all leads |
+| Temperature 2c | rich | Pattern 2 (current) | Aggregate ~tied; not worth the churn |
+| Precip 3a (all 3 stations) | lean | **Pattern 1** | 1.3–6.7% Brier win across all (station, lead) |
+| Precip 3c | rich | Pattern 3 (current) | Production wins by 0.4–0.9% Brier (Bellever) |
+| Dry-window 3b | rich-ish | Pattern 3 (current) | Production wins 5/6 cells tested |
+
+**Heuristic from these results:** lean blenders with simple per-model features
+benefit from dropping UKMO entirely (the noise from inconsistent presence
+outweighs the signal). Richer blenders or models with strong per-model self-
+prediction features (`has_dry_window_*`) keep UKMO and tolerate the noise —
+the present 74% of UKMO contributions outweighs the missing 26% of noise.
+
+**Implementation:** in pattern 1 SQL, the `latest` CTE adds `AND Model IN
+('gfs_seamless','ecmwf_ifs025','icon_seamless','meteofrance_seamless','gem_seamless')`
+(no UKMO), the pivot uses `CAST(NULL AS DOUBLE) AS *_ukmo`, and the outer
+WHERE drops the `*_ukmo IS NOT NULL` requirement. Reader code is NaN-safe
+(`IsDBNull(...) ? double.NaN : GetDouble(...)`). Spread aggregates skip NaN
+inputs so mean/std/range come from the 5 present models.
+
 ## Things explicitly out of scope for now
 
 - Multi-location generalisation

@@ -144,6 +144,34 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- verify $ARGS
           echo "exit=$?" >> "$GITHUB_OUTPUT"
 
+      - name: Verify element blenders (wind / humidity / shortwave-radiation / cloud-cover)
+        # One verify step per element. Independent exit codes — drift on any element
+        # surfaces in the job summary. Empty windows (no predictions yet) exit 0.
+        id: verify_elements_run
+        run: |
+          AS_OF="${{ github.event.inputs.as_of }}"
+          WINDOW="${{ github.event.inputs.window_days }}"
+          DRIFT="${{ github.event.inputs.drift }}"
+          drift=0
+          fail=0
+          for tgt in wind humidity shortwave-radiation cloud-cover; do
+            ARGS="--target $tgt"
+            if [ -n "$AS_OF" ]; then ARGS="$ARGS --as-of $AS_OF"; fi
+            if [ -n "$WINDOW" ]; then ARGS="$ARGS --window-days $WINDOW"; fi
+            if [ -n "$DRIFT" ]; then ARGS="$ARGS --drift $DRIFT"; fi
+            set +e
+            dotnet run --project src/WeatherBlend --no-build -c Release -- verify $ARGS
+            code=$?
+            set -e
+            case "$code" in
+              0) ;;
+              4) echo "::warning::Element drift on $tgt — see verify report."; drift=1 ;;
+              *) echo "::error::Element verify $tgt exited $code (non-drift failure)."; fail=1 ;;
+            esac
+          done
+          echo "drift=$drift" >> "$GITHUB_OUTPUT"
+          echo "fail=$fail" >> "$GITHUB_OUTPUT"
+
       - name: Push refreshed reports to R2
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
@@ -167,6 +195,8 @@ jobs:
           T_EXIT="${{ steps.verify_run.outputs.exit }}"
           P_EXIT="${{ steps.verify_precip_run.outputs.exit }}"
           D_EXIT="${{ steps.verify_dry_window_run.outputs.exit }}"
+          E_DRIFT="${{ steps.verify_elements_run.outputs.drift }}"
+          E_FAIL="${{ steps.verify_elements_run.outputs.fail }}"
           drift=0
           fail=0
           case "$T_EXIT" in
@@ -184,6 +214,8 @@ jobs:
             4) echo "::warning::Dry-window drift detected — see verify report."; drift=1 ;;
             *) echo "::error::Dry-window verify step exited $D_EXIT (non-drift failure)."; fail=1 ;;
           esac
+          if [ "$E_DRIFT" = "1" ]; then drift=1; fi
+          if [ "$E_FAIL" = "1" ]; then fail=1; fi
           if [ "$drift" = "1" ]; then
             echo "**Drift detected.** See attached \`verify_*.md\` report(s)." >> "$GITHUB_STEP_SUMMARY"
           fi

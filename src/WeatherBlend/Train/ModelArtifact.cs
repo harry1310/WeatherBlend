@@ -108,6 +108,14 @@ public static class ModelArtifact
         public string BestSingle { get; set; } = "";
         public double BestSingleValMae { get; set; }
 
+        /// <summary>
+        /// Same model identified by val MAE, scored on the test set. Lets the report
+        /// answer "does the blend beat best-single on the SAME split?" without picking
+        /// a different best per split (which would be cherry-picking). 0.0 on legacy
+        /// metadata files predating the field.
+        /// </summary>
+        public double BestSingleTestMae { get; set; }
+
         /// <summary>Blend MAE on the held-out test set.</summary>
         public double BlendTestMae { get; set; }
         public double BlendTestRmse { get; set; }

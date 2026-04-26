@@ -101,6 +101,12 @@ latest AS (
     WHERE LocationName = '{escLocation}'
       AND RunTimeSource = 'offset_day'
       AND LeadHours = {leadHours}
+      -- UKMO excluded entirely (pattern 1). Open-Meteo Previous Runs ships UKMO
+      -- for ~74% of valid times only; the inconsistent presence creates training
+      -- noise. 2026-04-26 apples-to-apples bake-off across all 3 stations showed
+      -- pattern 1 (drop UKMO entirely) beats current pattern 3 (NaN-tolerant) by
+      -- 1.3–6.7% Brier on the shared UKMO-present test set at every (station, lead).
+      AND Model IN ('gfs_seamless','ecmwf_ifs025','icon_seamless','meteofrance_seamless','gem_seamless')
 ),
 pivoted AS (
     SELECT
@@ -109,13 +115,13 @@ pivoted AS (
         MAX(CASE WHEN Model = 'ecmwf_ifs025'         THEN Precipitation END) AS precip_ecmwf,
         MAX(CASE WHEN Model = 'icon_seamless'        THEN Precipitation END) AS precip_icon,
         MAX(CASE WHEN Model = 'meteofrance_seamless' THEN Precipitation END) AS precip_mf,
-        MAX(CASE WHEN Model = 'ukmo_seamless'        THEN Precipitation END) AS precip_ukmo,
+        CAST(NULL AS DOUBLE)                                                  AS precip_ukmo,
         MAX(CASE WHEN Model = 'gem_seamless'         THEN Precipitation END) AS precip_gem,
         MAX(CASE WHEN Model = 'gfs_seamless'         THEN PrecipitationProbability END) AS prob_gfs,
         MAX(CASE WHEN Model = 'ecmwf_ifs025'         THEN PrecipitationProbability END) AS prob_ecmwf,
         MAX(CASE WHEN Model = 'icon_seamless'        THEN PrecipitationProbability END) AS prob_icon,
         MAX(CASE WHEN Model = 'meteofrance_seamless' THEN PrecipitationProbability END) AS prob_mf,
-        MAX(CASE WHEN Model = 'ukmo_seamless'        THEN PrecipitationProbability END) AS prob_ukmo,
+        CAST(NULL AS DOUBLE)                                                              AS prob_ukmo,
         MAX(CASE WHEN Model = 'gem_seamless'         THEN PrecipitationProbability END) AS prob_gem,
         AVG(RelativeHumidity2m) AS rh_mean,
         AVG(Temperature2m - DewPoint2m) AS dew_depression_mean,

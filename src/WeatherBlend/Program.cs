@@ -8,6 +8,11 @@ using Serilog;
 using WeatherBlend.Collect;
 using WeatherBlend.Commands;
 using WeatherBlend.Config;
+using WeatherBlend.Train.Element;
+using WeatherBlend.Train.Element.Cloud;
+using WeatherBlend.Train.Element.Humidity;
+using WeatherBlend.Train.Element.Radiation;
+using WeatherBlend.Train.Element.Wind;
 
 namespace WeatherBlend;
 
@@ -136,6 +141,14 @@ public static class Program
                 services.AddTransient<DryWindowPredictCommand>();
                 services.AddTransient<DryWindowVerifyCommand>();
                 services.AddTransient<ScoreHistoricalCommand>();
+                services.AddTransient<ElementTrainCommand>();
+                services.AddTransient<ElementPredictCommand>();
+                services.AddTransient<ElementVerifyCommand>();
+                services.AddTransient<ElementBakeoffCommand>();
+                services.AddTransient<IElementBlender, WindBlender>();
+                services.AddTransient<IElementBlender, HumidityBlender>();
+                services.AddTransient<IElementBlender, RadiationBlender>();
+                services.AddTransient<IElementBlender, CloudBlender>();
             })
             .Build();
 
@@ -213,7 +226,7 @@ public static class Program
 
         var targetOpt = new Option<string>(
             name: "--target",
-            description: "Target variable: temperature | precipitation | dry-window",
+            description: "Target variable: temperature | precipitation | dry-window | wind | humidity | shortwave-radiation | cloud-cover",
             getDefaultValue: () => "temperature");
         var leadOpt = new Option<string>(
             name: "--lead",
@@ -277,7 +290,7 @@ public static class Program
 
         var predictTargetOpt = new Option<string>(
             name: "--target",
-            description: "Target variable: temperature | precipitation | dry-window",
+            description: "Target variable: temperature | precipitation | dry-window | wind | humidity | shortwave-radiation | cloud-cover",
             getDefaultValue: () => "temperature");
         var predictVersionOpt = new Option<string>(
             name: "--model-version",
@@ -302,6 +315,7 @@ public static class Program
         };
         predict.SetHandler(async (target, version, forDate, truthStation, window) =>
         {
+            var elementTarget = ElementTargets.TryFromCli(target);
             if (string.Equals(target, "precipitation", StringComparison.OrdinalIgnoreCase))
             {
                 var cmd = host.Services.GetRequiredService<PrecipPredictCommand>();
@@ -311,6 +325,11 @@ public static class Program
             {
                 var cmd = host.Services.GetRequiredService<DryWindowPredictCommand>();
                 Environment.ExitCode = await cmd.RunAsync(truthStation, window, version, forDate, CancellationToken.None);
+            }
+            else if (elementTarget is not null)
+            {
+                var cmd = host.Services.GetRequiredService<ElementPredictCommand>();
+                Environment.ExitCode = await cmd.RunAsync(elementTarget, version, forDate, CancellationToken.None);
             }
             else
             {
@@ -322,7 +341,7 @@ public static class Program
 
         var verifyTargetOpt = new Option<string>(
             name: "--target",
-            description: "Target variable: temperature | precipitation | dry-window",
+            description: "Target variable: temperature | precipitation | dry-window | wind | humidity | shortwave-radiation | cloud-cover",
             getDefaultValue: () => "temperature");
         var verifyAsOfOpt = new Option<DateOnly?>(
             name: "--as-of",
@@ -362,6 +381,7 @@ public static class Program
             var truthStation = ctx.ParseResult.GetValueForOption(verifyTruthStationOpt)!;
             var dryWindow = ctx.ParseResult.GetValueForOption(verifyDryWindowOpt)!;
 
+            var elementTarget = ElementTargets.TryFromCli(target);
             if (string.Equals(target, "precipitation", StringComparison.OrdinalIgnoreCase))
             {
                 var cmd = host.Services.GetRequiredService<PrecipVerifyCommand>();
@@ -373,6 +393,12 @@ public static class Program
                 var cmd = host.Services.GetRequiredService<DryWindowVerifyCommand>();
                 ctx.ExitCode = await cmd.RunAsync(
                     truthStation, dryWindow, asOf, windowDays ?? 30, latencyDays, drift, ctx.GetCancellationToken());
+            }
+            else if (elementTarget is not null)
+            {
+                var cmd = host.Services.GetRequiredService<ElementVerifyCommand>();
+                ctx.ExitCode = await cmd.RunAsync(
+                    elementTarget, asOf, windowDays ?? 14, latencyDays, drift, ctx.GetCancellationToken());
             }
             else
             {
@@ -471,6 +497,20 @@ public static class Program
             ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
         });
         root.AddCommand(dryWindowReport);
+
+        var bakeTargetOpt = new Option<string>(name: "--target", description: "humidity | cloud-cover", getDefaultValue: () => "humidity");
+        var bakeV1Opt = new Option<string>(name: "--version-1", description: "Pattern 1 (UKMO dropped) version dir name") { IsRequired = true };
+        var bakeV2Opt = new Option<string>(name: "--version-2", description: "Pattern 2 (UKMO required) version dir name") { IsRequired = true };
+        var bakeoff = new Command("bakeoff", "Apples-to-apples Element bake-off between two saved versions on a shared UKMO-present test set")
+        {
+            bakeTargetOpt, bakeV1Opt, bakeV2Opt,
+        };
+        bakeoff.SetHandler(async (target, v1, v2) =>
+        {
+            var cmd = host.Services.GetRequiredService<ElementBakeoffCommand>();
+            Environment.ExitCode = await cmd.RunAsync(target, v1, v2, CancellationToken.None);
+        }, bakeTargetOpt, bakeV1Opt, bakeV2Opt);
+        root.AddCommand(bakeoff);
 
         var dryWindowAblate = new Command(
             "dry-window-ablate",

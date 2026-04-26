@@ -73,6 +73,28 @@ public class FeatureBuilderTests
     }
 
     [Fact]
+    public void ComposeRow_pattern1_skips_NaN_UKMO_in_spread()
+    {
+        // Pattern 1: UKMO column comes back as SQL NULL → NaN in the row. Spread
+        // (mean/std/range) must skip NaN entries; otherwise the result is itself NaN
+        // and the model sees garbage in its ensemble-aggregate features.
+        // 5 present values with mean=14, range=8; UKMO at index 4 is NaN.
+        var temps = new[] { 10.0, 12.0, 14.0, 16.0, double.NaN, 18.0 };
+        var row = FeatureBuilder.ComposeRow(
+            new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc),
+            temps,
+            windDirMeanDeg: double.NaN,
+            era5Temp: 14.0);
+
+        row.TempMean.Should().BeApproximately(14f, 1e-4f);
+        row.TempRange.Should().BeApproximately(8f, 1e-4f);
+        // Population std of {10,12,14,16,18}: sqrt((16+4+0+4+16)/5) = sqrt(8) ≈ 2.8284
+        row.TempStd.Should().BeApproximately(2.8284f, 1e-3f);
+        // UKMO slot stays NaN — LightGBM treats as missing, ignores when splitting.
+        float.IsNaN(row.TempUkmo).Should().BeTrue();
+    }
+
+    [Fact]
     public void TrainingDataset_split_is_chronological_and_non_overlapping()
     {
         // 20 rows across ~20 distinct valid times.

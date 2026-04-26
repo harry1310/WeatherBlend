@@ -63,7 +63,14 @@ public static class FeatureBuilder
         // coincidence and would contaminate the lead-specific training set.
         // Without the filter, "24h forecast" would include 0h analyses issued
         // at midnight.
-        var fcWhere = $"LocationName = '{locationName}' AND RunTimeSource = 'offset_day' AND LeadHours = {leadHours} AND Temperature2m IS NOT NULL";
+        //
+        // UKMO excluded entirely (pattern 1). Open-Meteo's Previous Runs API ships
+        // UKMO for ~74% of valid times only — the inconsistent presence created
+        // training noise that hurt the blender. 2026-04-26 apples-to-apples bake-off
+        // showed pattern 1 (drop UKMO entirely from training) beats pattern 2
+        // (require UKMO non-null, drop 26% of rows) by 1.3–3.6% MAE across all
+        // leads on the shared UKMO-present test set.
+        var fcWhere = $"LocationName = '{locationName}' AND RunTimeSource = 'offset_day' AND LeadHours = {leadHours} AND Temperature2m IS NOT NULL AND Model IN ('gfs_seamless','ecmwf_ifs025','icon_seamless','meteofrance_seamless','gem_seamless')";
 
         // One row per (valid_time, model) — latest RunTime wins when live-collected
         // data has stacked multiple forecasts for the same valid time.
@@ -86,7 +93,7 @@ pivoted AS (
         MAX(CASE WHEN Model = 'ecmwf_ifs025'         THEN Temperature2m END) AS temp_ecmwf,
         MAX(CASE WHEN Model = 'icon_seamless'        THEN Temperature2m END) AS temp_icon,
         MAX(CASE WHEN Model = 'meteofrance_seamless' THEN Temperature2m END) AS temp_mf,
-        MAX(CASE WHEN Model = 'ukmo_seamless'        THEN Temperature2m END) AS temp_ukmo,
+        CAST(NULL AS DOUBLE)                                                  AS temp_ukmo,
         MAX(CASE WHEN Model = 'gem_seamless'         THEN Temperature2m END) AS temp_gem,
         AVG(WindDirection10m) AS wind_dir_mean
     FROM latest
@@ -110,7 +117,6 @@ WHERE p.temp_gfs   IS NOT NULL
   AND p.temp_ecmwf IS NOT NULL
   AND p.temp_icon  IS NOT NULL
   AND p.temp_mf    IS NOT NULL
-  AND p.temp_ukmo  IS NOT NULL
   AND p.temp_gem   IS NOT NULL
 ORDER BY p.ValidTimeUtc;
 ";
@@ -126,7 +132,8 @@ ORDER BY p.ValidTimeUtc;
 
             var valid = r.GetDateTime(0);
             var t = new double[6];
-            for (int i = 0; i < 6; i++) t[i] = r.GetDouble(1 + i);
+            // UKMO column is always SQL-NULL under pattern 1 → NaN here.
+            for (int i = 0; i < 6; i++) t[i] = r.IsDBNull(1 + i) ? double.NaN : r.GetDouble(1 + i);
 
             var windDirMean = r.IsDBNull(7) ? double.NaN : r.GetDouble(7);
             var era5Temp = r.GetDouble(8);
@@ -150,20 +157,24 @@ ORDER BY p.ValidTimeUtc;
         if (perModelTemps.Length != 6)
             throw new ArgumentException("Expected 6 model temperatures", nameof(perModelTemps));
 
+        // Spread skips NaN entries (pattern 1 leaves UKMO as NaN at index 4).
+        // Population std (N, not N-1) — matches numpy default, fine for a feature.
         double sum = 0, sumSq = 0, min = double.MaxValue, max = double.MinValue;
+        int n = 0;
         for (int i = 0; i < 6; i++)
         {
             var x = perModelTemps[i];
+            if (double.IsNaN(x)) continue;
             sum += x;
             sumSq += x * x;
             if (x < min) min = x;
             if (x > max) max = x;
+            n++;
         }
-        var mean = sum / 6.0;
-        // Population std (N, not N-1) — consistent with numpy default, fine for a feature.
-        var variance = Math.Max(0.0, (sumSq / 6.0) - (mean * mean));
-        var std = Math.Sqrt(variance);
-        var range = max - min;
+        var mean = n == 0 ? double.NaN : sum / n;
+        var variance = n == 0 ? double.NaN : Math.Max(0.0, (sumSq / n) - (mean * mean));
+        var std = double.IsNaN(variance) ? double.NaN : Math.Sqrt(variance);
+        var range = n == 0 ? double.NaN : max - min;
 
         // Ensure DateTime kind is UTC so later comparisons don't silently shift.
         var v = validTimeUtc.Kind == DateTimeKind.Utc

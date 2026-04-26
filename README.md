@@ -70,6 +70,17 @@ dotnet run --project src/WeatherBlend -- verify --target dry-window --truth-stat
 dotnet run --project src/WeatherBlend -- train --target dry-window --feature-set rich --window all --lead all
 dotnet run --project src/WeatherBlend -- dry-window-calibrate --truth-station all
 dotnet run --project src/WeatherBlend -- dry-window-ablate          # 3b vs 3d-shape vs 3d-cal table + shape gain importance
+
+# Element blenders (lean): per-variable blenders for wind speed, relative humidity,
+# shortwave radiation, and total cloud cover. Same architecture as the temperature
+# 2b lean blender — LightGBM regression per lead {24,48,72}h, ERA5 truth at the
+# Bonehill grid cell, champion-only this phase. One dispatcher routes each target.
+dotnet run --project src/WeatherBlend -- train   --target wind                --feature-set lean --lead all
+dotnet run --project src/WeatherBlend -- train   --target humidity            --feature-set lean --lead all
+dotnet run --project src/WeatherBlend -- train   --target shortwave-radiation --feature-set lean --lead all
+dotnet run --project src/WeatherBlend -- train   --target cloud-cover         --feature-set lean --lead all
+dotnet run --project src/WeatherBlend -- predict --target wind                # likewise for humidity / shortwave-radiation / cloud-cover
+dotnet run --project src/WeatherBlend -- verify  --target wind
 ```
 
 ### Precipitation target specifics
@@ -129,6 +140,41 @@ dotnet run --project src/WeatherBlend -- dry-window-ablate          # 3b vs 3d-s
   pairing; live inference uses the most-recent live-cycle row per (valid-time,
   model). Feature shape is identical and the model applies cleanly, but the
   inference-time distribution is not exactly the training distribution.
+
+### Element blenders (wind / humidity / shortwave-radiation / cloud-cover)
+
+- **Truth source: ERA5 at the Bonehill grid cell**, consistent with the
+  temperature blender. EGTE METAR is intended as a verify-side secondary
+  sanity check; the wiring is deferred (each element needs bespoke handling
+  — RH from T+Td via Magnus, wind direct, no METAR signal for radiation,
+  parser extension for cloud cover).
+- **Per-element feature shapes:** wind 22 features (5 model speeds × 1 + 5×2
+  sin/cos directions + 3 spread + 4 calendar; MétéoFrance excluded — Open-Meteo
+  Previous Runs ships no MF wind), humidity 19 (6×RH + 6×dewpoint + 3 spread +
+  4 calendar), radiation 25 (6×SW + 6×direct + 6×diffuse + 3 spread + 4 calendar;
+  UKMO carries NaN at lead ≥48h, LightGBM handles natively), cloud 13 (6×total
+  + 3 spread + 4 calendar — layered cloud is 100% null in Open-Meteo Previous
+  Runs and was dropped from the lean spec).
+- **Artefacts:** `data/models/{element}/v{ts}/` with one `lead_{N}h.zip` per
+  lead, `feature_schema.json`, `feature_importance.json`,
+  `training_metadata.json`, and a single-active `MANIFEST.json`. Phase tags
+  are per-target (`lean-wind`, `lean-humidity`, etc.) so the predict dispatcher
+  is unambiguous; rich variants would land as `rich-{element}` if added later.
+- **Predict output:** `data/predictions/{element}/model_version={v}/date={yyyy-MM-dd}/predictions.parquet`
+  via the shared `ElementPredictionRow` schema (per-model values for all six
+  slots, runtimes, ensemble aggregates, blend value, SHA-256 feature hash).
+- **Verify:** ERA5 primary MAE per (version, lead) with stratification by month
+  and truth-value quintile, drift flag (rolling MAE > 1.5× training-test MAE).
+- **Live-forecast coverage gaps (production caveats):** shortwave radiation is
+  100% null in the live forecast tree — predict produces no radiation rows
+  until the live collector is extended to pull SW/direct/diffuse. MétéoFrance
+  cuts off around 36h on the live endpoint, so humidity and cloud predict
+  yield only the 24h lead in production.
+- **Lean training-time results (Bonehill, 2026-04-25):** wind +20–24% vs best
+  single (ECMWF), humidity +7–10%, cloud +10% / +2% / **−2%** at 24/48/72h,
+  radiation **−1% / +4% / +1%**. See
+  `data/reports/lean_blenders_phase_2026-04-25.md` for the full headline table
+  and per-element analysis.
 
 ## Scheduling on Windows
 

@@ -4,37 +4,54 @@ using WeatherBlend.Config;
 using WeatherBlend.Evaluate;
 using WeatherBlend.Evaluate.Precip;
 using WeatherBlend.Train;
+using WeatherBlend.Train.Element;
 
 namespace WeatherBlend.Commands;
 
 /// <summary>
 /// Trains the blender — one LightGBM model per lead ∈ {24,48,72}.
 ///
-/// target=temperature: regressor against ERA5 reanalysis (Phase 2b).
+/// target=temperature: regressor against ERA5 reanalysis (Phase 2b/2c).
 /// target=precipitation: binary classifier for P(hour has >= 0.1 mm) against
-/// EA Bellever rainfall truth (Phase 3a occurrence model).
+/// EA Bellever rainfall truth (Phase 3a/3c).
+/// target=dry-window: P(at least one N-hour dry block in target day) (Phase 3b/3d).
+/// target=wind | humidity | shortwave-radiation | cloud-cover: per-lead regressor
+/// against ERA5 truth — the lean per-element blenders.
 /// </summary>
 public sealed class TrainCommand
 {
     private readonly ILogger<TrainCommand> _log;
     private readonly AppConfig _cfg;
     private readonly DryWindowTrainCommand _dryWindow;
+    private readonly ElementTrainCommand _element;
 
     private static readonly int[] DefaultLeads = { 24, 48, 72 };
 
-    public TrainCommand(ILogger<TrainCommand> log, AppConfig cfg, DryWindowTrainCommand dryWindow)
+    public TrainCommand(
+        ILogger<TrainCommand> log,
+        AppConfig cfg,
+        DryWindowTrainCommand dryWindow,
+        ElementTrainCommand element)
     {
         _log = log;
         _cfg = cfg;
         _dryWindow = dryWindow;
+        _element = element;
     }
 
     public async Task<int> RunAsync(string target, string lead, string? station, string? window, string featureSet, CancellationToken ct)
     {
         var t = target.ToLowerInvariant();
-        if (t is not ("temperature" or "precipitation" or "dry-window"))
+        var elementTarget = ElementTargets.TryFromCli(t);
+        var validTargets = new[]
         {
-            _log.LogError("target must be 'temperature' | 'precipitation' | 'dry-window' (got '{Target}')", target);
+            "temperature", "precipitation", "dry-window",
+            "wind", "humidity", "shortwave-radiation", "cloud-cover",
+        };
+        if (!validTargets.Contains(t))
+        {
+            _log.LogError("target must be one of [{Targets}] (got '{Target}')",
+                string.Join(", ", validTargets), target);
             return 2;
         }
 
@@ -49,6 +66,13 @@ public sealed class TrainCommand
         if (fs is not ("lean" or "rich"))
         {
             _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich.", featureSet);
+            return 2;
+        }
+        if (elementTarget is not null && fs != "lean")
+        {
+            _log.LogError(
+                "Element targets currently only support --feature-set lean (got '{Fs}'). " +
+                "Rich variants are not defined for the per-variable blenders yet.", fs);
             return 2;
         }
         return t switch
@@ -66,6 +90,10 @@ public sealed class TrainCommand
                                    fs == "rich" ? Train.DryWindow.DryWindowFeatureBuilder.Phase3dShape
                                                 : Train.DryWindow.DryWindowFeatureBuilder.Phase3b,
                                    ct),
+            // Per-variable element blenders: one dispatcher routes wind / humidity /
+            // shortwave-radiation / cloud-cover to its dedicated IElementBlender.
+            _ when elementTarget is not null
+                   => await _element.RunAsync(elementTarget, leads, ct),
             _ => 2,
         };
     }

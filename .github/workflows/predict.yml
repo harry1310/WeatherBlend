@@ -122,6 +122,26 @@ jobs:
           fi
           if [ -n "${code:-}" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then exit "$code"; fi
 
+      - name: Predict element blenders (wind / humidity / shortwave-radiation / cloud-cover)
+        # Per-element lean blenders. Same exit-code semantics as precipitation/dry-window:
+        # 2 = no blender for that target yet; 3 = no live forecast rows. Neither fatal.
+        # Radiation predict is currently expected to return 3 (live forecasts don't include
+        # SW columns; tracked as a known live-collector gap, see Element comparison report).
+        # Humidity + cloud may return partial coverage at 48/72h when MétéoFrance is missing.
+        run: |
+          FOR_DATE="${{ github.event.inputs.for_date }}"
+          for tgt in wind humidity shortwave-radiation cloud-cover; do
+            code=0
+            if [ -n "$FOR_DATE" ]; then
+              dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target "$tgt" --for-date "$FOR_DATE" || code=$?
+            else
+              dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target "$tgt" || code=$?
+            fi
+            if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ] && [ "$code" != "4" ]; then
+              echo "predict $tgt failed with exit $code"; exit "$code"
+            fi
+          done
+
       - name: Push predictions to R2
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
