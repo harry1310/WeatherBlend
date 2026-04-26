@@ -40,13 +40,9 @@ public sealed class MetOfficeArchiveBackfillClient
         IReadOnlyList<int> cycles, IReadOnlyList<int> leads,
         int parallelism, CancellationToken ct)
     {
-        var python = Environment.GetEnvironmentVariable("WEATHERBLEND_PYTHON")
-                     ?? @"C:\Projects\Weather\WeatherProbabilistic\.venv\Scripts\python.exe";
+        var python = ResolvePython();
         var scriptPath = ResolveScriptPath();
 
-        if (!File.Exists(python))
-            throw new FileNotFoundException(
-                $"Python interpreter not found at {python}. Set WEATHERBLEND_PYTHON env var.", python);
         if (!File.Exists(scriptPath))
             throw new FileNotFoundException(
                 $"Met Office backfill script not found at {scriptPath}.", scriptPath);
@@ -92,6 +88,52 @@ public sealed class MetOfficeArchiveBackfillClient
             _log.LogInformation("met-office-archive-backfill done (exit 0)");
 
         return proc.ExitCode;
+    }
+
+    /// <summary>Resolve a usable Python interpreter. Order:
+    ///   1. WEATHERBLEND_PYTHON env var if set and pointing at a real file.
+    ///   2. Local dev convenience — the WeatherProbabilistic venv on this box.
+    ///   3. `python3` then `python` from PATH (CI / Linux runners after
+    ///      actions/setup-python@v5 — both names are usually exposed).</summary>
+    private static string ResolvePython()
+    {
+        var fromEnv = Environment.GetEnvironmentVariable("WEATHERBLEND_PYTHON");
+        if (!string.IsNullOrEmpty(fromEnv) && File.Exists(fromEnv))
+            return fromEnv;
+
+        const string winDevVenv = @"C:\Projects\Weather\WeatherProbabilistic\.venv\Scripts\python.exe";
+        if (File.Exists(winDevVenv))
+            return winDevVenv;
+
+        foreach (var name in new[] { "python3", "python" })
+        {
+            var resolved = TryResolveOnPath(name);
+            if (resolved is not null) return resolved;
+        }
+
+        throw new FileNotFoundException(
+            "No Python interpreter found. Set WEATHERBLEND_PYTHON, or install python3/python on PATH " +
+            "(GH Actions: use actions/setup-python@v5).");
+    }
+
+    private static string? TryResolveOnPath(string exeName)
+    {
+        var path = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrEmpty(path)) return null;
+        var sep = Path.PathSeparator;
+        var exts = OperatingSystem.IsWindows()
+            ? new[] { ".exe", ".bat", ".cmd", "" }
+            : new[] { "" };
+        foreach (var dir in path.Split(sep))
+        {
+            if (string.IsNullOrEmpty(dir)) continue;
+            foreach (var ext in exts)
+            {
+                var candidate = Path.Combine(dir, exeName + ext);
+                if (File.Exists(candidate)) return candidate;
+            }
+        }
+        return null;
     }
 
     private static string ResolveScriptPath()

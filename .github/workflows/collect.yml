@@ -23,6 +23,19 @@ jobs:
           dotnet-version: "10.0.x"
           dotnet-quality: preview
 
+      # Python is needed by the Met Office Global Det step inside `collect` —
+      # CollectCommand shells out to scripts/met_office_archive_backfill.py via
+      # MetOfficeArchiveBackfillClient. NetCDF parsing in pure C# would need
+      # HDF.PInvoke; the Python path is the same pattern as Wgrib2 elsewhere
+      # in WeatherBlend — external tool, thin C# wrapper.
+      # If this setup or the deps install fails, the MO Global collect step is
+      # try/catch'd in CollectCommand so the rest of collect still succeeds.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python deps for Met Office Global Det archive
+        run: pip install --no-cache-dir xarray h5netcdf pyarrow pandas requests
+
       - name: Install rclone
         run: |
           curl -fsSL https://rclone.org/install.sh | sudo bash
@@ -60,6 +73,14 @@ jobs:
           rclone copy "r2:${R2_BUCKET}/data/truth/metar"           ./data/truth/metar           --fast-list --transfers 16 --checkers 32 --progress
           rclone copy "r2:${R2_BUCKET}/data/truth/rainfall"        ./data/truth/rainfall        --fast-list --transfers 16 --checkers 32 --progress
           rclone copy "r2:${R2_BUCKET}/data/truth/met_office_obs"  ./data/truth/met_office_obs  --fast-list --transfers 16 --checkers 32 --progress
+          # Met Office Global Det archive — pull the whole tree so the
+          # post-collect rclone-copy diff back to R2 is minimal. ~5 KB per
+          # parquet × ~1.5k cycles ≈ 7 MB, trivial. Marked || true so a
+          # transient R2 issue doesn't block the rest of collect.
+          mkdir -p "data/forecasts/location=bonehill_rocks/model=met_office_global"
+          rclone copy "r2:${R2_BUCKET}/data/forecasts/location=bonehill_rocks/model=met_office_global" \
+            "./data/forecasts/location=bonehill_rocks/model=met_office_global" \
+            --fast-list --transfers 16 --checkers 32 --progress || true
 
       - name: Build
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo

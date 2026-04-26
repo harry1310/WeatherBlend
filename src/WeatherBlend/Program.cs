@@ -148,6 +148,7 @@ public static class Program
                 services.AddTransient<UtciPredictCommand>();
                 services.AddSingleton<MetOfficeArchiveBackfillClient>();
                 services.AddTransient<MetOfficeArchiveBackfillCommand>();
+                services.AddSingleton<MetOfficeGlobalArchiveCollector>();
                 services.AddTransient<IElementBlender, WindBlender>();
                 services.AddTransient<IElementBlender, HumidityBlender>();
                 services.AddTransient<IElementBlender, RadiationBlender>();
