@@ -49,12 +49,14 @@ public static class RadiationFeatureBuilder
     };
 
     /// <summary>
-    /// Per-lead model membership. UKMO radiation is excluded at every lead — at 48/72h
-    /// it's 100% null (Open-Meteo Previous Runs), and at 24h it's still 26% null. The
-    /// inconsistent presence at 24h was creating noise that hurt the blender (the
-    /// 6-model-with-NaN-UKMO 24h variant was -0.8% vs best-single ECMWF). Dropping
-    /// UKMO entirely matches wind's pattern and gives radiation a clean 5-model shape
-    /// at every lead.
+    /// Per-lead model membership. UKMO radiation is excluded at every lead — its
+    /// ShortwaveRadiation field is essentially never populated in either backfill
+    /// (≥48h: 99.99% null, 24h: 25% null) or live collects (92–100% null per
+    /// 2026-04-26 audit). A 6-model trainer would learn to lean on UKMO during
+    /// training and find nothing to feed it at predict time. Unlike the other
+    /// elements, UKMO is genuinely missing data here, not a train-time-poisoning
+    /// artefact, so 5-model is the right choice. No date filter needed for the
+    /// same reason — there's no UKMO column to be poisoned by the pre-2024-09 block.
     /// </summary>
     public static IReadOnlyList<string> ModelsForLead(int leadHours) =>
         new[] { "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "meteofrance_seamless", "gem_seamless" };

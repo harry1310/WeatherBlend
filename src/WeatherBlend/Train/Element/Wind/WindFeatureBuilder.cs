@@ -54,13 +54,15 @@ public static class WindFeatureBuilder
     };
 
     /// <summary>
-    /// Per-lead model membership. Wind drops MF (no MF wind data anywhere) and now also
-    /// drops UKMO (~26% null at every lead — same noise pattern that hurt the other
-    /// blenders). Same 4-model membership at every lead. UKMO columns in <see cref="WindRow"/>
-    /// are kept (schema unchanged) but always NaN — feature importance ~0.
+    /// Per-lead model membership. Wind drops MF (Open-Meteo Previous Runs ships no MF
+    /// wind data — confirmed by 2026-04-25 audit) but KEEPS UKMO. Wind is the only
+    /// target where the 6-model + restricted-window variant beats 5-model + full
+    /// window on the same fixed test rows (4-way bake-off 2026-04-26): UKMO's regional
+    /// UK wind skill outweighs the ~30% training-data loss. Same 5-model membership
+    /// at every lead.
     /// </summary>
     public static IReadOnlyList<string> ModelsForLead(int leadHours) =>
-        new[] { "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "gem_seamless" };
+        new[] { "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "ukmo_seamless", "gem_seamless" };
 
     public static List<WindRow> BuildForLead(
         string forecastsPath,
@@ -75,18 +77,17 @@ public static class WindFeatureBuilder
         var fcGlob = NormaliseGlob(Path.Combine(forecastsPath, "**", "*.parquet"));
         var eraGlob = NormaliseGlob(Path.Combine(era5Path, "**", "*.parquet"));
 
-        // UKMO excluded too: 26% null in Previous Runs at every lead, same noise pattern
-        // that hurt radiation and humidity blenders. Wind blender now uses 4 models:
-        // gfs/ecmwf/icon/gem (MF has zero wind data; UKMO is patchy). UKMO columns in
-        // the row are present but always NaN — LightGBM treats as missing, no model
-        // capacity wasted.
+        // 5-model membership (UKMO kept, MF excluded). Training restricted to the
+        // post-2024-09 clean window — required for the 6-model variant since UKMO is
+        // all-NULL pre-2024-09 in the Open-Meteo archive.
         var fcWhere =
             $"LocationName = '{locationName}' " +
             $"AND RunTimeSource = 'offset_day' " +
             $"AND LeadHours = {leadHours} " +
             $"AND WindSpeed10m IS NOT NULL " +
             $"AND WindDirection10m IS NOT NULL " +
-            $"AND Model IN ('gfs_seamless','ecmwf_ifs025','icon_seamless','gem_seamless')";
+            $"AND ValidTimeUtc >= TIMESTAMP '{TrainingWindow.UkmoCleanWindowStart}' " +
+            $"AND Model IN ('gfs_seamless','ecmwf_ifs025','icon_seamless','ukmo_seamless','gem_seamless')";
 
         var sql = $@"
 WITH latest AS (
@@ -104,12 +105,12 @@ pivoted AS (
         MAX(CASE WHEN Model = 'gfs_seamless'  THEN spd END) AS spd_gfs,
         MAX(CASE WHEN Model = 'ecmwf_ifs025'  THEN spd END) AS spd_ecmwf,
         MAX(CASE WHEN Model = 'icon_seamless' THEN spd END) AS spd_icon,
-        CAST(NULL AS DOUBLE) AS spd_ukmo,
+        MAX(CASE WHEN Model = 'ukmo_seamless' THEN spd END) AS spd_ukmo,
         MAX(CASE WHEN Model = 'gem_seamless'  THEN spd END) AS spd_gem,
         MAX(CASE WHEN Model = 'gfs_seamless'  THEN dir END) AS dir_gfs,
         MAX(CASE WHEN Model = 'ecmwf_ifs025'  THEN dir END) AS dir_ecmwf,
         MAX(CASE WHEN Model = 'icon_seamless' THEN dir END) AS dir_icon,
-        CAST(NULL AS DOUBLE) AS dir_ukmo,
+        MAX(CASE WHEN Model = 'ukmo_seamless' THEN dir END) AS dir_ukmo,
         MAX(CASE WHEN Model = 'gem_seamless'  THEN dir END) AS dir_gem
     FROM latest
     WHERE rn = 1
@@ -120,6 +121,7 @@ era5 AS (
     FROM read_parquet('{eraGlob}', hive_partitioning = false, union_by_name = true)
     WHERE LocationName = '{locationName}'
       AND WindSpeed10m IS NOT NULL
+      AND ValidTimeUtc >= TIMESTAMP '{TrainingWindow.UkmoCleanWindowStart}'
 )
 SELECT
     p.ValidTimeUtc,

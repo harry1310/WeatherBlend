@@ -184,17 +184,16 @@ public class ElementFeatureBuilderTests
 
     // ---- Per-lead model membership ----
     //
-    // MétéoFrance live forecasts cut off ~36h, so humidity & cloud train+predict use
-    // 5 models at lead 48/72h and the full 6 at lead 24h. UKMO radiation drops out at
-    // lead ≥48h, so radiation excludes UKMO at long lead but keeps it at 24h. These
-    // tests pin the per-lead membership lists so a future change to ModelsForLead is
-    // a deliberate edit rather than an accident.
-
-    // UKMO is structurally ~26% null at every lead in Previous Runs (same valid-times
-    // missing regardless of lead). Inconsistent presence creates training noise — empirical
-    // test showed dropping UKMO improved every blender. So UKMO is excluded from training
-    // for every element at every lead. The remaining per-lead variation is just MF: humidity
-    // and cloud have MF at 24h (full coverage) but not at 48/72h (live API horizon).
+    // Final per-blender UKMO decisions (2026-04-26 four-way bake-off; see
+    // docs/DESIGN.md UKMO matrix). Per-Element results were heterogeneous, so we
+    // make per-Element choices rather than uniform pattern:
+    //   Wind     → 5 models (UKMO restored), no bagging — only target UKMO helps at every lead
+    //   Humidity → 4-5 models (no UKMO), like temp/precip — full window beats UKMO+restricted
+    //   Cloud    → 5-6 models (UKMO restored) — UKMO substantially helps cloud (+2-4%)
+    //   Radiation → 5 models (no UKMO), full window — UKMO SW essentially never present
+    //
+    // MétéoFrance live forecasts cut off ~36h, so humidity & cloud drop MF at 48/72h
+    // so train/predict shape match. Wind drops MF at every lead (no MF wind data).
 
     [Fact]
     public void Humidity_ModelsForLead_24h_is_5_models_no_UKMO()
@@ -217,22 +216,22 @@ public class ElementFeatureBuilderTests
     }
 
     [Fact]
-    public void Cloud_ModelsForLead_24h_is_5_models_no_UKMO()
+    public void Cloud_ModelsForLead_24h_is_6_models_with_UKMO()
     {
         CloudFeatureBuilder.ModelsForLead(24).Should().BeEquivalentTo(new[]
         {
-            "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "meteofrance_seamless", "gem_seamless",
+            "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "meteofrance_seamless", "ukmo_seamless", "gem_seamless",
         });
     }
 
     [Theory]
     [InlineData(48)]
     [InlineData(72)]
-    public void Cloud_ModelsForLead_long_lead_is_4_models_no_UKMO_no_MF(int lead)
+    public void Cloud_ModelsForLead_long_lead_is_5_models_no_MF(int lead)
     {
         CloudFeatureBuilder.ModelsForLead(lead).Should().BeEquivalentTo(new[]
         {
-            "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "gem_seamless",
+            "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "ukmo_seamless", "gem_seamless",
         });
     }
 
@@ -242,9 +241,10 @@ public class ElementFeatureBuilderTests
     [InlineData(72)]
     public void Radiation_ModelsForLead_is_5_models_no_UKMO_at_every_lead(int lead)
     {
-        // Radiation can keep MF at every lead (MF is fully populated for radiation in
-        // Previous Runs at all leads, and live MF radiation is also present where MF
-        // covers — its 36h horizon doesn't typically truncate radiation predict).
+        // Radiation keeps MF at every lead (MF radiation is fully populated in Previous
+        // Runs and live), but drops UKMO entirely — UKMO ShortwaveRadiation is 92–100%
+        // null in live collects, so a 6-model trainer would lean on UKMO and find
+        // nothing to feed it at predict time.
         RadiationFeatureBuilder.ModelsForLead(lead).Should().BeEquivalentTo(new[]
         {
             "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "meteofrance_seamless", "gem_seamless",
@@ -255,14 +255,14 @@ public class ElementFeatureBuilderTests
     [InlineData(24)]
     [InlineData(48)]
     [InlineData(72)]
-    public void Wind_ModelsForLead_is_4_models_no_UKMO_no_MF_at_every_lead(int lead)
+    public void Wind_ModelsForLead_is_5_models_no_MF_at_every_lead(int lead)
     {
-        // Wind already excluded MF (no MF wind data anywhere on Open-Meteo) and now also
-        // excludes UKMO (~26% null pattern). 4-model-everywhere matches the cleanest
-        // per-blender pattern.
+        // Wind keeps UKMO (4-way bake-off 2026-04-26: only target where the 6-model
+        // variant beats 5-model on a fixed test set) but still drops MF — Open-Meteo
+        // Previous Runs ships no MF wind speed/direction at any lead.
         WindFeatureBuilder.ModelsForLead(lead).Should().BeEquivalentTo(new[]
         {
-            "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "gem_seamless",
+            "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "ukmo_seamless", "gem_seamless",
         });
     }
 }

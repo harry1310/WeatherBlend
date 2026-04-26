@@ -101,11 +101,13 @@ latest AS (
     WHERE LocationName = '{escLocation}'
       AND RunTimeSource = 'offset_day'
       AND LeadHours = {leadHours}
-      -- UKMO excluded entirely (pattern 1). Open-Meteo Previous Runs ships UKMO
-      -- for ~74% of valid times only; the inconsistent presence creates training
-      -- noise. 2026-04-26 apples-to-apples bake-off across all 3 stations showed
-      -- pattern 1 (drop UKMO entirely) beats current pattern 3 (NaN-tolerant) by
-      -- 1.3–6.7% Brier on the shared UKMO-present test set at every (station, lead).
+      -- UKMO excluded entirely (Pattern 1 final, 2026-04-26 four-way bake-off).
+      -- The 6-model + restricted-window variant looked good in an earlier same-window
+      -- bake-off but lost decisively (1-9 pct Brier across all 9 station/lead cells)
+      -- once tested apples-to-apples on the same fixed test rows: the ~30 pct
+      -- training-data loss from the date filter outweighs UKMO's signal. Bagging is
+      -- a separate +0.5-2 pct win on top of any data-window choice (kept; see
+      -- PrecipOccurrenceTrainer.Hyperparameters).
       AND Model IN ('gfs_seamless','ecmwf_ifs025','icon_seamless','meteofrance_seamless','gem_seamless')
 ),
 pivoted AS (

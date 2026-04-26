@@ -28,7 +28,18 @@ public sealed class TemperatureTrainer
         double L1Regularization = 0.1,
         double L2Regularization = 0.1,
         int EarlyStoppingRound = 30,
-        int Seed = 42);
+        int Seed = 42,
+        // Bagging (added 2026-04-26). Hyperparameter grid on temp 2b 6-model
+        // restricted-window dataset showed feature_fraction is the bigger lever
+        // (every per-lead winner has it ≤0.8); bagging_fraction 0.7–0.8 with
+        // freq=1 sits within seed noise of the optimum at every lead. ~1% MAE
+        // improvement over the deterministic 1.0/1.0 default at every lead;
+        // also gives the ensemble the noise it needs to be a real ensemble.
+        // Element trainers inherit these via ElementTrainerHarness which calls
+        // TemperatureTrainer.Train<T>.
+        double SubsampleFraction = 0.8,
+        int SubsampleFrequency = 1,
+        double FeatureFraction = 0.8);
 
     public sealed record TrainedBlender(
         MLContext Ml,
@@ -88,6 +99,9 @@ public sealed class TemperatureTrainer
             {
                 L1Regularization = hp.L1Regularization,
                 L2Regularization = hp.L2Regularization,
+                SubsampleFraction = hp.SubsampleFraction,
+                SubsampleFrequency = hp.SubsampleFrequency,
+                FeatureFraction = hp.FeatureFraction,
             },
         };
 

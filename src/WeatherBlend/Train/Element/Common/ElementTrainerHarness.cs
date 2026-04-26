@@ -224,5 +224,8 @@ public static class ElementTrainerHarness
             ["L2Regularization"] = hp.L2Regularization,
             ["EarlyStoppingRound"] = hp.EarlyStoppingRound,
             ["Seed"] = hp.Seed,
+            ["SubsampleFraction"] = hp.SubsampleFraction,
+            ["SubsampleFrequency"] = hp.SubsampleFrequency,
+            ["FeatureFraction"] = hp.FeatureFraction,
         };
 }

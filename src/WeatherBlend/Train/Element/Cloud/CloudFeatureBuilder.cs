@@ -42,15 +42,16 @@ public static class CloudFeatureBuilder
     ///
     /// MétéoFrance live forecasts cut off ~36h → drop at 48/72h so train/predict match.
     ///
-    /// UKMO is ~26% null at every lead in Previous Runs (structural data gap); same
-    /// noise pattern that hurt radiation and humidity → drop at every lead.
+    /// UKMO restored 2026-04-26 after restricted-window bake-off — see
+    /// <see cref="TrainingWindow"/>. UKMO ships total cloud cover at every lead in live
+    /// collects, so train/predict shape match.
     ///
-    /// Net: 5 models at 24h (no UKMO), 4 at 48/72h (no UKMO + no MF).
+    /// Net: 6 models at 24h, 5 at 48/72h (no MF).
     /// </summary>
     public static IReadOnlyList<string> ModelsForLead(int leadHours) =>
         leadHours == 24
-            ? new[] { "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "meteofrance_seamless", "gem_seamless" }
-            : new[] { "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "gem_seamless" };
+            ? new[] { "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "meteofrance_seamless", "ukmo_seamless", "gem_seamless" }
+            : new[] { "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "ukmo_seamless", "gem_seamless" };
 
     public static List<CloudRow> BuildForLead(
         string forecastsPath, string era5Path, string locationName, int leadHours, CancellationToken ct = default)
@@ -63,7 +64,7 @@ public static class CloudFeatureBuilder
 
         var modelList = string.Join(",", ModelsForLead(leadHours).Select(m => $"'{m}'"));
         var includeMf = leadHours == 24;
-        // UKMO excluded everywhere; MF excluded at 48/72h.
+        // UKMO restored at every lead; MF excluded at 48/72h (live API horizon ~36h).
         var mfPivotClause = includeMf
             ? "MAX(CASE WHEN Model = 'meteofrance_seamless' THEN cc END) AS cc_mf,"
             : "CAST(NULL AS DOUBLE) AS cc_mf,";
@@ -74,6 +75,7 @@ public static class CloudFeatureBuilder
             $"AND RunTimeSource = 'offset_day' " +
             $"AND LeadHours = {leadHours} " +
             $"AND CloudCover IS NOT NULL " +
+            $"AND ValidTimeUtc >= TIMESTAMP '{TrainingWindow.UkmoCleanWindowStart}' " +
             $"AND Model IN ({modelList})";
 
         var sql = $@"
@@ -90,7 +92,7 @@ pivoted AS (
         MAX(CASE WHEN Model = 'ecmwf_ifs025'         THEN cc END) AS cc_ecmwf,
         MAX(CASE WHEN Model = 'icon_seamless'        THEN cc END) AS cc_icon,
         MAX(CASE WHEN Model = 'gem_seamless'         THEN cc END) AS cc_gem,
-        CAST(NULL AS DOUBLE) AS cc_ukmo,
+        MAX(CASE WHEN Model = 'ukmo_seamless'        THEN cc END) AS cc_ukmo,
         {mfPivotClause}
     FROM latest WHERE rn = 1 GROUP BY ValidTimeUtc
 ),
@@ -98,6 +100,7 @@ era5 AS (
     SELECT ValidTimeUtc, CloudCover AS truth
     FROM read_parquet('{eraGlob}', hive_partitioning = false, union_by_name = true)
     WHERE LocationName = '{locationName}' AND CloudCover IS NOT NULL
+      AND ValidTimeUtc >= TIMESTAMP '{TrainingWindow.UkmoCleanWindowStart}'
 )
 SELECT
     p.ValidTimeUtc,

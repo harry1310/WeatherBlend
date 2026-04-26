@@ -242,45 +242,160 @@ applies to all element blenders as it does to temperature; consequences vary by
 variable (small for temperature, large for wind/cloud) but the architectural
 choice is the same.
 
-## UKMO handling: per-blender pattern decisions (2026-04-26)
+## UKMO handling: per-blender decisions (2026-04-26, revised)
 
-Open-Meteo's Previous Runs API ships UKMO for ~74% of valid times only — same
-26% gap at every lead, every variable. UKMO's *live* forecast coverage is
-~98%, so the gap is a Previous Runs API limitation, not a production problem.
+### What we thought the problem was
 
-The question for each blender: how to handle UKMO's partial training-time
-presence? Three patterns considered:
+Open-Meteo's Previous Runs API ships UKMO with ~26% of valid times missing across
+every lead and every variable. We initially assumed this was random per-row gaps.
+Three patterns considered:
 
 | Pattern | Training rows kept | Training noise | Predict robustness |
 |---|---|---|---|
-| **1. Drop UKMO entirely** (UKMO column always NaN in training) | 100% | None — feature is constant | Always works (UKMO masked at predict too) |
+| **1. Drop UKMO entirely** (UKMO column always NaN in training) | 100% | None — feature is constant | Always works |
 | **2. Require UKMO non-null** (drop training rows where UKMO missing) | 74% | None — UKMO always present in training | Breaks if live UKMO degrades |
 | **3. NaN-tolerant** (keep all rows, UKMO can be NaN) | 100% | Random per-row NaN noise | Always works but miscalibrated |
 
-Apples-to-apples bake-offs (`bakeoff` CLI) on shared UKMO-present test rows
-yielded these per-blender decisions:
+A first-pass apples-to-apples bake-off favoured Pattern 1 for the lean blenders
+(temp 2b, precip 3a, all 4 Elements) — UKMO was dropped from those trainers.
 
-| Blender | Family | Best pattern | Reason |
-|---|---|---|---|
-| Element ×4 (wind/humidity/cloud/radiation) | lean | **Pattern 1** | Simple per-model features → UKMO noise dominates |
-| Temperature 2b | lean | **Pattern 1** | 1.3–3.6% MAE win across all leads |
-| Temperature 2c | rich | Pattern 2 (current) | Aggregate ~tied; not worth the churn |
-| Precip 3a (all 3 stations) | lean | **Pattern 1** | 1.3–6.7% Brier win across all (station, lead) |
-| Precip 3c | rich | Pattern 3 (current) | Production wins by 0.4–0.9% Brier (Bellever) |
-| Dry-window 3b | rich-ish | Pattern 3 (current) | Production wins 5/6 cells tested |
+### What the problem actually was
 
-**Heuristic from these results:** lean blenders with simple per-model features
-benefit from dropping UKMO entirely (the noise from inconsistent presence
-outweighs the signal). Richer blenders or models with strong per-model self-
-prediction features (`has_dry_window_*`) keep UKMO and tolerate the noise —
-the present 74% of UKMO contributions outweighs the missing 26% of noise.
+Field-level missingness audit (`scripts/ukmo_field_missingness.py`, 2026-04-26):
+the 26% gap is **NOT** a per-row random pattern. It is a contiguous **7-month
+time block** at the start of the archive (2024-01 → 2024-08, every UKMO field
+NULL); from 2024-09 onwards UKMO is consistently populated. With our
+chronological 80/20 train/test split, that block dominates training and the
+6-model fit learns a dual regime ("UKMO=NaN for 7 months, then valid forever
+after") that doesn't generalise to the held-out test set (where UKMO is ~100%
+present). The 5-model wins were train-time poisoning, not evidence that UKMO
+genuinely hurts.
 
-**Implementation:** in pattern 1 SQL, the `latest` CTE adds `AND Model IN
-('gfs_seamless','ecmwf_ifs025','icon_seamless','meteofrance_seamless','gem_seamless')`
-(no UKMO), the pivot uses `CAST(NULL AS DOUBLE) AS *_ukmo`, and the outer
-WHERE drops the `*_ukmo IS NOT NULL` requirement. Reader code is NaN-safe
-(`IsDBNull(...) ? double.NaN : GetDouble(...)`). Spread aggregates skip NaN
-inputs so mean/std/range come from the 5 present models.
+### Restricted-window bake-off (the fix)
+
+Re-running the same apples-to-apples bake-off with training restricted to
+post-2024-09 (the clean window where UKMO is consistently present) flipped the
+result almost everywhere. 6-model wins or ties at every (target, station, lead)
+cell tested — clearest at 24h precip (+2.9–4.7% Brier across all 3 stations)
+and 48h/72h temp (+1.1–1.2% MAE).
+
+### Current per-blender handling (final, 2026-04-26 four-way bake-off)
+
+The 6-model migration was rolled back for most targets after a 4-way bake-off
+(prior 5-model+full vs 6-model+restricted vs +bagging vs prior+bagging) on
+**fixed identical test rows** revealed the original migration bake-off was
+flawed: it held the data window constant for both variants, hiding the real
+trade-off. The 6-model variant's UKMO signal generally does NOT outweigh the
+~30% training-data loss from restricting to the post-2024-09 window. Per
+target the answers diverged though — wind and cloud genuinely benefit from
+UKMO; temp/precip/humidity don't.
+
+| Blender | Final variant | Models | Window | Bagging |
+|---|---|---|---|---|
+| Temperature 2b lean | **5-model + full + bag** | GFS, ECMWF, ICON, MF, GEM | full backfill | ✓ |
+| Temperature 2c rich | Pattern 2 (existing) | unchanged | unchanged | unchanged |
+| Precip 3a lean (×3 stations) | **5-model + full + bag** | as above | full backfill | ✓ |
+| Precip 3c rich | Pattern 3 (existing) | unchanged | unchanged | unchanged |
+| Dry-window 3b | Pattern 3 (existing) | unchanged | unchanged | unchanged |
+| Element **wind** | **5-model + restricted, NO bag** | GFS, ECMWF, ICON, **UKMO**, GEM (no MF; never had MF wind) | post-2024-09 | ✗ (deliberate) |
+| Element humidity | **5-model + full + bag** | GFS, ECMWF, ICON, MF, GEM (24h); no MF at 48/72h | full backfill | ✓ |
+| Element **cloud** | **6-model + restricted + bag** | GFS, ECMWF, ICON, MF, **UKMO**, GEM (24h); 5 at 48/72h (no MF) | post-2024-09 | ✓ |
+| Element radiation | 5-model + full + bag | GFS, ECMWF, ICON, MF, GEM | full backfill | ✓ |
+
+**Why heterogeneous?** Met Office's UM has historically excelled at UK wind
+(regional model resolves Bonehill's tor topography) and cloud (good
+parameterisation, stratus detection) — for those targets UKMO is genuinely
+informative. For temperature the global ensemble averages out individual model
+biases and UKMO is just one of six. For per-station rainfall the truth has
+its own gauge-specific bias structure UKMO doesn't help with. For humidity
+similarly. Picking per blender, not per pattern.
+
+**Wind opts out of bagging** specifically — the 4-way showed bagging slightly
+HURTS wind at every lead (−0.16/−0.55/−0.42% vs no-bag), unique among
+targets. `WindBlender.cs` overrides `Hyperparameters` to set
+`SubsampleFraction=1.0, SubsampleFrequency=0, FeatureFraction=1.0` while
+every other Element inherits the bagged defaults from
+`TemperatureTrainer.Hyperparameters`.
+
+The restricted-window cutoff is `TrainingWindow.UkmoCleanWindowStart`
+(2024-09-01), used by wind and cloud only.
+
+**Bagging defaults** (everywhere except wind): `SubsampleFraction=0.8,
+SubsampleFrequency=1, FeatureFraction=0.8` in all three trainers. ML.NET's
+defaults left LightGBM fully deterministic; bagging adds 0.5–2% MAE
+improvement and genuine ensemble noise across temp/precip/humidity/cloud.
+
+**Known unfixed**: cloud 24h blend still loses to best-single ECMWF (~−10.8%
+MAE), even with the C variant. Cloud is structurally hard with the lean
+13-feature shape — needs feature engineering (layered cloud, dew-point
+depression, radiation cross-checks) rather than model selection. Tracked as
+future work.
+
+## UTCI: derived outdoor-comfort target (2026-04-26)
+
+The Universal Thermal Climate Index (Bröde et al. 2012) is the first WeatherBlend
+output that *isn't* itself a trained blender — it's a deterministic transform of
+five upstream blender outputs (`temperature` lean 2b + `humidity` + `wind` +
+`shortwave-radiation` + `cloud-cover`). UTCI exists because none of the five
+inputs alone answers the actual user question: "is it comfortable to be outside
+on Bonehill right now?"
+
+**Why we blended radiation and cloud was UTCI all along.** Mean radiant
+temperature (Tmrt) is what turns UTCI from "Ta + wind chill + humidity" into a
+real outdoor-comfort number. Tmrt at Ta=25 °C with full clear-sky midday sun
+(~800 W/m² shortwave) sits around 50–55 °C; under heavy cloud at the same Ta
+it's ~28 °C. That delta is what pushes UTCI from "no thermal stress" into
+"strong heat stress" bands. Without blended SW + cloud the calculator would
+have to fall back on Tmrt = Ta and lose the entire heat-stress signal.
+
+### Tmrt approach (radiation balance, simplified)
+
+Hemisphere-weighted radiation balance for an upright unobstructed person
+(Thorsson et al. 2007 / Lindberg et al. 2008 SOLWEIG-lite form):
+
+```
+Sstr = K_human · Kdown + 0.5 · εp · (Ldown + Lup)
+Tmrt = (Sstr / (εp · σ))^0.25 - 273.15
+```
+
+| Term | Source | Notes |
+|---|---|---|
+| `Ta` | temperature 2b lean | air temperature, °C |
+| `Kdown` | shortwave-radiation blender | total horizontal SW down, W/m² |
+| `Ldown` | derived from cloud + Ta | Brutsaert clear-sky εclear = 1.24·(e/T)^(1/7), boosted by cloud (Crawford-Duchon: εeff = (1-cc)·εclear + cc) |
+| `Lup` | derived from Ta | εg · σ · Ta⁴, εg=0.95 (grass) |
+| `e` | derived from Ta + RH | Wexler/Hardy saturation expansion × RH/100 |
+| `K_human` | constant 0.30 | Lumped αk · (0.25·fdir + 0.5·fdiff + 0.5·αs) for upright person on horizontal Kdown — calibrated to reproduce published clear-sky Tmrt response (Tmrt − Ta ≈ +25–30 K at midday clear sky) |
+| `εp = 0.97`, `αk = 0.7`, `αs = 0.15` | constants | human emissivity / SW absorptivity / grass albedo |
+
+Direct/diffuse split and solar-zenith-dependent projected-area factor are
+deliberately **not** computed: our blenders give us total horizontal Kdown and
+no direction info, so the lumped `K_human` is the honest one-coefficient
+substitute. The simplification is documented next to the constant so a future
+refinement (split SW + solar elevation) is a localised change.
+
+### UTCI polynomial
+
+Inputs `(Ta, Pa hPa, va10 m/s, Tmrt °C)` fed to the official Bröde 2012
+6th-order regression. Wind input is at 10 m (the regression was fit on it,
+not on body-height wind); a 1.1 m reduction (`× log(1.1/0.01)/log(10/0.01)
+≈ 0.6809`) is provided as a separate column for display.
+
+### Architecture choices
+
+- **Derived target, not a blender.** No model_version registry, no manifest,
+  no champion/challenger. Output uses fixed `model_version=v1` so a future
+  Tmrt formulation upgrade can land as `v2` without rewriting the predict path.
+- **Per-row provenance of every input version.** `TempModelVersion`,
+  `HumidityModelVersion`, etc. let us trace "which radiation champion produced
+  the SW input that drove this Tmrt".
+- **Anchor-aligned join.** UTCI predict reads `data/predictions/{slug}/
+  model_version={champion}/date={anchor}/predictions.parquet` for each input,
+  joins by `(ValidTimeUtc, LeadHours)`, drops rows where any one input is
+  missing — UTCI requires all five.
+- **No verify wired in v1.** UTCI has no observational truth at Bonehill
+  (would need a globe thermometer). Verification belongs upstream — each input
+  blender already has its own `verify` against ERA5.
 
 ## Things explicitly out of scope for now
 

@@ -73,12 +73,12 @@ public class FeatureBuilderTests
     }
 
     [Fact]
-    public void ComposeRow_pattern1_skips_NaN_UKMO_in_spread()
+    public void ComposeRow_spread_is_NaN_safe_for_missing_UKMO()
     {
-        // Pattern 1: UKMO column comes back as SQL NULL → NaN in the row. Spread
-        // (mean/std/range) must skip NaN entries; otherwise the result is itself NaN
-        // and the model sees garbage in its ensemble-aggregate features.
-        // 5 present values with mean=14, range=8; UKMO at index 4 is NaN.
+        // 6-model with NaN-tolerant UKMO: although training is restricted to the
+        // post-2024-09 clean window where UKMO is consistently present, the spread
+        // computation must still be NaN-safe so a stray missing row doesn't poison
+        // mean/std/range. 5 present values with mean=14, range=8; UKMO at index 4 NaN.
         var temps = new[] { 10.0, 12.0, 14.0, 16.0, double.NaN, 18.0 };
         var row = FeatureBuilder.ComposeRow(
             new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc),

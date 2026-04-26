@@ -64,12 +64,13 @@ public static class FeatureBuilder
         // Without the filter, "24h forecast" would include 0h analyses issued
         // at midnight.
         //
-        // UKMO excluded entirely (pattern 1). Open-Meteo's Previous Runs API ships
-        // UKMO for ~74% of valid times only — the inconsistent presence created
-        // training noise that hurt the blender. 2026-04-26 apples-to-apples bake-off
-        // showed pattern 1 (drop UKMO entirely from training) beats pattern 2
-        // (require UKMO non-null, drop 26% of rows) by 1.3–3.6% MAE across all
-        // leads on the shared UKMO-present test set.
+        // UKMO excluded entirely (Pattern 1 — final, 2026-04-26 four-way bake-off).
+        // History: we briefly restored UKMO + restricted training to post-2024-09 to
+        // avoid the all-NULL block in Open-Meteo's archive, but a fixed-test-set 4-way
+        // bake-off showed that the resulting ~30% training-data loss outweighs UKMO's
+        // signal — by 1-2% MAE for temperature and 1-9% Brier for precipitation. The
+        // 5-model + full-window variant wins almost everywhere when bagging is held
+        // constant. Documented in docs/DESIGN.md UKMO matrix.
         var fcWhere = $"LocationName = '{locationName}' AND RunTimeSource = 'offset_day' AND LeadHours = {leadHours} AND Temperature2m IS NOT NULL AND Model IN ('gfs_seamless','ecmwf_ifs025','icon_seamless','meteofrance_seamless','gem_seamless')";
 
         // One row per (valid_time, model) — latest RunTime wins when live-collected
@@ -132,7 +133,8 @@ ORDER BY p.ValidTimeUtc;
 
             var valid = r.GetDateTime(0);
             var t = new double[6];
-            // UKMO column is always SQL-NULL under pattern 1 → NaN here.
+            // UKMO column may still be SQL-NULL on a small fraction of rows
+            // inside the clean window; LightGBM handles NaN natively.
             for (int i = 0; i < 6; i++) t[i] = r.IsDBNull(1 + i) ? double.NaN : r.GetDouble(1 + i);
 
             var windDirMean = r.IsDBNull(7) ? double.NaN : r.GetDouble(7);
@@ -157,7 +159,9 @@ ORDER BY p.ValidTimeUtc;
         if (perModelTemps.Length != 6)
             throw new ArgumentException("Expected 6 model temperatures", nameof(perModelTemps));
 
-        // Spread skips NaN entries (pattern 1 leaves UKMO as NaN at index 4).
+        // Spread skips NaN entries — typically all six values are present, but
+        // any per-model gap (most often UKMO) leaves a NaN that we exclude from
+        // mean/std/range so the spread reflects only present members.
         // Population std (N, not N-1) — matches numpy default, fine for a feature.
         double sum = 0, sumSq = 0, min = double.MaxValue, max = double.MinValue;
         int n = 0;

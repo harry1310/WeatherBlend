@@ -145,6 +145,9 @@ public static class Program
                 services.AddTransient<ElementPredictCommand>();
                 services.AddTransient<ElementVerifyCommand>();
                 services.AddTransient<ElementBakeoffCommand>();
+                services.AddTransient<UtciPredictCommand>();
+                services.AddSingleton<MetOfficeArchiveBackfillClient>();
+                services.AddTransient<MetOfficeArchiveBackfillCommand>();
                 services.AddTransient<IElementBlender, WindBlender>();
                 services.AddTransient<IElementBlender, HumidityBlender>();
                 services.AddTransient<IElementBlender, RadiationBlender>();
@@ -215,6 +218,45 @@ public static class Program
             await cmd.RunAsync(start, end, cycles, CancellationToken.None);
         }, gfsStartOpt, gfsEndOpt, gfsCyclesOpt);
         root.AddCommand(gfsBackfill);
+
+        // ---- met-office-archive-backfill ----
+        var moStartOpt = new Option<DateOnly>("--start", "Start cycle date (yyyy-MM-dd), UTC")
+            { IsRequired = true };
+        var moEndOpt = new Option<DateOnly>(
+            name: "--end",
+            description: "End cycle date (yyyy-MM-dd), UTC (inclusive). Default: yesterday.",
+            getDefaultValue: () => DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-1)));
+        var moCyclesOpt = new Option<string>(
+            name: "--cycles",
+            description: "Comma-separated cycle hours. Default 0,12 — 06/18Z only run 20h and aren't useful for 24/48/72h leads.",
+            getDefaultValue: () => "0,12");
+        var moLeadsOpt = new Option<string>(
+            name: "--leads",
+            description: "Comma-separated lead hours.",
+            getDefaultValue: () => "24,48,72");
+        var moParallelismOpt = new Option<int>(
+            name: "--parallelism",
+            description: "Concurrent NetCDF downloads per cycle.",
+            getDefaultValue: () => 12);
+        var metOfficeArchive = new Command(
+            "met-office-archive-backfill",
+            "Backfill historical Met Office Global Det 10km from AWS Open Data into model=met_office_global. " +
+            "Anonymous S3 access; 2-year rolling archive; ~15s/cycle wall time.")
+        {
+            moStartOpt, moEndOpt, moCyclesOpt, moLeadsOpt, moParallelismOpt,
+        };
+        metOfficeArchive.SetHandler(async (start, end, cyclesStr, leadsStr, parallelism) =>
+        {
+            var cycles = cyclesStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(s => int.Parse(s, System.Globalization.CultureInfo.InvariantCulture))
+                .ToArray();
+            var leads = leadsStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(s => int.Parse(s, System.Globalization.CultureInfo.InvariantCulture))
+                .ToArray();
+            var cmd = host.Services.GetRequiredService<MetOfficeArchiveBackfillCommand>();
+            Environment.ExitCode = await cmd.RunAsync(start, end, cycles, leads, parallelism, CancellationToken.None);
+        }, moStartOpt, moEndOpt, moCyclesOpt, moLeadsOpt, moParallelismOpt);
+        root.AddCommand(metOfficeArchive);
 
         var status = new Command("status", "Show what data is on disk");
         status.SetHandler(async ctx =>
@@ -290,7 +332,7 @@ public static class Program
 
         var predictTargetOpt = new Option<string>(
             name: "--target",
-            description: "Target variable: temperature | precipitation | dry-window | wind | humidity | shortwave-radiation | cloud-cover",
+            description: "Target variable: temperature | precipitation | dry-window | wind | humidity | shortwave-radiation | cloud-cover | utci",
             getDefaultValue: () => "temperature");
         var predictVersionOpt = new Option<string>(
             name: "--model-version",
@@ -325,6 +367,11 @@ public static class Program
             {
                 var cmd = host.Services.GetRequiredService<DryWindowPredictCommand>();
                 Environment.ExitCode = await cmd.RunAsync(truthStation, window, version, forDate, CancellationToken.None);
+            }
+            else if (string.Equals(target, "utci", StringComparison.OrdinalIgnoreCase))
+            {
+                var cmd = host.Services.GetRequiredService<UtciPredictCommand>();
+                Environment.ExitCode = await cmd.RunAsync(forDate, CancellationToken.None);
             }
             else if (elementTarget is not null)
             {

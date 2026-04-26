@@ -29,7 +29,14 @@ public sealed class PrecipOccurrenceTrainer
         double L1Regularization = 0.1,
         double L2Regularization = 0.1,
         int EarlyStoppingRound = 40,
-        int Seed = 42);
+        int Seed = 42,
+        // Bagging (added 2026-04-26 alongside temp 2b — same defaults). Standard
+        // LightGBM regularisation; ML.NET's wrapper defaults to 1.0/1.0 (off)
+        // which leaves the booster fully deterministic and over-reliant on the
+        // single-fit signal. See TemperatureTrainer.Hyperparameters for rationale.
+        double SubsampleFraction = 0.8,
+        int SubsampleFrequency = 1,
+        double FeatureFraction = 0.8);
 
     public sealed record TrainedClassifier(
         MLContext Ml,
@@ -92,6 +99,9 @@ public sealed class PrecipOccurrenceTrainer
             {
                 L1Regularization = hp.L1Regularization,
                 L2Regularization = hp.L2Regularization,
+                SubsampleFraction = hp.SubsampleFraction,
+                SubsampleFrequency = hp.SubsampleFrequency,
+                FeatureFraction = hp.FeatureFraction,
             },
         };
 

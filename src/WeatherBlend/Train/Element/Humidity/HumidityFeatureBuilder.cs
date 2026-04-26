@@ -46,10 +46,11 @@ public static class HumidityFeatureBuilder
     /// MétéoFrance live forecasts cut off ~36h → drop MF at 48/72h so train/predict
     /// shape match.
     ///
-    /// UKMO is ~26% null at every lead in Previous Runs (structural data gap, same
-    /// valid-times missing regardless of lead). Inconsistent presence creates training
-    /// noise — same pattern we observed and fixed for radiation. Drop UKMO at every
-    /// lead.
+    /// UKMO excluded entirely. 4-way bake-off 2026-04-26 confirmed humidity behaves
+    /// like temp/precip: the 6-model + restricted-window variant loses to 5-model +
+    /// full window by 4–6% MAE on the same fixed test rows. UKMO's signal doesn't
+    /// outweigh the ~30% training-data loss for humidity. (See docs/DESIGN.md UKMO
+    /// matrix; cloud and wind reach the opposite conclusion and keep UKMO.)
     ///
     /// Net membership: 5 models at 24h (no UKMO), 4 at 48/72h (no UKMO + no MF).
     /// </summary>
@@ -69,9 +70,8 @@ public static class HumidityFeatureBuilder
 
         var modelList = string.Join(",", ModelsForLead(leadHours).Select(m => $"'{m}'"));
         var includeMf = leadHours == 24;
-        // UKMO excluded at every lead (26% null in Previous Runs, hurts training); MF
-        // excluded at 48/72h (live API horizon ~36h). Pivot returns NULL for excluded
-        // models so the row schema stays constant.
+        // MF excluded at 48/72h (live API horizon ~36h); UKMO excluded everywhere
+        // (4-way bake-off 2026-04-26 — see ModelsForLead docstring).
         var mfPivotClauses = includeMf
             ? @"
         MAX(CASE WHEN Model = 'meteofrance_seamless' THEN rh END) AS rh_mf,

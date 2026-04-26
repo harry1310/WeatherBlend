@@ -26,7 +26,12 @@ public sealed class WindBlender : IElementBlender
     {
         var inputs = new ElementTrainerHarness.ElementTrainerInputs<WindRow>(
             Target: Target,
-            Hyperparameters: new TemperatureTrainer.Hyperparameters(),
+            // Wind opts OUT of bagging. The 4-way bake-off 2026-04-26 showed bagging
+            // marginally HURTS wind at every lead (-0.16/-0.55/-0.42% vs no-bag), unlike
+            // every other target where bagging helps by +0.5-2%. UKMO is restored for
+            // wind (only target where the 6-model wins on the same fixed test set).
+            Hyperparameters: new TemperatureTrainer.Hyperparameters(
+                SubsampleFraction: 1.0, SubsampleFrequency: 0, FeatureFraction: 1.0),
             InternalFeatureColumns: WindFeatureBuilder.InternalFeatureColumns,
             PublicFeatureNames: WindFeatureBuilder.PublicFeatureNames,
             ModelAccessors: WindFeatureBuilder.ModelAccessors,
@@ -39,6 +44,9 @@ public sealed class WindBlender : IElementBlender
                 "blender is therefore a 5-model ensemble, not 6.",
                 "Objective is L2; MAE used only as early-stopping metric (Microsoft.ML.LightGbm 4.0 limit).",
                 "No monotone constraints (same Microsoft.ML.LightGbm 4.0 limit).",
+                "Bagging deliberately disabled (1.0/0/1.0). 4-way bake-off showed bagging " +
+                "marginally hurts wind at every lead, unlike every other target. Wind keeps " +
+                "the deterministic ML.NET defaults.",
             },
             LoadRowsForLead: (lead, c) => WindFeatureBuilder.BuildForLead(
                 _cfg.Storage.ForecastsPath, _cfg.Storage.Era5Path, _cfg.Location.Name, lead, c));
