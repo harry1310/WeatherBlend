@@ -67,6 +67,7 @@ public sealed class CollectCommand
             }
         }
 
+        var metarErrors = 0;
         try
         {
             var station = _cfg.Location.Metar.Primary;
@@ -85,8 +86,16 @@ public sealed class CollectCommand
         }
         catch (Exception ex)
         {
-            _log.LogError(ex, "METAR collection FAILED");
-            return 2;
+            // Match the pattern of every other collector — log + count, do not
+            // abort the rest of collect. Until 2026-04-26 this returned exit 2,
+            // which (a) skipped rainfall + MO Spot + MO Obs + MO Global and
+            // (b) caused GH Actions to skip the post-collect R2 push step,
+            // so even forecasts collected before METAR didn't land on R2.
+            // METAR was load-bearing as the sole verification truth in early
+            // phases; with ERA5/EA/MO Obs now also collected it's no longer
+            // worth blocking everything else when aviationweather.gov hiccups.
+            metarErrors++;
+            _log.LogError(ex, "METAR collection FAILED (non-fatal)");
         }
 
         // EA rainfall: pull the last 2 days per station. Interval-end timestamps
@@ -113,7 +122,7 @@ public sealed class CollectCommand
 
         var metOfficeErrors = await CollectMetOfficeAsync(ct);
 
-        if (forecastErrors > 0 || rainfallErrors > 0 || metOfficeErrors > 0) return 1;
+        if (forecastErrors > 0 || metarErrors > 0 || rainfallErrors > 0 || metOfficeErrors > 0) return 1;
         return 0;
     }
 
