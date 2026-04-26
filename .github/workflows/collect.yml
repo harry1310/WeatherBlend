@@ -86,17 +86,37 @@ jobs:
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
 
       - name: Collect
+        id: collect
         env:
           MET_OFFICE_SPOT_API_KEY: ${{ secrets.MET_OFFICE_SPOT_API_KEY }}
           MET_OFFICE_OBS_API_KEY: ${{ secrets.MET_OFFICE_OBS_API_KEY }}
+        # continue-on-error so a sub-collector failure (CollectCommand returns 1)
+        # doesn't skip the R2 push below — partial data still lands. The "Fail
+        # job if collect had errors" step at the end re-raises the failure so
+        # GitHub still emails you / marks the run red.
+        continue-on-error: true
         run: dotnet run --project src/WeatherBlend --no-build -c Release -- collect
 
       - name: Push new/updated data to R2
+        # if: always() — run even when Collect set continue-on-error. Any data
+        # that DID land on disk before the failure is pushed; remote partition
+        # is never made worse than what's locally on disk.
+        if: always()
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
           # copy (not sync) — additive only, never deletes remote files.
           rclone copy ./data "r2:${R2_BUCKET}/data" --fast-list --transfers 16 --checkers 32 --progress
+
+      - name: Fail job if collect had errors
+        # Re-raise the failure after R2 push has run. Keeps GitHub's run
+        # status / email-on-failure behaviour intact, while ensuring the
+        # data side-effect ran first.
+        if: steps.collect.outcome != 'success'
+        run: |
+          echo "Collect step exited non-zero — see 'Collect' log above for which sub-collector failed."
+          echo "R2 push was attempted regardless so any successfully collected data has landed."
+          exit 1
 
       - name: Upload logs as artifact
         if: always()
