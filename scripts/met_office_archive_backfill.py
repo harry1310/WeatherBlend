@@ -255,6 +255,11 @@ def main():
                     help="Comma-separated lead hours")
     ap.add_argument("--parallelism", type=int, default=8,
                     help="Concurrent NetCDF downloads per cycle")
+    ap.add_argument("--min-cycle-age-hours", type=int, default=0,
+                    help="Skip cycles whose run time is less than this many hours ago. "
+                         "AWS publishes ~3-6h after each cycle's run time, so for live "
+                         "collect set this to 7 to avoid the same-day 12Z 'all 404' noise. "
+                         "Leave 0 for historical backfill.")
     args = ap.parse_args()
 
     start = datetime.strptime(args.start, "%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -271,12 +276,23 @@ def main():
 
     n_cycles_done = 0
     n_cycles_failed = 0
+    n_cycles_skipped = 0
     t_start = time.time()
+    now_utc = datetime.now(timezone.utc)
 
     cur = start
     while cur <= end:
         for cc in cycles:
             cycle_dt = cur.replace(hour=cc, minute=0, second=0, microsecond=0)
+            age_hours = (now_utc - cycle_dt).total_seconds() / 3600.0
+            if args.min_cycle_age_hours > 0 and age_hours < args.min_cycle_age_hours:
+                # Skip silently rather than 404-spam through 14 vars × 3 leads — files
+                # for this cycle simply aren't on AWS yet. Common case: live collect at
+                # 16Z catches today's 12Z (4h old) before publication completes.
+                print(f"\n[{datetime.now().strftime('%H:%M:%S')}] cycle {cycle_dt:%Y-%m-%d %H}Z — "
+                      f"skip (age {age_hours:.1f}h < min {args.min_cycle_age_hours}h, AWS publication delay)")
+                n_cycles_skipped += 1
+                continue
             print(f"\n[{datetime.now().strftime('%H:%M:%S')}] cycle {cycle_dt:%Y-%m-%d %H}Z")
             try:
                 rows = fetch_cycle(cycle_dt, leads, VARIABLE_MAP, BONEHILL_LAT, BONEHILL_LON,
@@ -293,7 +309,7 @@ def main():
         cur += pd.Timedelta(days=1)
 
     dur = time.time() - t_start
-    print(f"\nDone. cycles ok={n_cycles_done} failed={n_cycles_failed}  elapsed={dur:.1f}s")
+    print(f"\nDone. cycles ok={n_cycles_done} failed={n_cycles_failed} skipped={n_cycles_skipped}  elapsed={dur:.1f}s")
     return 0 if n_cycles_failed == 0 else 1
 
 

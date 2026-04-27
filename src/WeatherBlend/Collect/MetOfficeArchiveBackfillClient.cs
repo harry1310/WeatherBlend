@@ -38,7 +38,7 @@ public sealed class MetOfficeArchiveBackfillClient
     public async Task<int> RunAsync(
         DateOnly start, DateOnly end,
         IReadOnlyList<int> cycles, IReadOnlyList<int> leads,
-        int parallelism, CancellationToken ct)
+        int parallelism, int minCycleAgeHours, CancellationToken ct)
     {
         var python = ResolvePython();
         var scriptPath = ResolveScriptPath();
@@ -55,6 +55,7 @@ public sealed class MetOfficeArchiveBackfillClient
             "--cycles", string.Join(",", cycles),
             "--leads",  string.Join(",", leads),
             "--parallelism", parallelism.ToString(CultureInfo.InvariantCulture),
+            "--min-cycle-age-hours", minCycleAgeHours.ToString(CultureInfo.InvariantCulture),
         };
 
         _log.LogInformation(

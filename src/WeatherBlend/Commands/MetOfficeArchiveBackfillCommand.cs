@@ -34,6 +34,8 @@ public sealed class MetOfficeArchiveBackfillCommand
         _log.LogInformation(
             "Met Office archive backfill {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} cycles=[{Cycles}] leads=[{Leads}] parallelism={N}",
             start, end, string.Join(',', cycles), string.Join(',', leads), parallelism);
-        return await _client.RunAsync(start, end, cycles, leads, parallelism, ct);
+        // Historical backfill — every cycle in range is far older than any sensible
+        // publication delay, so the min-age floor is 0 (no skip).
+        return await _client.RunAsync(start, end, cycles, leads, parallelism, minCycleAgeHours: 0, ct);
     }
 }

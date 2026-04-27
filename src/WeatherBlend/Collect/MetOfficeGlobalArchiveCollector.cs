@@ -31,6 +31,9 @@ public sealed class MetOfficeGlobalArchiveCollector
     private static readonly int[] DefaultLeads = { 24, 48, 72 };
     private const int DefaultLookbackDays = 3;
     private const int DefaultParallelism = 8;
+    // AWS publishes a cycle's NetCDFs ~3-6h after run time; a 7h floor avoids the
+    // same-day "all 14 vars 404" noise on whichever 12Z run hasn't fully landed yet.
+    private const int MinCycleAgeHours = 7;
 
     private readonly MetOfficeArchiveBackfillClient _client;
     private readonly ILogger<MetOfficeGlobalArchiveCollector> _log;
@@ -48,9 +51,9 @@ public sealed class MetOfficeGlobalArchiveCollector
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var start = today.AddDays(-DefaultLookbackDays);
         _log.LogInformation(
-            "Met Office Global Det archive — refreshing {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} cycles=[{Cycles}] leads=[{Leads}]",
-            start, today, string.Join(',', DefaultCycles), string.Join(',', DefaultLeads));
+            "Met Office Global Det archive — refreshing {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} cycles=[{Cycles}] leads=[{Leads}] min-age={Age}h",
+            start, today, string.Join(',', DefaultCycles), string.Join(',', DefaultLeads), MinCycleAgeHours);
         return await _client.RunAsync(
-            start, today, DefaultCycles, DefaultLeads, DefaultParallelism, ct);
+            start, today, DefaultCycles, DefaultLeads, DefaultParallelism, MinCycleAgeHours, ct);
     }
 }
