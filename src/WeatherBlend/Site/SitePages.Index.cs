@@ -35,11 +35,27 @@ public static partial class SitePages
             .GroupBy(r => r.LeadHours)
             .ToDictionary(g => g.Key, g => g.ToList());
 
+        // UTCI feels-like per (lead, valid_time). The pipeline emits rows on the same
+        // anchor as the temperature blender, so exact match is the right join key — no
+        // ±12h fuzz needed (P(wet) lives on a separate run-grid; UTCI does not). Multiple
+        // PredictionMadeAtUtc rows can share a key when an anchor is re-run; keep the
+        // freshest. Single version v1 today, so no champion filter is required.
+        var utciByKey = input.UtciPredictions
+            .GroupBy(u => (u.LeadHours, u.ValidTimeUtc))
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(u => u.PredictedAtUtc).First());
+
         var cards = new StringBuilder();
-        foreach (var lead in new[] { 24, 48, 72 })
+        foreach (var lead in PocLeads)
         {
             if (latestByLead.TryGetValue(lead, out var p))
             {
+                string feelsCell = "";
+                if (utciByKey.TryGetValue((p.LeadHours, p.ValidTimeUtc), out var u))
+                {
+                    var feelsColor = TemperatureColor(u.UtciC);
+                    feelsCell = $"<div class=\"feels\">Feels <strong style=\"color: {feelsColor}\">{u.UtciC.ToString("0.0", Ci)}°C</strong> <small>{Escape(PrettyUtciBand(u.Band))}</small></div>";
+                }
+
                 string pwetCell = "";
                 if (pwetByLead.TryGetValue(lead, out var pwRows))
                 {
@@ -59,6 +75,7 @@ public static partial class SitePages
                     <article class="forecast-card">
                       <header><h3>+{lead}h · {p.ValidTimeUtc:ddd}</h3><small>{p.ValidTimeUtc:yyyy-MM-dd HH:mm}Z</small></header>
                       <div class="temp" style="--temp-color: {tempColor}">{p.BlendTemperature.ToString("0.0", Ci)}°C</div>
+                      {feelsCell}
                       {pwetCell}
                       <footer>
                         <small>Made {p.PredictionMadeAtUtc:yyyy-MM-dd HH:mm}Z</small><br/>

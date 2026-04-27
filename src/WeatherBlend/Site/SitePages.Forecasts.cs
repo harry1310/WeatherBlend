@@ -43,7 +43,7 @@ public static partial class SitePages
     private static string RenderLeadSubNav(int current)
     {
         var items = new StringBuilder();
-        foreach (var lead in new[] { 24, 48, 72 })
+        foreach (var lead in PocLeads)
         {
             var cls = lead == current ? " class=\"active\"" : "";
             items.Append(Ci, $"""<li><a href="forecasts-{lead}h.html"{cls}>+{lead}h</a></li>""");

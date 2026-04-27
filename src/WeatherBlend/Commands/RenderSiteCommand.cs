@@ -42,8 +42,8 @@ public sealed class RenderSiteCommand
         var now = DateTime.UtcNow;
         var windowStart = now.AddDays(-windowDays);
         // Forecast cards need valid-times that are still in the future at render time,
-        // so include the full forecast horizon (leads go to 72h) plus a day of headroom.
-        var predictionEnd = now.AddDays(4);
+        // so include the full forecast horizon (leads go to 120h) plus a day of headroom.
+        var predictionEnd = now.AddDays(6);
 
         _log.LogInformation(
             "Render site: predictions [{Start:yyyy-MM-dd}..{End:yyyy-MM-dd}], rolling {Rolling}d, output → {Dir}",
@@ -54,6 +54,9 @@ public sealed class RenderSiteCommand
 
         var precip = QueryPrecipPredictions(windowStart, predictionEnd, ct);
         _log.LogInformation("Loaded {N} precipitation prediction rows.", precip.Count);
+
+        var utci = QueryUtciPredictions(windowStart, predictionEnd, ct);
+        _log.LogInformation("Loaded {N} UTCI prediction rows.", utci.Count);
 
         var dryWindow = QueryDryWindowPredictions(windowStart, predictionEnd, ct);
         _log.LogInformation("Loaded {N} dry-window prediction rows.", dryWindow.Count);
@@ -110,13 +113,14 @@ public sealed class RenderSiteCommand
             CurrentVersion = currentVersion,
             PrecipCurrentByStation = precipCurrentByStation,
             ModelSummaries = modelSummaries,
+            UtciPredictions = utci,
         };
 
         Directory.CreateDirectory(outputDir);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "index.html"),         SitePages.RenderIndex(input),          ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "forecasts-24h.html"), SitePages.RenderForecasts(input, 24),  ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "forecasts-48h.html"), SitePages.RenderForecasts(input, 48),  ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "forecasts-72h.html"), SitePages.RenderForecasts(input, 72),  ct);
+        foreach (var lead in SitePages.PocLeads)
+            await File.WriteAllTextAsync(Path.Combine(outputDir, $"forecasts-{lead}h.html"),
+                SitePages.RenderForecasts(input, lead), ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "models.html"),        SitePages.RenderModels(input),         ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "about.html"),         SitePages.RenderAbout(input),          ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "styles.css"),         SitePages.Stylesheet(),                ct);
@@ -151,7 +155,10 @@ public sealed class RenderSiteCommand
                 SitePages.RenderDryWindow(input, slug), ct);
         }
 
-        var totalFiles = 7 + 1 + Math.Max(1, rainStations.Count) + Math.Max(1, dryStations.Count);
+        // index + per-lead forecasts + models + about + styles + skill-temperature
+        // + skill-rainfall × stations + dry-window × stations.
+        var totalFiles = 5 + SitePages.PocLeads.Length
+            + Math.Max(1, rainStations.Count) + Math.Max(1, dryStations.Count);
         _log.LogInformation("Site rendered → {Dir} ({Files} files)", outputDir, totalFiles);
         return 0;
     }
@@ -617,6 +624,52 @@ ORDER BY TruthStation, LeadHours, ValidTimeUtc";
         {
             _log.LogWarning("Precipitation predictions tree empty — precip page will render an empty state.");
             return Array.Empty<SitePages.PrecipForecastPoint>();
+        }
+        return rows;
+    }
+
+    private IReadOnlyList<SitePages.UtciForecastPoint> QueryUtciPredictions(
+        DateTime start, DateTime end, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        var glob = Path.Combine(_cfg.Storage.PredictionsPath, "utci", "**", "*.parquet")
+            .Replace('\\', '/').Replace("'", "''");
+
+        var sql = $@"
+SELECT ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours, UtciC, Band
+FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+WHERE LocationName = '{_cfg.Location.Name}'
+  AND UtciC IS NOT NULL
+  AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
+  AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+ORDER BY LeadHours, ValidTimeUtc";
+
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+
+        var rows = new List<SitePages.UtciForecastPoint>();
+        try
+        {
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                ct.ThrowIfCancellationRequested();
+                rows.Add(new SitePages.UtciForecastPoint(
+                    Version:        r.GetString(0),
+                    PredictedAtUtc: r.GetDateTime(1),
+                    ValidTimeUtc:   r.GetDateTime(2),
+                    LeadHours:      r.GetInt32(3),
+                    UtciC:          r.GetDouble(4),
+                    Band:           r.IsDBNull(5) ? "" : r.GetString(5)));
+            }
+        }
+        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
+        {
+            _log.LogWarning("UTCI predictions tree empty — feels-like chip will be absent on home cards.");
+            return Array.Empty<SitePages.UtciForecastPoint>();
         }
         return rows;
     }

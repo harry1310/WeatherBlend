@@ -17,6 +17,14 @@ public static partial class SitePages
 {
     private static readonly CultureInfo Ci = CultureInfo.InvariantCulture;
 
+    /// <summary>
+    /// Lead-time horizons for the lean temp/precip pages: home cards, per-lead
+    /// forecast tables, temperature rolling-MAE chart, Models per-lead rows.
+    /// Dry-window stays on its own narrower {24,48,72} list — Phase 3b/3d models
+    /// were never trained at 120h.
+    /// </summary>
+    internal static readonly int[] PocLeads = { 24, 48, 72, 120 };
+
     public sealed record SiteInputs
     {
         public required string LocationDisplay { get; init; }
@@ -94,6 +102,16 @@ public static partial class SitePages
         /// </summary>
         public IReadOnlyList<ModelSummary> ModelSummaries { get; init; }
             = Array.Empty<ModelSummary>();
+
+        /// <summary>
+        /// Joined "feels-like" UTCI predictions per (lead, valid_time). Each row pairs the
+        /// lean temperature blender output with the four element blenders (humidity / wind /
+        /// shortwave radiation / cloud cover) at the same anchor and runs Bröde 2012. Empty
+        /// list when the UTCI prediction tree hasn't been synced yet — the home card falls
+        /// back silently (no chip rendered).
+        /// </summary>
+        public IReadOnlyList<UtciForecastPoint> UtciPredictions { get; init; }
+            = Array.Empty<UtciForecastPoint>();
     }
 
     /// <summary>
@@ -145,6 +163,14 @@ public static partial class SitePages
         double? PrecipUkmo,
         double? PrecipGem);
 
+    public sealed record UtciForecastPoint(
+        string Version,
+        DateTime PredictedAtUtc,
+        DateTime ValidTimeUtc,
+        int LeadHours,
+        double UtciC,
+        string Band);
+
     public sealed record DryWindowForecastPoint(
         string Station,
         int WindowHours,
@@ -172,6 +198,9 @@ public static partial class SitePages
         .forecast-card .pwet { font-size: 0.95rem; color: var(--pwet); margin: 0 0 0.5rem; font-variant-numeric: tabular-nums; }
         .forecast-card .pwet strong { font-weight: 700; }
         .forecast-card .pwet small { color: var(--pico-muted-color); margin-left: 0.35rem; }
+        .forecast-card .feels { font-size: 0.95rem; color: var(--pico-muted-color); margin: 0 0 0.5rem; font-variant-numeric: tabular-nums; }
+        .forecast-card .feels strong { font-weight: 700; }
+        .forecast-card .feels small { margin-left: 0.35rem; }
 
         nav.lead-nav { margin: 0 0 1.25rem; padding: 0; }
         nav.lead-nav ul { display: flex; gap: 0.75rem; list-style: none; padding: 0; margin: 0; }
@@ -295,6 +324,24 @@ public static partial class SitePages
             items.Append(Ci, $"""<li><a href="{href}"{cls}>{Escape(PrettyStation(s))}</a></li>""");
         }
         return $"""<nav class="lead-nav"><ul>{items}</ul></nav>""";
+    }
+
+    /// <summary>
+    /// Pretty-print a <see cref="WeatherBlend.Predict.Utci.UtciStress"/> enum name for
+    /// the home-card chip. "ModerateHeat" → "Moderate heat"; "NoStress" → "No stress".
+    /// </summary>
+    internal static string PrettyUtciBand(string band)
+    {
+        if (string.IsNullOrEmpty(band)) return "";
+        var sb = new StringBuilder(band.Length + 4);
+        for (int i = 0; i < band.Length; i++)
+        {
+            var c = band[i];
+            if (i == 0) sb.Append(char.ToUpper(c));
+            else if (char.IsUpper(c)) { sb.Append(' '); sb.Append(char.ToLower(c)); }
+            else sb.Append(c);
+        }
+        return sb.ToString();
     }
 
     private static string Escape(string s) =>

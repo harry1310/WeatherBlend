@@ -77,7 +77,7 @@ public static partial class SitePages
         foreach (var m in ordered)
         {
             bool firstLeadRow = true;
-            foreach (var lead in new[] { 24, 48, 72 })
+            foreach (var lead in PocLeads)
             {
                 if (!m.PerLead.TryGetValue(lead, out var s)) continue;
 
@@ -134,7 +134,7 @@ public static partial class SitePages
     }
 
     private static int CountLeads(ModelSummary m)
-        => new[] { 24, 48, 72 }.Count(lead => m.PerLead.ContainsKey(lead));
+        => PocLeads.Count(lead => m.PerLead.ContainsKey(lead));
 
     /// <summary>
     /// Pretty-print a composite key. Examples:
