@@ -95,7 +95,12 @@ VARIABLE_MAP: list[VarSpec] = [
     VarSpec("temperature_at_screen_level",                        "air_temperature",       "Temperature2m",      lambda x: x - 273.15),
     VarSpec("temperature_of_dew_point_at_screen_level",           "dew_point_temperature", "DewPoint2m",         lambda x: x - 273.15),
     VarSpec("relative_humidity_at_screen_level",                  "relative_humidity",     "RelativeHumidity2m", lambda x: x * 100.0),  # 0..1 → %
-    VarSpec("precipitation_rate",                                 "precipitation_flux",    "Precipitation",      lambda x: x * 3600.0),  # kg/m²/s → mm/h
+    # Met Office uses lwe_precipitation_rate in m s-1 (Liquid Water Equivalent rate)
+    # — NOT kg m-2 s-1 like NOAA/ECMWF. Conversion: m/s → mm/h = × 1000 × 3600.
+    # (Pre-2026-04-27 this was × 3600, producing values 1000× too small. Fixed
+    # in commit-after-this; existing parquets patched in place by
+    # scripts/patch_met_office_precip_units.py.)
+    VarSpec("precipitation_rate",                                 "lwe_precipitation_rate","Precipitation",      lambda x: x * 3_600_000.0),  # m/s → mm/h
     VarSpec("wind_speed_at_10m",                                  "wind_speed",            "WindSpeed10m",       None),
     VarSpec("wind_direction_at_10m",                              "wind_from_direction",   "WindDirection10m",   None),
     VarSpec("wind_gust_at_10m",                                   "wind_speed_of_gust",    "WindGusts10m",       None),
