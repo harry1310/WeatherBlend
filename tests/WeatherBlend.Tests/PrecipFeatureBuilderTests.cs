@@ -1,11 +1,99 @@
 using FluentAssertions;
+using Microsoft.Extensions.Configuration;
+using NetEscapades.Configuration.Yaml;
+using WeatherBlend.Config;
 using WeatherBlend.Train;
+using WeatherBlend.Train.Common;
 using Xunit;
 
 namespace WeatherBlend.Tests;
 
 public class PrecipFeatureBuilderTests
 {
+    // -----------------------------------------------------------------------
+    // New canonical path (BlenderSpec / BinaryTrainingRow). Phase 2 refactor.
+    // -----------------------------------------------------------------------
+
+    private static BlendersConfig LoadShippedConfig()
+    {
+        var configPath = Path.Combine(AppContext.BaseDirectory, "config.yaml");
+        var cfg = new ConfigurationBuilder().AddYamlFile(configPath, optional: false).Build();
+        var bound = new AppConfig();
+        cfg.Bind(bound);
+        return bound.Blenders;
+    }
+
+    [Fact]
+    public void BuildSpec_lean_precip_lead_24_has_5_optional_models_and_25_features()
+    {
+        var spec = PrecipFeatureBuilder.BuildSpec(LoadShippedConfig(), 24);
+        spec.Target.Should().Be("precipitation");
+        spec.FeatureSet.Should().Be("lean");
+        spec.RequiredModels.Should().BeEmpty();
+        spec.OptionalModels.Should().Equal(
+            "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "meteofrance_seamless", "gem_seamless");
+        // Layout: 5 precip + 5 prob + 4 spread + 7 covariates + 4 calendar = 25.
+        spec.FeatureNames.Should().HaveCount(25);
+        spec.FeatureNames.Should().StartWith(new[]
+        {
+            "precip_gfs", "precip_ecmwf", "precip_icon", "precip_mf", "precip_gem",
+            "prob_gfs", "prob_ecmwf", "prob_icon", "prob_mf", "prob_gem",
+        });
+        spec.FeatureNames.Should().Contain("precip_agreement_wet_01");
+    }
+
+    [Fact]
+    public void BuildSpec_lean_precip_lead_120_drops_MF_to_4_models_and_23_features()
+    {
+        var spec = PrecipFeatureBuilder.BuildSpec(LoadShippedConfig(), 120);
+        spec.OptionalModels.Should().Equal(
+            "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "gem_seamless");
+        // 4 precip + 4 prob + 4 spread + 7 covariates + 4 calendar = 23.
+        spec.FeatureNames.Should().HaveCount(23);
+        spec.FeatureNames.Should().NotContain("precip_mf");
+        spec.FeatureNames.Should().NotContain("prob_mf");
+        spec.FeatureNames.Should().NotContain("precip_ukmo");
+    }
+
+    [Fact]
+    public void ComposeRow_with_spec_packs_features_and_label()
+    {
+        var spec = PrecipFeatureBuilder.BuildSpec(LoadShippedConfig(), 24);
+        var precip = new[] { 0.0, 0.05, 0.2, 0.5, 1.0 };
+        var probs  = new[] { 0.1, 0.2,  0.3, 0.4, 0.5 };
+        var row = PrecipFeatureBuilder.ComposeRow(
+            spec, new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc),
+            precip, probs,
+            rhMean: 80, dewDepressionMean: 2,
+            cloudLowMean: 50, cloudMidMean: 30, cloudHighMean: 20,
+            capeMean: 100, windSpeedMean: 5,
+            truthMmHour: 0.3);
+
+        row.Features.Length.Should().Be(spec.FeatureCount);
+        for (int i = 0; i < precip.Length; i++)
+            row.Features[i].Should().BeApproximately((float)precip[i], 1e-5f);
+        row.Label.Should().BeTrue();          // 0.3 mm/h ≥ 0.1 mm threshold
+        row.TruthMmHour.Should().BeApproximately(0.3f, 1e-5f);
+        // Mean of (0.0, 0.05, 0.2, 0.5, 1.0) = 0.35; max = 1.0; agreement = 3/5 (precip≥0.1mm).
+        row.Features[spec.IndexOf("precip_mean")].Should().BeApproximately(0.35f, 1e-4f);
+        row.Features[spec.IndexOf("precip_max")].Should().BeApproximately(1.0f, 1e-4f);
+        row.Features[spec.IndexOf("precip_agreement_wet_01")].Should().BeApproximately(3f / 5f, 1e-4f);
+    }
+
+    [Fact]
+    public void ComposeRow_throws_when_perModelPrecip_count_does_not_match_spec()
+    {
+        var spec = PrecipFeatureBuilder.BuildSpec(LoadShippedConfig(), 24);  // 5 models
+        var act = () => PrecipFeatureBuilder.ComposeRow(
+            spec, DateTime.UtcNow, new[] { 0.0, 0.0 }, new[] { 0.0, 0.0, 0.0, 0.0, 0.0 },
+            0, 0, 0, 0, 0, 0, 0, 0);
+        act.Should().Throw<ArgumentException>();
+    }
+
+    // -----------------------------------------------------------------------
+    // Legacy fixed-shape path (kept until rich precip migrates in Phase 3)
+    // -----------------------------------------------------------------------
+
     [Fact]
     public void OccurrenceFeatureNames_has_exactly_27_columns_in_expected_order()
     {

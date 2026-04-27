@@ -156,3 +156,146 @@ http:
   # 2026-04-25. Bump if 429s reappear; lower at your own risk. ERA5 uses a
   # hardcoded 2s delay (its endpoint has plenty of headroom in observed runs).
   previousRunsBackfillDelaySeconds: 15
+
+# Per-blender model membership. Single source of truth for "what models does
+# this blender use at this lead". Drives:
+#   * Training SQL: which model columns are pivoted, post-pivot row drop policy.
+#   * Predict-time forecast pivot: only listed models are pulled.
+#   * feature_schema.json on each artefact (per-lead).
+#
+# Three-bucket per-lead model membership:
+#   requiredModels  — must be NOT NULL per row; row dropped otherwise.
+#                     Use for models we want as load-bearing inputs.
+#   optionalModels  — included as a feature, allowed to be NaN at the row level
+#                     (LightGBM handles NaN natively via missing-value branches).
+#                     Use for models with known intra-window gaps.
+#   (anything else) — excluded entirely. No vector slot, no NaN sentinel.
+#                     Use for models we deliberately don't want, or that have
+#                     no data at all.
+#
+# Universal safety check (always on): even an all-optional spec drops rows
+# where every listed model is silent — the feature vector would be all-NaN,
+# contributing nothing to training.
+#
+# perLeadOverrides replaces both lists for a specific lead. Used where data
+# availability differs (MF caps at 72h; UKMO data starts 2024-09; etc.).
+#
+# History note: the "lean" temperature blender excludes UKMO entirely (per the
+# 2026-04-26 four-way bake-off — the 5-model + full-window variant beat the
+# 6-model + restricted-window variant by 1-2% MAE). The "rich" temperature
+# blender requires UKMO, which naturally restricts training to post-2024-09 —
+# that's the deliberate design tradeoff captured by required-vs-excluded here.
+blenders:
+  items:
+    # ---- Temperature ----
+    - target: temperature
+      featureSet: lean
+      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, gem_seamless]
+      optionalModels: []
+      perLeadOverrides:
+        - lead: 120
+          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless]
+          optionalModels: []
+
+    - target: temperature
+      featureSet: rich
+      # Rich requires UKMO — naturally restricts training to post-2024-09 (when
+      # UKMO data starts in Open-Meteo Previous Runs). Deliberate design tradeoff.
+      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, ukmo_seamless, gem_seamless]
+      optionalModels: []
+      perLeadOverrides:
+        - lead: 120
+          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, ukmo_seamless, gem_seamless]
+          optionalModels: []
+
+    # ---- Precipitation ----
+    # Lenient policy: precip rows kept where ANY model has data — models often
+    # disagree about whether an hour is wet at all, so all 5 (or 6 for rich) sit
+    # in optional and the universal at-least-one check provides the floor.
+    - target: precipitation
+      featureSet: lean
+      requiredModels: []
+      optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, gem_seamless]
+      perLeadOverrides:
+        - lead: 120
+          requiredModels: []
+          optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless]
+
+    - target: precipitation
+      featureSet: rich
+      requiredModels: []
+      optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, ukmo_seamless, gem_seamless]
+      perLeadOverrides:
+        - lead: 120
+          requiredModels: []
+          optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, ukmo_seamless, gem_seamless]
+
+    # ---- Dry-window ----
+    - target: dry_window
+      featureSet: base
+      requiredModels: []
+      optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, gem_seamless]
+      perLeadOverrides:
+        - lead: 120
+          requiredModels: []
+          optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless]
+
+    - target: dry_window
+      featureSet: shape
+      requiredModels: []
+      optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, gem_seamless]
+      perLeadOverrides:
+        - lead: 120
+          requiredModels: []
+          optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless]
+
+    # ---- Element blenders (single-variant) ----
+    # Wind: 4 strict + UKMO optional (UKMO wind has intra-2024-09+ gaps).
+    # MF excluded everywhere — Open-Meteo Previous Runs ships no MF wind data.
+    - target: wind
+      featureSet: default
+      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless]
+      optionalModels: [ukmo_seamless]
+
+    # Humidity: UKMO excluded entirely in legacy (CAST NULL stamp).
+    # MF excluded at 48/72h (live API horizon ~36h). TBD: verify whether MF
+    # at lead 24 was strictly required or allowed-NaN in the legacy SQL.
+    - target: humidity
+      featureSet: default
+      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, gem_seamless]
+      optionalModels: []
+      perLeadOverrides:
+        - lead: 48
+          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless]
+          optionalModels: []
+        - lead: 72
+          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless]
+          optionalModels: []
+
+    # Cloud: UKMO restored everywhere; MF dropped at 48/72h.
+    # TBD: verify whether MF at lead 24 was strictly required or allowed-NaN.
+    - target: cloud
+      featureSet: default
+      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, ukmo_seamless, gem_seamless]
+      optionalModels: []
+      perLeadOverrides:
+        - lead: 48
+          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, ukmo_seamless, gem_seamless]
+          optionalModels: []
+        - lead: 72
+          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, ukmo_seamless, gem_seamless]
+          optionalModels: []
+
+    # Radiation: UKMO permanently absent (74% null at 24h, 100% at 48/72h).
+    # MF dropped at 48/72h.
+    - target: radiation
+      featureSet: default
+      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, gem_seamless]
+      optionalModels: []
+      perLeadOverrides:
+        - lead: 48
+          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless]
+          optionalModels: []
+        - lead: 72
+          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless]
+          optionalModels: []

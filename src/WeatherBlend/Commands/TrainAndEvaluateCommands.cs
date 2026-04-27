@@ -4,19 +4,23 @@ using WeatherBlend.Config;
 using WeatherBlend.Evaluate;
 using WeatherBlend.Evaluate.Precip;
 using WeatherBlend.Train;
+using WeatherBlend.Train.Common;
 using WeatherBlend.Train.Element;
 
 namespace WeatherBlend.Commands;
 
 /// <summary>
-/// Trains the blender — one LightGBM model per lead ∈ {24,48,72}.
+/// Trains the blender — one LightGBM model per lead.
 ///
-/// target=temperature: regressor against ERA5 reanalysis (Phase 2b/2c).
+/// target=temperature: regressor against ERA5 reanalysis (Phase 2b/2c). Leads {24,48,72,120}.
 /// target=precipitation: binary classifier for P(hour has >= 0.1 mm) against
-/// EA Bellever rainfall truth (Phase 3a/3c).
-/// target=dry-window: P(at least one N-hour dry block in target day) (Phase 3b/3d).
+/// EA Bellever rainfall truth (Phase 3a/3c). Leads {24,48,72,120}.
+/// target=dry-window: P(at least one N-hour dry block in target day) (Phase 3b/3d). Leads {24,48,72}.
 /// target=wind | humidity | shortwave-radiation | cloud-cover: per-lead regressor
-/// against ERA5 truth — the lean per-element blenders.
+/// against ERA5 truth — the lean per-element blenders. Leads {24,48,72}.
+///
+/// Lead 120h applies to temperature + precipitation only — dry-window and Element
+/// blenders stay capped at 72h pending a separate scoping decision.
 /// </summary>
 public sealed class TrainCommand
 {
@@ -25,7 +29,9 @@ public sealed class TrainCommand
     private readonly DryWindowTrainCommand _dryWindow;
     private readonly ElementTrainCommand _element;
 
-    private static readonly int[] DefaultLeads = { 24, 48, 72 };
+    // Default leads for temperature + precipitation. Dry-window and Element
+    // train commands keep their own narrower {24,48,72} arrays internally.
+    private static readonly int[] DefaultLeads = { 24, 48, 72, 120 };
 
     public TrainCommand(
         ILogger<TrainCommand> log,
@@ -58,7 +64,7 @@ public sealed class TrainCommand
         var leads = ParseLeads(lead);
         if (leads is null)
         {
-            _log.LogError("Invalid --lead value '{Lead}'. Expected 24, 48, 72, or all.", lead);
+            _log.LogError("Invalid --lead value '{Lead}'. Expected 24, 48, 72, 120, or all.", lead);
             return 2;
         }
 
@@ -75,6 +81,20 @@ public sealed class TrainCommand
                 "Rich variants are not defined for the per-variable blenders yet.", fs);
             return 2;
         }
+
+        // Lead 120h is currently scoped to temperature + precipitation only.
+        // Dry-window and Element targets stay capped at 72h until separately scoped.
+        if ((t == "dry-window" || elementTarget is not null) && leads.Contains(120))
+        {
+            if (lead.Equals("120", StringComparison.OrdinalIgnoreCase))
+            {
+                _log.LogError("--lead 120 is not supported for target '{T}' yet (temperature + precipitation only).", t);
+                return 2;
+            }
+            // "all" implicitly includes 120 — silently narrow rather than error.
+            leads = leads.Where(l => l != 120).ToArray();
+        }
+
         return t switch
         {
             "temperature"   => fs == "rich"
@@ -104,6 +124,7 @@ public sealed class TrainCommand
         "24"  => new[] { 24 },
         "48"  => new[] { 48 },
         "72"  => new[] { 72 },
+        "120" => new[] { 120 },
         _     => null,
     };
 
@@ -122,17 +143,22 @@ public sealed class TrainCommand
 
         var perLead = new Dictionary<string, ModelArtifact.PerLeadStats>();
         var importanceByLead = new Dictionary<int, IEnumerable<(string Name, double Gain)>>();
+        var specsPerLead = new Dictionary<int, BlenderSpec>();
 
         foreach (var lead in leads)
         {
             ct.ThrowIfCancellationRequested();
             _log.LogInformation("--- Lead {Lead}h ---", lead);
 
+            var spec = FeatureBuilder.BuildSpec(_cfg.Blenders, lead);
+            specsPerLead[lead] = spec;
+            _log.LogInformation("Spec: {Spec}", spec);
+
             var rows = FeatureBuilder.BuildForLead(
                 _cfg.Storage.ForecastsPath,
                 _cfg.Storage.Era5Path,
                 _cfg.Location.Name,
-                lead,
+                spec,
                 ct);
             _log.LogInformation("Loaded {N} rows spanning {S:yyyy-MM-dd} → {E:yyyy-MM-dd}",
                 rows.Count,
@@ -145,7 +171,7 @@ public sealed class TrainCommand
                 return 3;
             }
 
-            var ds = TrainingDataset.Split(rows);
+            var ds = RegressionDataset.Split(rows);
             _log.LogInformation("Split → train {TN} ({T0:yyyy-MM-dd}..{T1:yyyy-MM-dd}), " +
                                 "val {VN} ({V0:yyyy-MM-dd}..{V1:yyyy-MM-dd}), " +
                                 "test {EN} ({E0:yyyy-MM-dd}..{E1:yyyy-MM-dd})",
@@ -153,16 +179,17 @@ public sealed class TrainCommand
                 ds.Val.Count,   ds.ValStart,   ds.ValEnd,
                 ds.Test.Count,  ds.TestStart,  ds.TestEnd);
 
-            var trained = TemperatureTrainer.Train(ds, hp);
+            var trained = TemperatureTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
 
-            var testActual = ds.Test.Select(x => (double)x.Era5Temp).ToArray();
-            var testPred   = TemperatureTrainer.Predict(trained.Ml, trained.Model, ds.Test);
+            var testActual = ds.Test.Select(x => (double)x.Label).ToArray();
+            var testPred   = TemperatureTrainer.PredictVector(trained.Ml, trained.Model, spec, ds.Test);
             var blendStats = Metrics.Compute(testPred, testActual);
 
             // Best-single per-lead, selected on validation MAE.
-            var best = Baselines.BestSingle(ds.Val);
-            var bestValMae = Metrics.Compute(Baselines.SingleModel(ds.Val, best),
-                                             ds.Val.Select(x => (double)x.Era5Temp).ToArray()).Mae;
+            var best = Baselines.BestSingle(spec, ds.Val);
+            var bestValMae = Metrics.Compute(
+                Baselines.FromFeature(spec, ds.Val, best),
+                ds.Val.Select(x => (double)x.Label).ToArray()).Mae;
 
             ModelArtifact.SaveLeadModel(trained.Ml, trained.Model, trained.InputSchema, versionDir, lead);
             importanceByLead[lead] = trained.FeatureImportance;
@@ -191,8 +218,8 @@ public sealed class TrainCommand
                 lead, blendStats.Mae, best, bestValMae, testMonths);
         }
 
-        // Shared artefacts.
-        ModelArtifact.SaveFeatureSchema(versionDir, FeatureBuilder.FeatureNames);
+        // Shared artefacts — per-lead BlenderSpec is now the schema source of truth.
+        ModelArtifact.SaveBlenderSpecs(versionDir, specsPerLead);
         ModelArtifact.SavePerLeadFeatureImportance(versionDir, importanceByLead);
 
         var metadata = new ModelArtifact.TrainingMetadata
@@ -209,7 +236,7 @@ public sealed class TrainCommand
             {
                 "Objective is L2 (squared error); MAE used only as early-stopping metric. Microsoft.ML.LightGbm 4.0 does not expose regression_l1.",
                 "No monotone constraints on per-model temperature inputs. Microsoft.ML.LightGbm 4.0 does not expose monotone_constraints.",
-                "Per-lead model artefacts named lead_{N}h.zip (ML.NET ITransformer pipeline) rather than .lgb — the zip contains the LightGBM booster plus the feature-concat transform.",
+                "Per-lead model artefacts named lead_{N}h.zip; vector-native LightGBM trainer (Features column = float[]).",
             },
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
@@ -241,18 +268,22 @@ public sealed class TrainCommand
 
         var perLead = new Dictionary<string, ModelArtifact.PerLeadStats>();
         var importanceByLead = new Dictionary<int, IEnumerable<(string Name, double Gain)>>();
-        var featureCols = TemperatureTrainer.RichFeatureColumnInternalNames();
+        var specsPerLead = new Dictionary<int, BlenderSpec>();
 
         foreach (var lead in leads)
         {
             ct.ThrowIfCancellationRequested();
             _log.LogInformation("--- Lead {Lead}h ---", lead);
 
+            var spec = RichFeatureBuilder.BuildSpec(_cfg.Blenders, lead);
+            specsPerLead[lead] = spec;
+            _log.LogInformation("Spec: {Spec}", spec);
+
             var rows = RichFeatureBuilder.BuildForLead(
                 _cfg.Storage.ForecastsPath,
                 _cfg.Storage.Era5Path,
                 _cfg.Location.Name,
-                lead,
+                spec,
                 ct);
             _log.LogInformation("Loaded {N} rich rows spanning {S:yyyy-MM-dd} → {E:yyyy-MM-dd}",
                 rows.Count,
@@ -265,12 +296,7 @@ public sealed class TrainCommand
                 return 3;
             }
 
-            // Reuse the 2b chronological split logic; covariance lets us pass the rich rows
-            // as IReadOnlyList<TrainingRow> and recover them downstream via Cast<>.
-            var ds = TrainingDataset.Split(rows);
-            var richTrain = ds.Train.Cast<RichTrainingRow>().ToList();
-            var richVal   = ds.Val.Cast<RichTrainingRow>().ToList();
-            var richTest  = ds.Test.Cast<RichTrainingRow>().ToList();
+            var ds = RegressionDataset.Split(rows);
             _log.LogInformation("Split → train {TN} ({T0:yyyy-MM-dd}..{T1:yyyy-MM-dd}), " +
                                 "val {VN} ({V0:yyyy-MM-dd}..{V1:yyyy-MM-dd}), " +
                                 "test {EN} ({E0:yyyy-MM-dd}..{E1:yyyy-MM-dd})",
@@ -278,16 +304,16 @@ public sealed class TrainCommand
                 ds.Val.Count,   ds.ValStart,   ds.ValEnd,
                 ds.Test.Count,  ds.TestStart,  ds.TestEnd);
 
-            var trained = TemperatureTrainer.Train(richTrain, richVal, featureCols, hp);
+            var trained = TemperatureTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
 
-            var testActual = richTest.Select(x => (double)x.Era5Temp).ToArray();
-            var testPred   = TemperatureTrainer.Predict(trained.Ml, trained.Model, richTest);
+            var testActual = ds.Test.Select(x => (double)x.Label).ToArray();
+            var testPred   = TemperatureTrainer.PredictVector(trained.Ml, trained.Model, spec, ds.Test);
             var blendStats = Metrics.Compute(testPred, testActual);
 
-            // Best-single picked on val MAE — same baseline as 2b for like-for-like comparison.
-            var best = Baselines.BestSingle(ds.Val);
-            var bestValMae = Metrics.Compute(Baselines.SingleModel(ds.Val, best),
-                                             ds.Val.Select(x => (double)x.Era5Temp).ToArray()).Mae;
+            var best = Baselines.BestSingle(spec, ds.Val);
+            var bestValMae = Metrics.Compute(
+                Baselines.FromFeature(spec, ds.Val, best),
+                ds.Val.Select(x => (double)x.Label).ToArray()).Mae;
 
             ModelArtifact.SaveLeadModel(trained.Ml, trained.Model, trained.InputSchema, versionDir, lead);
             importanceByLead[lead] = trained.FeatureImportance;
@@ -316,7 +342,7 @@ public sealed class TrainCommand
                 lead, blendStats.Mae, best, bestValMae, testMonths);
         }
 
-        ModelArtifact.SaveFeatureSchema(versionDir, RichFeatureBuilder.FeatureNames);
+        ModelArtifact.SaveBlenderSpecs(versionDir, specsPerLead);
         ModelArtifact.SavePerLeadFeatureImportance(versionDir, importanceByLead);
 
         var metadata = new ModelArtifact.TrainingMetadata
@@ -419,6 +445,7 @@ public sealed class TrainCommand
 
         var perLead = new Dictionary<string, ModelArtifact.PerLeadStats>();
         var importanceByLead = new Dictionary<int, IEnumerable<(string Name, double Gain)>>();
+        var specsPerLead = new Dictionary<int, BlenderSpec>();
         PrecipClimatology? climatology = null;
 
         foreach (var lead in leads)
@@ -426,17 +453,21 @@ public sealed class TrainCommand
             ct.ThrowIfCancellationRequested();
             _log.LogInformation("--- Lead {Lead}h ---", lead);
 
+            var spec = PrecipFeatureBuilder.BuildSpec(_cfg.Blenders, lead);
+            specsPerLead[lead] = spec;
+            _log.LogInformation("Spec: {Spec}", spec);
+
             var rows = PrecipFeatureBuilder.BuildForLead(
                 _cfg.Storage.ForecastsPath,
                 _cfg.Storage.RainfallPath,
                 _cfg.Location.Name,
                 primaryStation,
-                lead,
+                spec,
                 ct);
             _log.LogInformation("Loaded {N} rows (wet={Wet} / {Pct:P1}) spanning {S:yyyy-MM-dd} → {E:yyyy-MM-dd}",
                 rows.Count,
-                rows.Count(r => r.WetBinary),
-                rows.Count == 0 ? 0 : (double)rows.Count(r => r.WetBinary) / rows.Count,
+                rows.Count(r => r.Label),
+                rows.Count == 0 ? 0 : (double)rows.Count(r => r.Label) / rows.Count,
                 rows.Count == 0 ? DateTime.MinValue : rows[0].ValidTimeUtc,
                 rows.Count == 0 ? DateTime.MinValue : rows[^1].ValidTimeUtc);
 
@@ -446,10 +477,10 @@ public sealed class TrainCommand
                 return 3;
             }
 
-            var ds = PrecipDataset.Split(rows);
-            // Climatology is a base-rate lookup over (month, hour) and so is essentially
-            // identical across leads — one copy per version is enough. Build from the
-            // first lead's train partition; predict/verify will reuse it.
+            var ds = BinaryDataset.Split(rows);
+            // Climatology — base-rate lookup over (month, hour). Build a row of the
+            // legacy PrecipClimatology shape from BinaryTrainingRow's labels so the
+            // predict-time loader stays unchanged.
             climatology ??= PrecipClimatology.BuildFromTraining(ds.Train);
             _log.LogInformation("Split → train {TN} (wet {TW}), val {VN} (wet {VW}), test {EN} (wet {EW})",
                 ds.Train.Count, ds.TrainWet,
@@ -459,24 +490,20 @@ public sealed class TrainCommand
                                 "val {V0:yyyy-MM-dd}..{V1:yyyy-MM-dd}, test {E0:yyyy-MM-dd}..{E1:yyyy-MM-dd}",
                 ds.TrainStart, ds.TrainEnd, ds.ValStart, ds.ValEnd, ds.TestStart, ds.TestEnd);
 
-            var trained = PrecipOccurrenceTrainer.Train(ds, hp);
+            var trained = PrecipOccurrenceTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
 
-            // Test-set headline metrics.
-            var truthTest = ds.Test.Select(r => r.WetBinary ? 1.0 : 0.0).ToArray();
-            var blendProb = PrecipOccurrenceTrainer.PredictProbability(trained.Ml, trained.Model, ds.Test);
+            var truthTest = ds.Test.Select(r => r.Label ? 1.0 : 0.0).ToArray();
+            var blendProb = PrecipOccurrenceTrainer.PredictVectorProbability(trained.Ml, trained.Model, spec, ds.Test);
             var blendBrier = PrecipMetrics.Brier(blendProb, truthTest);
 
-            // Baselines for comparison.
-            var best = PrecipBaselines.BestSingle(ds.Val);
+            var best = PrecipBaselines.BestSingle(spec, ds.Val);
             var bestValBrier = PrecipMetrics.Brier(
-                PrecipBaselines.SingleModelWet(ds.Val, best),
-                ds.Val.Select(r => r.WetBinary ? 1.0 : 0.0).ToArray());
+                PrecipBaselines.SingleModelWet(spec, ds.Val, best),
+                ds.Val.Select(r => r.Label ? 1.0 : 0.0).ToArray());
             var climPred = PrecipBaselines.Climatology(ds.Train, ds.Test);
             var climBrier = PrecipMetrics.Brier(climPred, truthTest);
             var bss = PrecipMetrics.BrierSkillScore(blendBrier, climBrier);
 
-            // Frequency bias at 0.5 decision threshold — quick sanity check that
-            // the classifier isn't collapsing to all-wet or all-dry.
             var blendBinary = blendProb.Select(p => p >= 0.5 ? 1.0 : 0.0).ToArray();
             var fbias = PrecipMetrics.FrequencyBias(blendBinary, truthTest);
 
@@ -497,9 +524,9 @@ public sealed class TrainCommand
                 TestRows  = ds.Test.Count,
                 TestCalendarMonths = testMonths,
                 BestSingle = best,
-                BestSingleValMae = bestValBrier,   // reusing the column for Brier — documented in metadata
+                BestSingleValMae = bestValBrier,   // reused column — Brier
                 BlendTestMae  = blendBrier,
-                BlendTestRmse = climBrier,         // reuse — climatology Brier for BSS reference
+                BlendTestRmse = climBrier,         // reused column — climatology Brier
                 BlendTestBias = fbias,
             };
 
@@ -508,7 +535,7 @@ public sealed class TrainCommand
                 lead, blendBrier, climBrier, bss, fbias, best, bestValBrier);
         }
 
-        ModelArtifact.SaveFeatureSchema(versionDir, PrecipFeatureBuilder.OccurrenceFeatureNames);
+        ModelArtifact.SaveBlenderSpecs(versionDir, specsPerLead);
         ModelArtifact.SavePerLeadFeatureImportance(versionDir, importanceByLead);
         // Persist climatology alongside the model zips so predict/verify can reach
         // for a P(wet) baseline without re-scanning the training rainfall tree.
@@ -579,9 +606,8 @@ public sealed class TrainCommand
 
         var modelsRoot = Path.Combine("data", "models");
         var hp = new PrecipOccurrenceTrainer.Hyperparameters();
-        var featureCols = PrecipOccurrenceTrainer.RichFeatureColumnInternalNames();
 
-        _log.LogInformation("Phase 3c — rich-feature precip blender (55 features), stations=[{Stations}], leads=[{Leads}]",
+        _log.LogInformation("Phase 3c — rich-feature precip blender, stations=[{Stations}], leads=[{Leads}]",
             string.Join(", ", stationsToTrain), string.Join(",", leads));
         _log.LogInformation("Hyperparameters: iter={Iter} lr={Lr} leaves={Leaves} esr={Esr} seed={Seed} (identical to Phase 3a — feature richness is the only variable)",
             hp.NumberOfIterations, hp.LearningRate, hp.NumberOfLeaves, hp.EarlyStoppingRound, hp.Seed);
@@ -590,7 +616,7 @@ public sealed class TrainCommand
         foreach (var station in stationsToTrain)
         {
             ct.ThrowIfCancellationRequested();
-            var rc = await TrainPhase3cStationAsync(station, leads, modelsRoot, hp, featureCols, ct);
+            var rc = await TrainPhase3cStationAsync(station, leads, modelsRoot, hp, ct);
             if (rc != 0) anyFail = true;
         }
         return anyFail ? 3 : 0;
@@ -601,7 +627,6 @@ public sealed class TrainCommand
         int[] leads,
         string modelsRoot,
         PrecipOccurrenceTrainer.Hyperparameters hp,
-        string[] featureCols,
         CancellationToken ct)
     {
         var stationSlug = "ea_" + Slugify(primaryStation);
@@ -613,6 +638,7 @@ public sealed class TrainCommand
 
         var perLead = new Dictionary<string, ModelArtifact.PerLeadStats>();
         var importanceByLead = new Dictionary<int, IEnumerable<(string Name, double Gain)>>();
+        var specsPerLead = new Dictionary<int, BlenderSpec>();
         PrecipClimatology? climatology = null;
 
         foreach (var lead in leads)
@@ -620,17 +646,21 @@ public sealed class TrainCommand
             ct.ThrowIfCancellationRequested();
             _log.LogInformation("--- Lead {Lead}h ---", lead);
 
+            var spec = PrecipRichFeatureBuilder.BuildSpec(_cfg.Blenders, lead);
+            specsPerLead[lead] = spec;
+            _log.LogInformation("Spec: {Spec}", spec);
+
             var rows = PrecipRichFeatureBuilder.BuildForLead(
                 _cfg.Storage.ForecastsPath,
                 _cfg.Storage.RainfallPath,
                 _cfg.Location.Name,
                 primaryStation,
-                lead,
+                spec,
                 ct);
             _log.LogInformation("Loaded {N} rich rows (wet={Wet} / {Pct:P1}) spanning {S:yyyy-MM-dd} → {E:yyyy-MM-dd}",
                 rows.Count,
-                rows.Count(r => r.WetBinary),
-                rows.Count == 0 ? 0 : (double)rows.Count(r => r.WetBinary) / rows.Count,
+                rows.Count(r => r.Label),
+                rows.Count == 0 ? 0 : (double)rows.Count(r => r.Label) / rows.Count,
                 rows.Count == 0 ? DateTime.MinValue : rows[0].ValidTimeUtc,
                 rows.Count == 0 ? DateTime.MinValue : rows[^1].ValidTimeUtc);
 
@@ -640,13 +670,7 @@ public sealed class TrainCommand
                 return 3;
             }
 
-            // Reuse 3a chronological split — covariance lets us pass rich rows
-            // as IReadOnlyList<PrecipTrainingRow> through PrecipDataset.Split and
-            // recover them via Cast<> when handing to the trainer.
-            var ds = PrecipDataset.Split(rows.Cast<PrecipTrainingRow>().ToList());
-            var richTrain = ds.Train.Cast<RichPrecipTrainingRow>().ToList();
-            var richVal   = ds.Val.Cast<RichPrecipTrainingRow>().ToList();
-            var richTest  = ds.Test.Cast<RichPrecipTrainingRow>().ToList();
+            var ds = BinaryDataset.Split(rows);
             climatology ??= PrecipClimatology.BuildFromTraining(ds.Train);
 
             _log.LogInformation("Split → train {TN} (wet {TW}), val {VN} (wet {VW}), test {EN} (wet {EW})",
@@ -657,16 +681,16 @@ public sealed class TrainCommand
                                 "val {V0:yyyy-MM-dd}..{V1:yyyy-MM-dd}, test {E0:yyyy-MM-dd}..{E1:yyyy-MM-dd}",
                 ds.TrainStart, ds.TrainEnd, ds.ValStart, ds.ValEnd, ds.TestStart, ds.TestEnd);
 
-            var trained = PrecipOccurrenceTrainer.Train(richTrain, richVal, featureCols, hp);
+            var trained = PrecipOccurrenceTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
 
-            var truthTest = richTest.Select(r => r.WetBinary ? 1.0 : 0.0).ToArray();
-            var blendProb = PrecipOccurrenceTrainer.PredictProbability(trained.Ml, trained.Model, richTest);
+            var truthTest = ds.Test.Select(r => r.Label ? 1.0 : 0.0).ToArray();
+            var blendProb = PrecipOccurrenceTrainer.PredictVectorProbability(trained.Ml, trained.Model, spec, ds.Test);
             var blendBrier = PrecipMetrics.Brier(blendProb, truthTest);
 
-            var best = PrecipBaselines.BestSingle(ds.Val);
+            var best = PrecipBaselines.BestSingle(spec, ds.Val);
             var bestValBrier = PrecipMetrics.Brier(
-                PrecipBaselines.SingleModelWet(ds.Val, best),
-                ds.Val.Select(r => r.WetBinary ? 1.0 : 0.0).ToArray());
+                PrecipBaselines.SingleModelWet(spec, ds.Val, best),
+                ds.Val.Select(r => r.Label ? 1.0 : 0.0).ToArray());
             var climPred = PrecipBaselines.Climatology(ds.Train, ds.Test);
             var climBrier = PrecipMetrics.Brier(climPred, truthTest);
             var bss = PrecipMetrics.BrierSkillScore(blendBrier, climBrier);
@@ -702,7 +726,7 @@ public sealed class TrainCommand
                 lead, blendBrier, climBrier, bss, fbias, best, bestValBrier);
         }
 
-        ModelArtifact.SaveFeatureSchema(versionDir, PrecipRichFeatureBuilder.OccurrenceFeatureNames);
+        ModelArtifact.SaveBlenderSpecs(versionDir, specsPerLead);
         ModelArtifact.SavePerLeadFeatureImportance(versionDir, importanceByLead);
         if (climatology is not null)
             climatology.SaveTo(Path.Combine(versionDir, ModelArtifact.ClimatologyFileName));
@@ -777,7 +801,7 @@ public sealed class EvaluateCommand
     private readonly ILogger<EvaluateCommand> _log;
     private readonly AppConfig _cfg;
 
-    private static readonly int[] Phase2bLeads = { 24, 48, 72 };
+    private static readonly int[] Phase2bLeads = { 24, 48, 72, 120 };
 
     public EvaluateCommand(ILogger<EvaluateCommand> log, AppConfig cfg)
     {

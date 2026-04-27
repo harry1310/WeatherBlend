@@ -24,7 +24,7 @@ public sealed class WindBlender : IElementBlender
 
     public Task<int> TrainAsync(int[] leads, CancellationToken ct)
     {
-        var inputs = new ElementTrainerHarness.ElementTrainerInputs<WindRow>(
+        var inputs = new ElementTrainerHarness.ElementTrainerInputs(
             Target: Target,
             // Wind opts OUT of bagging. The 4-way bake-off 2026-04-26 showed bagging
             // marginally HURTS wind at every lead (-0.16/-0.55/-0.42% vs no-bag), unlike
@@ -32,24 +32,21 @@ public sealed class WindBlender : IElementBlender
             // wind (only target where the 6-model wins on the same fixed test set).
             Hyperparameters: new TemperatureTrainer.Hyperparameters(
                 SubsampleFraction: 1.0, SubsampleFrequency: 0, FeatureFraction: 1.0),
-            InternalFeatureColumns: WindFeatureBuilder.InternalFeatureColumns,
-            PublicFeatureNames: WindFeatureBuilder.PublicFeatureNames,
-            ModelAccessors: WindFeatureBuilder.ModelAccessors,
-            TimeOf: r => r.ValidTimeUtc,
-            TruthOf: r => r.Era5WindSpeed,
+            BuildSpec: lead => WindFeatureBuilder.BuildSpec(_cfg.Blenders, lead),
+            LoadRowsForSpec: (spec, c) => WindFeatureBuilder.BuildForLead(
+                _cfg.Storage.ForecastsPath, _cfg.Storage.Era5Path, _cfg.Location.Name, spec, c),
             DeviationsFromBrief: new[]
             {
                 "MétéoFrance excluded — Open-Meteo Previous Runs API ships no MF wind " +
                 "(100% null on speed and direction at Bonehill, audit 2026-04-25). Wind " +
-                "blender is therefore a 5-model ensemble, not 6.",
+                "blender is therefore a 5-model ensemble, not 6. UKMO sits in optionalModels — " +
+                "rows survive UKMO-silent hours but contribute when UKMO is present.",
                 "Objective is L2; MAE used only as early-stopping metric (Microsoft.ML.LightGbm 4.0 limit).",
                 "No monotone constraints (same Microsoft.ML.LightGbm 4.0 limit).",
                 "Bagging deliberately disabled (1.0/0/1.0). 4-way bake-off showed bagging " +
                 "marginally hurts wind at every lead, unlike every other target. Wind keeps " +
                 "the deterministic ML.NET defaults.",
-            },
-            LoadRowsForLead: (lead, c) => WindFeatureBuilder.BuildForLead(
-                _cfg.Storage.ForecastsPath, _cfg.Storage.Era5Path, _cfg.Location.Name, lead, c));
+            });
 
         return ElementTrainerHarness.RunAsync(_log, inputs, leads, ct);
     }

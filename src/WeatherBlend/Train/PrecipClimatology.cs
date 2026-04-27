@@ -1,4 +1,5 @@
 using System.Text.Json;
+using WeatherBlend.Train.Common;
 
 namespace WeatherBlend.Train;
 
@@ -39,6 +40,37 @@ public sealed class PrecipClimatology
         var globalMean = trainRows.Count == 0
             ? double.NaN
             : (double)trainRows.Count(r => r.WetBinary) / trainRows.Count;
+
+        return new PrecipClimatology
+        {
+            PWetByBucket = pWet,
+            GlobalWetRate = globalMean,
+            SourceRowCount = trainRows.Count,
+        };
+    }
+
+    /// <summary>
+    /// Build from the new vector-row shape (<see cref="BinaryTrainingRow"/>).
+    /// Same algorithm; the row's <c>Label</c> bool replaces the legacy
+    /// <see cref="PrecipTrainingRow.WetBinary"/>.
+    /// </summary>
+    public static PrecipClimatology BuildFromTraining(IReadOnlyList<BinaryTrainingRow> trainRows)
+    {
+        var sums = new Dictionary<(int Month, int Hour), (int Wet, int N)>();
+        foreach (var r in trainRows)
+        {
+            var k = (r.ValidTimeUtc.Month, r.ValidTimeUtc.Hour);
+            sums.TryGetValue(k, out var cur);
+            sums[k] = (cur.Wet + (r.Label ? 1 : 0), cur.N + 1);
+        }
+
+        var pWet = sums.ToDictionary(
+            kv => BucketKey(kv.Key.Month, kv.Key.Hour),
+            kv => (double)kv.Value.Wet / kv.Value.N);
+
+        var globalMean = trainRows.Count == 0
+            ? double.NaN
+            : (double)trainRows.Count(r => r.Label) / trainRows.Count;
 
         return new PrecipClimatology
         {

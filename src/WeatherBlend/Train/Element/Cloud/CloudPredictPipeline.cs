@@ -4,9 +4,15 @@ using Microsoft.ML;
 using WeatherBlend.Models;
 using WeatherBlend.Predict;
 using WeatherBlend.Train;
+using WeatherBlend.Train.Common;
 
 namespace WeatherBlend.Train.Element.Cloud;
 
+/// <summary>
+/// Predict-time pipeline for the cloud-cover blender. Spec-driven via
+/// <see cref="BlenderSpec"/> loaded from feature_schema.json. Pulls the 6-slot
+/// canonical pivot once, then per lead filters down to spec.Models in spec order.
+/// </summary>
 public static class CloudPredictPipeline
 {
     public static List<ElementPredictionRow> PredictForCycle(
@@ -20,6 +26,8 @@ public static class CloudPredictPipeline
         int[] leads,
         CancellationToken ct)
     {
+        var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
+        var canonOrder = FeatureBuilder.CanonicalModelOrder.ToList();
         var targets = leads.Select(L => (Lead: L, Valid: anchor.AddHours(L))).ToArray();
         var pivot = QueryPivot(forecastsPath, locationName, anchor,
             targets.Min(t => t.Valid), targets.Max(t => t.Valid), ct);
@@ -35,33 +43,44 @@ public static class CloudPredictPipeline
                 log.LogWarning("  Lead {Lead}h: no live forecast for valid={Valid:yyyy-MM-dd HH:mm}Z; skipping.", lead, valid);
                 continue;
             }
-            // Required-models check is per-lead — at 48/72h MF is structurally absent.
-            var requiredModels = CloudFeatureBuilder.ModelsForLead(lead).ToHashSet();
-            var missing = CloudFeatureBuilder.ModelAccessors
-                .Select((acc, i) => (acc.ModelId, i))
-                .Where(t => requiredModels.Contains(t.ModelId))
-                .Where(t => float.IsNaN(p.Cc[t.i]))
-                .Select(t => t.ModelId)
-                .ToArray();
-            if (missing.Length > 0)
+            if (!specs.TryGetValue(lead, out var spec))
             {
-                log.LogWarning("  Lead {Lead}h: missing per-model cloud cover for [{Models}] at valid={Valid:yyyy-MM-dd HH:mm}Z; skipping.",
-                    lead, string.Join(",", missing), valid);
+                log.LogWarning("  Lead {Lead}h: no BlenderSpec in feature_schema.json; skipping.", lead);
                 continue;
             }
 
-            // Force NaN for models excluded from this lead's training schema.
-            for (int i = 0; i < CloudFeatureBuilder.ModelAccessors.Count; i++)
+            int N = spec.Models.Count;
+            var cc = new double[N];
+            var missingRequired = new List<string>();
+            var requiredSet = spec.RequiredModels.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < N; i++)
             {
-                if (requiredModels.Contains(CloudFeatureBuilder.ModelAccessors[i].ModelId)) continue;
-                p.Cc[i] = float.NaN;
+                var ci = canonOrder.IndexOf(spec.Models[i]);
+                cc[i] = float.IsNaN(p.Cc[ci]) ? double.NaN : p.Cc[ci];
+                if (double.IsNaN(cc[i]) && requiredSet.Contains(spec.Models[i]))
+                    missingRequired.Add(spec.Models[i]);
+            }
+            if (missingRequired.Count > 0)
+            {
+                log.LogWarning("  Lead {Lead}h: missing required per-model cloud cover for [{M}] at valid={Valid:yyyy-MM-dd HH:mm}Z; skipping.",
+                    lead, string.Join(",", missingRequired), valid);
+                continue;
             }
 
-            var row = CloudFeatureBuilder.ComposeRow(valid, p.Cc, era5Cc: float.NaN);
-            var model = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
-            var yhat = TemperatureTrainer.Predict(ml, model, new[] { row })[0];
+            var row = CloudFeatureBuilder.ComposeRow(spec, valid, cc, era5Cc: float.NaN);
+            var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
+            var yhat = TemperatureTrainer.PredictVector(ml, loadedModel, spec, new[] { row })[0];
 
-            static double? Nz(float v) => float.IsNaN(v) ? null : v;
+            var modelCc  = new double?[6];
+            var modelRun = new DateTime?[6];
+            for (int i = 0; i < N; i++)
+            {
+                var ci = canonOrder.IndexOf(spec.Models[i]);
+                modelCc[ci]  = double.IsNaN(cc[i]) ? null : cc[i];
+                modelRun[ci] = p.RunTimes[ci];
+            }
+
+            var spreadStart = N;
             output.Add(new ElementPredictionRow
             {
                 LocationName = locationName,
@@ -71,16 +90,17 @@ public static class CloudPredictPipeline
                 ValidTimeUtc = valid,
                 LeadHours = lead,
                 BlendValue = yhat,
-                ModelGfs   = Nz(p.Cc[0]), ModelEcmwf = Nz(p.Cc[1]), ModelIcon  = Nz(p.Cc[2]),
-                ModelMf    = Nz(p.Cc[3]), ModelUkmo  = Nz(p.Cc[4]), ModelGem   = Nz(p.Cc[5]),
-                RunTimeGfs = p.RunTimes[0], RunTimeEcmwf = p.RunTimes[1], RunTimeIcon = p.RunTimes[2],
-                RunTimeMf  = requiredModels.Contains("meteofrance_seamless") ? p.RunTimes[3] : null,
-                RunTimeUkmo  = p.RunTimes[4], RunTimeGem  = p.RunTimes[5],
-                Mean = row.CcMean, Std = row.CcStd, Range = row.CcRange,
-                FeatureVectorHash = FeatureHash(row),
+                ModelGfs   = modelCc[0], ModelEcmwf = modelCc[1], ModelIcon  = modelCc[2],
+                ModelMf    = modelCc[3], ModelUkmo  = modelCc[4], ModelGem   = modelCc[5],
+                RunTimeGfs = modelRun[0], RunTimeEcmwf = modelRun[1], RunTimeIcon = modelRun[2],
+                RunTimeMf  = modelRun[3], RunTimeUkmo  = modelRun[4], RunTimeGem  = modelRun[5],
+                Mean = row.Features[spreadStart + 0],
+                Std  = row.Features[spreadStart + 1],
+                Range = row.Features[spreadStart + 2],
+                FeatureVectorHash = FeatureHashing.HashFloats(row.Features),
             });
             log.LogInformation("  Lead {Lead}h → blend {Blend:0.0}% (valid {Valid:yyyy-MM-dd HH:mm}Z, mean {Mean:0.0}%)",
-                lead, yhat, valid, row.CcMean);
+                lead, yhat, valid, row.Features[spreadStart + 0]);
         }
         return output;
     }
@@ -109,11 +129,8 @@ ORDER BY ValidTimeUtc, Model;";
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
 
-        var modelSlot = new Dictionary<string, int>
-        {
-            ["gfs_seamless"] = 0, ["ecmwf_ifs025"] = 1, ["icon_seamless"] = 2,
-            ["meteofrance_seamless"] = 3, ["ukmo_seamless"] = 4, ["gem_seamless"] = 5,
-        };
+        var slotByModel = FeatureBuilder.CanonicalModelOrder
+            .Select((id, i) => (id, i)).ToDictionary(x => x.id, x => x.i);
 
         var working = new Dictionary<DateTime, (float[] Cc, DateTime?[] Rt)>();
         using var r = cmd.ExecuteReader();
@@ -122,7 +139,7 @@ ORDER BY ValidTimeUtc, Model;";
             ct.ThrowIfCancellationRequested();
             var valid = r.GetDateTime(0);
             var model = r.GetString(1);
-            if (!modelSlot.TryGetValue(model, out var idx)) continue;
+            if (!slotByModel.TryGetValue(model, out var idx)) continue;
             if (!working.TryGetValue(valid, out var slot))
             {
                 slot = (Enumerable.Repeat(float.NaN, 6).ToArray(), new DateTime?[6]);
@@ -132,17 +149,5 @@ ORDER BY ValidTimeUtc, Model;";
             slot.Cc[idx] = r.IsDBNull(3) ? float.NaN : (float)r.GetDouble(3);
         }
         return working.ToDictionary(kv => kv.Key, kv => new Pivoted(kv.Value.Cc, kv.Value.Rt));
-    }
-
-    private static string FeatureHash(CloudRow row)
-    {
-        Span<float> v = stackalloc float[]
-        {
-            row.CcGfs, row.CcEcmwf, row.CcIcon, row.CcMf, row.CcUkmo, row.CcGem,
-            row.CcMean, row.CcStd, row.CcRange,
-            row.HourSin, row.HourCos, row.DoySin, row.DoyCos,
-        };
-        var bytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(v);
-        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
     }
 }

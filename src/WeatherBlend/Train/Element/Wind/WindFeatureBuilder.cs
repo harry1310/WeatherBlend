@@ -1,74 +1,68 @@
 using DuckDB.NET.Data;
-using WeatherBlend.Train.Element.Common;
+using WeatherBlend.Config;
+using WeatherBlend.Train.Common;
 
 namespace WeatherBlend.Train.Element.Wind;
 
 /// <summary>
-/// SQL pivot + row composition for the wind blender.
+/// SQL pivot + row composition for the wind blender — spec-driven.
 /// Pulls per-model <c>wind_speed_10m</c> and <c>wind_direction_10m</c> from the
 /// Previous Runs forecast tree and joins to ERA5 <c>wind_speed_10m</c> as truth.
 ///
-/// MétéoFrance is excluded entirely: audit 2026-04-25 confirmed Open-Meteo's
-/// Previous Runs API ships no MF wind data (100% null on both speed and direction).
-/// Including MF columns would just mean five-of-six models contributing always-NaN
-/// features — better to be explicit about the 5-model membership.
+/// Model membership comes from <c>blenders.wind</c> in config.yaml. MétéoFrance
+/// is excluded entirely there (Open-Meteo Previous Runs ships no MF wind data —
+/// audit 2026-04-25). UKMO sits in <c>optionalModels</c> — its rows are kept
+/// when UKMO is silent (NaN) but contribute when present.
+///
+/// Feature layout per N active models:
+///   N per-model wind_spd
+///   2N per-model wind_dir (sin block, then cos block)
+///   3 ensemble spread (mean, std, range — over wind_spd)
+///   4 cyclical calendar
+/// Total = 3N + 7. For N=5 → 22 features (matches legacy shape).
 /// </summary>
 public static class WindFeatureBuilder
 {
-    /// <summary>Public feature names persisted to feature_schema.json.</summary>
-    public static readonly IReadOnlyList<string> PublicFeatureNames = new[]
+    public const string SpecTarget = "wind";
+    public const string SpecFeatureSet = "default";
+
+    public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours)
     {
-        "wind_spd_gfs", "wind_spd_ecmwf", "wind_spd_icon", "wind_spd_ukmo", "wind_spd_gem",
-        "wind_dir_sin_gfs", "wind_dir_cos_gfs",
-        "wind_dir_sin_ecmwf", "wind_dir_cos_ecmwf",
-        "wind_dir_sin_icon", "wind_dir_cos_icon",
-        "wind_dir_sin_ukmo", "wind_dir_cos_ukmo",
-        "wind_dir_sin_gem", "wind_dir_cos_gem",
-        "wind_spd_mean", "wind_spd_std", "wind_spd_range",
-        "hour_sin", "hour_cos", "doy_sin", "doy_cos",
-    };
+        var blender = blendersCfg.Get(SpecTarget, SpecFeatureSet);
+        var requiredSet = blender.RequiredForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var optionalSet = blender.OptionalForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Internal C# property names ML.NET binds on. Order aligned 1:1 with PublicFeatureNames.</summary>
-    public static readonly IReadOnlyList<string> InternalFeatureColumns = new[]
-    {
-        nameof(WindRow.SpdGfs), nameof(WindRow.SpdEcmwf), nameof(WindRow.SpdIcon),
-        nameof(WindRow.SpdUkmo), nameof(WindRow.SpdGem),
-        nameof(WindRow.DirSinGfs), nameof(WindRow.DirCosGfs),
-        nameof(WindRow.DirSinEcmwf), nameof(WindRow.DirCosEcmwf),
-        nameof(WindRow.DirSinIcon), nameof(WindRow.DirCosIcon),
-        nameof(WindRow.DirSinUkmo), nameof(WindRow.DirCosUkmo),
-        nameof(WindRow.DirSinGem), nameof(WindRow.DirCosGem),
-        nameof(WindRow.SpdMean), nameof(WindRow.SpdStd), nameof(WindRow.SpdRange),
-        nameof(WindRow.HourSin), nameof(WindRow.HourCos),
-        nameof(WindRow.DoySin), nameof(WindRow.DoyCos),
-    };
+        var orderedRequired = FeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
+        var orderedOptional = FeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
+        var orderedModels = FeatureBuilder.CanonicalModelOrder
+            .Where(m => requiredSet.Contains(m) || optionalSet.Contains(m)).ToList();
+        if (orderedModels.Count == 0)
+            throw new InvalidOperationException($"No models active for {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h.");
 
-    /// <summary>Per-model accessors used by the harness's best-single-by-val-MAE picker.</summary>
-    public static readonly IReadOnlyList<ElementTrainerHarness.ModelAccessor<WindRow>> ModelAccessors = new[]
-    {
-        new ElementTrainerHarness.ModelAccessor<WindRow>("gfs_seamless",  r => r.SpdGfs),
-        new ElementTrainerHarness.ModelAccessor<WindRow>("ecmwf_ifs025",  r => r.SpdEcmwf),
-        new ElementTrainerHarness.ModelAccessor<WindRow>("icon_seamless", r => r.SpdIcon),
-        new ElementTrainerHarness.ModelAccessor<WindRow>("ukmo_seamless", r => r.SpdUkmo),
-        new ElementTrainerHarness.ModelAccessor<WindRow>("gem_seamless",  r => r.SpdGem),
-    };
+        var names = new List<string>();
+        foreach (var m in orderedModels) names.Add($"wind_spd_{FeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"wind_dir_sin_{FeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"wind_dir_cos_{FeatureBuilder.ShortName(m)}");
+        names.AddRange(new[] { "wind_spd_mean", "wind_spd_std", "wind_spd_range" });
+        names.AddRange(new[] { "hour_sin", "hour_cos", "doy_sin", "doy_cos" });
 
-    /// <summary>
-    /// Per-lead model membership. Wind drops MF (Open-Meteo Previous Runs ships no MF
-    /// wind data — confirmed by 2026-04-25 audit) but KEEPS UKMO. Wind is the only
-    /// target where the 6-model + restricted-window variant beats 5-model + full
-    /// window on the same fixed test rows (4-way bake-off 2026-04-26): UKMO's regional
-    /// UK wind skill outweighs the ~30% training-data loss. Same 5-model membership
-    /// at every lead.
-    /// </summary>
-    public static IReadOnlyList<string> ModelsForLead(int leadHours) =>
-        new[] { "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "ukmo_seamless", "gem_seamless" };
+        return new BlenderSpec
+        {
+            Target = SpecTarget,
+            FeatureSet = SpecFeatureSet,
+            LeadHours = leadHours,
+            RequiredModels = orderedRequired,
+            OptionalModels = orderedOptional,
+            Models = orderedModels,
+            FeatureNames = names,
+        };
+    }
 
-    public static List<WindRow> BuildForLead(
+    public static List<RegressionTrainingRow> BuildForLead(
         string forecastsPath,
         string era5Path,
         string locationName,
-        int leadHours,
+        BlenderSpec spec,
         CancellationToken ct = default)
     {
         using var conn = new DuckDBConnection("DataSource=:memory:");
@@ -76,134 +70,139 @@ public static class WindFeatureBuilder
 
         var fcGlob = NormaliseGlob(Path.Combine(forecastsPath, "**", "*.parquet"));
         var eraGlob = NormaliseGlob(Path.Combine(era5Path, "**", "*.parquet"));
+        var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
+        var n = spec.Models.Count;
 
-        // 5-model membership (UKMO kept, MF excluded). Training restricted to the
-        // post-2024-09 clean window — required for the 6-model variant since UKMO is
-        // all-NULL pre-2024-09 in the Open-Meteo archive.
-        var fcWhere =
-            $"LocationName = '{locationName}' " +
-            $"AND RunTimeSource = 'offset_day' " +
-            $"AND LeadHours = {leadHours} " +
-            $"AND WindSpeed10m IS NOT NULL " +
-            $"AND WindDirection10m IS NOT NULL " +
-            $"AND ValidTimeUtc >= TIMESTAMP '{TrainingWindow.UkmoCleanWindowStart}' " +
-            $"AND Model IN ('gfs_seamless','ecmwf_ifs025','icon_seamless','ukmo_seamless','gem_seamless')";
+        // UKMO data starts 2024-09; restrict the training window so rows from before that
+        // are dropped (they'd have UKMO=NaN at every row). Even with UKMO optional, the
+        // post-pivot at-least-one safety check would survive but the blender wouldn't see
+        // UKMO contribution at all in the early window — better to be uniform.
+        var minTs = $"TIMESTAMP '{TrainingWindow.UkmoCleanWindowStart}'";
+
+        var pivotSpd = string.Join(",\n        ",
+            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN WindSpeed10m END) AS spd_{FeatureBuilder.ShortName(m)}"));
+        var pivotDir = string.Join(",\n        ",
+            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN WindDirection10m END) AS dir_{FeatureBuilder.ShortName(m)}"));
+        var selectSpd = string.Join(", ", spec.Models.Select(m => $"p.spd_{FeatureBuilder.ShortName(m)}"));
+        var selectDir = string.Join(", ", spec.Models.Select(m => $"p.dir_{FeatureBuilder.ShortName(m)}"));
+
+        var requiredNotNull = spec.RequiredModels.Count > 0
+            ? string.Join("\n  AND ", spec.RequiredModels.Select(m =>
+                $"p.spd_{FeatureBuilder.ShortName(m)} IS NOT NULL AND p.dir_{FeatureBuilder.ShortName(m)} IS NOT NULL"))
+            : "TRUE";
+        var anyNotNull = "(" + string.Join(" OR ", spec.Models.Select(m => $"p.spd_{FeatureBuilder.ShortName(m)} IS NOT NULL")) + ")";
 
         var sql = $@"
 WITH latest AS (
-    SELECT ValidTimeUtc, Model, WindSpeed10m AS spd, WindDirection10m AS dir,
-           ROW_NUMBER() OVER (
-               PARTITION BY ValidTimeUtc, Model
-               ORDER BY RunTimeUtc DESC
-           ) AS rn
+    SELECT ValidTimeUtc, Model, WindSpeed10m, WindDirection10m,
+           ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, Model ORDER BY RunTimeUtc DESC) AS rn
     FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
-    WHERE {fcWhere}
+    WHERE LocationName = '{locationName}'
+      AND RunTimeSource = 'offset_day'
+      AND LeadHours = {spec.LeadHours}
+      AND WindSpeed10m IS NOT NULL
+      AND WindDirection10m IS NOT NULL
+      AND ValidTimeUtc >= {minTs}
+      AND Model IN {modelInClause}
 ),
 pivoted AS (
-    SELECT
-        ValidTimeUtc,
-        MAX(CASE WHEN Model = 'gfs_seamless'  THEN spd END) AS spd_gfs,
-        MAX(CASE WHEN Model = 'ecmwf_ifs025'  THEN spd END) AS spd_ecmwf,
-        MAX(CASE WHEN Model = 'icon_seamless' THEN spd END) AS spd_icon,
-        MAX(CASE WHEN Model = 'ukmo_seamless' THEN spd END) AS spd_ukmo,
-        MAX(CASE WHEN Model = 'gem_seamless'  THEN spd END) AS spd_gem,
-        MAX(CASE WHEN Model = 'gfs_seamless'  THEN dir END) AS dir_gfs,
-        MAX(CASE WHEN Model = 'ecmwf_ifs025'  THEN dir END) AS dir_ecmwf,
-        MAX(CASE WHEN Model = 'icon_seamless' THEN dir END) AS dir_icon,
-        MAX(CASE WHEN Model = 'ukmo_seamless' THEN dir END) AS dir_ukmo,
-        MAX(CASE WHEN Model = 'gem_seamless'  THEN dir END) AS dir_gem
-    FROM latest
-    WHERE rn = 1
-    GROUP BY ValidTimeUtc
+    SELECT ValidTimeUtc,
+        {pivotSpd},
+        {pivotDir}
+    FROM latest WHERE rn = 1 GROUP BY ValidTimeUtc
 ),
 era5 AS (
     SELECT ValidTimeUtc, WindSpeed10m AS truth
     FROM read_parquet('{eraGlob}', hive_partitioning = false, union_by_name = true)
     WHERE LocationName = '{locationName}'
       AND WindSpeed10m IS NOT NULL
-      AND ValidTimeUtc >= TIMESTAMP '{TrainingWindow.UkmoCleanWindowStart}'
+      AND ValidTimeUtc >= {minTs}
 )
-SELECT
-    p.ValidTimeUtc,
-    p.spd_gfs, p.spd_ecmwf, p.spd_icon, p.spd_ukmo, p.spd_gem,
-    p.dir_gfs, p.dir_ecmwf, p.dir_icon, p.dir_ukmo, p.dir_gem,
-    e.truth
-FROM pivoted p
-JOIN era5 e USING (ValidTimeUtc)
-WHERE p.spd_gfs   IS NOT NULL
-  AND p.spd_ecmwf IS NOT NULL
-  AND p.spd_icon  IS NOT NULL
-  AND p.spd_gem   IS NOT NULL
-ORDER BY p.ValidTimeUtc;
-";
+SELECT p.ValidTimeUtc, {selectSpd}, {selectDir}, e.truth
+FROM pivoted p JOIN era5 e USING (ValidTimeUtc)
+WHERE ({requiredNotNull})
+  AND {anyNotNull}
+ORDER BY p.ValidTimeUtc;";
 
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
         using var r = cmd.ExecuteReader();
 
-        var rows = new List<WindRow>();
+        var rows = new List<RegressionTrainingRow>();
+        var spd = new double[n];
+        var dir = new double[n];
         while (r.Read())
         {
             ct.ThrowIfCancellationRequested();
-
             var valid = r.GetDateTime(0);
-            var spd = new float[5];
-            for (int i = 0; i < 5; i++) spd[i] = r.IsDBNull(1 + i) ? float.NaN : (float)r.GetDouble(1 + i);
-            var dir = new float[5];
-            for (int i = 0; i < 5; i++) dir[i] = r.IsDBNull(6 + i) ? float.NaN : (float)r.GetDouble(6 + i);
-            var truth = (float)r.GetDouble(11);
-
-            rows.Add(ComposeRow(valid, spd, dir, truth));
+            for (int i = 0; i < n; i++) spd[i] = r.IsDBNull(1 + i) ? double.NaN : r.GetDouble(1 + i);
+            for (int i = 0; i < n; i++) dir[i] = r.IsDBNull(1 + n + i) ? double.NaN : r.GetDouble(1 + n + i);
+            var truth = r.GetDouble(1 + 2 * n);
+            rows.Add(ComposeRow(spec, valid, spd, dir, truth));
         }
-
         return rows;
     }
 
-    /// <summary>
-    /// Compose one row from raw per-model values + ERA5 truth. Pure function so the SQL
-    /// loop stays a one-liner and the row-shape logic gets a unit test fixture.
-    /// </summary>
-    public static WindRow ComposeRow(
+    public static RegressionTrainingRow ComposeRow(
+        BlenderSpec spec,
         DateTime validTimeUtc,
-        ReadOnlySpan<float> speeds,    // 5: gfs, ecmwf, icon, ukmo, gem
-        ReadOnlySpan<float> directions, // 5: gfs, ecmwf, icon, ukmo, gem (degrees)
-        float era5WindSpeed)
+        IReadOnlyList<double> speeds,
+        IReadOnlyList<double> directionsDeg,
+        double era5WindSpeed)
     {
-        if (speeds.Length != 5)     throw new ArgumentException("Expected 5 speeds (gfs/ecmwf/icon/ukmo/gem)", nameof(speeds));
-        if (directions.Length != 5) throw new ArgumentException("Expected 5 directions (gfs/ecmwf/icon/ukmo/gem)", nameof(directions));
+        var n = spec.Models.Count;
+        if (speeds.Count != n) throw new ArgumentException($"Expected {n} speeds", nameof(speeds));
+        if (directionsDeg.Count != n) throw new ArgumentException($"Expected {n} directions", nameof(directionsDeg));
 
-        var spread = InterModelSpread.From(speeds);
-        var cal = CalendarFeatures.From(validTimeUtc);
-
-        // Bearings → unit-vector components. North = 0°, increasing clockwise.
-        static (float Sin, float Cos) Encode(float deg)
+        // Spread over wind_spd (NaN-safe so optional-model NaN slots are skipped).
+        double sum = 0, sumSq = 0, min = double.MaxValue, max = double.MinValue;
+        int present = 0;
+        for (int i = 0; i < n; i++)
         {
-            if (float.IsNaN(deg)) return (float.NaN, float.NaN);
-            var rad = deg * (float)(Math.PI / 180.0);
-            return ((float)Math.Sin(rad), (float)Math.Cos(rad));
+            var x = speeds[i];
+            if (double.IsNaN(x)) continue;
+            sum += x; sumSq += x * x;
+            if (x < min) min = x;
+            if (x > max) max = x;
+            present++;
         }
-        var (s0, c0) = Encode(directions[0]);
-        var (s1, c1) = Encode(directions[1]);
-        var (s2, c2) = Encode(directions[2]);
-        var (s3, c3) = Encode(directions[3]);
-        var (s4, c4) = Encode(directions[4]);
+        var mean  = present == 0 ? double.NaN : sum / present;
+        var var0  = present == 0 ? double.NaN : Math.Max(0.0, (sumSq / present) - (mean * mean));
+        var std   = double.IsNaN(var0) ? double.NaN : Math.Sqrt(var0);
+        var range = present == 0 ? double.NaN : max - min;
 
-        return new WindRow
+        var v = validTimeUtc.Kind == DateTimeKind.Utc
+            ? validTimeUtc
+            : DateTime.SpecifyKind(validTimeUtc, DateTimeKind.Utc);
+        var hourAngle = 2.0 * Math.PI * v.Hour / 24.0;
+        var doyAngle  = 2.0 * Math.PI * (v.DayOfYear - 1) / 365.0;
+
+        var features = new float[spec.FeatureCount];
+        for (int i = 0; i < n; i++) features[i] = (float)speeds[i];
+        // Wind-direction unit vectors: NaN propagates via Math.Sin/Cos.
+        for (int i = 0; i < n; i++)
         {
-            ValidTimeUtc = validTimeUtc.Kind == DateTimeKind.Utc
-                ? validTimeUtc
-                : DateTime.SpecifyKind(validTimeUtc, DateTimeKind.Utc),
-            SpdGfs   = speeds[0], SpdEcmwf = speeds[1], SpdIcon = speeds[2],
-            SpdUkmo  = speeds[3], SpdGem   = speeds[4],
-            DirSinGfs   = s0, DirCosGfs   = c0,
-            DirSinEcmwf = s1, DirCosEcmwf = c1,
-            DirSinIcon  = s2, DirCosIcon  = c2,
-            DirSinUkmo  = s3, DirCosUkmo  = c3,
-            DirSinGem   = s4, DirCosGem   = c4,
-            SpdMean = spread.Mean, SpdStd = spread.Std, SpdRange = spread.Range,
-            HourSin = cal.HourSin, HourCos = cal.HourCos,
-            DoySin  = cal.DoySin,  DoyCos  = cal.DoyCos,
-            Era5WindSpeed = era5WindSpeed,
+            var rad = directionsDeg[i] * Math.PI / 180.0;
+            features[n + i] = (float)Math.Sin(rad);
+        }
+        for (int i = 0; i < n; i++)
+        {
+            var rad = directionsDeg[i] * Math.PI / 180.0;
+            features[2 * n + i] = (float)Math.Cos(rad);
+        }
+        features[3 * n + 0] = (float)mean;
+        features[3 * n + 1] = (float)std;
+        features[3 * n + 2] = (float)range;
+        features[3 * n + 3] = (float)Math.Sin(hourAngle);
+        features[3 * n + 4] = (float)Math.Cos(hourAngle);
+        features[3 * n + 5] = (float)Math.Sin(doyAngle);
+        features[3 * n + 6] = (float)Math.Cos(doyAngle);
+
+        return new RegressionTrainingRow
+        {
+            ValidTimeUtc = v,
+            Features = features,
+            Label = (float)era5WindSpeed,
         };
     }
 

@@ -10,6 +10,7 @@ public sealed class AppConfig
     public StorageConfig Storage { get; set; } = new();
     public HttpConfig Http { get; set; } = new();
     public MetOfficeConfig MetOffice { get; set; } = new();
+    public BlendersConfig Blenders { get; set; } = new();
 }
 
 public sealed class VariablesConfig

@@ -4,63 +4,25 @@ using Microsoft.ML;
 using WeatherBlend.Models;
 using WeatherBlend.Predict;
 using WeatherBlend.Train;
+using WeatherBlend.Train.Common;
 
 namespace WeatherBlend.Train.Element.Wind;
 
 /// <summary>
-/// Predict-time pipeline for the wind blender. Pulls one live-cycle pivot for the
-/// {valid_24h, valid_48h, valid_72h} window, composes a <see cref="WindRow"/> per lead
-/// using <see cref="WindFeatureBuilder.ComposeRow"/> (so the predict-time and
-/// train-time row shapes are byte-for-byte identical), then runs the per-lead
-/// model.zip from <paramref name="versionDir"/>.
+/// Predict-time pipeline for the wind blender. Spec-driven: per-lead
+/// <see cref="BlenderSpec"/> loaded from <c>feature_schema.json</c>; the SQL pivot
+/// pulls only spec.Models columns; the feature row is composed via
+/// <see cref="WindFeatureBuilder.ComposeRow"/> so train + predict shapes are
+/// byte-for-byte identical.
 ///
-/// Output ElementPredictionRow has six per-model slots
-/// (Gfs/Ecmwf/Icon/Mf/Ukmo/Gem). Wind has only five accessors (Open-Meteo
-/// Previous Runs ships no MF wind, audit 2026-04-25), so ModelMf and RunTimeMf
-/// are always null in the output. Mapping from accessor-slot index → output
-/// field is done by <see cref="MapToOutputModelFields"/> — keeps the predict-
-/// time output provenance honest about which models the blender actually saw.
+/// Output <see cref="ElementPredictionRow"/> still has six per-model slots
+/// (Gfs/Ecmwf/Icon/Mf/Ukmo/Gem). We populate only the slots that map back to a
+/// model in <c>spec.Models</c>; the rest stay <c>null</c>. The fossil 5-to-6
+/// <c>OutputModelFields</c> mapping helper is gone — the spec is the single
+/// source of truth for which output fields get populated.
 /// </summary>
 public static class WindPredictPipeline
 {
-    /// <summary>Per-model output values projected from the pivoted accessor-
-    /// slot arrays into the six ElementPredictionRow fields. Pure data class
-    /// for unit testing the projection in isolation — see
-    /// `MapToOutputModelFields`.</summary>
-    public readonly record struct OutputModelFields(
-        double? ModelGfs, double? ModelEcmwf, double? ModelIcon,
-        double? ModelMf,  double? ModelUkmo,  double? ModelGem,
-        DateTime? RunTimeGfs, DateTime? RunTimeEcmwf, DateTime? RunTimeIcon,
-        DateTime? RunTimeMf,  DateTime? RunTimeUkmo,  DateTime? RunTimeGem);
-
-    /// <summary>Projects wind's 5-slot accessor arrays
-    /// (gfs, ecmwf, icon, ukmo, gem) into the 6-field ElementPredictionRow
-    /// schema. The single source-of-truth for which output fields wind
-    /// populates from data vs leaves null. Was previously inlined in
-    /// PredictForCycle and got the UKMO mapping wrong (hardcoded null even
-    /// after UKMO restoration); now extracted + tested.</summary>
-    public static OutputModelFields MapToOutputModelFields(
-        IReadOnlyList<float> speeds, IReadOnlyList<DateTime?> runTimes)
-    {
-        if (speeds.Count != WindFeatureBuilder.ModelAccessors.Count)
-            throw new ArgumentException(
-                $"Expected {WindFeatureBuilder.ModelAccessors.Count} per-model speeds, got {speeds.Count}",
-                nameof(speeds));
-        if (runTimes.Count != WindFeatureBuilder.ModelAccessors.Count)
-            throw new ArgumentException(
-                $"Expected {WindFeatureBuilder.ModelAccessors.Count} per-model run times, got {runTimes.Count}",
-                nameof(runTimes));
-
-        // Accessor order: gfs=0, ecmwf=1, icon=2, ukmo=3, gem=4.
-        // Output schema: gfs, ecmwf, icon, mf, ukmo, gem (mf has no source).
-        double? V(int i) => float.IsNaN(speeds[i]) ? null : speeds[i];
-        return new OutputModelFields(
-            ModelGfs: V(0), ModelEcmwf: V(1), ModelIcon: V(2),
-            ModelMf:  null, ModelUkmo:  V(3), ModelGem:  V(4),
-            RunTimeGfs: runTimes[0], RunTimeEcmwf: runTimes[1], RunTimeIcon: runTimes[2],
-            RunTimeMf:  null,        RunTimeUkmo:  runTimes[3], RunTimeGem:  runTimes[4]);
-    }
-
     public static List<ElementPredictionRow> PredictForCycle(
         ILogger log,
         string locationName,
@@ -72,6 +34,8 @@ public static class WindPredictPipeline
         int[] leads,
         CancellationToken ct)
     {
+        var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
+        var canonOrder = FeatureBuilder.CanonicalModelOrder.ToList();
         var targets = leads.Select(L => (Lead: L, Valid: anchor.AddHours(L))).ToArray();
         var pivot = QueryPivot(forecastsPath, locationName, anchor,
             targets.Min(t => t.Valid), targets.Max(t => t.Valid), ct);
@@ -87,38 +51,48 @@ public static class WindPredictPipeline
                 log.LogWarning("  Lead {Lead}h: no live forecast for valid={Valid:yyyy-MM-dd HH:mm}Z; skipping.", lead, valid);
                 continue;
             }
-
-            // Required-models check is per-lead — UKMO (and MF) are excluded from
-            // training and live data isn't expected, so don't flag them as "missing".
-            var requiredModels = WindFeatureBuilder.ModelsForLead(lead).ToHashSet();
-            var missing = WindFeatureBuilder.ModelAccessors
-                .Select((acc, i) => (acc.ModelId, i))
-                .Where(t => requiredModels.Contains(t.ModelId))
-                .Where(t => float.IsNaN(p.Speeds[t.i]) || float.IsNaN(p.Directions[t.i]))
-                .Select(t => t.ModelId)
-                .ToArray();
-            if (missing.Length > 0)
+            if (!specs.TryGetValue(lead, out var spec))
             {
-                log.LogWarning("  Lead {Lead}h: missing per-model wind speed/dir for [{Models}] at valid={Valid:yyyy-MM-dd HH:mm}Z; skipping.",
-                    lead, string.Join(",", missing), valid);
+                log.LogWarning("  Lead {Lead}h: no BlenderSpec in feature_schema.json; skipping.", lead);
                 continue;
             }
 
-            // Force NaN for models the per-lead training schema excluded — keeps predict
-            // input identical to what the model saw in training.
-            for (int i = 0; i < WindFeatureBuilder.ModelAccessors.Count; i++)
+            int N = spec.Models.Count;
+            var spd = new double[N];
+            var dir = new double[N];
+            var missingRequired = new List<string>();
+            var requiredSet = spec.RequiredModels.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < N; i++)
             {
-                if (requiredModels.Contains(WindFeatureBuilder.ModelAccessors[i].ModelId)) continue;
-                p.Speeds[i] = float.NaN;
-                p.Directions[i] = float.NaN;
+                var ci = canonOrder.IndexOf(spec.Models[i]);
+                spd[i] = float.IsNaN(p.Speeds[ci]) ? double.NaN : p.Speeds[ci];
+                dir[i] = float.IsNaN(p.Directions[ci]) ? double.NaN : p.Directions[ci];
+                if (double.IsNaN(spd[i]) && requiredSet.Contains(spec.Models[i]))
+                    missingRequired.Add(spec.Models[i]);
+            }
+            if (missingRequired.Count > 0)
+            {
+                log.LogWarning("  Lead {Lead}h: missing required per-model wind for [{M}] at valid={Valid:yyyy-MM-dd HH:mm}Z; skipping.",
+                    lead, string.Join(",", missingRequired), valid);
+                continue;
             }
 
-            var row = WindFeatureBuilder.ComposeRow(valid, p.Speeds, p.Directions, era5WindSpeed: float.NaN);
+            var row = WindFeatureBuilder.ComposeRow(spec, valid, spd, dir, era5WindSpeed: float.NaN);
+            var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
+            var yhat = TemperatureTrainer.PredictVector(ml, loadedModel, spec, new[] { row })[0];
 
-            var model = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
-            var yhat = TemperatureTrainer.Predict(ml, model, new[] { row })[0];
+            // Per-model output fields: populate only spec.Models, null elsewhere.
+            var modelSpd = new double?[6];
+            var modelRun = new DateTime?[6];
+            for (int i = 0; i < N; i++)
+            {
+                var ci = canonOrder.IndexOf(spec.Models[i]);
+                modelSpd[ci] = double.IsNaN(spd[i]) ? null : spd[i];
+                modelRun[ci] = p.RunTimes[ci];
+            }
 
-            var fields = MapToOutputModelFields(p.Speeds, p.RunTimes);
+            // Spread features at offset 3*N (after spd + sin block + cos block).
+            var spreadStart = 3 * N;
             output.Add(new ElementPredictionRow
             {
                 LocationName = locationName,
@@ -128,25 +102,18 @@ public static class WindPredictPipeline
                 ValidTimeUtc = valid,
                 LeadHours = lead,
                 BlendValue = yhat,
-                ModelGfs   = fields.ModelGfs,
-                ModelEcmwf = fields.ModelEcmwf,
-                ModelIcon  = fields.ModelIcon,
-                ModelMf    = fields.ModelMf,
-                ModelUkmo  = fields.ModelUkmo,
-                ModelGem   = fields.ModelGem,
-                RunTimeGfs   = fields.RunTimeGfs,
-                RunTimeEcmwf = fields.RunTimeEcmwf,
-                RunTimeIcon  = fields.RunTimeIcon,
-                RunTimeMf    = fields.RunTimeMf,
-                RunTimeUkmo  = fields.RunTimeUkmo,
-                RunTimeGem   = fields.RunTimeGem,
-                Mean = row.SpdMean,
-                Std  = row.SpdStd,
-                Range = row.SpdRange,
-                FeatureVectorHash = FeatureHash(row),
+                ModelGfs   = modelSpd[0], ModelEcmwf = modelSpd[1], ModelIcon  = modelSpd[2],
+                ModelMf    = modelSpd[3], ModelUkmo  = modelSpd[4], ModelGem   = modelSpd[5],
+                RunTimeGfs   = modelRun[0], RunTimeEcmwf = modelRun[1],
+                RunTimeIcon  = modelRun[2], RunTimeMf    = modelRun[3],
+                RunTimeUkmo  = modelRun[4], RunTimeGem   = modelRun[5],
+                Mean = row.Features[spreadStart + 0],
+                Std  = row.Features[spreadStart + 1],
+                Range = row.Features[spreadStart + 2],
+                FeatureVectorHash = FeatureHashing.HashFloats(row.Features),
             });
             log.LogInformation("  Lead {Lead}h → blend {Blend:0.000} m/s (valid {Valid:yyyy-MM-dd HH:mm}Z, mean {Mean:0.000} m/s)",
-                lead, yhat, valid, row.SpdMean);
+                lead, yhat, valid, row.Features[spreadStart + 0]);
         }
 
         return output;
@@ -160,13 +127,14 @@ public static class WindPredictPipeline
     {
         var fcGlob = Path.Combine(forecastsPath, "**", "*.parquet").Replace('\\', '/').Replace("'", "''");
         var live = PredictForecastFilters.LiveCycleAsOf(locationName, asOf, earliestValid, latestValid);
+        // Pull all 6 models — the spec filter happens later in the loop. Cheap enough
+        // and lets the per-lead spec drive what survives without re-querying per lead.
         var sql = $@"
 WITH latest AS (
     SELECT ValidTimeUtc, Model, RunTimeUtc, WindSpeed10m, WindDirection10m,
            ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, Model ORDER BY RunTimeUtc DESC) AS rn
     FROM read_parquet('{fcGlob}', hive_partitioning=false, union_by_name=true)
     WHERE {live}
-      AND Model IN ('gfs_seamless','ecmwf_ifs025','icon_seamless','ukmo_seamless','gem_seamless')
 )
 SELECT ValidTimeUtc, Model, RunTimeUtc, WindSpeed10m, WindDirection10m
 FROM latest WHERE rn = 1
@@ -177,15 +145,10 @@ ORDER BY ValidTimeUtc, Model;";
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
 
-        // Order matches WindFeatureBuilder.ModelAccessors: gfs, ecmwf, icon, ukmo, gem.
-        var modelSlot = new Dictionary<string, int>
-        {
-            ["gfs_seamless"]  = 0,
-            ["ecmwf_ifs025"]  = 1,
-            ["icon_seamless"] = 2,
-            ["ukmo_seamless"] = 3,
-            ["gem_seamless"]  = 4,
-        };
+        // Slot ordering matches FeatureBuilder.CanonicalModelOrder so the predict
+        // command can map spec.Models[i] → canonical-slot index.
+        var slotByModel = FeatureBuilder.CanonicalModelOrder
+            .Select((id, i) => (id, i)).ToDictionary(x => x.id, x => x.i);
 
         var working = new Dictionary<DateTime, (float[] Speeds, float[] Directions, DateTime?[] RunTimes)>();
         using var r = cmd.ExecuteReader();
@@ -194,17 +157,16 @@ ORDER BY ValidTimeUtc, Model;";
             ct.ThrowIfCancellationRequested();
             var valid = r.GetDateTime(0);
             var model = r.GetString(1);
-            if (!modelSlot.TryGetValue(model, out var idx)) continue;
-
+            if (!slotByModel.TryGetValue(model, out var idx)) continue;
             if (!working.TryGetValue(valid, out var slot))
             {
                 slot = (
-                    Enumerable.Repeat(float.NaN, 5).ToArray(),
-                    Enumerable.Repeat(float.NaN, 5).ToArray(),
-                    new DateTime?[5]);
+                    Enumerable.Repeat(float.NaN, 6).ToArray(),
+                    Enumerable.Repeat(float.NaN, 6).ToArray(),
+                    new DateTime?[6]);
                 working[valid] = slot;
             }
-            slot.RunTimes[idx] = r.GetDateTime(2);
+            slot.RunTimes[idx]  = r.GetDateTime(2);
             slot.Speeds[idx]    = r.IsDBNull(3) ? float.NaN : (float)r.GetDouble(3);
             slot.Directions[idx] = r.IsDBNull(4) ? float.NaN : (float)r.GetDouble(4);
         }
@@ -212,21 +174,5 @@ ORDER BY ValidTimeUtc, Model;";
         return working.ToDictionary(
             kv => kv.Key,
             kv => new Pivoted(kv.Value.Speeds, kv.Value.Directions, kv.Value.RunTimes));
-    }
-
-    /// <summary>Stable SHA-256 hex of all feature floats in WindRow internal-column order.</summary>
-    private static string FeatureHash(WindRow row)
-    {
-        Span<float> v = stackalloc float[]
-        {
-            row.SpdGfs, row.SpdEcmwf, row.SpdIcon, row.SpdUkmo, row.SpdGem,
-            row.DirSinGfs, row.DirCosGfs, row.DirSinEcmwf, row.DirCosEcmwf,
-            row.DirSinIcon, row.DirCosIcon, row.DirSinUkmo, row.DirCosUkmo,
-            row.DirSinGem, row.DirCosGem,
-            row.SpdMean, row.SpdStd, row.SpdRange,
-            row.HourSin, row.HourCos, row.DoySin, row.DoyCos,
-        };
-        var bytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(v);
-        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
     }
 }

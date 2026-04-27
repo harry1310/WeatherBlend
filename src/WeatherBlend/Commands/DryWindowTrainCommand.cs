@@ -3,7 +3,9 @@ using WeatherBlend.Config;
 using WeatherBlend.Evaluate.DryWindow;
 using WeatherBlend.Evaluate.Precip;
 using WeatherBlend.Train;
+using WeatherBlend.Train.Common;
 using WeatherBlend.Train.DryWindow;
+using CommonRow = WeatherBlend.Train.Common.DryWindowTrainingRow;
 
 namespace WeatherBlend.Commands;
 
@@ -86,6 +88,7 @@ public sealed class DryWindowTrainCommand
 
                 var perLead = new Dictionary<string, ModelArtifact.PerLeadStats>();
                 var importanceByLead = new Dictionary<int, IEnumerable<(string Name, double Gain)>>();
+                var specsPerLead = new Dictionary<int, BlenderSpec>();
                 DryWindowClimatology? climatology = null;
                 bool anyLeadTrained = false;
 
@@ -94,16 +97,20 @@ public sealed class DryWindowTrainCommand
                     ct.ThrowIfCancellationRequested();
                     _log.LogInformation("--- Lead {Lead}h ---", lead);
 
+                    var spec = DryWindowFeatureBuilder.BuildSpec(_cfg.Blenders, lead, phase);
+                    specsPerLead[lead] = spec;
+                    _log.LogInformation("Spec: {Spec}", spec);
+
                     var rows = DryWindowFeatureBuilder.BuildForLead(
                         _cfg.Storage.ForecastsPath,
                         _cfg.Storage.RainfallPath,
                         _cfg.Location.Name,
                         stationName,
-                        lead,
+                        spec,
                         window,
                         ct);
 
-                    var pos = rows.Count(r => r.HasDryWindow);
+                    var pos = rows.Count(r => r.Label);
                     _log.LogInformation("Loaded {N} rows (positives={Pos} / {Pct:P1}) spanning {S:yyyy-MM-dd} → {E:yyyy-MM-dd}",
                         rows.Count, pos,
                         rows.Count == 0 ? 0 : (double)pos / rows.Count,
@@ -118,8 +125,10 @@ public sealed class DryWindowTrainCommand
                         continue;
                     }
 
-                    var ds = DryWindowDataset.Split(rows);
-                    climatology ??= DryWindowClimatology.BuildFromTraining(ds.Train, window);
+                    var ds = WeatherBlend.Train.Common.DryWindowDataset.Split(rows);
+                    // Climatology stays on the legacy day-keyed structure for predict/verify
+                    // backward compat — derive from the new vector rows via month + label.
+                    climatology ??= BuildClimatologyFromVectorRows(ds.Train, window);
 
                     _log.LogInformation("Split → train {TN} (pos {TP}), val {VN} (pos {VP}), test {EN} (pos {EP})",
                         ds.Train.Count, ds.TrainPositives,
@@ -129,16 +138,16 @@ public sealed class DryWindowTrainCommand
                                         "val {V0:yyyy-MM-dd}..{V1:yyyy-MM-dd}, test {E0:yyyy-MM-dd}..{E1:yyyy-MM-dd}",
                         ds.TrainStart, ds.TrainEnd, ds.ValStart, ds.ValEnd, ds.TestStart, ds.TestEnd);
 
-                    var trained = DryWindowTrainer.Train(ds, hp, phase);
+                    var trained = DryWindowTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
 
-                    var truthTest = ds.Test.Select(r => r.HasDryWindow ? 1.0 : 0.0).ToArray();
-                    var blendProb = DryWindowTrainer.PredictProbability(trained.Ml, trained.Model, ds.Test);
+                    var truthTest = ds.Test.Select(r => r.Label ? 1.0 : 0.0).ToArray();
+                    var blendProb = DryWindowTrainer.PredictVectorProbability(trained.Ml, trained.Model, spec, ds.Test);
                     var blendBrier = PrecipMetrics.Brier(blendProb, truthTest);
 
-                    var best = DryWindowBaselines.BestSingle(ds.Val);
+                    var best = DryWindowBaselines.BestSingle(spec, ds.Val);
                     var bestValBrier = PrecipMetrics.Brier(
-                        DryWindowBaselines.SingleModelHasDryWindow(ds.Val, best),
-                        ds.Val.Select(r => r.HasDryWindow ? 1.0 : 0.0).ToArray());
+                        DryWindowBaselines.FromFeature(spec, ds.Val, best),
+                        ds.Val.Select(r => r.Label ? 1.0 : 0.0).ToArray());
 
                     var climPred = DryWindowBaselines.Climatology(ds.Train, ds.Test, window);
                     var climBrier = PrecipMetrics.Brier(climPred, truthTest);
@@ -187,7 +196,7 @@ public sealed class DryWindowTrainCommand
                     continue;
                 }
 
-                ModelArtifact.SaveFeatureSchema(versionDir, DryWindowFeatureBuilder.FeatureNamesForPhase(phase));
+                ModelArtifact.SaveBlenderSpecs(versionDir, specsPerLead);
                 ModelArtifact.SavePerLeadFeatureImportance(versionDir, importanceByLead);
                 if (climatology is not null)
                 {
@@ -289,6 +298,33 @@ public sealed class DryWindowTrainCommand
 
     private static string Slugify(string s) => s.ToLowerInvariant()
         .Replace(' ', '_').Replace('-', '_').Replace(',', '_');
+
+    /// <summary>
+    /// Build a legacy-shaped <see cref="DryWindowClimatology"/> from the new
+    /// vector-row dataset. Kept on the legacy shape so predict-time loaders
+    /// (which read climatology.json) don't need to change in this phase.
+    /// </summary>
+    private static DryWindowClimatology BuildClimatologyFromVectorRows(
+        IReadOnlyList<CommonRow> trainRows, int windowHours)
+    {
+        // Match the legacy DryWindowClimatology layout — month-keyed P(yes-dry-window).
+        var sums = new Dictionary<string, (int Pos, int N)>();
+        foreach (var r in trainRows)
+        {
+            var k = r.TargetDateUtc.Month.ToString("D2");
+            sums.TryGetValue(k, out var cur);
+            sums[k] = (cur.Pos + (r.Label ? 1 : 0), cur.N + 1);
+        }
+        var pDry = sums.ToDictionary(kv => kv.Key, kv => (double)kv.Value.Pos / kv.Value.N);
+        var globalRate = trainRows.Count == 0 ? 0.0 : trainRows.Count(r => r.Label) / (double)trainRows.Count;
+        return new DryWindowClimatology
+        {
+            PDryByMonth = pDry,
+            GlobalPositiveRate = globalRate,
+            SourceRowCount = trainRows.Count,
+            WindowHours = windowHours,
+        };
+    }
 
     private static Dictionary<string, object> BuildHpDict(DryWindowTrainer.Hyperparameters hp, int windowHours)
         => new()

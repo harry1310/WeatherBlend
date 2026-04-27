@@ -1,4 +1,6 @@
 using FluentAssertions;
+using Microsoft.Extensions.Configuration;
+using NetEscapades.Configuration.Yaml;
 using WeatherBlend.Config;
 using Xunit;
 
@@ -59,5 +61,81 @@ public class ConfigTests
     {
         var c = new HttpConfig { PreviousRunsBackfillDelaySeconds = 30 };
         c.PreviousRunsBackfillDelaySeconds.Should().Be(30);
+    }
+
+    [Fact]
+    public void BlendersConfig_get_throws_when_target_or_featureSet_missing()
+    {
+        var b = new BlendersConfig
+        {
+            Items = { new BlenderConfig { Target = "temperature", FeatureSet = "lean" } }
+        };
+        var act = () => b.Get("temperature", "rich");
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*temperature*rich*");
+    }
+
+    [Fact]
+    public void BlenderConfig_required_and_optional_fall_back_to_default_when_no_override()
+    {
+        var c = new BlenderConfig
+        {
+            RequiredModels = new() { "gfs_seamless", "ecmwf_ifs025" },
+            OptionalModels = new() { "ukmo_seamless" },
+            PerLeadOverrides = new()
+            {
+                new() { Lead = 120, RequiredModels = new() { "gfs_seamless" }, OptionalModels = new() }
+            },
+        };
+        c.RequiredForLead(24).Should().Equal("gfs_seamless", "ecmwf_ifs025");
+        c.OptionalForLead(24).Should().Equal("ukmo_seamless");
+        c.RequiredForLead(120).Should().Equal("gfs_seamless");
+        c.OptionalForLead(120).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void BlendersConfig_binds_from_yaml()
+    {
+        // The actual config.yaml shipped with the project should bind cleanly to
+        // BlendersConfig with all 10 expected (target, featureSet) entries. This
+        // pins the binding contract so adding a new blender requires updating
+        // the test alongside the config — and so a regression in the YAML schema
+        // (e.g. a typo in a property name) is caught before training does it.
+        var configPath = Path.Combine(AppContext.BaseDirectory, "config.yaml");
+        var cfg = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+            .AddYamlFile(configPath, optional: false)
+            .Build();
+        var bound = new AppConfig();
+        cfg.Bind(bound);
+
+        bound.Blenders.Items.Should().HaveCount(10);
+        var keys = bound.Blenders.Items.Select(b => $"{b.Target}/{b.FeatureSet}").ToArray();
+        keys.Should().Contain(new[]
+        {
+            "temperature/lean", "temperature/rich",
+            "precipitation/lean", "precipitation/rich",
+            "dry_window/base", "dry_window/shape",
+            "wind/default", "humidity/default", "cloud/default", "radiation/default",
+        });
+
+        // Lean temp: 5 strict, none optional, MF dropped at 120h.
+        var leanTemp = bound.Blenders.Get("temperature", "lean");
+        leanTemp.RequiredModels.Should().HaveCount(5);
+        leanTemp.OptionalModels.Should().BeEmpty();
+        leanTemp.RequiredForLead(120).Should().HaveCount(4);
+        leanTemp.RequiredForLead(120).Should().NotContain("meteofrance_seamless");
+
+        // Lean precip: nothing required, all 5 optional (COALESCE-any).
+        var leanPrecip = bound.Blenders.Get("precipitation", "lean");
+        leanPrecip.RequiredModels.Should().BeEmpty();
+        leanPrecip.OptionalModels.Should().HaveCount(5);
+        leanPrecip.OptionalForLead(120).Should().HaveCount(4);
+
+        // Wind: 4 strict + UKMO optional, MF excluded entirely.
+        var wind = bound.Blenders.Get("wind", "default");
+        wind.RequiredModels.Should().HaveCount(4);
+        wind.OptionalModels.Should().Equal("ukmo_seamless");
+        wind.RequiredModels.Should().NotContain("meteofrance_seamless");
+        wind.OptionalModels.Should().NotContain("meteofrance_seamless");
     }
 }

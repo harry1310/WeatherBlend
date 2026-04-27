@@ -1,150 +1,164 @@
 using DuckDB.NET.Data;
+using WeatherBlend.Config;
+using WeatherBlend.Train.Common;
 using WeatherBlend.Train.Element.Common;
 
 namespace WeatherBlend.Train.Element.Cloud;
 
 /// <summary>
-/// SQL pivot + row composition for the cloud-cover blender.
-/// Pulls per-model total <c>cloud_cover</c> (only — layered cloud is unavailable
-/// in Open-Meteo Previous Runs at Bonehill, see <see cref="CloudRow"/> docstring).
-/// All six models populate total cloud cover.
+/// Spec-driven SQL pivot + row composition for the cloud-cover blender.
+/// Pulls per-model total <c>cloud_cover</c> only — layered cloud is unavailable
+/// in Open-Meteo Previous Runs at Bonehill.
+///
+/// Model membership comes from <c>blenders.cloud</c> in config.yaml. UKMO is
+/// in <c>requiredModels</c> at every lead (2026-04-26 bake-off restored it);
+/// MF is required at lead 24h and excluded at 48/72h (live API horizon ~36h).
+///
+/// Layout per N active models: N per-model cc + 3 spread + 4 calendar = N + 7.
+/// For N=6 → 13 features (matches legacy shape). For N=5 → 12.
 /// </summary>
 public static class CloudFeatureBuilder
 {
-    public static readonly IReadOnlyList<string> PublicFeatureNames = new[]
+    public const string SpecTarget = "cloud";
+    public const string SpecFeatureSet = "default";
+
+    public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours)
     {
-        "cc_gfs", "cc_ecmwf", "cc_icon", "cc_mf", "cc_ukmo", "cc_gem",
-        "cc_mean", "cc_std", "cc_range",
-        "hour_sin", "hour_cos", "doy_sin", "doy_cos",
-    };
+        var blender = blendersCfg.Get(SpecTarget, SpecFeatureSet);
+        var requiredSet = blender.RequiredForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var optionalSet = blender.OptionalForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-    public static readonly IReadOnlyList<string> InternalFeatureColumns = new[]
-    {
-        nameof(CloudRow.CcGfs), nameof(CloudRow.CcEcmwf), nameof(CloudRow.CcIcon),
-        nameof(CloudRow.CcMf), nameof(CloudRow.CcUkmo), nameof(CloudRow.CcGem),
-        nameof(CloudRow.CcMean), nameof(CloudRow.CcStd), nameof(CloudRow.CcRange),
-        nameof(CloudRow.HourSin), nameof(CloudRow.HourCos),
-        nameof(CloudRow.DoySin), nameof(CloudRow.DoyCos),
-    };
+        var orderedRequired = FeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
+        var orderedOptional = FeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
+        var orderedModels = FeatureBuilder.CanonicalModelOrder
+            .Where(m => requiredSet.Contains(m) || optionalSet.Contains(m)).ToList();
+        if (orderedModels.Count == 0)
+            throw new InvalidOperationException($"No models active for {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h.");
 
-    public static readonly IReadOnlyList<ElementTrainerHarness.ModelAccessor<CloudRow>> ModelAccessors = new[]
-    {
-        new ElementTrainerHarness.ModelAccessor<CloudRow>("gfs_seamless",         r => r.CcGfs),
-        new ElementTrainerHarness.ModelAccessor<CloudRow>("ecmwf_ifs025",         r => r.CcEcmwf),
-        new ElementTrainerHarness.ModelAccessor<CloudRow>("icon_seamless",        r => r.CcIcon),
-        new ElementTrainerHarness.ModelAccessor<CloudRow>("meteofrance_seamless", r => r.CcMf),
-        new ElementTrainerHarness.ModelAccessor<CloudRow>("ukmo_seamless",        r => r.CcUkmo),
-        new ElementTrainerHarness.ModelAccessor<CloudRow>("gem_seamless",         r => r.CcGem),
-    };
+        var names = new List<string>();
+        foreach (var m in orderedModels) names.Add($"cc_{FeatureBuilder.ShortName(m)}");
+        names.AddRange(new[] { "cc_mean", "cc_std", "cc_range" });
+        names.AddRange(new[] { "hour_sin", "hour_cos", "doy_sin", "doy_cos" });
 
-    /// <summary>
-    /// Per-lead model membership.
-    ///
-    /// MétéoFrance live forecasts cut off ~36h → drop at 48/72h so train/predict match.
-    ///
-    /// UKMO restored 2026-04-26 after restricted-window bake-off — see
-    /// <see cref="TrainingWindow"/>. UKMO ships total cloud cover at every lead in live
-    /// collects, so train/predict shape match.
-    ///
-    /// Net: 6 models at 24h, 5 at 48/72h (no MF).
-    /// </summary>
-    public static IReadOnlyList<string> ModelsForLead(int leadHours) =>
-        leadHours == 24
-            ? new[] { "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "meteofrance_seamless", "ukmo_seamless", "gem_seamless" }
-            : new[] { "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "ukmo_seamless", "gem_seamless" };
+        return new BlenderSpec
+        {
+            Target = SpecTarget,
+            FeatureSet = SpecFeatureSet,
+            LeadHours = leadHours,
+            RequiredModels = orderedRequired,
+            OptionalModels = orderedOptional,
+            Models = orderedModels,
+            FeatureNames = names,
+        };
+    }
 
-    public static List<CloudRow> BuildForLead(
-        string forecastsPath, string era5Path, string locationName, int leadHours, CancellationToken ct = default)
+    public static List<RegressionTrainingRow> BuildForLead(
+        string forecastsPath, string era5Path, string locationName, BlenderSpec spec, CancellationToken ct = default)
     {
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
 
         var fcGlob  = Norm(Path.Combine(forecastsPath, "**", "*.parquet"));
         var eraGlob = Norm(Path.Combine(era5Path, "**", "*.parquet"));
+        var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
+        var n = spec.Models.Count;
+        var minTs = $"TIMESTAMP '{TrainingWindow.UkmoCleanWindowStart}'";
 
-        var modelList = string.Join(",", ModelsForLead(leadHours).Select(m => $"'{m}'"));
-        var includeMf = leadHours == 24;
-        // UKMO restored at every lead; MF excluded at 48/72h (live API horizon ~36h).
-        var mfPivotClause = includeMf
-            ? "MAX(CASE WHEN Model = 'meteofrance_seamless' THEN cc END) AS cc_mf,"
-            : "CAST(NULL AS DOUBLE) AS cc_mf,";
-        var mfWhereClause = includeMf ? "AND p.cc_mf IS NOT NULL" : "";
-
-        var fcWhere =
-            $"LocationName = '{locationName}' " +
-            $"AND RunTimeSource = 'offset_day' " +
-            $"AND LeadHours = {leadHours} " +
-            $"AND CloudCover IS NOT NULL " +
-            $"AND ValidTimeUtc >= TIMESTAMP '{TrainingWindow.UkmoCleanWindowStart}' " +
-            $"AND Model IN ({modelList})";
+        var pivotCc = string.Join(",\n        ",
+            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN CloudCover END) AS cc_{FeatureBuilder.ShortName(m)}"));
+        var selectCc = string.Join(", ", spec.Models.Select(m => $"p.cc_{FeatureBuilder.ShortName(m)}"));
+        var requiredNotNull = spec.RequiredModels.Count > 0
+            ? string.Join("\n  AND ", spec.RequiredModels.Select(m => $"p.cc_{FeatureBuilder.ShortName(m)} IS NOT NULL"))
+            : "TRUE";
+        var anyNotNull = "(" + string.Join(" OR ", spec.Models.Select(m => $"p.cc_{FeatureBuilder.ShortName(m)} IS NOT NULL")) + ")";
 
         var sql = $@"
 WITH latest AS (
-    SELECT ValidTimeUtc, Model, CloudCover AS cc,
+    SELECT ValidTimeUtc, Model, CloudCover,
            ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, Model ORDER BY RunTimeUtc DESC) AS rn
     FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
-    WHERE {fcWhere}
+    WHERE LocationName = '{locationName}'
+      AND RunTimeSource = 'offset_day'
+      AND LeadHours = {spec.LeadHours}
+      AND CloudCover IS NOT NULL
+      AND ValidTimeUtc >= {minTs}
+      AND Model IN {modelInClause}
 ),
 pivoted AS (
-    SELECT
-        ValidTimeUtc,
-        MAX(CASE WHEN Model = 'gfs_seamless'         THEN cc END) AS cc_gfs,
-        MAX(CASE WHEN Model = 'ecmwf_ifs025'         THEN cc END) AS cc_ecmwf,
-        MAX(CASE WHEN Model = 'icon_seamless'        THEN cc END) AS cc_icon,
-        MAX(CASE WHEN Model = 'gem_seamless'         THEN cc END) AS cc_gem,
-        MAX(CASE WHEN Model = 'ukmo_seamless'        THEN cc END) AS cc_ukmo,
-        {mfPivotClause}
+    SELECT ValidTimeUtc,
+        {pivotCc}
     FROM latest WHERE rn = 1 GROUP BY ValidTimeUtc
 ),
 era5 AS (
     SELECT ValidTimeUtc, CloudCover AS truth
     FROM read_parquet('{eraGlob}', hive_partitioning = false, union_by_name = true)
     WHERE LocationName = '{locationName}' AND CloudCover IS NOT NULL
-      AND ValidTimeUtc >= TIMESTAMP '{TrainingWindow.UkmoCleanWindowStart}'
+      AND ValidTimeUtc >= {minTs}
 )
-SELECT
-    p.ValidTimeUtc,
-    p.cc_gfs, p.cc_ecmwf, p.cc_icon, p.cc_mf, p.cc_ukmo, p.cc_gem,
-    e.truth
-FROM pivoted p
-JOIN era5 e USING (ValidTimeUtc)
-WHERE p.cc_gfs IS NOT NULL AND p.cc_ecmwf IS NOT NULL AND p.cc_icon IS NOT NULL
-  AND p.cc_gem IS NOT NULL
-  {mfWhereClause}
-ORDER BY p.ValidTimeUtc;
-";
+SELECT p.ValidTimeUtc, {selectCc}, e.truth
+FROM pivoted p JOIN era5 e USING (ValidTimeUtc)
+WHERE ({requiredNotNull})
+  AND {anyNotNull}
+ORDER BY p.ValidTimeUtc;";
 
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
         using var r = cmd.ExecuteReader();
 
-        var rows = new List<CloudRow>();
+        var rows = new List<RegressionTrainingRow>();
+        var cc = new double[n];
         while (r.Read())
         {
             ct.ThrowIfCancellationRequested();
             var valid = r.GetDateTime(0);
-            var cc = new float[6];
-            for (int i = 0; i < 6; i++) cc[i] = r.IsDBNull(1 + i) ? float.NaN : (float)r.GetDouble(1 + i);
-            var truth = (float)r.GetDouble(7);
-            rows.Add(ComposeRow(valid, cc, truth));
+            for (int i = 0; i < n; i++) cc[i] = r.IsDBNull(1 + i) ? double.NaN : r.GetDouble(1 + i);
+            var truth = r.GetDouble(1 + n);
+            rows.Add(ComposeRow(spec, valid, cc, truth));
         }
         return rows;
     }
 
-    public static CloudRow ComposeRow(DateTime validTimeUtc, ReadOnlySpan<float> cc, float era5Cc)
+    public static RegressionTrainingRow ComposeRow(
+        BlenderSpec spec, DateTime validTimeUtc, IReadOnlyList<double> cc, double era5Cc)
     {
-        if (cc.Length != 6) throw new ArgumentException("Expected 6 cloud values", nameof(cc));
+        var n = spec.Models.Count;
+        if (cc.Count != n) throw new ArgumentException($"Expected {n} cloud values", nameof(cc));
 
-        var spread = InterModelSpread.From(cc);
-        var cal = CalendarFeatures.From(validTimeUtc);
-
-        return new CloudRow
+        double sum = 0, sumSq = 0, min = double.MaxValue, max = double.MinValue;
+        int present = 0;
+        for (int i = 0; i < n; i++)
         {
-            ValidTimeUtc = validTimeUtc.Kind == DateTimeKind.Utc ? validTimeUtc : DateTime.SpecifyKind(validTimeUtc, DateTimeKind.Utc),
-            CcGfs = cc[0], CcEcmwf = cc[1], CcIcon = cc[2], CcMf = cc[3], CcUkmo = cc[4], CcGem = cc[5],
-            CcMean = spread.Mean, CcStd = spread.Std, CcRange = spread.Range,
-            HourSin = cal.HourSin, HourCos = cal.HourCos, DoySin = cal.DoySin, DoyCos = cal.DoyCos,
-            Era5Cc = era5Cc,
+            var x = cc[i];
+            if (double.IsNaN(x)) continue;
+            sum += x; sumSq += x * x;
+            if (x < min) min = x;
+            if (x > max) max = x;
+            present++;
+        }
+        var mean  = present == 0 ? double.NaN : sum / present;
+        var var0  = present == 0 ? double.NaN : Math.Max(0.0, (sumSq / present) - (mean * mean));
+        var std   = double.IsNaN(var0) ? double.NaN : Math.Sqrt(var0);
+        var range = present == 0 ? double.NaN : max - min;
+
+        var v = validTimeUtc.Kind == DateTimeKind.Utc ? validTimeUtc : DateTime.SpecifyKind(validTimeUtc, DateTimeKind.Utc);
+        var hourAngle = 2.0 * Math.PI * v.Hour / 24.0;
+        var doyAngle  = 2.0 * Math.PI * (v.DayOfYear - 1) / 365.0;
+
+        var features = new float[spec.FeatureCount];
+        for (int i = 0; i < n; i++) features[i] = (float)cc[i];
+        features[n + 0] = (float)mean;
+        features[n + 1] = (float)std;
+        features[n + 2] = (float)range;
+        features[n + 3] = (float)Math.Sin(hourAngle);
+        features[n + 4] = (float)Math.Cos(hourAngle);
+        features[n + 5] = (float)Math.Sin(doyAngle);
+        features[n + 6] = (float)Math.Cos(doyAngle);
+
+        return new RegressionTrainingRow
+        {
+            ValidTimeUtc = v,
+            Features = features,
+            Label = (float)era5Cc,
         };
     }
 

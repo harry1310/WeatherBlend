@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.ML;
+using WeatherBlend.Train.Common;
 
 namespace WeatherBlend.Train;
 
@@ -70,8 +71,36 @@ public static class ModelArtifact
 
     public sealed class FeatureSchema
     {
-        public List<string> FeatureNames { get; set; } = new();
+        /// <summary>
+        /// Per-lead BlenderSpec (new canonical layout, post unify-model-membership refactor).
+        /// Keys are stringified lead-hours ("24", "48", "72", "120").
+        /// </summary>
+        public Dictionary<string, LeadSchema> Leads { get; set; } = new();
+
+        /// <summary>
+        /// Legacy flat feature-name list. Populated by pre-refactor builders that
+        /// haven't migrated to <see cref="SaveBlenderSpecs"/> yet. Removed after
+        /// Phase 5 of the refactor lands.
+        /// </summary>
+        public List<string>? FeatureNames { get; set; }
+
         public string Dtype { get; set; } = "float32";
+    }
+
+    /// <summary>
+    /// Per-lead schema entry persisted in feature_schema.json. Mirrors the runtime
+    /// <see cref="BlenderSpec"/> with concrete <c>List&lt;string&gt;</c> collections so
+    /// System.Text.Json round-trips cleanly.
+    /// </summary>
+    public sealed class LeadSchema
+    {
+        public string Target { get; set; } = "";
+        public string FeatureSet { get; set; } = "";
+        public int LeadHours { get; set; }
+        public List<string> RequiredModels { get; set; } = new();
+        public List<string> OptionalModels { get; set; } = new();
+        public List<string> Models { get; set; } = new();
+        public List<string> FeatureNames { get; set; } = new();
     }
 
     public sealed class TrainingMetadata
@@ -161,10 +190,75 @@ public static class ModelArtifact
         return ml.Model.Load(path, out schema);
     }
 
+    /// <summary>
+    /// Legacy flat-list schema writer. Used by builders that haven't been migrated
+    /// to <see cref="SaveBlenderSpecs"/> yet. Removed after Phase 5 of the
+    /// unify-model-membership refactor.
+    /// </summary>
+    [Obsolete("Use SaveBlenderSpecs instead — per-lead schema captures model membership.")]
     public static void SaveFeatureSchema(string versionDir, IEnumerable<string> featureNames)
     {
         var obj = new FeatureSchema { FeatureNames = featureNames.ToList() };
         WriteJson(Path.Combine(versionDir, FeatureSchemaFileName), obj);
+    }
+
+    /// <summary>
+    /// Persist per-lead BlenderSpecs to <c>feature_schema.json</c>. One file per
+    /// version captures every lead in that artefact set so predict can look up
+    /// the (models, feature ordering, requireAllModelsPresent) policy without
+    /// consulting config.yaml — config might have changed between train and predict.
+    /// </summary>
+    public static void SaveBlenderSpecs(string versionDir, IReadOnlyDictionary<int, BlenderSpec> specsPerLead)
+    {
+        var schema = new FeatureSchema();
+        foreach (var (lead, spec) in specsPerLead)
+        {
+            schema.Leads[lead.ToString(System.Globalization.CultureInfo.InvariantCulture)] = new LeadSchema
+            {
+                Target = spec.Target,
+                FeatureSet = spec.FeatureSet,
+                LeadHours = spec.LeadHours,
+                RequiredModels = spec.RequiredModels.ToList(),
+                OptionalModels = spec.OptionalModels.ToList(),
+                Models = spec.Models.ToList(),
+                FeatureNames = spec.FeatureNames.ToList(),
+            };
+        }
+        WriteJson(Path.Combine(versionDir, FeatureSchemaFileName), schema);
+    }
+
+    /// <summary>
+    /// Load every per-lead BlenderSpec from a version's <c>feature_schema.json</c>.
+    /// Throws if the file is missing — predict cannot run without the schema
+    /// (we'd have no idea which models the trained vector expects).
+    /// </summary>
+    public static IReadOnlyDictionary<int, BlenderSpec> LoadBlenderSpecs(string versionDir)
+    {
+        var path = Path.Combine(versionDir, FeatureSchemaFileName);
+        if (!File.Exists(path))
+            throw new FileNotFoundException(
+                $"Missing {FeatureSchemaFileName} in {versionDir} — artefact predates the per-lead schema layout. Retrain.");
+
+        var schema = ReadJson<FeatureSchema>(path)
+                     ?? throw new InvalidOperationException($"Could not parse {path}");
+
+        var result = new Dictionary<int, BlenderSpec>();
+        foreach (var (key, ls) in schema.Leads)
+        {
+            if (!int.TryParse(key, out var lead))
+                throw new InvalidOperationException($"Non-integer lead key '{key}' in {path}");
+            result[lead] = new BlenderSpec
+            {
+                Target = ls.Target,
+                FeatureSet = ls.FeatureSet,
+                LeadHours = ls.LeadHours,
+                RequiredModels = ls.RequiredModels,
+                OptionalModels = ls.OptionalModels,
+                Models = ls.Models,
+                FeatureNames = ls.FeatureNames,
+            };
+        }
+        return result;
     }
 
     public static void SaveFeatureImportance(

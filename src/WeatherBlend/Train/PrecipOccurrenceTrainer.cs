@@ -1,6 +1,7 @@
 using Microsoft.ML;
 using Microsoft.ML.Data;
 using Microsoft.ML.Trainers.LightGbm;
+using WeatherBlend.Train.Common;
 
 namespace WeatherBlend.Train;
 
@@ -49,9 +50,103 @@ public sealed class PrecipOccurrenceTrainer
     /// <summary>
     /// Phase 3a call site: lean 27-feature dataset. Thin wrapper over the generic
     /// <see cref="Train{T}"/> with the lean feature-column list.
+    /// Legacy code path — superseded by <see cref="TrainVector"/> after the
+    /// unify-model-membership refactor (Phase 2+).
     /// </summary>
+    [Obsolete("Use TrainVector with BinaryTrainingRow instead.")]
     public static TrainedClassifier Train(PrecipDataset ds, Hyperparameters hp)
         => Train(ds.Train, ds.Val, LeanFeatureColumnInternalNames(), hp);
+
+    /// <summary>
+    /// Vector-native fit: takes <see cref="BinaryTrainingRow"/> rows whose
+    /// <see cref="BinaryTrainingRow.Features"/> already IS the training vector
+    /// (no Concatenate transform needed). The vector length is fixed per
+    /// <paramref name="spec"/>; train and predict stay lockstep because both
+    /// sides build the vector from the same <see cref="BlenderSpec"/>.
+    /// </summary>
+    public static TrainedClassifier TrainVector(
+        IReadOnlyList<BinaryTrainingRow> train,
+        IReadOnlyList<BinaryTrainingRow> val,
+        BlenderSpec spec,
+        Hyperparameters hp)
+    {
+        if (train.Count == 0)
+            throw new ArgumentException("No training rows", nameof(train));
+        if (train[0].Features.Length != spec.FeatureCount)
+            throw new InvalidOperationException(
+                $"Training row Features length {train[0].Features.Length} != spec.FeatureCount {spec.FeatureCount} for {spec}");
+
+        var ml = new MLContext(seed: hp.Seed);
+
+        var schema = SchemaDefinition.Create(typeof(BinaryTrainingRow));
+        schema[nameof(BinaryTrainingRow.Features)].ColumnType =
+            new VectorDataViewType(NumberDataViewType.Single, spec.FeatureCount);
+
+        var trainDv = ml.Data.LoadFromEnumerable(train, schema);
+        var valDv   = ml.Data.LoadFromEnumerable(val, schema);
+
+        var options = new LightGbmBinaryTrainer.Options
+        {
+            LabelColumnName = "Label",
+            FeatureColumnName = nameof(BinaryTrainingRow.Features),
+            NumberOfIterations = hp.NumberOfIterations,
+            LearningRate = hp.LearningRate,
+            NumberOfLeaves = hp.NumberOfLeaves,
+            MinimumExampleCountPerLeaf = hp.MinimumExampleCountPerLeaf,
+            EarlyStoppingRound = hp.EarlyStoppingRound,
+            Seed = hp.Seed,
+            UnbalancedSets = false,
+            Booster = new GradientBooster.Options
+            {
+                L1Regularization = hp.L1Regularization,
+                L2Regularization = hp.L2Regularization,
+                SubsampleFraction = hp.SubsampleFraction,
+                SubsampleFrequency = hp.SubsampleFrequency,
+                FeatureFraction = hp.FeatureFraction,
+            },
+        };
+
+        var trainer = ml.BinaryClassification.Trainers.LightGbm(options);
+        var predictor = trainer.Fit(trainDv, valDv);
+
+        var weights = default(VBuffer<float>);
+        predictor.Model.SubModel.GetFeatureWeights(ref weights);
+        var importance = weights.DenseValues()
+            .Select((g, i) => (Name: spec.FeatureNames[i], Gain: (double)g))
+            .OrderByDescending(t => t.Gain)
+            .ToArray();
+
+        return new TrainedClassifier(
+            Ml: ml,
+            Model: predictor,
+            InputSchema: trainDv.Schema,
+            Hyperparameters: hp,
+            FeatureNames: spec.FeatureNames.ToArray(),
+            FeatureImportance: importance);
+    }
+
+    /// <summary>
+    /// Vector-native predict over <see cref="BinaryTrainingRow"/>. Uses an
+    /// explicit SchemaDefinition matching <paramref name="spec"/> so the saved
+    /// model receives the same shape it was trained on.
+    /// </summary>
+    public static double[] PredictVectorProbability(
+        MLContext ml,
+        ITransformer model,
+        BlenderSpec spec,
+        IReadOnlyList<BinaryTrainingRow> rows)
+    {
+        if (rows.Count == 0) return Array.Empty<double>();
+        var schema = SchemaDefinition.Create(typeof(BinaryTrainingRow));
+        schema[nameof(BinaryTrainingRow.Features)].ColumnType =
+            new VectorDataViewType(NumberDataViewType.Single, spec.FeatureCount);
+        var dv = ml.Data.LoadFromEnumerable(rows, schema);
+        var predicted = model.Transform(dv);
+        var scores = predicted.GetColumn<float>("Probability").ToArray();
+        var result = new double[scores.Length];
+        for (int i = 0; i < scores.Length; i++) result[i] = scores[i];
+        return result;
+    }
 
     /// <summary>
     /// Generic LightGBM fit over arbitrary rows + feature column list. Used by

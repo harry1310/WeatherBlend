@@ -1,4 +1,6 @@
+using WeatherBlend.Train.Common;
 using WeatherBlend.Train.DryWindow;
+using CommonRow = WeatherBlend.Train.Common.DryWindowTrainingRow;
 
 namespace WeatherBlend.Evaluate.DryWindow;
 
@@ -9,7 +11,7 @@ namespace WeatherBlend.Evaluate.DryWindow;
 /// </summary>
 public static class DryWindowBaselines
 {
-    public static double[] SingleModelHasDryWindow(IReadOnlyList<DryWindowTrainingRow> rows, string col) => col switch
+    public static double[] SingleModelHasDryWindow(IReadOnlyList<WeatherBlend.Train.DryWindow.DryWindowTrainingRow> rows, string col) => col switch
     {
         "has_dry_window_gfs"   => rows.Select(r => (double)r.HasDryWindowGfs  ).ToArray(),
         "has_dry_window_ecmwf" => rows.Select(r => (double)r.HasDryWindowEcmwf).ToArray(),
@@ -21,13 +23,13 @@ public static class DryWindowBaselines
     };
 
     /// <summary>Mean-of-models: fraction of ensemble members predicting a dry window exists.</summary>
-    public static double[] MeanOfModels(IReadOnlyList<DryWindowTrainingRow> rows)
+    public static double[] MeanOfModels(IReadOnlyList<WeatherBlend.Train.DryWindow.DryWindowTrainingRow> rows)
         => rows.Select(r => float.IsNaN(r.AgreementHasDryWindow) ? 0.0 : (double)r.AgreementHasDryWindow).ToArray();
 
     /// <summary>Month-keyed climatology from <paramref name="trainRows"/> evaluated at each target row's date.</summary>
     public static double[] Climatology(
-        IReadOnlyList<DryWindowTrainingRow> trainRows,
-        IReadOnlyList<DryWindowTrainingRow> targetRows,
+        IReadOnlyList<WeatherBlend.Train.DryWindow.DryWindowTrainingRow> trainRows,
+        IReadOnlyList<WeatherBlend.Train.DryWindow.DryWindowTrainingRow> targetRows,
         int windowHours)
     {
         var clim = DryWindowClimatology.BuildFromTraining(trainRows, windowHours);
@@ -42,7 +44,7 @@ public static class DryWindowBaselines
     /// via <paramref name="labelByDate"/>; returns NaN when yesterday is missing.
     /// </summary>
     public static double[] Persistence(
-        IReadOnlyList<DryWindowTrainingRow> rows,
+        IReadOnlyList<WeatherBlend.Train.DryWindow.DryWindowTrainingRow> rows,
         IReadOnlyDictionary<DateOnly, bool> labelByDate,
         int lagDays = 1)
     {
@@ -59,7 +61,7 @@ public static class DryWindowBaselines
     }
 
     /// <summary>Column name of the single model with lowest Brier over <paramref name="rows"/>.</summary>
-    public static string BestSingle(IReadOnlyList<DryWindowTrainingRow> rows)
+    public static string BestSingle(IReadOnlyList<WeatherBlend.Train.DryWindow.DryWindowTrainingRow> rows)
     {
         var truth = rows.Select(r => r.HasDryWindow ? 1.0 : 0.0).ToArray();
         string best = "has_dry_window_ecmwf";
@@ -80,4 +82,74 @@ public static class DryWindowBaselines
         return best;
     }
 
+    // -----------------------------------------------------------------------
+    // Vector-row API (BlenderSpec + Common.DryWindowTrainingRow). Phase 4+.
+    // -----------------------------------------------------------------------
+
+    /// <summary>Pull a named feature column from the vector — used for per-model baselines.</summary>
+    public static double[] FromFeature(BlenderSpec spec, IReadOnlyList<CommonRow> rows, string featureName)
+    {
+        var idx = spec.IndexOf(featureName);
+        var p = new double[rows.Count];
+        for (int i = 0; i < rows.Count; i++) p[i] = rows[i].Features[idx];
+        return p;
+    }
+
+    /// <summary>Mean-of-models = ensemble agreement on has-dry-window (already a feature).</summary>
+    public static double[] MeanOfModels(BlenderSpec spec, IReadOnlyList<CommonRow> rows)
+    {
+        var idx = spec.IndexOf("agreement_has_dry_window");
+        var p = new double[rows.Count];
+        for (int i = 0; i < rows.Count; i++)
+        {
+            var v = rows[i].Features[idx];
+            p[i] = float.IsNaN(v) ? 0.0 : v;
+        }
+        return p;
+    }
+
+    /// <summary>Climatology baseline against the new vector-row dataset.</summary>
+    public static double[] Climatology(
+        IReadOnlyList<CommonRow> trainRows,
+        IReadOnlyList<CommonRow> targetRows,
+        int windowHours)
+    {
+        var sums = new Dictionary<int, (int Pos, int N)>();
+        foreach (var r in trainRows)
+        {
+            var k = r.TargetDateUtc.Month;
+            sums.TryGetValue(k, out var cur);
+            sums[k] = (cur.Pos + (r.Label ? 1 : 0), cur.N + 1);
+        }
+        var globalRate = trainRows.Count == 0 ? 0.0 : trainRows.Count(r => r.Label) / (double)trainRows.Count;
+
+        var p = new double[targetRows.Count];
+        for (int i = 0; i < targetRows.Count; i++)
+        {
+            var k = targetRows[i].TargetDateUtc.Month;
+            p[i] = sums.TryGetValue(k, out var cur) && cur.N > 0
+                ? cur.Pos / (double)cur.N
+                : globalRate;
+        }
+        return p;
+    }
+
+    /// <summary>
+    /// Per-model has-dry-window slot with lowest Brier on the rows. Iterates
+    /// the per-model "has_dry_window_X" entries in the spec — those live at
+    /// index 4N..5N-1 (after sum/max_hour/wet_count/longest_dry blocks).
+    /// </summary>
+    public static string BestSingle(BlenderSpec spec, IReadOnlyList<CommonRow> rows)
+    {
+        var truth = rows.Select(r => r.Label ? 1.0 : 0.0).ToArray();
+        string best = $"has_dry_window_{Train.FeatureBuilder.ShortName(spec.Models[0])}";
+        double bestBrier = double.PositiveInfinity;
+        foreach (var m in spec.Models)
+        {
+            var name = $"has_dry_window_{Train.FeatureBuilder.ShortName(m)}";
+            var b = WeatherBlend.Evaluate.Precip.PrecipMetrics.Brier(FromFeature(spec, rows, name), truth);
+            if (!double.IsNaN(b) && b < bestBrier) { bestBrier = b; best = name; }
+        }
+        return best;
+    }
 }

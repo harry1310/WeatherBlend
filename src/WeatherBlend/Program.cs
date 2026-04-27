@@ -129,7 +129,7 @@ public static class Program
                 services.AddTransient<PredictCommand>();
                 services.AddTransient<PrecipPredictCommand>();
                 services.AddTransient<PrecipCalibrateCommand>();
-                services.AddTransient<PrecipAblateCommand>();
+                // PrecipAblateCommand removed in Phase 6 of unify-model-membership refactor.
                 services.AddTransient<VerifyCommand>();
                 services.AddTransient<PrecipVerifyCommand>();
                 services.AddTransient<RenderSiteCommand>();
@@ -144,7 +144,7 @@ public static class Program
                 services.AddTransient<ElementTrainCommand>();
                 services.AddTransient<ElementPredictCommand>();
                 services.AddTransient<ElementVerifyCommand>();
-                services.AddTransient<ElementBakeoffCommand>();
+                // ElementBakeoffCommand removed in Phase 5 of unify-model-membership refactor.
                 services.AddTransient<UtciPredictCommand>();
                 services.AddSingleton<MetOfficeArchiveBackfillClient>();
                 services.AddTransient<MetOfficeArchiveBackfillCommand>();
@@ -273,7 +273,7 @@ public static class Program
             getDefaultValue: () => "temperature");
         var leadOpt = new Option<string>(
             name: "--lead",
-            description: "Lead hours: 24 | 48 | 72 | all",
+            description: "Lead hours: 24 | 48 | 72 | 120 | all (120 supported for temperature + precipitation only)",
             getDefaultValue: () => "all");
         var stationOpt = new Option<string?>(
             name: "--station",
@@ -352,7 +352,7 @@ public static class Program
             getDefaultValue: () => "all");
         var predict = new Command(
             "predict",
-            "Produce blended forecasts for the next 24/48/72h from the current blender")
+            "Produce blended forecasts (24/48/72h, plus 120h for temperature + precipitation) from the current blender")
         {
             predictTargetOpt, predictVersionOpt, predictForDateOpt, predictTruthStationOpt, predictWindowOpt,
         };
@@ -516,15 +516,8 @@ public static class Program
         }, dwCalibrateStationOpt);
         root.AddCommand(dryWindowCalibrate);
 
-        var precipAblate = new Command(
-            "precip-ablate",
-            "Phase 3c diagnostic: tabulate 3a vs 3c test-set Brier + run 24h feature-tier ablation");
-        precipAblate.SetHandler(async ctx =>
-        {
-            var cmd = host.Services.GetRequiredService<PrecipAblateCommand>();
-            ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
-        });
-        root.AddCommand(precipAblate);
+        // The `precip-ablate` command was removed in Phase 6 of the unify-model-membership refactor.
+        // Its conclusions are baked into the production rich precip blender.
 
         var dryWindowDiag = new Command(
             "dry-window-diagnostic",
@@ -546,19 +539,9 @@ public static class Program
         });
         root.AddCommand(dryWindowReport);
 
-        var bakeTargetOpt = new Option<string>(name: "--target", description: "humidity | cloud-cover", getDefaultValue: () => "humidity");
-        var bakeV1Opt = new Option<string>(name: "--version-1", description: "Pattern 1 (UKMO dropped) version dir name") { IsRequired = true };
-        var bakeV2Opt = new Option<string>(name: "--version-2", description: "Pattern 2 (UKMO required) version dir name") { IsRequired = true };
-        var bakeoff = new Command("bakeoff", "Apples-to-apples Element bake-off between two saved versions on a shared UKMO-present test set")
-        {
-            bakeTargetOpt, bakeV1Opt, bakeV2Opt,
-        };
-        bakeoff.SetHandler(async (target, v1, v2) =>
-        {
-            var cmd = host.Services.GetRequiredService<ElementBakeoffCommand>();
-            Environment.ExitCode = await cmd.RunAsync(target, v1, v2, CancellationToken.None);
-        }, bakeTargetOpt, bakeV1Opt, bakeV2Opt);
-        root.AddCommand(bakeoff);
+        // The `bakeoff` command was removed in Phase 5 of the unify-model-membership refactor.
+        // It diagnosed UKMO inclusion vs exclusion on a shared UKMO-present test set; the
+        // resulting per-element decisions are now baked into config.yaml's blenders section.
 
         var dryWindowAblate = new Command(
             "dry-window-ablate",

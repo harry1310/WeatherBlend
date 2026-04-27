@@ -7,6 +7,7 @@ using WeatherBlend.Models;
 using WeatherBlend.Predict;
 using WeatherBlend.Site;
 using WeatherBlend.Train;
+using WeatherBlend.Train.Common;
 
 namespace WeatherBlend.Commands;
 
@@ -28,7 +29,7 @@ public sealed class PrecipPredictCommand
     private readonly ILogger<PrecipPredictCommand> _log;
     private readonly AppConfig _cfg;
 
-    private static readonly int[] DefaultLeads = { 24, 48, 72 };
+    private static readonly int[] DefaultLeads = { 24, 48, 72, 120 };
 
     public PrecipPredictCommand(ILogger<PrecipPredictCommand> log, AppConfig cfg)
     {
@@ -171,6 +172,11 @@ public sealed class PrecipPredictCommand
         var ml = new MLContext(seed: 42);
         var predictions = new List<PrecipPredictionRow>();
 
+        // Both lean (3a) and rich (3c) artefacts use the per-lead BlenderSpec layout.
+        // Rich's spec just has a longer feature vector. Schema is read from feature_schema.json.
+        var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
+        var canonOrder = FeatureBuilder.CanonicalModelOrder.ToList();
+
         foreach (var (lead, valid) in targets)
         {
             if (!perValid.TryGetValue(valid, out var pivot))
@@ -179,40 +185,64 @@ public sealed class PrecipPredictCommand
                     station, lead, valid);
                 continue;
             }
-
-            // Require at least one non-null per-model precip — matches the training
-            // filter. If every model is silent there's nothing to blend.
             if (!pivot.Precip.Any(p => p.HasValue))
             {
                 _log.LogWarning("Station {Station} lead {Lead}h: all six per-model precip values null for valid={Valid:yyyy-MM-dd HH:mm}Z; skipping.",
                     station, lead, valid);
                 continue;
             }
+            if (!specs.TryGetValue(lead, out var spec))
+            {
+                _log.LogWarning("Station {Station} lead {Lead}h: no BlenderSpec in feature_schema.json for this lead; skipping.",
+                    station, lead);
+                continue;
+            }
 
-            var precip = pivot.Precip.Select(p => p ?? double.NaN).ToArray();
-            var prob   = pivot.Prob.Select(p => p ?? double.NaN).ToArray();
+            // Pull spec.Models precip + prob from the canonical 6-slot pivot, in spec order.
+            int N = spec.Models.Count;
+            var specPrecip = new double[N];
+            var specProb   = new double[N];
+            var missingRequired = new List<string>();
+            var requiredSet = spec.RequiredModels.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < N; i++)
+            {
+                var ci = canonOrder.IndexOf(spec.Models[i]);
+                var pv = pivot.Precip[ci];
+                var qv = pivot.Prob[ci];
+                specPrecip[i] = pv ?? double.NaN;
+                specProb[i]   = qv ?? double.NaN;
+                if (!pv.HasValue && requiredSet.Contains(spec.Models[i]))
+                    missingRequired.Add(spec.Models[i]);
+            }
+            if (missingRequired.Count > 0)
+            {
+                _log.LogWarning("Station {Station} lead {Lead}h: missing required per-model precip [{Missing}] for valid={Valid:yyyy-MM-dd HH:mm}Z; skipping.",
+                    station, lead, string.Join(",", missingRequired), valid);
+                continue;
+            }
 
-            // truthMmHour is ignored at predict time (the trainer only reads features);
-            // 0 keeps WetBinary=false in the composed row.
-            PrecipTrainingRow featureRow;
+            // Compose the row — lean or rich depending on spec.FeatureSet.
+            BinaryTrainingRow row;
             if (isRich)
             {
-                var dew = pivot.Dew.Select(v => v ?? double.NaN).ToArray();
-                var rh  = pivot.Rh .Select(v => v ?? double.NaN).ToArray();
-                var pres = pivot.Pressure.Select(v => v ?? double.NaN).ToArray();
-                var dewDep = new double[6];
-                for (int i = 0; i < 6; i++)
+                var dew    = new double[N];
+                var rh     = new double[N];
+                var dewDep = new double[N];
+                var pres   = new double[N];
+                for (int i = 0; i < N; i++)
                 {
-                    var t = pivot.Temp2m[i];
-                    var d = pivot.Dew[i];
+                    var ci = canonOrder.IndexOf(spec.Models[i]);
+                    var t  = pivot.Temp2m[ci];
+                    var d  = pivot.Dew[ci];
+                    dew[i]    = d ?? double.NaN;
+                    rh[i]     = pivot.Rh[ci] ?? double.NaN;
                     dewDep[i] = (t.HasValue && d.HasValue) ? t.Value - d.Value : double.NaN;
+                    pres[i]   = pivot.Pressure[ci] ?? double.NaN;
                 }
-
                 var runTime = valid.AddHours(-lead);
                 var persist = PrecipRichFeatureBuilder.ComputePersistence(hourlyRain!, runTime);
-
-                featureRow = PrecipRichFeatureBuilder.ComposeRow(
-                    valid, precip, prob, dew, rh, dewDep, pres,
+                row = PrecipRichFeatureBuilder.ComposeRow(
+                    spec, valid, specPrecip, specProb, dew, rh, dewDep, pres,
                     rhMean: pivot.RhMean, dewDepressionMean: pivot.DewDepressionMean,
                     cloudLowMean: pivot.CloudLowMean, cloudMidMean: pivot.CloudMidMean,
                     cloudHighMean: pivot.CloudHighMean,
@@ -225,8 +255,8 @@ public sealed class PrecipPredictCommand
             }
             else
             {
-                featureRow = PrecipFeatureBuilder.ComposeRow(
-                    valid, precip, prob,
+                row = PrecipFeatureBuilder.ComposeRow(
+                    spec, valid, specPrecip, specProb,
                     rhMean: pivot.RhMean, dewDepressionMean: pivot.DewDepressionMean,
                     cloudLowMean: pivot.CloudLowMean, cloudMidMean: pivot.CloudMidMean,
                     cloudHighMean: pivot.CloudHighMean,
@@ -234,23 +264,29 @@ public sealed class PrecipPredictCommand
                     truthMmHour: 0.0);
             }
 
-            var model = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
-            // Must type the input list as the row subclass so LoadFromEnumerable reflects
-            // the rich property set — the rich model expects the extra 28 columns.
-            var pWet = isRich
-                ? PrecipOccurrenceTrainer.PredictProbability(ml, model, new[] { (RichPrecipTrainingRow)featureRow })
-                : PrecipOccurrenceTrainer.PredictProbability(ml, model, new[] { featureRow });
+            var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
+            var pWet = PrecipOccurrenceTrainer.PredictVectorProbability(ml, loadedModel, spec, new[] { row });
 
-            // Phase 3a_isotonic: remap the raw LightGBM score through the saved PAV
-            // knots for this lead. If the lead has no knot entry, fall through to
-            // the raw score — better to surface the original prediction than 0.
             if (calibration is not null && calibration.ByLead.TryGetValue(lead.ToString(), out var leadCal))
-            {
                 pWet[0] = leadCal.Apply(pWet[0]);
-            }
 
             var climPWet = climatology.Predict(valid);
 
+            // Build per-model output fields: populate only spec.Models, null elsewhere.
+            var perModelPrecip = new double?[6];
+            var perModelProb   = new double?[6];
+            var perModelRun    = new DateTime?[6];
+            for (int i = 0; i < N; i++)
+            {
+                var ci = canonOrder.IndexOf(spec.Models[i]);
+                perModelPrecip[ci] = specPrecip[i];
+                perModelProb[ci]   = specProb[i];
+                perModelRun[ci]    = pivot.RunTime[ci];
+            }
+
+            // Spread features live at offset 2N in both lean and rich layouts
+            // (precip per model, then prob per model, then mean/std/max/agreement).
+            var spreadStart = 2 * N;
             predictions.Add(new PrecipPredictionRow
             {
                 LocationName = _cfg.Location.Name,
@@ -261,27 +297,25 @@ public sealed class PrecipPredictCommand
                 LeadHours = lead,
                 ProbWet = pWet[0],
                 ClimatologyPWet = climPWet,
-                PrecipGfs   = pivot.Precip[0], PrecipEcmwf = pivot.Precip[1],
-                PrecipIcon  = pivot.Precip[2], PrecipMf    = pivot.Precip[3],
-                PrecipUkmo  = pivot.Precip[4], PrecipGem   = pivot.Precip[5],
-                ProbGfsModel   = pivot.Prob[0], ProbEcmwfModel = pivot.Prob[1],
-                ProbIconModel  = pivot.Prob[2], ProbMfModel    = pivot.Prob[3],
-                ProbUkmoModel  = pivot.Prob[4], ProbGemModel   = pivot.Prob[5],
-                RunTimeGfs   = pivot.RunTime[0], RunTimeEcmwf = pivot.RunTime[1],
-                RunTimeIcon  = pivot.RunTime[2], RunTimeMf    = pivot.RunTime[3],
-                RunTimeUkmo  = pivot.RunTime[4], RunTimeGem   = pivot.RunTime[5],
-                PrecipMean = NanToNull(featureRow.PrecipMean),
-                PrecipStd  = NanToNull(featureRow.PrecipStd),
-                PrecipMax  = NanToNull(featureRow.PrecipMax),
-                PrecipAgreementWet01 = NanToNull(featureRow.PrecipAgreementWet01),
-                FeatureVectorHash = isRich
-                    ? HashFeatures((RichPrecipTrainingRow)featureRow)
-                    : HashFeatures(featureRow),
+                PrecipGfs   = perModelPrecip[0], PrecipEcmwf = perModelPrecip[1],
+                PrecipIcon  = perModelPrecip[2], PrecipMf    = perModelPrecip[3],
+                PrecipUkmo  = perModelPrecip[4], PrecipGem   = perModelPrecip[5],
+                ProbGfsModel   = perModelProb[0], ProbEcmwfModel = perModelProb[1],
+                ProbIconModel  = perModelProb[2], ProbMfModel    = perModelProb[3],
+                ProbUkmoModel  = perModelProb[4], ProbGemModel   = perModelProb[5],
+                RunTimeGfs   = perModelRun[0], RunTimeEcmwf = perModelRun[1],
+                RunTimeIcon  = perModelRun[2], RunTimeMf    = perModelRun[3],
+                RunTimeUkmo  = perModelRun[4], RunTimeGem   = perModelRun[5],
+                PrecipMean = NanToNull(row.Features[spreadStart + 0]),
+                PrecipStd  = NanToNull(row.Features[spreadStart + 1]),
+                PrecipMax  = NanToNull(row.Features[spreadStart + 2]),
+                PrecipAgreementWet01 = NanToNull(row.Features[spreadStart + 3]),
+                FeatureVectorHash = FeatureHashing.HashFloats(row.Features),
             });
 
             _log.LogInformation(
                 "Station {Station} lead {Lead}h → P(wet) {P:0.000} (clim {Clim:0.000}, valid {Valid:yyyy-MM-dd HH:mm}Z, agreement {Ag:0.00})",
-                station, lead, pWet[0], climPWet, valid, featureRow.PrecipAgreementWet01);
+                station, lead, pWet[0], climPWet, valid, row.Features[spreadStart + 3]);
         }
 
         if (predictions.Count == 0)

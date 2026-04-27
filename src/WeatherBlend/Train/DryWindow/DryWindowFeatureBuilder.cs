@@ -1,4 +1,8 @@
+using System.Text;
 using DuckDB.NET.Data;
+using WeatherBlend.Config;
+using WeatherBlend.Train.Common;
+using CommonRow = WeatherBlend.Train.Common.DryWindowTrainingRow;
 
 namespace WeatherBlend.Train.DryWindow;
 
@@ -649,4 +653,334 @@ ORDER BY ValidTimeUtc, Model;";
 
     private static string NormaliseGlob(string path)
         => path.Replace('\\', '/').Replace("'", "''");
+
+    // -----------------------------------------------------------------------
+    // New canonical API (Phase 4 of unify-model-membership refactor).
+    // Spec-driven, dynamic-shape vector via Common.DryWindowTrainingRow.Features.
+    // -----------------------------------------------------------------------
+
+    public const string SpecTarget = "dry_window";
+
+    /// <summary>
+    /// Resolve the runtime <see cref="BlenderSpec"/> for dry-window at a given lead.
+    /// <paramref name="phase"/> selects between the 53-feature base layout
+    /// (<see cref="Phase3b"/> / <see cref="Phase3dCalibrated"/>, mapped to
+    /// <c>featureSet="base"</c>) and the 60-feature shape layout
+    /// (<see cref="Phase3dShape"/>, mapped to <c>featureSet="shape"</c>).
+    ///
+    /// Layout per active model count N:
+    ///   6 per-model variables × N (sum, max_hour, wet_count, longest_dry, has_dry, prob_max)
+    ///   6 ensemble summaries
+    ///   9 covariates
+    ///   2 calendar (doy_sin, doy_cos — no hour features at day granularity)
+    /// → 6N + 17 (base). Add 7 within-day shape features for 3d-shape → 6N + 24.
+    /// </summary>
+    public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours, string phase)
+    {
+        var featureSet = phase == Phase3dShape ? "shape" : "base";
+        var blender = blendersCfg.Get(SpecTarget, featureSet);
+        var requiredSet = blender.RequiredForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var optionalSet = blender.OptionalForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var overlap = requiredSet.Intersect(optionalSet, StringComparer.OrdinalIgnoreCase).ToArray();
+        if (overlap.Length > 0)
+            throw new InvalidOperationException(
+                $"BlenderConfig {SpecTarget}/{featureSet} at lead {leadHours}h has model(s) " +
+                $"listed as both required and optional: [{string.Join(",", overlap)}].");
+
+        var orderedRequired = FeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
+        var orderedOptional = FeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
+        var orderedModels = FeatureBuilder.CanonicalModelOrder
+            .Where(m => requiredSet.Contains(m) || optionalSet.Contains(m)).ToList();
+        if (orderedModels.Count == 0)
+            throw new InvalidOperationException($"No models active for {SpecTarget}/{featureSet} at lead {leadHours}h.");
+
+        var names = new List<string>();
+        foreach (var m in orderedModels) names.Add($"precip_sum_{FeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"precip_max_hour_{FeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"wet_hour_count_{FeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"longest_dry_run_{FeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"has_dry_window_{FeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"prob_max_{FeatureBuilder.ShortName(m)}");
+        names.AddRange(new[]
+        {
+            "precip_sum_mean", "precip_sum_std", "precip_sum_max",
+            "agreement_has_dry_window", "longest_dry_run_mean", "wet_hour_count_mean",
+        });
+        names.AddRange(new[]
+        {
+            "rh_mean", "rh_min", "dew_depression_max",
+            "cloud_low_mean", "cloud_mid_mean", "cloud_high_mean",
+            "cape_max", "wind_mean", "wind_max",
+        });
+        names.AddRange(new[] { "doy_sin", "doy_cos" });
+        if (phase == Phase3dShape)
+            names.AddRange(ShapeFeatureNames);
+
+        return new BlenderSpec
+        {
+            Target = SpecTarget,
+            FeatureSet = featureSet,
+            LeadHours = leadHours,
+            RequiredModels = orderedRequired,
+            OptionalModels = orderedOptional,
+            Models = orderedModels,
+            FeatureNames = names,
+        };
+    }
+
+    /// <summary>
+    /// Build day-anchored training rows for one (station, lead, window) blender.
+    /// SQL pivot pulls only spec.Models. Per-model day features are NaN if a model
+    /// doesn't supply a complete 24-hour day. Required-model gate isn't enforced
+    /// at the day level — dry-window's policy is "include the day if any model
+    /// supplied any hour" (matches legacy AnyPresent check).
+    /// </summary>
+    public static List<CommonRow> BuildForLead(
+        string forecastsPath,
+        string rainfallPath,
+        string locationName,
+        string stationName,
+        BlenderSpec spec,
+        int windowHours,
+        CancellationToken ct = default)
+    {
+        if (windowHours < 1 || windowHours > 24)
+            throw new ArgumentOutOfRangeException(nameof(windowHours));
+
+        // Step 1: hourly truth + per-day labels (same as legacy).
+        var truth = LoadHourlyTruth(rainfallPath, locationName, stationName, ct);
+        var labels = DryWindowLabelBuilder.Build(truth, new[] { windowHours });
+        if (labels.Labels.Count == 0) return new List<CommonRow>();
+
+        var labelByDate = labels.Labels
+            .Where(l => l.WindowHours == windowHours)
+            .ToDictionary(l => l.Date, l => l.HasDryWindow);
+
+        var truthMmByDate = truth
+            .GroupBy(h => DateOnly.FromDateTime(h.HourUtc))
+            .ToDictionary(g => g.Key, g => g.Sum(h => h.PrecipMmHour));
+
+        // Step 2: forecasts for the lead band, restricted to spec.Models.
+        var forecast = LoadForecastsForSpec(
+            forecastsPath, locationName, spec, ct);
+
+        // Bucket per (target-date, model-id) → ForecastDay (24-hour holder).
+        var perModelDay = new Dictionary<(DateOnly Date, string Model), ForecastDay>();
+        foreach (var f in forecast)
+        {
+            ct.ThrowIfCancellationRequested();
+            var d = DateOnly.FromDateTime(f.ValidTimeUtc);
+            var key = (d, f.Model);
+            if (!perModelDay.TryGetValue(key, out var day))
+            {
+                day = new ForecastDay();
+                perModelDay[key] = day;
+            }
+            day.SetHour(f.ValidTimeUtc.Hour, f);
+        }
+
+        // Step 3: compose one row per labeled date — features ordered per spec.Models.
+        var rows = new List<CommonRow>(labelByDate.Count);
+        foreach (var (date, label) in labelByDate.OrderBy(kv => kv.Key))
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var modelDays = new List<ForecastDay?>(spec.Models.Count);
+            foreach (var modelId in spec.Models)
+                modelDays.Add(perModelDay.TryGetValue((date, modelId), out var d) ? d : null);
+
+            // Drop the day if no model supplied any hour — would yield an all-NaN feature vector.
+            if (!modelDays.Any(d => d is { AnyPresent: true })) continue;
+
+            var row = ComposeRow(spec, date, windowHours, modelDays, label,
+                truthMmByDate.TryGetValue(date, out var mmDay) ? mmDay : 0.0);
+            rows.Add(row);
+        }
+        return rows;
+    }
+
+    /// <summary>
+    /// Pack the dry-window feature vector. Layout matches <see cref="BuildSpec"/>'s
+    /// <c>FeatureNames</c>: 6 per-model groups × N + 6 ensemble summaries + 9 covariates
+    /// + 2 calendar [+ 7 shape features when spec.FeatureSet == "shape"].
+    /// </summary>
+    internal static CommonRow ComposeRow(
+        BlenderSpec spec,
+        DateOnly targetDate,
+        int windowHours,
+        IReadOnlyList<ForecastDay?> modelDays,
+        bool label,
+        double truthMmDay)
+    {
+        var n = spec.Models.Count;
+        if (modelDays.Count != n)
+            throw new ArgumentException($"Expected {n} model days, got {modelDays.Count}", nameof(modelDays));
+
+        // Per-model features. NaN when the model doesn't have a complete 24-hour day.
+        var perModelSum        = new double[n];
+        var perModelMaxHour    = new double[n];
+        var perModelWetCount   = new double[n];
+        var perModelLongestDry = new double[n];
+        var perModelHasDry     = new double[n];
+        var perModelProbMax    = new double[n];
+
+        for (int i = 0; i < n; i++)
+        {
+            var day = modelDays[i];
+            if (day is null || !day.IsComplete)
+            {
+                perModelSum[i] = double.NaN;
+                perModelMaxHour[i] = double.NaN;
+                perModelWetCount[i] = double.NaN;
+                perModelLongestDry[i] = double.NaN;
+                perModelHasDry[i] = double.NaN;
+                perModelProbMax[i] = double.NaN;
+                continue;
+            }
+
+            double sum = 0, maxHr = 0, probMax = double.NaN;
+            int wetHours = 0, run = 0, longest = 0;
+            bool hasAnyProb = false;
+            for (int h = 0; h < 24; h++)
+            {
+                var p = day.Precip[h] ?? 0.0;
+                sum += p;
+                if (p > maxHr) maxHr = p;
+                if (p >= WetThresholdMm) { wetHours++; run = 0; }
+                else                     { run++; if (run > longest) longest = run; }
+
+                var pr = day.Prob[h];
+                if (pr.HasValue)
+                {
+                    if (!hasAnyProb || pr.Value > probMax) probMax = pr.Value;
+                    hasAnyProb = true;
+                }
+            }
+            perModelSum[i] = sum;
+            perModelMaxHour[i] = maxHr;
+            perModelWetCount[i] = wetHours;
+            perModelLongestDry[i] = longest;
+            perModelHasDry[i] = longest >= windowHours ? 1.0 : 0.0;
+            perModelProbMax[i] = hasAnyProb ? probMax : double.NaN;
+        }
+
+        var (sumMean, sumStd, sumMax) = MeanStdMax(perModelSum);
+        var longestMean  = NaNMean(perModelLongestDry);
+        var wetHoursMean = NaNMean(perModelWetCount);
+        var agreement    = NaNMean(perModelHasDry);
+
+        var env = EnvelopeCovariates(modelDays);
+        var shape = ShapeFeatures(modelDays);
+
+        var doyAngle = 2.0 * Math.PI * (targetDate.DayOfYear - 1) / 365.0;
+        var includeShape = spec.FeatureSet == "shape";
+
+        var features = new float[spec.FeatureCount];
+        int idx = 0;
+        for (int i = 0; i < n; i++) features[idx++] = (float)perModelSum[i];
+        for (int i = 0; i < n; i++) features[idx++] = (float)perModelMaxHour[i];
+        for (int i = 0; i < n; i++) features[idx++] = (float)perModelWetCount[i];
+        for (int i = 0; i < n; i++) features[idx++] = (float)perModelLongestDry[i];
+        for (int i = 0; i < n; i++) features[idx++] = (float)perModelHasDry[i];
+        for (int i = 0; i < n; i++) features[idx++] = (float)perModelProbMax[i];
+        features[idx++] = (float)sumMean;
+        features[idx++] = (float)sumStd;
+        features[idx++] = (float)sumMax;
+        features[idx++] = (float)agreement;
+        features[idx++] = (float)longestMean;
+        features[idx++] = (float)wetHoursMean;
+        features[idx++] = (float)env.RhMean;
+        features[idx++] = (float)env.RhMin;
+        features[idx++] = (float)env.DewDepressionMax;
+        features[idx++] = (float)env.CloudLowMean;
+        features[idx++] = (float)env.CloudMidMean;
+        features[idx++] = (float)env.CloudHighMean;
+        features[idx++] = (float)env.CapeMax;
+        features[idx++] = (float)env.WindMean;
+        features[idx++] = (float)env.WindMax;
+        features[idx++] = (float)Math.Sin(doyAngle);
+        features[idx++] = (float)Math.Cos(doyAngle);
+        if (includeShape)
+        {
+            features[idx++] = (float)shape.FirstWetHour;
+            features[idx++] = (float)shape.LastWetHour;
+            features[idx++] = (float)shape.LongestDryRun;
+            features[idx++] = (float)shape.LongestWetRun;
+            features[idx++] = (float)shape.NRainEvents;
+            features[idx++] = (float)shape.MorningPrecipSum;
+            features[idx++] = (float)shape.AfternoonPrecipSum;
+        }
+        if (idx != spec.FeatureCount)
+            throw new InvalidOperationException(
+                $"Dry-window feature pack mismatch: wrote {idx}, expected {spec.FeatureCount}");
+
+        return new CommonRow
+        {
+            TargetDateUtc = targetDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc),
+            WindowHours = windowHours,
+            Features = features,
+            Label = label,
+            PrecipMmDay = (float)truthMmDay,
+        };
+    }
+
+    private static List<ForecastRow> LoadForecastsForSpec(
+        string forecastsPath, string locationName, BlenderSpec spec, CancellationToken ct)
+    {
+        var glob = NormaliseGlob(Path.Combine(forecastsPath, "**", "*.parquet"));
+        var escLocation = locationName.Replace("'", "''");
+        var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
+
+        var sql = $@"
+WITH latest AS (
+    SELECT
+        ValidTimeUtc, Model,
+        Precipitation, PrecipitationProbability,
+        RelativeHumidity2m, Temperature2m, DewPoint2m,
+        CloudCoverLow, CloudCoverMid, CloudCoverHigh,
+        Cape, WindSpeed10m,
+        ROW_NUMBER() OVER (
+            PARTITION BY ValidTimeUtc, Model
+            ORDER BY RunTimeUtc DESC
+        ) AS rn
+    FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+    WHERE LocationName = '{escLocation}'
+      AND RunTimeSource = 'offset_day'
+      AND LeadHours BETWEEN {spec.LeadHours} AND {spec.LeadHours + 23}
+      AND Model IN {modelInClause}
+)
+SELECT ValidTimeUtc, Model,
+       Precipitation, PrecipitationProbability,
+       RelativeHumidity2m, Temperature2m, DewPoint2m,
+       CloudCoverLow, CloudCoverMid, CloudCoverHigh,
+       Cape, WindSpeed10m
+FROM latest WHERE rn = 1
+ORDER BY ValidTimeUtc, Model;";
+
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        var rows = new List<ForecastRow>();
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            ct.ThrowIfCancellationRequested();
+            rows.Add(new ForecastRow(
+                DateTime.SpecifyKind(r.GetDateTime(0), DateTimeKind.Utc),
+                r.GetString(1),
+                r.IsDBNull(2) ? null : r.GetDouble(2),
+                r.IsDBNull(3) ? null : r.GetDouble(3),
+                r.IsDBNull(4) ? null : r.GetDouble(4),
+                r.IsDBNull(5) ? null : r.GetDouble(5),
+                r.IsDBNull(6) ? null : r.GetDouble(6),
+                r.IsDBNull(7) ? null : r.GetDouble(7),
+                r.IsDBNull(8) ? null : r.GetDouble(8),
+                r.IsDBNull(9) ? null : r.GetDouble(9),
+                r.IsDBNull(10) ? null : r.GetDouble(10),
+                r.IsDBNull(11) ? null : r.GetDouble(11)));
+        }
+        return rows;
+    }
 }

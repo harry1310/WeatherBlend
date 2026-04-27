@@ -8,7 +8,9 @@ using WeatherBlend.Config;
 using WeatherBlend.Models;
 using WeatherBlend.Predict;
 using WeatherBlend.Train;
+using WeatherBlend.Train.Common;
 using WeatherBlend.Train.DryWindow;
+using CommonRow = WeatherBlend.Train.Common.DryWindowTrainingRow;
 
 namespace WeatherBlend.Commands;
 
@@ -158,6 +160,10 @@ public sealed class DryWindowPredictCommand
         _log.LogInformation("{Key}: version {V} (phase {P}), window {W}h",
             compositeKey, metadata.Version, metadata.Phase, windowHours);
 
+        // Per-lead BlenderSpec lives in feature_schema.json; covers both 3b and 3d-shape.
+        var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
+        var canonOrder = WeatherBlend.Train.FeatureBuilder.CanonicalModelOrder.ToList();
+
         var ml = new MLContext(seed: 42);
         var predictions = new List<DryWindowPredictionRow>();
 
@@ -176,16 +182,31 @@ public sealed class DryWindowPredictCommand
                     compositeKey, versionName, lead, targetDate);
                 continue;
             }
+            if (!specs.TryGetValue(lead, out var spec))
+            {
+                _log.LogWarning("{Key} {V} lead {Lead}h: no BlenderSpec in feature_schema.json; skipping.",
+                    compositeKey, versionName, lead);
+                continue;
+            }
+
+            // Filter the canonical 6-slot model-day list down to spec.Models, in spec order.
+            var specModelDays = new List<DryWindowFeatureBuilder.ForecastDay?>(spec.Models.Count);
+            foreach (var modelId in spec.Models)
+            {
+                var ci = canonOrder.IndexOf(modelId);
+                specModelDays.Add(modelDayList[ci]);
+            }
 
             var row = DryWindowFeatureBuilder.ComposeRow(
+                spec,
                 DateOnly.FromDateTime(targetDate),
                 windowHours,
-                modelDayList,
+                specModelDays,
                 label: false,
                 truthMmDay: 0.0);
 
-            var model = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
-            var probs = DryWindowTrainer.PredictProbability(ml, model, new[] { row });
+            var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
+            var probs = DryWindowTrainer.PredictVectorProbability(ml, loadedModel, spec, new[] { row });
             var rawProb = probs[0];
             var prob = rawProb;
             if (calibration is not null && calibration.ByLead.TryGetValue(lead.ToString(), out var leadCal))
@@ -193,6 +214,18 @@ public sealed class DryWindowPredictCommand
                 prob = leadCal.Apply(rawProb);
             }
             var climProb = climatology.Predict(targetDate);
+
+            // Build per-model output fields: populate only spec.Models, null elsewhere.
+            var perModelHasDry  = new double?[6];
+            var perModelSum     = new double?[6];
+            for (int i = 0; i < spec.Models.Count; i++)
+            {
+                var ci = canonOrder.IndexOf(spec.Models[i]);
+                var hasDry = row.Features[spec.IndexOf($"has_dry_window_{WeatherBlend.Train.FeatureBuilder.ShortName(spec.Models[i])}")];
+                var sum    = row.Features[spec.IndexOf($"precip_sum_{WeatherBlend.Train.FeatureBuilder.ShortName(spec.Models[i])}")];
+                perModelHasDry[ci] = NanToNullDouble(hasDry);
+                perModelSum[ci]    = NanToNullDouble(sum);
+            }
 
             predictions.Add(new DryWindowPredictionRow
             {
@@ -205,36 +238,32 @@ public sealed class DryWindowPredictCommand
                 LeadHours = lead,
                 ProbHasDryWindow = prob,
                 ClimatologyProbHasDryWindow = climProb,
-                AgreementHasDryWindow = NanToNull(row.AgreementHasDryWindow),
-                PrecipSumMean = NanToNull(row.PrecipSumMean),
-                LongestDryRunMean = NanToNull(row.LongestDryRunMean),
-                WetHourCountMean = NanToNull(row.WetHourCountMean),
-                HasDryWindowGfs   = NanToNull(row.HasDryWindowGfs),
-                HasDryWindowEcmwf = NanToNull(row.HasDryWindowEcmwf),
-                HasDryWindowIcon  = NanToNull(row.HasDryWindowIcon),
-                HasDryWindowMf    = NanToNull(row.HasDryWindowMf),
-                HasDryWindowUkmo  = NanToNull(row.HasDryWindowUkmo),
-                HasDryWindowGem   = NanToNull(row.HasDryWindowGem),
-                PrecipSumGfs   = NanToNull(row.PrecipSumGfs),
-                PrecipSumEcmwf = NanToNull(row.PrecipSumEcmwf),
-                PrecipSumIcon  = NanToNull(row.PrecipSumIcon),
-                PrecipSumMf    = NanToNull(row.PrecipSumMf),
-                PrecipSumUkmo  = NanToNull(row.PrecipSumUkmo),
-                PrecipSumGem   = NanToNull(row.PrecipSumGem),
-                FeatureVectorHash = HashFeatures(row, metadata.Phase),
+                AgreementHasDryWindow = NanToNullDouble(row.Features[spec.IndexOf("agreement_has_dry_window")]),
+                PrecipSumMean = NanToNullDouble(row.Features[spec.IndexOf("precip_sum_mean")]),
+                LongestDryRunMean = NanToNullDouble(row.Features[spec.IndexOf("longest_dry_run_mean")]),
+                WetHourCountMean = NanToNullDouble(row.Features[spec.IndexOf("wet_hour_count_mean")]),
+                HasDryWindowGfs   = perModelHasDry[0], HasDryWindowEcmwf = perModelHasDry[1],
+                HasDryWindowIcon  = perModelHasDry[2], HasDryWindowMf    = perModelHasDry[3],
+                HasDryWindowUkmo  = perModelHasDry[4], HasDryWindowGem   = perModelHasDry[5],
+                PrecipSumGfs   = perModelSum[0], PrecipSumEcmwf = perModelSum[1],
+                PrecipSumIcon  = perModelSum[2], PrecipSumMf    = perModelSum[3],
+                PrecipSumUkmo  = perModelSum[4], PrecipSumGem   = perModelSum[5],
+                FeatureVectorHash = FeatureHashing.HashFloats(row.Features),
             });
 
             if (isCalibrated)
             {
                 _log.LogInformation(
                     "  lead {Lead}h ({Date:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (raw {R:0.000}, clim {C:0.000}, agreement {A:0.00})",
-                    lead, targetDate, windowHours, prob, rawProb, climProb, row.AgreementHasDryWindow);
+                    lead, targetDate, windowHours, prob, rawProb, climProb,
+                    row.Features[spec.IndexOf("agreement_has_dry_window")]);
             }
             else
             {
                 _log.LogInformation(
                     "  lead {Lead}h ({Date:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (clim {C:0.000}, agreement {A:0.00})",
-                    lead, targetDate, windowHours, prob, climProb, row.AgreementHasDryWindow);
+                    lead, targetDate, windowHours, prob, climProb,
+                    row.Features[spec.IndexOf("agreement_has_dry_window")]);
             }
         }
 
@@ -401,6 +430,7 @@ ORDER BY ValidTimeUtc, Model;";
     }
 
     private static double? NanToNull(float v) => float.IsNaN(v) ? null : v;
+    private static double? NanToNullDouble(float v) => float.IsNaN(v) ? null : (double)v;
 
     /// <summary>
     /// SHA-256 hex of the feature floats in DryWindowFeatureBuilder order.
@@ -408,7 +438,7 @@ ORDER BY ValidTimeUtc, Model;";
     /// reuses the 3b model unchanged so its feature vector is identical).
     /// 3d-shape hashes 60 floats (base + 7 shape columns).
     /// </summary>
-    public static string HashFeatures(DryWindowTrainingRow row, string? phase = null)
+    public static string HashFeatures(WeatherBlend.Train.DryWindow.DryWindowTrainingRow row, string? phase = null)
     {
         var floats = new List<float>(60)
         {

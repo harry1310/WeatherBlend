@@ -19,21 +19,20 @@ public sealed class HumidityBlender : IElementBlender
 
     public Task<int> TrainAsync(int[] leads, CancellationToken ct)
     {
-        var inputs = new ElementTrainerHarness.ElementTrainerInputs<HumidityRow>(
+        var inputs = new ElementTrainerHarness.ElementTrainerInputs(
             Target: Target,
             Hyperparameters: new TemperatureTrainer.Hyperparameters(),
-            InternalFeatureColumns: HumidityFeatureBuilder.InternalFeatureColumns,
-            PublicFeatureNames: HumidityFeatureBuilder.PublicFeatureNames,
-            ModelAccessors: HumidityFeatureBuilder.ModelAccessors,
-            TimeOf: r => r.ValidTimeUtc,
-            TruthOf: r => r.Era5Rh,
+            BuildSpec: lead => HumidityFeatureBuilder.BuildSpec(_cfg.Blenders, lead),
+            LoadRowsForSpec: (spec, c) => HumidityFeatureBuilder.BuildForLead(
+                _cfg.Storage.ForecastsPath, _cfg.Storage.Era5Path, _cfg.Location.Name, spec, c),
             DeviationsFromBrief: new[]
             {
+                "UKMO excluded entirely (4-way bake-off 2026-04-26 — humidity behaves like " +
+                "temp/precip: 6-model + restricted-window loses to 5-model + full-window).",
+                "MF dropped at 48/72h — Open-Meteo live forecasts cap at ~36h.",
                 "Objective is L2; MAE used only as early-stopping metric (Microsoft.ML.LightGbm 4.0 limit).",
                 "No monotone constraints (same Microsoft.ML.LightGbm 4.0 limit).",
-            },
-            LoadRowsForLead: (lead, c) => HumidityFeatureBuilder.BuildForLead(
-                _cfg.Storage.ForecastsPath, _cfg.Storage.Era5Path, _cfg.Location.Name, lead, c));
+            });
 
         return ElementTrainerHarness.RunAsync(_log, inputs, leads, ct);
     }

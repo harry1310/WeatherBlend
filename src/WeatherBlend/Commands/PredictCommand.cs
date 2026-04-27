@@ -7,6 +7,7 @@ using WeatherBlend.Config;
 using WeatherBlend.Models;
 using WeatherBlend.Predict;
 using WeatherBlend.Train;
+using WeatherBlend.Train.Common;
 
 namespace WeatherBlend.Commands;
 
@@ -28,7 +29,7 @@ public sealed class PredictCommand
     private readonly ILogger<PredictCommand> _log;
     private readonly AppConfig _cfg;
 
-    private static readonly int[] DefaultLeads = { 24, 48, 72 };
+    private static readonly int[] DefaultLeads = { 24, 48, 72, 120 };
 
     public PredictCommand(ILogger<PredictCommand> log, AppConfig cfg)
     {
@@ -137,6 +138,12 @@ public sealed class PredictCommand
         var ml = new MLContext(seed: 42);
         var predictions = new List<PredictionRow>();
 
+        // Both lean (2b) and rich (2c) artefacts now use the per-lead BlenderSpec
+        // layout — the rich variant just has a longer feature vector. Schema is
+        // loaded from feature_schema.json so config can change without breaking
+        // already-trained artefacts.
+        var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
+
         foreach (var (lead, valid) in targets)
         {
             if (!perValid.TryGetValue(valid, out var pivot))
@@ -146,49 +153,107 @@ public sealed class PredictCommand
                 continue;
             }
 
-            var missingTemps = Enumerable.Range(0, 6)
-                .Where(i => !pivot.Temp[i].HasValue)
-                .Select(i => FeatureBuilder.ModelColumns[i].Col)
-                .ToArray();
-            if (missingTemps.Length > 0)
+            if (!specs.TryGetValue(lead, out var spec))
             {
-                _log.LogWarning("  Lead {Lead}h: missing per-model temps [{Missing}] for valid={Valid:yyyy-MM-dd HH:mm}Z; skipping.",
-                    lead, string.Join(",", missingTemps), valid);
+                _log.LogWarning("  Lead {Lead}h: no BlenderSpec in feature_schema.json for this lead; skipping.", lead);
                 continue;
             }
 
-            var temps = pivot.Temp.Select(t => t!.Value).ToArray();
-            var leanRow = FeatureBuilder.ComposeRow(valid, temps, pivot.WindDirMean, era5Temp: double.NaN);
+            // Pull spec.Models values from the canonical 6-slot pivot, in spec order.
+            var canonOrder = FeatureBuilder.CanonicalModelOrder.ToList();
+            var specTemps = new double[spec.Models.Count];
+            var missingRequired = new List<string>();
+            var requiredSet = spec.RequiredModels.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < spec.Models.Count; i++)
+            {
+                var canonicalIdx = canonOrder.IndexOf(spec.Models[i]);
+                if (canonicalIdx < 0)
+                    throw new InvalidOperationException($"Spec model '{spec.Models[i]}' not in canonical order list.");
+                var v = pivot.Temp[canonicalIdx];
+                specTemps[i] = v ?? double.NaN;
+                if (!v.HasValue && requiredSet.Contains(spec.Models[i]))
+                    missingRequired.Add(spec.Models[i]);
+            }
 
-            double yhat;
-            string featureHash;
+            // Required-model gate: skip the row if any RequiredModels slot is null
+            // (matches training's post-pivot WHERE every required NOT NULL).
+            // Optional slots that are NaN survive — that's exactly the policy
+            // training was built against.
+            if (missingRequired.Count > 0)
+            {
+                _log.LogWarning("  Lead {Lead}h: missing required per-model temps [{Missing}] for valid={Valid:yyyy-MM-dd HH:mm}Z; skipping.",
+                    lead, string.Join(",", missingRequired), valid);
+                continue;
+            }
+            // Universal at-least-one safety check (mirrors training).
+            if (specTemps.All(double.IsNaN))
+            {
+                _log.LogWarning("  Lead {Lead}h: every model in spec is NaN at valid={Valid:yyyy-MM-dd HH:mm}Z; skipping.",
+                    lead, valid);
+                continue;
+            }
+
+            // Compose feature row — lean or rich depending on the spec's feature-set.
+            // Rich path also pulls per-model secondaries from the live pivot; lean path
+            // ignores them. Both produce RegressionTrainingRow whose Features.Length
+            // matches spec.FeatureCount.
+            RegressionTrainingRow row;
             if (isRich)
             {
-                var richRow = RichFeatureBuilder.ComposeRow(
-                    validTimeUtc: valid,
-                    temps:        temps,
-                    dewPoints:    pivot.DewPoints,
-                    rhs:          pivot.Rhs,
-                    clouds:       pivot.Clouds,
-                    cloudLows:    pivot.CloudLows,
-                    cloudMids:    pivot.CloudMids,
-                    cloudHighs:   pivot.CloudHighs,
-                    windSpeeds:   pivot.WindSpeeds,
-                    windDirsDeg:  pivot.WindDirsDeg,
-                    windGusts:    pivot.WindGusts,
-                    pressures:    pivot.Pressures,
-                    era5Temp:     double.NaN);
-                var model = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
-                yhat = TemperatureTrainer.Predict(ml, model, new[] { richRow })[0];
-                featureHash = HashRichFeatures(richRow);
+                // Pull per-model secondaries in spec.Models order (canonical-index lookup).
+                int N = spec.Models.Count;
+                var dew    = new double[N];
+                var rh     = new double[N];
+                var cloud  = new double[N];
+                var cloudL = new double[N];
+                var cloudM = new double[N];
+                var cloudH = new double[N];
+                var ws     = new double[N];
+                var wd     = new double[N];
+                var wg     = new double[N];
+                var pres   = new double[N];
+                for (int i = 0; i < N; i++)
+                {
+                    var ci = canonOrder.IndexOf(spec.Models[i]);
+                    dew[i]    = pivot.DewPoints[ci];
+                    rh[i]     = pivot.Rhs[ci];
+                    cloud[i]  = pivot.Clouds[ci];
+                    cloudL[i] = pivot.CloudLows[ci];
+                    cloudM[i] = pivot.CloudMids[ci];
+                    cloudH[i] = pivot.CloudHighs[ci];
+                    ws[i]     = pivot.WindSpeeds[ci];
+                    wd[i]     = pivot.WindDirsDeg[ci];
+                    wg[i]     = pivot.WindGusts[ci];
+                    pres[i]   = pivot.Pressures[ci];
+                }
+                row = RichFeatureBuilder.ComposeRow(spec, valid, specTemps,
+                    dewPoints: dew, rhs: rh, clouds: cloud,
+                    cloudLows: cloudL, cloudMids: cloudM, cloudHighs: cloudH,
+                    windSpeeds: ws, windDirsDeg: wd, windGusts: wg, pressures: pres,
+                    windDirMeanDeg: pivot.WindDirMean, era5Temp: double.NaN);
             }
             else
             {
-                var model = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
-                yhat = TemperatureTrainer.Predict(ml, model, new[] { leanRow })[0];
-                featureHash = HashFeatures(leanRow);
+                row = FeatureBuilder.ComposeRow(spec, valid, specTemps, pivot.WindDirMean, era5Temp: double.NaN);
             }
 
+            var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
+            var yhat = TemperatureTrainer.PredictVector(ml, loadedModel, spec, new[] { row })[0];
+            var featureHash = FeatureHashing.HashFloats(row.Features);
+
+            // Build PredictionRow per-model fields: populate only spec.Models, null elsewhere.
+            var perModelTemp = new double?[6];
+            var perModelRun  = new DateTime?[6];
+            for (int i = 0; i < spec.Models.Count; i++)
+            {
+                var ci = canonOrder.IndexOf(spec.Models[i]);
+                perModelTemp[ci] = specTemps[i];
+                perModelRun[ci]  = pivot.RunTime[ci];
+            }
+
+            // Spread features live at offset spec.Models.Count in the Features vector
+            // (lean: N temps then mean/std/range; rich starts with the same N+3 lean block).
+            var spreadStart = spec.Models.Count;
             predictions.Add(new PredictionRow
             {
                 LocationName = _cfg.Location.Name,
@@ -197,19 +262,19 @@ public sealed class PredictCommand
                 ValidTimeUtc = valid,
                 LeadHours = lead,
                 BlendTemperature = yhat,
-                TempGfs   = temps[0], TempEcmwf = temps[1], TempIcon  = temps[2],
-                TempMf    = temps[3], TempUkmo  = temps[4], TempGem   = temps[5],
-                RunTimeGfs   = pivot.RunTime[0], RunTimeEcmwf = pivot.RunTime[1],
-                RunTimeIcon  = pivot.RunTime[2], RunTimeMf    = pivot.RunTime[3],
-                RunTimeUkmo  = pivot.RunTime[4], RunTimeGem   = pivot.RunTime[5],
-                TempMean  = leanRow.TempMean,
-                TempStd   = leanRow.TempStd,
-                TempRange = leanRow.TempRange,
+                TempGfs   = perModelTemp[0], TempEcmwf = perModelTemp[1], TempIcon  = perModelTemp[2],
+                TempMf    = perModelTemp[3], TempUkmo  = perModelTemp[4], TempGem   = perModelTemp[5],
+                RunTimeGfs   = perModelRun[0], RunTimeEcmwf = perModelRun[1],
+                RunTimeIcon  = perModelRun[2], RunTimeMf    = perModelRun[3],
+                RunTimeUkmo  = perModelRun[4], RunTimeGem   = perModelRun[5],
+                TempMean  = row.Features[spreadStart + 0],
+                TempStd   = row.Features[spreadStart + 1],
+                TempRange = row.Features[spreadStart + 2],
                 FeatureVectorHash = featureHash,
             });
 
-            _log.LogInformation("  Lead {Lead}h → blend {Blend:0.00}°C (valid {Valid:yyyy-MM-dd HH:mm}Z, mean-of-models {Mean:0.00}°C)",
-                lead, yhat, valid, leanRow.TempMean);
+            _log.LogInformation("  Lead {Lead}h → blend {Blend:0.00}°C (valid {Valid:yyyy-MM-dd HH:mm}Z, mean-of-{N} {Mean:0.00}°C)",
+                lead, yhat, valid, spec.Models.Count, row.Features[spreadStart + 0]);
         }
 
         if (predictions.Count == 0)
