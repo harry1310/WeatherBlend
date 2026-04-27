@@ -27,7 +27,8 @@ public static class FeatureBuilder
     public const string Target = "temperature";
     public const string FeatureSet = "lean";
 
-    /// <summary>Canonical model ordering (matches the project's config.yaml models list).</summary>
+    /// <summary>Canonical model ordering (matches the project's config.yaml models list).
+    /// AIFS sits at the end so adding it doesn't shift existing per-model feature indexes.</summary>
     public static readonly IReadOnlyList<string> CanonicalModelOrder = new[]
     {
         "gfs_seamless",
@@ -36,6 +37,7 @@ public static class FeatureBuilder
         "meteofrance_seamless",
         "ukmo_seamless",
         "gem_seamless",
+        "ecmwf_aifs025_single",
     };
 
     /// <summary>Stable short suffix used in feature column names (temp_gfs, temp_ecmwf, ...).</summary>
@@ -47,6 +49,7 @@ public static class FeatureBuilder
         "meteofrance_seamless" => "mf",
         "ukmo_seamless" => "ukmo",
         "gem_seamless" => "gem",
+        "ecmwf_aifs025_single" => "aifs",
         _ => throw new ArgumentException($"Unknown modelId '{modelId}'", nameof(modelId)),
     };
 

@@ -273,12 +273,15 @@ public sealed class PrecipPredictCommand
             var climPWet = climatology.Predict(valid);
 
             // Build per-model output fields: populate only spec.Models, null elsewhere.
-            var perModelPrecip = new double?[6];
-            var perModelProb   = new double?[6];
-            var perModelRun    = new DateTime?[6];
+            // Output PrecipPredictionRow has 6 named slots; AIFS (canonical idx 6) is in
+            // the trained model + BlendValue but not exposed as a named field yet.
+            var perModelPrecip = new double?[7];
+            var perModelProb   = new double?[7];
+            var perModelRun    = new DateTime?[7];
             for (int i = 0; i < N; i++)
             {
                 var ci = canonOrder.IndexOf(spec.Models[i]);
+                if (ci >= 6) continue;     // AIFS — not in 6-wide output yet
                 perModelPrecip[ci] = specPrecip[i];
                 perModelProb[ci]   = specProb[i];
                 perModelRun[ci]    = pivot.RunTime[ci];
@@ -520,18 +523,18 @@ ORDER BY ValidTimeUtc, Model;";
 
     private sealed class Scratch
     {
-        public double?[] Precip { get; } = new double?[6];
-        public double?[] Prob { get; } = new double?[6];
-        public DateTime?[] RunTime { get; } = new DateTime?[6];
-        public double?[] Dew { get; } = new double?[6];
-        public double?[] Rh { get; } = new double?[6];
-        public double?[] Temp2m { get; } = new double?[6];
-        public double?[] CloudLow { get; } = new double?[6];
-        public double?[] CloudMid { get; } = new double?[6];
-        public double?[] CloudHigh { get; } = new double?[6];
-        public double?[] Cape { get; } = new double?[6];
-        public double?[] WindSpeed { get; } = new double?[6];
-        public double?[] Pressure { get; } = new double?[6];
+        public double?[] Precip { get; } = new double?[7];
+        public double?[] Prob { get; } = new double?[7];
+        public DateTime?[] RunTime { get; } = new DateTime?[7];
+        public double?[] Dew { get; } = new double?[7];
+        public double?[] Rh { get; } = new double?[7];
+        public double?[] Temp2m { get; } = new double?[7];
+        public double?[] CloudLow { get; } = new double?[7];
+        public double?[] CloudMid { get; } = new double?[7];
+        public double?[] CloudHigh { get; } = new double?[7];
+        public double?[] Cape { get; } = new double?[7];
+        public double?[] WindSpeed { get; } = new double?[7];
+        public double?[] Pressure { get; } = new double?[7];
     }
 
     private static double MeanOfSlots(double?[] slots)
@@ -556,37 +559,6 @@ ORDER BY ValidTimeUtc, Model;";
     }
 
     private static double? NanToNull(float v) => float.IsNaN(v) ? null : v;
-
-    /// <summary>SHA-256 hex of the 27 feature floats in OccurrenceFeatureNames order.</summary>
-    public static string HashFeatures(PrecipTrainingRow row) => FeatureHashing.HashFloats(new[]
-    {
-        row.PrecipGfs, row.PrecipEcmwf, row.PrecipIcon, row.PrecipMf, row.PrecipUkmo, row.PrecipGem,
-        row.ProbGfs,   row.ProbEcmwf,   row.ProbIcon,   row.ProbMf,   row.ProbUkmo,   row.ProbGem,
-        row.PrecipMean, row.PrecipStd, row.PrecipMax, row.PrecipAgreementWet01,
-        row.RhMean, row.DewDepressionMean,
-        row.CloudLowMean, row.CloudMidMean, row.CloudHighMean,
-        row.CapeMean, row.WindSpeedMean,
-        row.HourSin, row.HourCos, row.DoySin, row.DoyCos,
-    });
-
-    /// <summary>SHA-256 hex of the 55 rich feature floats in Phase 3c order (lean 27 + humidity 18 + pressure 6 + persistence 4).</summary>
-    public static string HashFeatures(RichPrecipTrainingRow row) => FeatureHashing.HashFloats(new[]
-    {
-        row.PrecipGfs, row.PrecipEcmwf, row.PrecipIcon, row.PrecipMf, row.PrecipUkmo, row.PrecipGem,
-        row.ProbGfs,   row.ProbEcmwf,   row.ProbIcon,   row.ProbMf,   row.ProbUkmo,   row.ProbGem,
-        row.PrecipMean, row.PrecipStd, row.PrecipMax, row.PrecipAgreementWet01,
-        row.RhMean, row.DewDepressionMean,
-        row.CloudLowMean, row.CloudMidMean, row.CloudHighMean,
-        row.CapeMean, row.WindSpeedMean,
-        row.HourSin, row.HourCos, row.DoySin, row.DoyCos,
-        row.DewGfs, row.DewEcmwf, row.DewIcon, row.DewMf, row.DewUkmo, row.DewGem,
-        row.RhGfs,  row.RhEcmwf,  row.RhIcon,  row.RhMf,  row.RhUkmo,  row.RhGem,
-        row.DewDepressionGfs, row.DewDepressionEcmwf, row.DewDepressionIcon,
-        row.DewDepressionMf,  row.DewDepressionUkmo,  row.DewDepressionGem,
-        row.PressureGfs, row.PressureEcmwf, row.PressureIcon,
-        row.PressureMf,  row.PressureUkmo,  row.PressureGem,
-        row.EaRainPrev24hMm, row.EaRainPrev72hMm, row.EaWetHoursLast24h, row.EaDryHoursTrailing,
-    });
 
     /// <summary>
     /// Reverse-lookup the config rainfall-station friendly name from an "ea_..." slug

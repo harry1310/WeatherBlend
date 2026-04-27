@@ -242,11 +242,15 @@ public sealed class PredictCommand
             var featureHash = FeatureHashing.HashFloats(row.Features);
 
             // Build PredictionRow per-model fields: populate only spec.Models, null elsewhere.
+            // Output PredictionRow has 6 named per-model fields (TempGfs..TempGem); AIFS
+            // (canonical index 6) contributes implicitly via BlendTemperature but isn't
+            // exposed as a named field yet — schema-add follow-up.
             var perModelTemp = new double?[6];
             var perModelRun  = new DateTime?[6];
             for (int i = 0; i < spec.Models.Count; i++)
             {
                 var ci = canonOrder.IndexOf(spec.Models[i]);
+                if (ci >= 6) continue;     // AIFS slot — not in 6-wide output yet
                 perModelTemp[ci] = specTemps[i];
                 perModelRun[ci]  = pivot.RunTime[ci];
             }
@@ -387,10 +391,10 @@ ORDER BY ValidTimeUtc, Model;";
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
 
-        // Model-id → slot index (stable per FeatureBuilder.ModelColumns ordering).
-        var modelSlot = FeatureBuilder.ModelColumns
-            .Select((m, i) => (m.ModelId, Index: i))
-            .ToDictionary(x => x.ModelId, x => x.Index);
+        // Model-id → slot index (canonical model order from FeatureBuilder).
+        var modelSlot = FeatureBuilder.CanonicalModelOrder
+            .Select((id, i) => (id, i))
+            .ToDictionary(x => x.id, x => x.i);
 
         var working = new Dictionary<DateTime, WorkingPivot>();
 
@@ -452,8 +456,9 @@ ORDER BY ValidTimeUtc, Model;";
     // once we've finished slotting all six models in.
     private sealed class WorkingPivot
     {
-        public double?[] Temp = new double?[6];
-        public DateTime?[] RunTime = new DateTime?[6];
+        // Sized to FeatureBuilder.CanonicalModelOrder.Count (7 incl. AIFS).
+        public double?[] Temp = new double?[7];
+        public DateTime?[] RunTime = new DateTime?[7];
         public double[] Dew = NanArray();
         public double[] Rh = NanArray();
         public double[] Cloud = NanArray();
@@ -466,7 +471,7 @@ ORDER BY ValidTimeUtc, Model;";
         public double[] Pressure = NanArray();
 
         public static WorkingPivot New() => new();
-        private static double[] NanArray() => Enumerable.Repeat(double.NaN, 6).ToArray();
+        private static double[] NanArray() => Enumerable.Repeat(double.NaN, 7).ToArray();
     }
 
     private static double? NullableDouble(IDataReader r, int ord)
@@ -474,39 +479,4 @@ ORDER BY ValidTimeUtc, Model;";
 
     private static double NullableDoubleAsNan(IDataReader r, int ord)
         => r.IsDBNull(ord) ? double.NaN : r.GetDouble(ord);
-
-    /// <summary>SHA-256 hex of the 13 lean feature floats in FeatureNames order.</summary>
-    public static string HashFeatures(TrainingRow row) => FeatureHashing.HashFloats(new[]
-    {
-        row.TempGfs, row.TempEcmwf, row.TempIcon, row.TempMf, row.TempUkmo, row.TempGem,
-        row.TempMean, row.TempStd, row.TempRange,
-        row.HourSin, row.HourCos, row.DoySin, row.DoyCos,
-    });
-
-    /// <summary>SHA-256 hex of the 88 rich feature floats in RichFeatureBuilder.FeatureNames order.</summary>
-    public static string HashRichFeatures(RichTrainingRow row) => FeatureHashing.HashFloats(new[]
-    {
-        // 13 lean (same order as HashFeatures).
-        row.TempGfs, row.TempEcmwf, row.TempIcon, row.TempMf, row.TempUkmo, row.TempGem,
-        row.TempMean, row.TempStd, row.TempRange,
-        row.HourSin, row.HourCos, row.DoySin, row.DoyCos,
-        // 6 per-model dew.
-        row.DewGfs, row.DewEcmwf, row.DewIcon, row.DewMf, row.DewUkmo, row.DewGem,
-        row.RhGfs, row.RhEcmwf, row.RhIcon, row.RhMf, row.RhUkmo, row.RhGem,
-        row.CloudGfs, row.CloudEcmwf, row.CloudIcon, row.CloudMf, row.CloudUkmo, row.CloudGem,
-        row.CloudLowGfs, row.CloudLowEcmwf, row.CloudLowIcon, row.CloudLowMf, row.CloudLowUkmo, row.CloudLowGem,
-        row.CloudMidGfs, row.CloudMidEcmwf, row.CloudMidIcon, row.CloudMidMf, row.CloudMidUkmo, row.CloudMidGem,
-        row.CloudHighGfs, row.CloudHighEcmwf, row.CloudHighIcon, row.CloudHighMf, row.CloudHighUkmo, row.CloudHighGem,
-        row.WindSpeedGfs, row.WindSpeedEcmwf, row.WindSpeedIcon, row.WindSpeedMf, row.WindSpeedUkmo, row.WindSpeedGem,
-        row.WindDirSinGfs, row.WindDirSinEcmwf, row.WindDirSinIcon, row.WindDirSinMf, row.WindDirSinUkmo, row.WindDirSinGem,
-        row.WindDirCosGfs, row.WindDirCosEcmwf, row.WindDirCosIcon, row.WindDirCosMf, row.WindDirCosUkmo, row.WindDirCosGem,
-        row.WindGustsGfs, row.WindGustsEcmwf, row.WindGustsIcon, row.WindGustsMf, row.WindGustsUkmo, row.WindGustsGem,
-        row.PressureGfs, row.PressureEcmwf, row.PressureIcon, row.PressureMf, row.PressureUkmo, row.PressureGem,
-        // 9 aggregates.
-        row.DewMean, row.DewStd,
-        row.RhMean, row.RhStd,
-        row.CloudMean,
-        row.WindSpeedMean, row.WindSpeedStd,
-        row.PressureMean, row.PressureStd,
-    });
 }

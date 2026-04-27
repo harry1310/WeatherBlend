@@ -216,11 +216,12 @@ public sealed class DryWindowPredictCommand
             var climProb = climatology.Predict(targetDate);
 
             // Build per-model output fields: populate only spec.Models, null elsewhere.
-            var perModelHasDry  = new double?[6];
-            var perModelSum     = new double?[6];
+            var perModelHasDry  = new double?[7];
+            var perModelSum     = new double?[7];
             for (int i = 0; i < spec.Models.Count; i++)
             {
                 var ci = canonOrder.IndexOf(spec.Models[i]);
+                if (ci >= 6) continue;     // AIFS — not in 6-wide output yet
                 var hasDry = row.Features[spec.IndexOf($"has_dry_window_{WeatherBlend.Train.FeatureBuilder.ShortName(spec.Models[i])}")];
                 var sum    = row.Features[spec.IndexOf($"precip_sum_{WeatherBlend.Train.FeatureBuilder.ShortName(spec.Models[i])}")];
                 perModelHasDry[ci] = NanToNullDouble(hasDry);
@@ -431,42 +432,6 @@ ORDER BY ValidTimeUtc, Model;";
 
     private static double? NanToNull(float v) => float.IsNaN(v) ? null : v;
     private static double? NanToNullDouble(float v) => float.IsNaN(v) ? null : (double)v;
-
-    /// <summary>
-    /// SHA-256 hex of the feature floats in DryWindowFeatureBuilder order.
-    /// 3b and 3d-calibrated hash 53 floats (the base feature set; 3d-calibrated
-    /// reuses the 3b model unchanged so its feature vector is identical).
-    /// 3d-shape hashes 60 floats (base + 7 shape columns).
-    /// </summary>
-    public static string HashFeatures(WeatherBlend.Train.DryWindow.DryWindowTrainingRow row, string? phase = null)
-    {
-        var floats = new List<float>(60)
-        {
-            row.PrecipSumGfs, row.PrecipSumEcmwf, row.PrecipSumIcon, row.PrecipSumMf, row.PrecipSumUkmo, row.PrecipSumGem,
-            row.PrecipMaxHourGfs, row.PrecipMaxHourEcmwf, row.PrecipMaxHourIcon, row.PrecipMaxHourMf, row.PrecipMaxHourUkmo, row.PrecipMaxHourGem,
-            row.WetHourCountGfs, row.WetHourCountEcmwf, row.WetHourCountIcon, row.WetHourCountMf, row.WetHourCountUkmo, row.WetHourCountGem,
-            row.LongestDryRunGfs, row.LongestDryRunEcmwf, row.LongestDryRunIcon, row.LongestDryRunMf, row.LongestDryRunUkmo, row.LongestDryRunGem,
-            row.HasDryWindowGfs, row.HasDryWindowEcmwf, row.HasDryWindowIcon, row.HasDryWindowMf, row.HasDryWindowUkmo, row.HasDryWindowGem,
-            row.ProbMaxGfs, row.ProbMaxEcmwf, row.ProbMaxIcon, row.ProbMaxMf, row.ProbMaxUkmo, row.ProbMaxGem,
-            row.PrecipSumMean, row.PrecipSumStd, row.PrecipSumMax,
-            row.AgreementHasDryWindow, row.LongestDryRunMean, row.WetHourCountMean,
-            row.RhMean, row.RhMin, row.DewDepressionMax,
-            row.CloudLowMean, row.CloudMidMean, row.CloudHighMean,
-            row.CapeMax, row.WindMean, row.WindMax,
-            row.DoySin, row.DoyCos,
-        };
-        if (string.Equals(phase, DryWindowFeatureBuilder.Phase3dShape, StringComparison.OrdinalIgnoreCase))
-        {
-            floats.Add(row.FirstWetHour);
-            floats.Add(row.LastWetHour);
-            floats.Add(row.LongestForecastDryRunHours);
-            floats.Add(row.LongestForecastWetRunHours);
-            floats.Add(row.NRainEvents);
-            floats.Add(row.MorningPrecipSum);
-            floats.Add(row.AfternoonPrecipSum);
-        }
-        return FeatureHashing.HashFloats(floats.ToArray());
-    }
 
     private static string Slugify(string s) => s.ToLowerInvariant()
         .Replace(' ', '_').Replace('-', '_').Replace(',', '_');

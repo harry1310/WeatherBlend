@@ -187,13 +187,17 @@ public static class Program
             name: "--source",
             description: "previous-runs | era5 | metar | rainfall | all",
             getDefaultValue: () => "all");
+        var modelOpt = new Option<string?>(
+            name: "--model",
+            description: "Optional: backfill only this Open-Meteo model id (previous-runs only). Defaults to all configured models.",
+            getDefaultValue: () => null);
         var backfill = new Command("backfill", "Fetch historical data (previous-runs forecasts, ERA5, OGIMET METAR, EA rainfall)")
-            { sourceOpt, startOpt, endOpt };
-        backfill.SetHandler(async (source, start, end) =>
+            { sourceOpt, startOpt, endOpt, modelOpt };
+        backfill.SetHandler(async (source, start, end, model) =>
         {
             var cmd = host.Services.GetRequiredService<BackfillCommand>();
-            await cmd.RunAsync(source, start, end, CancellationToken.None);
-        }, sourceOpt, startOpt, endOpt);
+            await cmd.RunAsync(source, start, end, model, CancellationToken.None);
+        }, sourceOpt, startOpt, endOpt, modelOpt);
         root.AddCommand(backfill);
 
         var gfsStartOpt = new Option<DateOnly>("--start", "Start cycle date (yyyy-MM-dd), UTC")

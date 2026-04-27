@@ -47,15 +47,15 @@ public sealed class BackfillCommand
         _log = log;
     }
 
-    public async Task<int> RunAsync(string source, DateOnly start, DateOnly end, CancellationToken ct)
+    public async Task<int> RunAsync(string source, DateOnly start, DateOnly end, string? model, CancellationToken ct)
     {
-        _log.LogInformation("Backfill source={Source} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} for {Location}",
-            source, start, end, _cfg.Location.DisplayName);
+        _log.LogInformation("Backfill source={Source} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd}{ModelFilter} for {Location}",
+            source, start, end, model is null ? "" : $" model={model}", _cfg.Location.DisplayName);
 
         var src = source.ToLowerInvariant();
         var errors = 0;
 
-        if (src is "previous-runs" or "all") errors += await BackfillPreviousRunsAsync(start, end, ct);
+        if (src is "previous-runs" or "all") errors += await BackfillPreviousRunsAsync(start, end, model, ct);
         if (src is "era5" or "all")          errors += await BackfillEra5Async(start, end, ct);
         if (src is "metar" or "all")         errors += await BackfillMetarAsync(start, end, ct);
         if (src is "rainfall" or "all")      errors += await BackfillRainfallAsync(start, end, ct);
@@ -76,10 +76,19 @@ public sealed class BackfillCommand
     // before it went live the API returns all-null columns and ParsePreviousRuns
     // drops them, so early-date UKMO chunks will log 0 rows — that's expected.
 
-    private async Task<int> BackfillPreviousRunsAsync(DateOnly start, DateOnly end, CancellationToken ct)
+    private async Task<int> BackfillPreviousRunsAsync(DateOnly start, DateOnly end, string? modelFilter, CancellationToken ct)
     {
         var errors = 0;
-        foreach (var model in _cfg.Models)
+        var models = modelFilter is null
+            ? (IEnumerable<ModelConfig>)_cfg.Models
+            : _cfg.Models.Where(m => string.Equals(m.Id, modelFilter, StringComparison.OrdinalIgnoreCase));
+        if (modelFilter is not null && !models.Any())
+        {
+            _log.LogError("--model '{M}' not in configured models list. Available: [{Avail}]",
+                modelFilter, string.Join(", ", _cfg.Models.Select(m => m.Id)));
+            return 1;
+        }
+        foreach (var model in models)
         {
             var cursor = start;
             while (cursor <= end)

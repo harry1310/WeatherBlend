@@ -82,11 +82,13 @@ public static class WindPredictPipeline
             var yhat = TemperatureTrainer.PredictVector(ml, loadedModel, spec, new[] { row })[0];
 
             // Per-model output fields: populate only spec.Models, null elsewhere.
+            // ElementPredictionRow has 6 named slots; AIFS contributes implicitly via BlendValue.
             var modelSpd = new double?[6];
             var modelRun = new DateTime?[6];
             for (int i = 0; i < N; i++)
             {
                 var ci = canonOrder.IndexOf(spec.Models[i]);
+                if (ci >= 6) continue;     // AIFS — not in 6-wide output yet
                 modelSpd[ci] = double.IsNaN(spd[i]) ? null : spd[i];
                 modelRun[ci] = p.RunTimes[ci];
             }
@@ -161,9 +163,9 @@ ORDER BY ValidTimeUtc, Model;";
             if (!working.TryGetValue(valid, out var slot))
             {
                 slot = (
-                    Enumerable.Repeat(float.NaN, 6).ToArray(),
-                    Enumerable.Repeat(float.NaN, 6).ToArray(),
-                    new DateTime?[6]);
+                    Enumerable.Repeat(float.NaN, 7).ToArray(),
+                    Enumerable.Repeat(float.NaN, 7).ToArray(),
+                    new DateTime?[7]);
                 working[valid] = slot;
             }
             slot.RunTimes[idx]  = r.GetDateTime(2);

@@ -24,79 +24,83 @@ public class FeatureBuilderTests
     }
 
     [Fact]
-    public void BuildSpec_lean_temperature_lead_24_uses_5_models_and_12_features()
+    public void BuildSpec_lean_temperature_lead_24_uses_5_required_plus_aifs_optional()
     {
         var spec = FeatureBuilder.BuildSpec(LoadShippedConfig(), 24);
         spec.Target.Should().Be("temperature");
         spec.FeatureSet.Should().Be("lean");
         spec.RequiredModels.Should().Equal(
             "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "meteofrance_seamless", "gem_seamless");
-        spec.OptionalModels.Should().BeEmpty();
+        spec.OptionalModels.Should().Equal("ecmwf_aifs025_single");
         spec.Models.Should().Equal(
-            "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "meteofrance_seamless", "gem_seamless");
-        spec.FeatureNames.Should().HaveCount(12);
+            "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "meteofrance_seamless", "gem_seamless", "ecmwf_aifs025_single");
+        // 6 per-model temps + 3 spread + 4 calendar = 13 features.
+        spec.FeatureNames.Should().HaveCount(13);
         spec.FeatureNames.Should().ContainInOrder(
-            "temp_gfs", "temp_ecmwf", "temp_icon", "temp_mf", "temp_gem",
+            "temp_gfs", "temp_ecmwf", "temp_icon", "temp_mf", "temp_gem", "temp_aifs",
             "temp_mean", "temp_std", "temp_range",
             "hour_sin", "hour_cos", "doy_sin", "doy_cos");
     }
 
     [Fact]
-    public void BuildSpec_lean_temperature_lead_120_drops_MF_and_uses_4_models_11_features()
+    public void BuildSpec_lean_temperature_lead_120_drops_MF_keeps_aifs_optional()
     {
         var spec = FeatureBuilder.BuildSpec(LoadShippedConfig(), 120);
         spec.RequiredModels.Should().Equal("gfs_seamless", "ecmwf_ifs025", "icon_seamless", "gem_seamless");
-        spec.OptionalModels.Should().BeEmpty();
-        spec.Models.Should().HaveCount(4);
-        spec.FeatureNames.Should().HaveCount(11);
+        spec.OptionalModels.Should().Equal("ecmwf_aifs025_single");
+        spec.Models.Should().HaveCount(5);
+        // 5 per-model temps + 3 spread + 4 calendar = 12 features.
+        spec.FeatureNames.Should().HaveCount(12);
         spec.FeatureNames.Should().NotContain("temp_mf");
         spec.FeatureNames.Should().NotContain("temp_ukmo");
+        spec.FeatureNames.Should().Contain("temp_aifs");
     }
 
     [Fact]
     public void ComposeRow_with_spec_packs_features_in_declared_order()
     {
         var spec = FeatureBuilder.BuildSpec(LoadShippedConfig(), 24);
-        // Per-model temps in spec order: gfs/ecmwf/icon/mf/gem.
-        var temps = new[] { 10.0, 12.0, 14.0, 16.0, 18.0 };
+        // Per-model temps in spec order: gfs/ecmwf/icon/mf/gem/aifs.
+        var temps = new[] { 10.0, 12.0, 14.0, 16.0, 18.0, 20.0 };
         var row = FeatureBuilder.ComposeRow(
             spec,
             new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc),
             temps,
             windDirMeanDeg: 180.0,
-            era5Temp: 14.0);
+            era5Temp: 15.0);
 
         row.Features.Length.Should().Be(spec.FeatureCount);
-        // First 5 entries are the per-model temps.
+        // First 6 entries are the per-model temps.
         for (int i = 0; i < temps.Length; i++) row.Features[i].Should().BeApproximately((float)temps[i], 1e-5f);
-        // Then mean/std/range over [10..18] (5 values).
-        row.Features[spec.IndexOf("temp_mean")].Should().BeApproximately(14f, 1e-4f);
-        row.Features[spec.IndexOf("temp_range")].Should().BeApproximately(8f, 1e-4f);
-        row.Label.Should().BeApproximately(14f, 1e-5f);
+        // Then mean/std/range over [10..20] (6 values, mean=15, range=10).
+        row.Features[spec.IndexOf("temp_mean")].Should().BeApproximately(15f, 1e-4f);
+        row.Features[spec.IndexOf("temp_range")].Should().BeApproximately(10f, 1e-4f);
+        row.Label.Should().BeApproximately(15f, 1e-5f);
         row.WindDirMean.Should().BeApproximately(180f, 1e-5f);
     }
 
     [Fact]
     public void ComposeRow_throws_when_temps_count_does_not_match_spec_models()
     {
-        var spec = FeatureBuilder.BuildSpec(LoadShippedConfig(), 24);  // 5 models
+        var spec = FeatureBuilder.BuildSpec(LoadShippedConfig(), 24);  // 6 models incl. AIFS
         var act = () => FeatureBuilder.ComposeRow(
             spec, DateTime.UtcNow, new[] { 1.0, 2.0 }, double.NaN, 0.0);
         act.Should().Throw<ArgumentException>();
     }
 
     [Fact]
-    public void ComposeRow_lead_120_packs_4_per_model_values_no_mf_no_ukmo()
+    public void ComposeRow_lead_120_packs_5_per_model_values_no_mf_no_ukmo_with_aifs()
     {
         var spec = FeatureBuilder.BuildSpec(LoadShippedConfig(), 120);
-        var temps = new[] { 5.0, 6.0, 7.0, 8.0 };
+        // Spec order at 120h: gfs, ecmwf, icon, gem, aifs.
+        var temps = new[] { 5.0, 6.0, 7.0, 8.0, 9.0 };
         var row = FeatureBuilder.ComposeRow(
             spec, new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc),
-            temps, windDirMeanDeg: 90, era5Temp: 6.5);
-        row.Features.Length.Should().Be(11);
-        // No temp_mf or temp_ukmo in feature names → they aren't in Features at all.
+            temps, windDirMeanDeg: 90, era5Temp: 7.0);
+        row.Features.Length.Should().Be(12);
         spec.FeatureNames.Should().NotContain("temp_mf");
         spec.FeatureNames.Should().NotContain("temp_ukmo");
+        spec.FeatureNames.Should().Contain("temp_aifs");
     }
 
     // -----------------------------------------------------------------------

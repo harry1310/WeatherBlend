@@ -73,11 +73,13 @@ public static class HumidityPredictPipeline
             var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
             var yhat = TemperatureTrainer.PredictVector(ml, loadedModel, spec, new[] { row })[0];
 
+            // ElementPredictionRow has 6 named slots; AIFS contributes implicitly via BlendValue.
             var modelRh  = new double?[6];
             var modelRun = new DateTime?[6];
             for (int i = 0; i < N; i++)
             {
                 var ci = canonOrder.IndexOf(spec.Models[i]);
+                if (ci >= 6) continue;     // AIFS — not in 6-wide output yet
                 modelRh[ci]  = double.IsNaN(rh[i]) ? null : rh[i];
                 modelRun[ci] = p.RunTimes[ci];
             }
@@ -146,9 +148,9 @@ ORDER BY ValidTimeUtc, Model;";
             if (!working.TryGetValue(valid, out var slot))
             {
                 slot = (
-                    Enumerable.Repeat(float.NaN, 6).ToArray(),
-                    Enumerable.Repeat(float.NaN, 6).ToArray(),
-                    new DateTime?[6]);
+                    Enumerable.Repeat(float.NaN, 7).ToArray(),
+                    Enumerable.Repeat(float.NaN, 7).ToArray(),
+                    new DateTime?[7]);
                 working[valid] = slot;
             }
             slot.Rt[idx]  = r.GetDateTime(2);

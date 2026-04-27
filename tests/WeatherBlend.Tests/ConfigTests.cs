@@ -118,23 +118,24 @@ public class ConfigTests
             "wind/default", "humidity/default", "cloud/default", "radiation/default",
         });
 
-        // Lean temp: 5 strict, none optional, MF dropped at 120h.
+        // Lean temp: 5 strict + AIFS optional. MF dropped at 120h, AIFS still optional.
         var leanTemp = bound.Blenders.Get("temperature", "lean");
         leanTemp.RequiredModels.Should().HaveCount(5);
-        leanTemp.OptionalModels.Should().BeEmpty();
+        leanTemp.OptionalModels.Should().Equal("ecmwf_aifs025_single");
         leanTemp.RequiredForLead(120).Should().HaveCount(4);
         leanTemp.RequiredForLead(120).Should().NotContain("meteofrance_seamless");
+        leanTemp.OptionalForLead(120).Should().Equal("ecmwf_aifs025_single");
 
-        // Lean precip: nothing required, all 5 optional (COALESCE-any).
+        // Lean precip: nothing required, all 6 optional (5 NWPs + AIFS, COALESCE-any).
         var leanPrecip = bound.Blenders.Get("precipitation", "lean");
         leanPrecip.RequiredModels.Should().BeEmpty();
-        leanPrecip.OptionalModels.Should().HaveCount(5);
-        leanPrecip.OptionalForLead(120).Should().HaveCount(4);
+        leanPrecip.OptionalModels.Should().HaveCount(6);
+        leanPrecip.OptionalForLead(120).Should().HaveCount(5);
 
-        // Wind: 4 strict + UKMO optional, MF excluded entirely.
+        // Wind: 4 strict + UKMO optional + AIFS optional, MF excluded entirely.
         var wind = bound.Blenders.Get("wind", "default");
         wind.RequiredModels.Should().HaveCount(4);
-        wind.OptionalModels.Should().Equal("ukmo_seamless");
+        wind.OptionalModels.Should().Equal("ukmo_seamless", "ecmwf_aifs025_single");
         wind.RequiredModels.Should().NotContain("meteofrance_seamless");
         wind.OptionalModels.Should().NotContain("meteofrance_seamless");
     }
