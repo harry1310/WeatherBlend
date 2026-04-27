@@ -208,12 +208,12 @@ blenders:
 
     - target: temperature
       featureSet: rich
-      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, ukmo_seamless, gem_seamless, ecmwf_aifs025_single]
-      optionalModels: []
+      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, ukmo_seamless, gem_seamless]
+      optionalModels: [ecmwf_aifs025_single]
       perLeadOverrides:
         - lead: 120
-          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, ukmo_seamless, gem_seamless, ecmwf_aifs025_single]
-          optionalModels: []
+          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, ukmo_seamless, gem_seamless]
+          optionalModels: [ecmwf_aifs025_single]
 
     # ---- Precipitation ----
     # Lenient policy: precip rows kept where ANY model has data — models often
