@@ -10,7 +10,7 @@ namespace WeatherBlend.Predict.Utci;
 /// Joins per-anchor predictions from the temperature blender (lean 2b) and
 /// the four element blenders (humidity / wind / shortwave-radiation /
 /// cloud-cover) by (ValidTimeUtc, LeadHours), then computes UTCI per row
-/// via <see cref="UtciCalculator"/>.
+/// via <see cref="FeelsLikeCalculator"/>.
 ///
 /// Reads each input from its own
 /// <c>data/predictions/{slug}/model_version={v}/date={anchor}/predictions.parquet</c>.
@@ -74,11 +74,11 @@ public static class UtciPredictPipeline
             double sw = Math.Max(r.Value, 0.0);
             double cc = ClampPercent(c.Value);
 
-            double pHpa = UtciCalculator.VapourPressureHpa(ta, rh);
-            double lDown = UtciCalculator.LongwaveDownWm2(ta, cc / 100.0, pHpa);
-            double lUp = UtciCalculator.LongwaveUpWm2(ta);
-            double tmrt = UtciCalculator.Tmrt(ta, sw, cc / 100.0, rh);
-            double utci = UtciCalculator.Utci(ta, pHpa, ws, tmrt);
+            double pHpa = FeelsLikeCalculator.VapourPressureHpa(ta, rh);
+            double lDown = FeelsLikeCalculator.LongwaveDownWm2(ta, cc / 100.0, pHpa);
+            double lUp = FeelsLikeCalculator.LongwaveUpWm2(ta);
+            double tmrt = FeelsLikeCalculator.Tmrt(ta, sw, cc / 100.0, rh);
+            double utci = FeelsLikeCalculator.Utci(ta, pHpa, ws, tmrt);
 
             rows.Add(new UtciPredictionRow
             {
@@ -90,7 +90,7 @@ public static class UtciPredictPipeline
                 TemperatureC = ta,
                 RelativeHumidityPct = rh,
                 WindSpeed10mMs = ws,
-                WindSpeed1m1Ms = UtciCalculator.WindAt1m1(ws),
+                WindSpeed1m1Ms = FeelsLikeCalculator.WindAt1m1(ws),
                 ShortwaveDownWm2 = sw,
                 CloudCoverPct = cc,
                 VapourPressureHpa = pHpa,
@@ -98,7 +98,7 @@ public static class UtciPredictPipeline
                 LongwaveUpWm2 = lUp,
                 MeanRadiantTemperatureC = tmrt,
                 UtciC = utci,
-                Band = UtciCalculator.Band(utci).ToString(),
+                Band = FeelsLikeCalculator.Band(utci).ToString(),
                 TempModelVersion = temp.Version,
                 HumidityModelVersion = hum.Version,
                 WindModelVersion = wnd.Version,

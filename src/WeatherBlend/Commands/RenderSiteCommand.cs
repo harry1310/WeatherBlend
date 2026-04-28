@@ -124,6 +124,7 @@ public sealed class RenderSiteCommand
         await File.WriteAllTextAsync(Path.Combine(outputDir, "models.html"),        SitePages.RenderModels(input),         ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "about.html"),         SitePages.RenderAbout(input),          ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "styles.css"),         SitePages.Stylesheet(),                ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "chart.js"),           SitePages.ChartScript(),               ct);
 
         // Temp skill is single-file — temperature has no station axis.
         await File.WriteAllTextAsync(Path.Combine(outputDir, "skill-temperature.html"),
@@ -155,9 +156,9 @@ public sealed class RenderSiteCommand
                 SitePages.RenderDryWindow(input, slug), ct);
         }
 
-        // index + per-lead forecasts + models + about + styles + skill-temperature
-        // + skill-rainfall × stations + dry-window × stations.
-        var totalFiles = 5 + SitePages.PocLeads.Length
+        // index + per-lead forecasts + models + about + styles + chart.js
+        // + skill-temperature + skill-rainfall × stations + dry-window × stations.
+        var totalFiles = 6 + SitePages.PocLeads.Length
             + Math.Max(1, rainStations.Count) + Math.Max(1, dryStations.Count);
         _log.LogInformation("Site rendered → {Dir} ({Files} files)", outputDir, totalFiles);
         return 0;
@@ -636,8 +637,14 @@ ORDER BY TruthStation, LeadHours, ValidTimeUtc";
         var glob = Path.Combine(_cfg.Storage.PredictionsPath, "utci", "**", "*.parquet")
             .Replace('\\', '/').Replace("'", "''");
 
+        // Pull TemperatureC, VapourPressureHpa, WindSpeed10mMs alongside UTCI so we
+        // can compute Steadman 1994 apparent-temperature in C# at render time. The
+        // formula is one line (Ta + 0.33·e − 0.70·ws − 4) and re-deriving it here
+        // means the home-card chip Just Works on existing parquets — no predict
+        // re-run needed to populate a new persisted column.
         var sql = $@"
-SELECT ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours, UtciC, Band
+SELECT ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours, UtciC, Band,
+       TemperatureC, VapourPressureHpa, WindSpeed10mMs
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
 WHERE LocationName = '{_cfg.Location.Name}'
   AND UtciC IS NOT NULL
@@ -657,13 +664,17 @@ ORDER BY LeadHours, ValidTimeUtc";
             while (r.Read())
             {
                 ct.ThrowIfCancellationRequested();
+                var ta = r.GetDouble(6);
+                var ePa = r.GetDouble(7);
+                var ws = r.GetDouble(8);
                 rows.Add(new SitePages.UtciForecastPoint(
                     Version:        r.GetString(0),
                     PredictedAtUtc: r.GetDateTime(1),
                     ValidTimeUtc:   r.GetDateTime(2),
                     LeadHours:      r.GetInt32(3),
                     UtciC:          r.GetDouble(4),
-                    Band:           r.IsDBNull(5) ? "" : r.GetString(5)));
+                    Band:           r.IsDBNull(5) ? "" : r.GetString(5),
+                    ApparentC:      WeatherBlend.Predict.Utci.FeelsLikeCalculator.Steadman1994(ta, ePa, ws)));
             }
         }
         catch (DuckDBException ex) when (ex.Message.Contains("No files found"))

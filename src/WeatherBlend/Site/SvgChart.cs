@@ -1,5 +1,7 @@
 using System.Globalization;
+using System.Net;
 using System.Text;
+using System.Text.Json;
 
 namespace WeatherBlend.Site;
 
@@ -154,6 +156,114 @@ public static class LineChartRenderer
 
         sb.Append("</svg>");
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Render a chart as a Chart.js v4 canvas element with an embedded JSON config.
+    /// The runtime in <c>chart.js</c> (see <see cref="SitePages.ChartScript"/>) reads
+    /// <c>data-cjs</c>, converts OADate X values to Unix ms, and builds a Chart with
+    /// pre-baked tick formatters driven by the metadata we emit here. Falls back to
+    /// the static <see cref="EmptyChart"/> SVG when there are no points.
+    ///
+    /// We probe the spec's <see cref="LineChartSpec.FormatX"/> and
+    /// <see cref="LineChartSpec.FormatY"/> lambdas with representative values so the
+    /// JS side can replicate them without parsing C# format strings — keeps the
+    /// JS layer free of culture / format-pattern logic.
+    /// </summary>
+    public static string RenderChartJs(LineChartSpec spec)
+    {
+        if (spec.Series.All(s => s.Points.Count == 0))
+            return EmptyChart(spec);
+
+        var xKind = ProbeXKind(spec.FormatX);
+        var (yDec, ySuffix, yTrim) = ProbeYFormat(spec.FormatY);
+
+        var datasets = new List<object>();
+        foreach (var s in spec.Series)
+        {
+            if (s.Points.Count == 0) continue;
+            // Compact wire format — [x, y] pairs only. The JS side converts X (OADate)
+            // to Unix ms; pre-formatted labels aren't needed because Chart.js calls
+            // our tick-format callback for tooltip values too (via the same yFormat
+            // metadata we pass below).
+            var pts = s.Points.Select(p => new[] { p.X, p.Y }).ToArray();
+            datasets.Add(new
+            {
+                label = s.Name,
+                color = s.Color,
+                discrete = s.PointsOnly,
+                points = pts,
+            });
+        }
+
+        var cfg = new
+        {
+            title = spec.Title,
+            xLabel = spec.XLabel,
+            yLabel = spec.YLabel,
+            xKind,
+            yDec,
+            ySuffix,
+            yTrim,
+            datasets,
+        };
+
+        var json = JsonSerializer.Serialize(cfg);
+        var encoded = WebUtility.HtmlEncode(json);
+        return string.Create(Ci, $"""
+            <div class="chart-cjs" style="height: {spec.Height}px;">
+              <canvas data-cjs="{encoded}"></canvas>
+            </div>
+            """);
+    }
+
+    /// <summary>
+    /// Map the C# X-axis formatter to one of the two date layouts the JS side knows
+    /// about: <c>"date"</c> ("MM-dd") or <c>"datetime"</c> ("MM-dd HHZ"). The probe
+    /// uses an OADate at 12:00 UTC; presence of <c>'Z'</c> in the formatted string
+    /// is the discriminator. If the formatter is something else entirely (e.g. a
+    /// raw numeric format), we still return <c>"date"</c> — the JS side renders a
+    /// reasonable fallback rather than failing.
+    /// </summary>
+    private static string ProbeXKind(Func<double, string> formatX)
+    {
+        var probe = new DateTime(2024, 4, 26, 12, 0, 0, DateTimeKind.Utc).ToOADate();
+        var s = formatX(probe);
+        return s.Contains('Z') ? "datetime" : "date";
+    }
+
+    /// <summary>
+    /// Probe the Y-axis formatter for the metadata the JS side needs:
+    /// number of decimal places, optional suffix (e.g. <c>"°"</c>, <c>"%"</c>),
+    /// and whether trailing zeros should be trimmed (the C# <c>"0.#"</c> idiom).
+    /// </summary>
+    private static (int Dec, string Suffix, bool Trim) ProbeYFormat(Func<double, string> formatY)
+    {
+        // Two probes: an integer-valued one (12.0) tells us whether trailing zeros
+        // get trimmed; a fractional one (3.456) tells us how many decimals are kept.
+        var s12 = formatY(12.0);
+        var sFrac = formatY(3.456);
+
+        static string TrailingNonNumeric(string v)
+        {
+            // Walk left over trailing non-numeric chars (e.g. "°", "°C", "%", " mm")
+            // and stop at the first digit/dot/sign — that boundary marks where the
+            // numeric body ends. Substring(i) is then the suffix.
+            int i = v.Length;
+            while (i > 0 && !(char.IsDigit(v[i - 1]) || v[i - 1] == '.' || v[i - 1] == '-' || v[i - 1] == '+'))
+                i--;
+            return v.Substring(i);
+        }
+
+        var suffix = TrailingNonNumeric(s12);
+        var body12 = s12.Substring(0, s12.Length - suffix.Length);
+        var bodyFrac = sFrac.Substring(0, sFrac.Length - suffix.Length);
+
+        var dot = bodyFrac.IndexOf('.');
+        var dec = dot < 0 ? 0 : (bodyFrac.Length - dot - 1);
+        var trim = !body12.Contains('.');
+
+        return (dec, suffix, trim);
     }
 
     private static string EmptyChart(LineChartSpec spec)

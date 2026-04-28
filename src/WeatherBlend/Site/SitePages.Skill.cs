@@ -197,7 +197,7 @@ public static partial class SitePages
         if (series.Count == 0)
             return RenderEmptyChart($"Temperature — phase {phaseKey}", "No overlap between predictions and truth in window.");
 
-        return LineChartRenderer.Render(new LineChartSpec
+        return LineChartRenderer.RenderChartJs(new LineChartSpec
         {
             Title = $"Temperature vs truth — phase {phaseKey}",
             XLabel = "Time (UTC)",
@@ -245,7 +245,7 @@ public static partial class SitePages
                 continue;
             }
 
-            content.Append(LineChartRenderer.Render(new LineChartSpec
+            content.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
             {
                 Title = $"Rolling MAE — lead +{lead}h",
                 XLabel = "Window end (UTC)",

@@ -53,22 +53,28 @@ public static partial class SitePages
 
     private static string RenderTempSection(SiteInputs input, int lead)
     {
-        // Per-NWP breakdown table only. The champion blend value itself is on the home
-        // page; repeating it here was duplication. Challenger lines at this lead live on
-        // the Skill page.
+        // Per-NWP overlay chart — Blend on top, the six NWP inputs underneath. The
+        // champion blend value itself is on the home page; this chart exists so the
+        // reader can see which NWPs the blender's leaning on at this horizon and
+        // where they disagree. Challenger blender lines at this lead live on Skill.
+        //
+        // Pool across all blender versions before picking the freshest per
+        // ValidTime: the champion only emits a few rows per anchor, so a strict
+        // version filter collapses the chart to a single point per lead. Pooling
+        // gives the X axis a real time spread without changing the per-NWP story
+        // (the NWP columns are identical across blender versions for the same
+        // valid hour).
         var future = input.Predictions
             .Where(p => p.LeadHours == lead
-                        && (string.IsNullOrEmpty(input.CurrentVersion) || p.ModelVersion == input.CurrentVersion)
                         && p.ValidTimeUtc >= input.GeneratedAtUtc.AddHours(-1))
             .GroupBy(p => p.ValidTimeUtc)
             .Select(g => g.OrderByDescending(p => p.PredictionMadeAtUtc).First())
             .OrderBy(p => p.ValidTimeUtc)
-            .Take(24)
             .ToList();
 
         var s = new StringBuilder();
-        s.Append("<h3>Temperature — per-model inputs</h3>");
-        s.Append("<p class=\"skill-line\">Each row is one valid time at this lead. The Blend column is what the home-page card shows; the per-NWP columns are the raw model values the blender saw.</p>");
+        s.Append("<h3>Temperature — blend vs per-model inputs</h3>");
+        s.Append("<p class=\"skill-line\">One series per NWP plus the champion blend, valid times at this lead. Hover for exact values.</p>");
 
         if (future.Count == 0)
         {
@@ -76,47 +82,45 @@ public static partial class SitePages
             return s.ToString();
         }
 
-        var tbody = new StringBuilder();
-        foreach (var p in future)
+        // NWPs first so the brand-purple Blend draws last and sits visually on top.
+        // Colours chosen for hue separation; UKMO uses indigo rather than purple to
+        // stay distinct from the brand colour reserved for the blend itself.
+        var nwpSpecs = new (string Label, string Color, Func<PredictionRow, double?> Get)[]
         {
-            tbody.Append(Ci, $"""
-                <tr>
-                  <td><time>{p.ValidTimeUtc:MM-dd HH:mm}Z</time></td>
-                  <td class="num"><strong>{p.BlendTemperature.ToString("0.0", Ci)}</strong></td>
-                  <td class="num">{FmtNullable(p.TempGfs, "0.0")}</td>
-                  <td class="num">{FmtNullable(p.TempEcmwf, "0.0")}</td>
-                  <td class="num">{FmtNullable(p.TempIcon, "0.0")}</td>
-                  <td class="num">{FmtNullable(p.TempMf, "0.0")}</td>
-                  <td class="num">{FmtNullable(p.TempUkmo, "0.0")}</td>
-                  <td class="num">{FmtNullable(p.TempGem, "0.0")}</td>
-                  <td class="num">{FmtNullable(p.TempMean, "0.0")}</td>
-                  <td class="num">{FmtNullable(p.TempStd, "0.00")}</td>
-                </tr>
-                """);
-        }
+            ("GFS",   "#ef5350", p => p.TempGfs),
+            ("ECMWF", "#42a5f5", p => p.TempEcmwf),
+            ("ICON",  "#66bb6a", p => p.TempIcon),
+            ("MF",    "#ffa726", p => p.TempMf),
+            ("UKMO",  "#5c6bc0", p => p.TempUkmo),
+            ("GEM",   "#26a69a", p => p.TempGem),
+        };
 
-        s.Append(Ci, $"""
-            <figure>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Valid time (UTC)</th>
-                    <th class="num">Blend</th>
-                    <th class="num">GFS</th>
-                    <th class="num">ECMWF</th>
-                    <th class="num">ICON</th>
-                    <th class="num">MF</th>
-                    <th class="num">UKMO</th>
-                    <th class="num">GEM</th>
-                    <th class="num">Mean</th>
-                    <th class="num">Std</th>
-                  </tr>
-                </thead>
-                <tbody>
-            {tbody}    </tbody>
-              </table>
-            </figure>
-            """);
+        var series = new List<LineSeries>();
+        foreach (var (label, color, get) in nwpSpecs)
+        {
+            var pts = future
+                .Select(p => (Valid: p.ValidTimeUtc, Val: get(p)))
+                .Where(t => t.Val.HasValue)
+                .Select(t => (X: t.Valid.ToOADate(), Y: t.Val!.Value))
+                .ToList();
+            if (pts.Count > 0)
+                series.Add(new LineSeries(label, color, pts));
+        }
+        var blendPts = future
+            .Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.BlendTemperature))
+            .ToList();
+        series.Add(new LineSeries("Blend", "#7c4dff", blendPts));
+
+        s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
+        {
+            Title = $"Temperature — +{lead}h",
+            XLabel = "Valid time (UTC)",
+            YLabel = "Temperature (°C)",
+            Series = series,
+            Height = 360,
+            FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
+            FormatY = v => v.ToString("0.#", Ci) + "°",
+        }));
         return s.ToString();
     }
 

@@ -35,14 +35,17 @@ public static partial class SitePages
             .GroupBy(r => r.LeadHours)
             .ToDictionary(g => g.Key, g => g.ToList());
 
-        // UTCI feels-like per (lead, valid_time). The pipeline emits rows on the same
-        // anchor as the temperature blender, so exact match is the right join key — no
-        // ±12h fuzz needed (P(wet) lives on a separate run-grid; UTCI does not). Multiple
-        // PredictionMadeAtUtc rows can share a key when an anchor is re-run; keep the
-        // freshest. Single version v1 today, so no champion filter is required.
-        var utciByKey = input.UtciPredictions
+        // UTCI feels-like per lead bucket. We had assumed UTCI emits on the same
+        // anchor as the temperature blender (so exact (lead, valid) would match),
+        // but predict cycles drift in practice — temp can be promoted on one anchor
+        // hours before UTCI rebuilds against the new champion. So match by lead
+        // bucket and pick the UTCI row whose ValidTime is closest to the temp
+        // card's, within ±12h — same fudge factor the P(wet) chip uses below.
+        var utciByLead = input.UtciPredictions
             .GroupBy(u => (u.LeadHours, u.ValidTimeUtc))
-            .ToDictionary(g => g.Key, g => g.OrderByDescending(u => u.PredictedAtUtc).First());
+            .Select(g => g.OrderByDescending(u => u.PredictedAtUtc).First())
+            .GroupBy(u => u.LeadHours)
+            .ToDictionary(g => g.Key, g => g.ToList());
 
         var cards = new StringBuilder();
         foreach (var lead in PocLeads)
@@ -50,10 +53,28 @@ public static partial class SitePages
             if (latestByLead.TryGetValue(lead, out var p))
             {
                 string feelsCell = "";
-                if (utciByKey.TryGetValue((p.LeadHours, p.ValidTimeUtc), out var u))
+                if (utciByLead.TryGetValue(lead, out var uRows))
                 {
-                    var feelsColor = TemperatureColor(u.UtciC);
-                    feelsCell = $"<div class=\"feels\">Feels <strong style=\"color: {feelsColor}\">{u.UtciC.ToString("0.0", Ci)}°C</strong> <small>{Escape(PrettyUtciBand(u.Band))}</small></div>";
+                    var u = uRows
+                        .Select(r => (Row: r, Delta: Math.Abs((r.ValidTimeUtc - p.ValidTimeUtc).TotalHours)))
+                        .Where(x => x.Delta <= 12)
+                        .OrderBy(x => x.Delta)
+                        .FirstOrDefault().Row;
+                    if (u is not null)
+                    {
+                        // Two-line chip: Steadman 1994 apparent-temperature first (the
+                        // BBC/BoM-style "feels like" the public knows), UTCI underneath
+                        // with its band name (the rigorous biothermal index). Both
+                        // numbers take the temperature gradient so cold/hot reads at a
+                        // glance; the band label only attaches to UTCI.
+                        var apparentColor = TemperatureColor(u.ApparentC);
+                        var utciColor = TemperatureColor(u.UtciC);
+                        feelsCell =
+                            "<div class=\"feels\">"
+                            + $"<div>Feels like <strong style=\"color: {apparentColor}\">{u.ApparentC.ToString("0.0", Ci)}°C</strong></div>"
+                            + $"<div>UTCI <strong style=\"color: {utciColor}\">{u.UtciC.ToString("0.0", Ci)}°C</strong> <small>{Escape(PrettyUtciBand(u.Band))}</small></div>"
+                            + "</div>";
+                    }
                 }
 
                 string pwetCell = "";
@@ -100,7 +121,7 @@ public static partial class SitePages
         var skill = ComputeHeadlineSkill(input);
         var versionNote = string.IsNullOrEmpty(input.CurrentVersion)
             ? "No champion pinned in MANIFEST — cards may drift between active versions."
-            : $"Champion version: <code>{Escape(input.CurrentVersion)}</code>. Charts comparing every active version against truth live on the <a href=\"skill.html\">skill page</a>.";
+            : $"Champion version: <code>{Escape(input.CurrentVersion)}</code>. Charts comparing every active version against truth live on the <a href=\"skill-temperature.html\">temperature skill page</a>.";
 
         var body = new StringBuilder();
         body.Append(Ci, $"""

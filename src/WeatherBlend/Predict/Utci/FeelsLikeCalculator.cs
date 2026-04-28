@@ -1,10 +1,17 @@
 namespace WeatherBlend.Predict.Utci;
 
 /// <summary>
-/// UTCI ("Universal Thermal Climate Index", Bröde et al. 2012) plus the
-/// supporting helpers needed to derive its inputs from our blended fields:
+/// "Feels-like" temperature calculators plus the supporting helpers they need:
 /// vapour pressure (RH + Ta), longwave-down (cloud + Ta), mean radiant
 /// temperature (shortwave-down + cloud + Ta).
+///
+/// Two indices live here:
+///   <see cref="Utci"/> — the rigorous Bröde 2012 6th-order regression. Uses
+///     Tmrt so it responds to radiation; the gold-standard biothermal index
+///     used in academic comfort/heat-stress work.
+///   <see cref="Steadman1994"/> — the simpler shade-form apparent temperature
+///     behind BoM's published "AT" and the BBC's public "feels like" chip.
+///     One-line formula, no radiation term, gentler on wind chill.
 ///
 /// Tmrt is the radiation-balance approximation popularised by Thorsson et al.
 /// 2007 / Höppe 1999: a person in radiative equilibrium with sky + ground.
@@ -14,13 +21,13 @@ namespace WeatherBlend.Predict.Utci;
 /// responds to clear-sky midday sun (Tmrt &gt;&gt; Ta) versus overcast
 /// conditions (Tmrt ≈ Ta).
 ///
-/// All polynomial coefficients are taken verbatim from the official
+/// All UTCI polynomial coefficients are taken verbatim from the official
 /// UTCI_approx 6th-order regression (Bröde et al. 2012; reference Visual
 /// Basic implementation at utci.org). Validity range:
 ///   Ta ∈ [-50, +50] °C, va10 ∈ [0.5, 17] m/s, Tmrt-Ta ∈ [-30, +70] K.
 /// Outside this domain the polynomial extrapolates and should not be trusted.
 /// </summary>
-public static class UtciCalculator
+public static class FeelsLikeCalculator
 {
     private const double SigmaSb = 5.670374419e-8;     // Stefan-Boltzmann, W/m²/K⁴
     private const double EmissivityHuman = 0.97;        // αl = εp
@@ -112,6 +119,19 @@ public static class UtciCalculator
     /// want the reduced wind for display — UTCI's polynomial takes the
     /// 10 m value directly (the regression was fit on it).</summary>
     public static double WindAt1m1(double wind10mMs) => wind10mMs * WindReductionFactor10mTo1m1;
+
+    /// <summary>
+    /// Steadman 1994 outdoor "apparent temperature" (°C) — the shade-comfort form
+    /// behind BoM's published AT and the BBC's "feels like":
+    ///   AT = Ta + 0.33·e − 0.70·ws − 4.00
+    /// where <paramref name="vapourPressureHpa"/> is the actual vapour pressure
+    /// (e, hPa) and <paramref name="wind10mMs"/> is the 10 m wind speed (m/s).
+    /// Companion to <see cref="Utci"/>: gentler on wind chill than UTCI's 6th-order
+    /// regression, no radiation term (1994 is the shade form). Used as the
+    /// publicly-recognisable feels-like number alongside UTCI on the home cards.
+    /// </summary>
+    public static double Steadman1994(double tempC, double vapourPressureHpa, double wind10mMs)
+        => tempC + 0.33 * vapourPressureHpa - 0.70 * wind10mMs - 4.0;
 
     /// <summary>Universal Thermal Climate Index (°C) — the Bröde 2012 6th-
     /// order regression. Inputs:

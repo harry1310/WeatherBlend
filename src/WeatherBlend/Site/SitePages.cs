@@ -169,7 +169,8 @@ public static partial class SitePages
         DateTime ValidTimeUtc,
         int LeadHours,
         double UtciC,
-        string Band);
+        string Band,
+        double ApparentC);
 
     public sealed record DryWindowForecastPoint(
         string Station,
@@ -214,6 +215,8 @@ public static partial class SitePages
         table small { color: var(--pico-muted-color); }
 
         svg.chart { width: 100%; height: auto; max-width: 100%; background: var(--pico-card-background-color); border-radius: 4px; margin: 0.5rem 0 1.5rem; }
+        .chart-cjs { position: relative; margin: 0.5rem 0 1.5rem; background: var(--pico-card-background-color); border-radius: 4px; padding: 0.5rem 0.5rem 0.25rem; }
+        .chart-cjs canvas { width: 100% !important; height: 100% !important; }
         .chart-title { font-size: 14px; font-weight: 600; fill: var(--pico-color); }
         .chart-grid { stroke: var(--pico-muted-border-color); stroke-width: 0.5; }
         .chart-frame { fill: none; stroke: var(--pico-muted-border-color); stroke-width: 1; }
@@ -224,6 +227,120 @@ public static partial class SitePages
         .chart-empty { font-size: 12px; fill: var(--pico-muted-color); font-style: italic; }
 
         footer.site-footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--pico-muted-border-color); color: var(--pico-muted-color); font-size: 0.875rem; }
+        """;
+
+    /// <summary>
+    /// Chart.js bootstrapper: scans every <c>canvas[data-cjs]</c> on the page,
+    /// builds a Chart.js v4 line chart from the embedded JSON config. Each config
+    /// carries pre-baked tick-format hints (date kind, decimals, suffix, trim)
+    /// so the JS layer doesn't need a date-fns/luxon adapter — we share a tiny
+    /// inline UTC date formatter and a tiny number formatter, both keyed off
+    /// metadata <see cref="LineChartRenderer.RenderChartJs"/> emits server-side.
+    ///
+    /// Only temperature charts go through here today (the user pivot from the
+    /// hand-rolled SVG hover). Other pages still render via
+    /// <see cref="LineChartRenderer.Render"/>; flip them over once the temp
+    /// page is confirmed good.
+    /// </summary>
+    public static string ChartScript() => """
+        (function () {
+          const PAD = n => String(n).padStart(2, '0');
+          function fmtDate(ms, kind) {
+            const d = new Date(ms);
+            const md = PAD(d.getUTCMonth() + 1) + '-' + PAD(d.getUTCDate());
+            if (kind === 'datetime') return md + ' ' + PAD(d.getUTCHours()) + 'Z';
+            return md;
+          }
+          function fmtNum(v, ycfg) {
+            const dec = ycfg.dec | 0;
+            let s = v.toFixed(dec);
+            if (ycfg.trim && s.indexOf('.') >= 0) s = parseFloat(s).toString();
+            return s + (ycfg.suffix || '');
+          }
+          // OADate (days since 1899-12-30) → Unix ms. Keeps server-side data tight.
+          function oaToMs(oa) { return (oa - 25569) * 86400000; }
+
+          function build(canvas) {
+            if (!window.Chart) return;
+            let cfg;
+            try { cfg = JSON.parse(canvas.getAttribute('data-cjs')); }
+            catch (e) { return; }
+            if (!cfg || !cfg.datasets || !cfg.datasets.length) return;
+
+            const ycfg = { dec: cfg.yDec, suffix: cfg.ySuffix, trim: cfg.yTrim };
+            const xKind = cfg.xKind || 'date';
+
+            const datasets = cfg.datasets.map(ds => ({
+              label: ds.label,
+              data: ds.points.map(p => ({ x: oaToMs(p[0]), y: p[1] })),
+              borderColor: ds.color,
+              backgroundColor: ds.color,
+              borderWidth: 1.75,
+              pointRadius: ds.discrete ? 2 : (ds.points.length <= 30 ? 3 : 0),
+              pointHoverRadius: 5,
+              showLine: !ds.discrete,
+              tension: 0,
+              spanGaps: true,
+            }));
+
+            new Chart(canvas, {
+              type: 'line',
+              data: { datasets },
+              options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                parsing: false,
+                normalized: true,
+                interaction: { mode: 'nearest', axis: 'x', intersect: false },
+                plugins: {
+                  title: { display: !!cfg.title, text: cfg.title || '', font: { size: 14, weight: '600' }, padding: { top: 4, bottom: 8 } },
+                  legend: { position: 'top', align: 'end', labels: { boxWidth: 12, boxHeight: 12, usePointStyle: false, font: { size: 11 } } },
+                  tooltip: {
+                    backgroundColor: 'rgba(20,20,30,0.92)',
+                    titleColor: '#fff', bodyColor: '#fff',
+                    borderColor: 'rgba(255,255,255,0.15)', borderWidth: 1,
+                    padding: 8, cornerRadius: 4,
+                    titleFont: { family: 'ui-monospace, monospace', size: 11 },
+                    bodyFont:  { family: 'ui-monospace, monospace', size: 11 },
+                    callbacks: {
+                      title: items => items.length ? fmtDate(items[0].parsed.x, xKind) : '',
+                      label: item => item.dataset.label + ': ' + fmtNum(item.parsed.y, ycfg),
+                    },
+                  },
+                },
+                scales: {
+                  x: {
+                    type: 'linear',
+                    title: { display: !!cfg.xLabel, text: cfg.xLabel || '' },
+                    ticks: {
+                      autoSkip: true, maxTicksLimit: 8,
+                      font: { family: 'ui-monospace, monospace', size: 10 },
+                      callback: v => fmtDate(v, xKind),
+                    },
+                  },
+                  y: {
+                    type: 'linear',
+                    title: { display: !!cfg.yLabel, text: cfg.yLabel || '' },
+                    ticks: {
+                      font: { family: 'ui-monospace, monospace', size: 10 },
+                      callback: v => fmtNum(v, ycfg),
+                    },
+                  },
+                },
+              },
+            });
+          }
+
+          function init() {
+            document.querySelectorAll('canvas[data-cjs]').forEach(build);
+          }
+          if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', init);
+          } else {
+            init();
+          }
+        })();
         """;
 
     private static string WrapPage(SiteInputs input, string pageTitle, string pageId, string bodyHtml)
@@ -237,6 +354,8 @@ public static partial class SitePages
               <title>{{Escape(pageTitle)}} — WeatherBlend</title>
               <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
               <link rel="stylesheet" href="styles.css">
+              <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+              <script src="chart.js" defer></script>
             </head>
             <body>
               <main class="container">
