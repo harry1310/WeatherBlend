@@ -1,4 +1,4 @@
-namespace WeatherBlend.Predict.Utci;
+namespace WeatherBlend.Predict.FeelsLike;
 
 /// <summary>
 /// "Feels-like" temperature calculators plus the supporting helpers they need:

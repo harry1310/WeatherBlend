@@ -55,8 +55,8 @@ public sealed class RenderSiteCommand
         var precip = QueryPrecipPredictions(windowStart, predictionEnd, ct);
         _log.LogInformation("Loaded {N} precipitation prediction rows.", precip.Count);
 
-        var utci = QueryUtciPredictions(windowStart, predictionEnd, ct);
-        _log.LogInformation("Loaded {N} UTCI prediction rows.", utci.Count);
+        var feelsLike = QueryFeelsLikePredictions(windowStart, predictionEnd, ct);
+        _log.LogInformation("Loaded {N} feels-like prediction rows.", feelsLike.Count);
 
         var dryWindow = QueryDryWindowPredictions(windowStart, predictionEnd, ct);
         _log.LogInformation("Loaded {N} dry-window prediction rows.", dryWindow.Count);
@@ -113,7 +113,7 @@ public sealed class RenderSiteCommand
             CurrentVersion = currentVersion,
             PrecipCurrentByStation = precipCurrentByStation,
             ModelSummaries = modelSummaries,
-            UtciPredictions = utci,
+            FeelsLikePredictions = feelsLike,
         };
 
         Directory.CreateDirectory(outputDir);
@@ -633,30 +633,29 @@ ORDER BY TruthStation, LeadHours, ValidTimeUtc";
         return rows;
     }
 
-    private IReadOnlyList<SitePages.UtciForecastPoint> QueryUtciPredictions(
+    private IReadOnlyList<SitePages.FeelsLikeForecastPoint> QueryFeelsLikePredictions(
         DateTime start, DateTime end, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
-        var glob = Path.Combine(_cfg.Storage.PredictionsPath, "utci", "**", "*.parquet")
+        var glob = Path.Combine(_cfg.Storage.PredictionsPath,
+                                WeatherBlend.Commands.FeelsLikePredictCommand.PredictionsSubdir,
+                                "**", "*.parquet")
             .Replace('\\', '/').Replace("'", "''");
 
-        // ApparentTemperatureC is persisted by the predict pipeline alongside UTCI
-        // (Steadman 1994 shade form). Caveat: until the first predict run produces
-        // a parquet with the new column, NO file in the tree carries it — and
-        // union_by_name only unifies columns present in at least one file, so a
-        // SELECT referencing the column would fail at binder time. Probe the
-        // schema first and skip the SELECT entirely if it's not there yet (chip
-        // silently absent on home cards). Once predict runs once, the column
-        // appears in the unified schema and the full query takes over.
+        // Both UtciC and ApparentTemperatureC are required on every row (Steadman
+        // 1994 added alongside UTCI as part of the predictUTCI → predictFeelsLike
+        // refactor). Until the first feels-like predict run lands on the new
+        // parquet path, no files match and we return empty silently — the chip
+        // is just absent on home cards.
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
 
         if (!ParquetSchemaHasColumn(conn, glob, "ApparentTemperatureC"))
         {
             _log.LogWarning(
-                "UTCI parquets don't carry ApparentTemperatureC yet — feels-like chip will be absent on home cards until predict runs once.");
-            return Array.Empty<SitePages.UtciForecastPoint>();
+                "Feels-like predictions tree empty or pre-Steadman — chip will be absent on home cards until predict runs once.");
+            return Array.Empty<SitePages.FeelsLikeForecastPoint>();
         }
 
         var sql = $@"
@@ -673,14 +672,14 @@ ORDER BY LeadHours, ValidTimeUtc";
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
 
-        var rows = new List<SitePages.UtciForecastPoint>();
+        var rows = new List<SitePages.FeelsLikeForecastPoint>();
         try
         {
             using var r = cmd.ExecuteReader();
             while (r.Read())
             {
                 ct.ThrowIfCancellationRequested();
-                rows.Add(new SitePages.UtciForecastPoint(
+                rows.Add(new SitePages.FeelsLikeForecastPoint(
                     Version:        r.GetString(0),
                     PredictedAtUtc: r.GetDateTime(1),
                     ValidTimeUtc:   r.GetDateTime(2),
@@ -692,8 +691,8 @@ ORDER BY LeadHours, ValidTimeUtc";
         }
         catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
         {
-            _log.LogWarning("UTCI predictions tree empty — feels-like chip will be absent on home cards.");
-            return Array.Empty<SitePages.UtciForecastPoint>();
+            _log.LogWarning("Feels-like predictions tree empty — chip will be absent on home cards.");
+            return Array.Empty<SitePages.FeelsLikeForecastPoint>();
         }
         return rows;
     }

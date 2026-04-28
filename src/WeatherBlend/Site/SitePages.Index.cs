@@ -35,13 +35,14 @@ public static partial class SitePages
             .GroupBy(r => r.LeadHours)
             .ToDictionary(g => g.Key, g => g.ToList());
 
-        // UTCI feels-like per lead bucket. We had assumed UTCI emits on the same
-        // anchor as the temperature blender (so exact (lead, valid) would match),
-        // but predict cycles drift in practice — temp can be promoted on one anchor
-        // hours before UTCI rebuilds against the new champion. So match by lead
-        // bucket and pick the UTCI row whose ValidTime is closest to the temp
-        // card's, within ±12h — same fudge factor the P(wet) chip uses below.
-        var utciByLead = input.UtciPredictions
+        // Feels-like (UTCI + Steadman) per lead bucket. We had assumed the predict
+        // pipeline emits on the same anchor as the temperature blender (so exact
+        // (lead, valid) would match), but predict cycles drift in practice — temp
+        // can be promoted on one anchor hours before feels-like rebuilds against
+        // the new champion. So match by lead bucket and pick the row whose
+        // ValidTime is closest to the temp card's, within ±12h — same fudge
+        // factor the P(wet) chip uses below.
+        var feelsLikeByLead = input.FeelsLikePredictions
             .GroupBy(u => (u.LeadHours, u.ValidTimeUtc))
             .Select(g => g.OrderByDescending(u => u.PredictedAtUtc).First())
             .GroupBy(u => u.LeadHours)
@@ -53,7 +54,7 @@ public static partial class SitePages
             if (latestByLead.TryGetValue(lead, out var p))
             {
                 string feelsCell = "";
-                if (utciByLead.TryGetValue(lead, out var uRows))
+                if (feelsLikeByLead.TryGetValue(lead, out var uRows))
                 {
                     var u = uRows
                         .Select(r => (Row: r, Delta: Math.Abs((r.ValidTimeUtc - p.ValidTimeUtc).TotalHours)))

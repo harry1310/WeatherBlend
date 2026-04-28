@@ -104,14 +104,15 @@ public static partial class SitePages
             = Array.Empty<ModelSummary>();
 
         /// <summary>
-        /// Joined "feels-like" UTCI predictions per (lead, valid_time). Each row pairs the
-        /// lean temperature blender output with the four element blenders (humidity / wind /
-        /// shortwave radiation / cloud cover) at the same anchor and runs Bröde 2012. Empty
-        /// list when the UTCI prediction tree hasn't been synced yet — the home card falls
-        /// back silently (no chip rendered).
+        /// Joined "feels-like" predictions per (lead, valid_time). Each row pairs the lean
+        /// temperature blender output with the four element blenders (humidity / wind /
+        /// shortwave radiation / cloud cover) at the same anchor and runs both Bröde 2012
+        /// (UTCI) and Steadman 1994 (apparent temperature). Empty list when the feels-like
+        /// prediction tree hasn't been synced yet — the home card falls back silently (no
+        /// chip rendered).
         /// </summary>
-        public IReadOnlyList<UtciForecastPoint> UtciPredictions { get; init; }
-            = Array.Empty<UtciForecastPoint>();
+        public IReadOnlyList<FeelsLikeForecastPoint> FeelsLikePredictions { get; init; }
+            = Array.Empty<FeelsLikeForecastPoint>();
     }
 
     /// <summary>
@@ -165,7 +166,7 @@ public static partial class SitePages
         double? PrecipAifs,
         double? PrecipJma);
 
-    public sealed record UtciForecastPoint(
+    public sealed record FeelsLikeForecastPoint(
         string Version,
         DateTime PredictedAtUtc,
         DateTime ValidTimeUtc,

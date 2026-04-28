@@ -164,6 +164,134 @@ public class SvgChartTests
             .Should().BeApproximately(todayOa, 1e-9);
     }
 
+    // -------- Non-finite-value filtering --------
+    //
+    // JSON has no representation for NaN / ±Infinity, so any non-finite value
+    // reaching JsonSerializer crashes the entire render. RenderChartJs must
+    // strip those before serialisation; Chart.js spans the resulting gap.
+
+    [Fact]
+    public void RenderChartJs_drops_NaN_y_value_from_a_point_array()
+    {
+        var spec = new LineChartSpec
+        {
+            Title = "with-nan", XLabel = "x", YLabel = "y",
+            Series = new[]
+            {
+                new LineSeries("a", "#000",
+                    new (double, double)[] { (1, 1.0), (2, double.NaN), (3, 3.0) }),
+            },
+        };
+        var html = LineChartRenderer.RenderChartJs(spec);
+        var cfg = ExtractCjsConfig(html);
+
+        var pts = cfg.GetProperty("datasets")[0].GetProperty("points");
+        pts.GetArrayLength().Should().Be(2,
+            "NaN-y point must be dropped; remaining x=1 and x=3 points kept");
+    }
+
+    [Fact]
+    public void RenderChartJs_drops_PositiveInfinity_y_value()
+    {
+        var spec = new LineChartSpec
+        {
+            Title = "inf", XLabel = "x", YLabel = "y",
+            Series = new[]
+            {
+                new LineSeries("a", "#000",
+                    new (double, double)[] { (1, double.PositiveInfinity), (2, 5.0) }),
+            },
+        };
+        var html = LineChartRenderer.RenderChartJs(spec);
+        var cfg = ExtractCjsConfig(html);
+
+        cfg.GetProperty("datasets")[0].GetProperty("points").GetArrayLength().Should().Be(1);
+    }
+
+    [Fact]
+    public void RenderChartJs_drops_NaN_x_value_from_a_point_array()
+    {
+        // X-axis non-finite is just as serialiser-fatal as Y-axis.
+        var spec = new LineChartSpec
+        {
+            Title = "nan-x", XLabel = "x", YLabel = "y",
+            Series = new[]
+            {
+                new LineSeries("a", "#000",
+                    new (double, double)[] { (double.NaN, 1.0), (2.0, 2.0) }),
+            },
+        };
+        var html = LineChartRenderer.RenderChartJs(spec);
+        var cfg = ExtractCjsConfig(html);
+
+        cfg.GetProperty("datasets")[0].GetProperty("points").GetArrayLength().Should().Be(1);
+    }
+
+    [Fact]
+    public void RenderChartJs_skips_dataset_entirely_when_every_point_is_non_finite()
+    {
+        // If filtering wipes every point in a series, drop the dataset itself —
+        // an empty `points` array is still a valid JSON payload but Chart.js
+        // would render an empty legend entry.
+        var spec = new LineChartSpec
+        {
+            Title = "all-nan", XLabel = "x", YLabel = "y",
+            Series = new[]
+            {
+                new LineSeries("doomed", "#000",
+                    new (double, double)[] { (1, double.NaN), (2, double.NaN) }),
+                new LineSeries("good", "#fff",
+                    new (double, double)[] { (1, 1.0), (2, 2.0) }),
+            },
+        };
+        var html = LineChartRenderer.RenderChartJs(spec);
+        var cfg = ExtractCjsConfig(html);
+
+        var ds = cfg.GetProperty("datasets");
+        ds.GetArrayLength().Should().Be(1);
+        ds[0].GetProperty("label").GetString().Should().Be("good");
+    }
+
+    [Fact]
+    public void RenderChartJs_drops_non_finite_band_edges_but_keeps_finite_ones()
+    {
+        var spec = new LineChartSpec
+        {
+            Title = "bands", XLabel = "x", YLabel = "y",
+            Series = new[] { new LineSeries("a", "#000", new (double, double)[] { (1, 1) }) },
+            Bands = new[]
+            {
+                (45_000.0, 45_000.5),                          // finite — keep
+                (double.NaN, 45_001.0),                        // start NaN — drop
+                (45_002.0, double.PositiveInfinity),           // end inf — drop
+                (45_003.0, 45_003.5),                          // finite — keep
+            },
+        };
+        var html = LineChartRenderer.RenderChartJs(spec);
+        var cfg = ExtractCjsConfig(html);
+
+        cfg.GetProperty("annotations").GetProperty("bands").GetArrayLength().Should().Be(2);
+    }
+
+    [Fact]
+    public void RenderChartJs_omits_today_line_when_value_is_non_finite()
+    {
+        // A NaN today-line (computed somewhere upstream from a divide-by-zero
+        // or similar) must NOT crash the serialiser. Treat it as "no today line"
+        // and skip the annotation.
+        var spec = new LineChartSpec
+        {
+            Title = "today-nan", XLabel = "x", YLabel = "y",
+            Series = new[] { new LineSeries("a", "#000", new (double, double)[] { (1, 1) }) },
+            TodayLineX = double.NaN,
+        };
+        var html = LineChartRenderer.RenderChartJs(spec);
+        var cfg = ExtractCjsConfig(html);
+
+        // No bands, no finite todayX → annotations block omitted entirely.
+        cfg.GetProperty("annotations").ValueKind.Should().Be(System.Text.Json.JsonValueKind.Null);
+    }
+
     [Fact]
     public void RenderChartJs_packs_every_dataset_with_color_and_discrete_flag()
     {

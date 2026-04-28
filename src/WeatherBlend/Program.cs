@@ -142,7 +142,7 @@ public static class Program
                 services.AddTransient<ElementPredictCommand>();
                 services.AddTransient<ElementVerifyCommand>();
                 // ElementBakeoffCommand removed in Phase 5 of unify-model-membership refactor.
-                services.AddTransient<UtciPredictCommand>();
+                services.AddTransient<FeelsLikePredictCommand>();
                 services.AddSingleton<MetOfficeArchiveBackfillClient>();
                 services.AddTransient<MetOfficeArchiveBackfillCommand>();
                 services.AddSingleton<MetOfficeGlobalArchiveCollector>();
@@ -316,7 +316,7 @@ public static class Program
 
         var predictTargetOpt = new Option<string>(
             name: "--target",
-            description: "Target variable: temperature | precipitation | dry-window | wind | humidity | shortwave-radiation | cloud-cover | utci",
+            description: "Target variable: temperature | precipitation | dry-window | wind | humidity | shortwave-radiation | cloud-cover | feels-like (alias: utci)",
             getDefaultValue: () => "temperature");
         var predictVersionOpt = new Option<string>(
             name: "--model-version",
@@ -352,9 +352,15 @@ public static class Program
                 var cmd = host.Services.GetRequiredService<DryWindowPredictCommand>();
                 Environment.ExitCode = await cmd.RunAsync(truthStation, window, version, forDate, CancellationToken.None);
             }
-            else if (string.Equals(target, "utci", StringComparison.OrdinalIgnoreCase))
+            else if (string.Equals(target, "feels-like", StringComparison.OrdinalIgnoreCase)
+                  || string.Equals(target, "utci", StringComparison.OrdinalIgnoreCase))
             {
-                var cmd = host.Services.GetRequiredService<UtciPredictCommand>();
+                // `utci` retained as a deprecated alias so existing scripts /
+                // workflows keep working through the rename window — drop it
+                // once everything's been migrated to `feels-like`.
+                if (string.Equals(target, "utci", StringComparison.OrdinalIgnoreCase))
+                    Console.Error.WriteLine("warn: --target utci is deprecated; use --target feels-like");
+                var cmd = host.Services.GetRequiredService<FeelsLikePredictCommand>();
                 Environment.ExitCode = await cmd.RunAsync(forDate, CancellationToken.None);
             }
             else if (elementTarget is not null)

@@ -1,5 +1,5 @@
 using FluentAssertions;
-using WeatherBlend.Predict.Utci;
+using WeatherBlend.Predict.FeelsLike;
 using Xunit;
 
 namespace WeatherBlend.Tests;

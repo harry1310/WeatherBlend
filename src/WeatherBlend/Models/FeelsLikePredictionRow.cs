@@ -3,19 +3,21 @@ using System.Diagnostics.CodeAnalysis;
 namespace WeatherBlend.Models;
 
 /// <summary>
-/// One UTCI prediction with full input provenance. Derived from the
-/// temperature blender (lean 2b) plus the four element blenders
+/// One "feels like" prediction with full input provenance. Carries both the
+/// rigorous UTCI (Bröde 2012 biothermal index) and the friendlier Steadman
+/// 1994 apparent temperature alongside every input that fed them. Derived
+/// from the temperature blender (lean 2b) plus the four element blenders
 /// (humidity / wind / shortwave-radiation / cloud-cover) at a shared
 /// (valid_time, lead) row. Stored under
-/// <c>data/predictions/utci/model_version={v}/date={yyyy-MM-dd}/predictions.parquet</c>.
+/// <c>data/predictions/feels_like/model_version={v}/date={yyyy-MM-dd}/predictions.parquet</c>.
 ///
 /// Each input model version is captured per row so the chain is auditable
 /// — "which radiation champion produced the SW input that drove this Tmrt?".
 /// </summary>
-public sealed class UtciPredictionRow
+public sealed class FeelsLikePredictionRow
 {
     [SetsRequiredMembers]
-    public UtciPredictionRow()
+    public FeelsLikePredictionRow()
     {
         LocationName = "";
         ModelVersion = "";

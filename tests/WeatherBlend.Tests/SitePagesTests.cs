@@ -728,9 +728,9 @@ public class SitePagesTests
                 FeatureVectorHash = "",
             },
         };
-        var utci = new[]
+        var feelsLike = new[]
         {
-            new SitePages.UtciForecastPoint(
+            new SitePages.FeelsLikeForecastPoint(
                 Version: "v1",
                 PredictedAtUtc: generatedAt,
                 ValidTimeUtc: validTime,
@@ -744,7 +744,7 @@ public class SitePagesTests
             GeneratedAtUtc = generatedAt,
             Predictions = preds,
             CurrentVersion = "v",
-            UtciPredictions = utci,
+            FeelsLikePredictions = feelsLike,
         };
 
         var html = SitePages.RenderIndex(input);
@@ -778,7 +778,7 @@ public class SitePagesTests
             GeneratedAtUtc = generatedAt,
             Predictions = preds,
             CurrentVersion = "v",
-            // UtciPredictions left empty.
+            // FeelsLikePredictions left empty.
         };
 
         var html = SitePages.RenderIndex(input);

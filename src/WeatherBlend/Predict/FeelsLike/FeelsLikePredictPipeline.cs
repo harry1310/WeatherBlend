@@ -4,13 +4,15 @@ using WeatherBlend.Models;
 using WeatherBlend.Train;
 using WeatherBlend.Train.Element;
 
-namespace WeatherBlend.Predict.Utci;
+namespace WeatherBlend.Predict.FeelsLike;
 
 /// <summary>
 /// Joins per-anchor predictions from the temperature blender (lean 2b) and
 /// the four element blenders (humidity / wind / shortwave-radiation /
-/// cloud-cover) by (ValidTimeUtc, LeadHours), then computes UTCI per row
-/// via <see cref="FeelsLikeCalculator"/>.
+/// cloud-cover) by (ValidTimeUtc, LeadHours), then computes BOTH UTCI
+/// (Bröde 2012 biothermal index) and Steadman 1994 apparent temperature
+/// per row via <see cref="FeelsLikeCalculator"/>. One parquet, two
+/// "feels like" indices on every row.
 ///
 /// Reads each input from its own
 /// <c>data/predictions/{slug}/model_version={v}/date={anchor}/predictions.parquet</c>.
@@ -27,7 +29,7 @@ namespace WeatherBlend.Predict.Utci;
 /// Provenance row carries the suffix <c>+ecmwf_raw</c> so the source is
 /// auditable per-row.
 /// </summary>
-public static class UtciPredictPipeline
+public static class FeelsLikePredictPipeline
 {
     public const string OutputModelVersion = "v1";
 
@@ -36,7 +38,7 @@ public static class UtciPredictPipeline
     /// beats best-single ECMWF — see class docstring.</summary>
     public static bool UseEcmwfRawForCloud { get; set; } = true;
 
-    public static async Task<List<UtciPredictionRow>> ComposeForAnchorAsync(
+    public static async Task<List<FeelsLikePredictionRow>> ComposeForAnchorAsync(
         ILogger log,
         string locationName,
         string predictionsRoot,
@@ -55,12 +57,12 @@ public static class UtciPredictPipeline
         if (temp.Rows.Count == 0 || hum.Rows.Count == 0 || wnd.Rows.Count == 0 ||
             rad.Rows.Count == 0 || cld.Rows.Count == 0)
         {
-            log.LogError("UTCI: at least one input is empty for anchor={Anchor:yyyy-MM-dd} (temp={T}, hum={H}, wind={W}, rad={R}, cloud={C}). Run `predict` for those targets first.",
+            log.LogError("Feels-like: at least one input is empty for anchor={Anchor:yyyy-MM-dd} (temp={T}, hum={H}, wind={W}, rad={R}, cloud={C}). Run `predict` for those targets first.",
                 anchor, temp.Rows.Count, hum.Rows.Count, wnd.Rows.Count, rad.Rows.Count, cld.Rows.Count);
-            return new List<UtciPredictionRow>();
+            return new List<FeelsLikePredictionRow>();
         }
 
-        var rows = new List<UtciPredictionRow>();
+        var rows = new List<FeelsLikePredictionRow>();
         foreach (var (key, t) in temp.Rows)
         {
             if (!hum.Rows.TryGetValue(key, out var h)) continue;
@@ -84,7 +86,7 @@ public static class UtciPredictPipeline
             // recomputing one of them at render time.
             double apparent = FeelsLikeCalculator.Steadman1994(ta, pHpa, ws);
 
-            rows.Add(new UtciPredictionRow
+            rows.Add(new FeelsLikePredictionRow
             {
                 LocationName = locationName,
                 ModelVersion = OutputModelVersion,
