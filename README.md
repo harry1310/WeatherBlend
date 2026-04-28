@@ -176,22 +176,29 @@ dotnet run --project src/WeatherBlend -- verify  --target wind
   `data/reports/lean_blenders_phase_2026-04-25.md` for the full headline table
   and per-element analysis.
 
-### UTCI (derived outdoor-comfort target)
+### Feels-like (derived outdoor-comfort target)
 
-Universal Thermal Climate Index (Bröde et al. 2012) derived from the five
-upstream blenders — no model training of its own. Joins the latest predict
-parquet for temperature (lean 2b) + humidity + wind + shortwave-radiation +
-cloud-cover at the same anchor date, computes mean radiant temperature via a
-hemisphere-weighted radiation balance (Thorsson 2007 / Lindberg 2008
-simplified form), feeds `(Ta, Pa, va10, Tmrt)` to the official UTCI
-6th-order polynomial, and labels each row with the published thermal-stress
-band (`NoStress`, `ModerateHeat`, `StrongCold`, ...). Output:
-`data/predictions/utci/model_version=v1/date={yyyy-MM-dd}/predictions.parquet`
-with per-row inputs, derived radiation terms, UTCI, band, and the source
-model_version of each input for full provenance. Tmrt is the lever that
-turns UTCI from "Ta + wind chill + humidity" into a real outdoor-comfort
-number that responds to clear-sky midday sun (Tmrt ≫ Ta) — which is why
-shortwave-radiation and cloud-cover were blended in the first place.
+Two "feels-like" indices on every row, derived from the five upstream
+blenders — no model training of its own. Joins the latest predict parquet
+for temperature (lean 2b) + humidity + wind + shortwave-radiation +
+cloud-cover at the same anchor date, computes mean radiant temperature via
+a hemisphere-weighted radiation balance (Thorsson 2007 / Lindberg 2008
+simplified form), then runs both:
+  * **UTCI** (Bröde et al. 2012 6th-order polynomial) — fed
+    `(Ta, Pa, va10, Tmrt)`; labels each row with the published thermal-
+    stress band (`NoStress`, `ModerateHeat`, `StrongCold`, ...). Tmrt is
+    the lever that turns UTCI from "Ta + wind chill + humidity" into a
+    real outdoor-comfort number that responds to clear-sky midday sun
+    (Tmrt ≫ Ta) — which is why shortwave-radiation and cloud-cover were
+    blended in the first place.
+  * **Steadman 1994** apparent temperature — the simpler shade-form
+    `Ta + 0.33·e − 0.70·ws − 4` behind BoM's published AT and the BBC's
+    public "feels like" chip. Less aggressive on wind chill than UTCI;
+    used as the publicly recognisable companion number on the home card.
+
+Output: `data/predictions/feels_like/model_version=v1/date={yyyy-MM-dd}/predictions.parquet`
+with per-row inputs, derived radiation terms, both indices, the UTCI band,
+and the source model_version of each input for full provenance.
 
 ```powershell
 # Pre-requisite: the five inputs already predicted for the same anchor.
@@ -200,7 +207,7 @@ dotnet run --project src/WeatherBlend -- predict --target humidity
 dotnet run --project src/WeatherBlend -- predict --target wind
 dotnet run --project src/WeatherBlend -- predict --target shortwave-radiation
 dotnet run --project src/WeatherBlend -- predict --target cloud-cover
-dotnet run --project src/WeatherBlend -- predict --target utci
+dotnet run --project src/WeatherBlend -- predict --target feels-like
 ```
 
 ## Scheduling on Windows

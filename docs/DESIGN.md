@@ -331,14 +331,24 @@ MAE), even with the C variant. Cloud is structurally hard with the lean
 depression, radiation cross-checks) rather than model selection. Tracked as
 future work.
 
-## UTCI: derived outdoor-comfort target (2026-04-26)
+## Feels-like: derived outdoor-comfort target (2026-04-26, renamed from UTCI 2026-04-29)
 
-The Universal Thermal Climate Index (Bröde et al. 2012) is the first WeatherBlend
-output that *isn't* itself a trained blender — it's a deterministic transform of
-five upstream blender outputs (`temperature` lean 2b + `humidity` + `wind` +
-`shortwave-radiation` + `cloud-cover`). UTCI exists because none of the five
-inputs alone answers the actual user question: "is it comfortable to be outside
-on Bonehill right now?"
+The "feels-like" target is the first WeatherBlend output that *isn't* itself a
+trained blender — it's a deterministic transform of five upstream blender outputs
+(`temperature` lean 2b + `humidity` + `wind` + `shortwave-radiation` +
+`cloud-cover`). It exists because none of the five inputs alone answers the
+actual user question: "is it comfortable to be outside on Bonehill right now?"
+
+The parquet now carries **two** comfort indices on every row:
+* **UTCI** (Bröde 2012) — rigorous biothermal index covered in detail below.
+* **Steadman 1994** apparent temperature (`Ta + 0.33·e − 0.70·ws − 4`) — the
+  simpler shade-form formula behind BoM's published AT and the BBC's public
+  "feels like" chip. Less aggressive on wind chill than UTCI; used on the home
+  card as the publicly recognisable companion to UTCI's biothermal number.
+
+CLI target name changed `--target utci` → `--target feels-like` on 2026-04-29;
+parquet path moved `data/predictions/utci/` → `data/predictions/feels_like/` at
+the same time. Old `utci/` parquets are no longer read and will age out.
 
 **Why we blended radiation and cloud was UTCI all along.** Mean radiant
 temperature (Tmrt) is what turns UTCI from "Ta + wind chill + humidity" into a

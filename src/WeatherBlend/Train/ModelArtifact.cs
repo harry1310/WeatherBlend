@@ -377,23 +377,74 @@ public static class ModelArtifact
         return Array.Empty<string>();
     }
 
+    /// <summary>
+    /// Read-mutate-write the manifest under a cross-process lock. The lock
+    /// serialises concurrent mutations so updates can't trample each other
+    /// (chained <c>train --feature-set lean &amp;&amp; train --feature-set rich</c>
+    /// invocations + parallel station trainers were the previous loss vector).
+    /// The final write uses <c>File.Move(overwrite: true)</c>, which is a single
+    /// atomic rename — readers (predict/verify/render-site) never see a missing
+    /// or half-written manifest.
+    /// </summary>
     private static void MutateManifest(string modelsRoot, string target, Action<Manifest> mutate)
     {
         var dir = Path.Combine(modelsRoot, target);
         Directory.CreateDirectory(dir);
         var manifestPath = Path.Combine(dir, ManifestFileName);
+        var lockPath = manifestPath + ".lock";
 
-        var manifest = File.Exists(manifestPath)
-            ? ReadJson<Manifest>(manifestPath) ?? new Manifest()
-            : new Manifest();
+        using (AcquireManifestLock(lockPath))
+        {
+            var manifest = File.Exists(manifestPath)
+                ? ReadJson<Manifest>(manifestPath) ?? new Manifest()
+                : new Manifest();
 
-        manifest.Target = target;
-        mutate(manifest);
+            manifest.Target = target;
+            mutate(manifest);
 
-        var tmp = manifestPath + ".tmp";
-        WriteJson(tmp, manifest);
-        if (File.Exists(manifestPath)) File.Delete(manifestPath);
-        File.Move(tmp, manifestPath);
+            var tmp = manifestPath + ".tmp";
+            WriteJson(tmp, manifest);
+            // File.Move(overwrite: true) is a single atomic rename on both Windows
+            // (MoveFileEx with MOVEFILE_REPLACE_EXISTING) and POSIX (rename(2)).
+            // Replaces the prior Delete-then-Move pattern that left a microsecond
+            // window where the manifest didn't exist on disk.
+            File.Move(tmp, manifestPath, overwrite: true);
+        }
+    }
+
+    // Lock-acquire backoff: polled retry up to ~5s. Manifest writes are tiny so
+    // contention should resolve in a handful of milliseconds; the upper bound is
+    // there only so a wedged lock-holder fails loudly instead of hanging forever.
+    private const int LockAcquireMaxAttempts = 50;
+    private const int LockAcquireBackoffMs = 100;
+
+    private static FileStream AcquireManifestLock(string lockPath)
+    {
+        for (int attempt = 0; attempt < LockAcquireMaxAttempts; attempt++)
+        {
+            try
+            {
+                // FileShare.None blocks any other process / thread that opens the
+                // same lock file. DeleteOnClose tidies the sentinel after release
+                // so the lock file doesn't accumulate in the model tree.
+                return new FileStream(
+                    lockPath,
+                    FileMode.OpenOrCreate,
+                    FileAccess.ReadWrite,
+                    FileShare.None,
+                    bufferSize: 1,
+                    FileOptions.DeleteOnClose);
+            }
+            catch (IOException)
+            {
+                // Another process holds the lock — back off and retry.
+                Thread.Sleep(LockAcquireBackoffMs);
+            }
+        }
+        throw new IOException(
+            $"Could not acquire manifest lock at '{lockPath}' after " +
+            $"{LockAcquireMaxAttempts * LockAcquireBackoffMs}ms — " +
+            "another writer is wedged or holding it for an unusually long time.");
     }
 
     /// <summary>Resolve "current" / explicit version string → absolute directory path.</summary>

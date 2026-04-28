@@ -307,4 +307,120 @@ public class ModelArtifactTests : IDisposable
 
         dir.Should().Be("data/models/temperature/v2026-04-21_201231_retrain");
     }
+
+    // ---- Concurrency: atomic rename + file lock --------------------------------
+
+    /// <summary>
+    /// Reader running concurrently with a writer should never observe a missing
+    /// or half-written manifest. Regression for the prior Delete-then-Move
+    /// pattern that left a microsecond window where the file didn't exist.
+    /// </summary>
+    [Fact]
+    public void Manifest_is_always_present_during_concurrent_writes()
+    {
+        // Seed so the reader has something to read before the writer starts.
+        ModelArtifact.UpdateManifest(_root, "temperature", "v0");
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        var observedMissing = 0;
+        var observedReads = 0;
+
+        // Reader thread — hammers ResolveActive while the writer churns.
+        var reader = Task.Run(() =>
+        {
+            while (!cts.IsCancellationRequested)
+            {
+                try
+                {
+                    var active = ModelArtifact.ResolveActive(_root, "temperature");
+                    if (active.Count == 0) Interlocked.Increment(ref observedMissing);
+                    Interlocked.Increment(ref observedReads);
+                }
+                catch (IOException) { Interlocked.Increment(ref observedMissing); }
+            }
+        });
+
+        // Writer thread — bumps Current 200× in tight succession.
+        var writer = Task.Run(() =>
+        {
+            for (int i = 1; i <= 200 && !cts.IsCancellationRequested; i++)
+            {
+                ModelArtifact.UpdateManifest(_root, "temperature", $"v{i}");
+            }
+        });
+
+        writer.Wait();
+        cts.Cancel();
+        reader.Wait();
+
+        observedReads.Should().BeGreaterThan(50,
+            "reader should have completed many reads while the writer was active");
+        observedMissing.Should().Be(0,
+            "manifest should never appear missing or half-written under concurrent updates");
+    }
+
+    /// <summary>
+    /// N concurrent threads each appending a unique version should produce a
+    /// final manifest that contains all N versions — no lost updates. Regression
+    /// for the read-mutate-write trample race fixed by the file lock.
+    /// </summary>
+    [Fact]
+    public void Concurrent_AppendVersion_does_not_lose_updates()
+    {
+        const int N = 30;
+
+        var threads = Enumerable.Range(0, N).Select(i => new Thread(() =>
+        {
+            ModelArtifact.AppendVersion(_root, "temperature", $"v-thread-{i:D2}");
+        })).ToList();
+
+        foreach (var t in threads) t.Start();
+        foreach (var t in threads) t.Join();
+
+        var path = Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName);
+        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(File.ReadAllText(path))!;
+
+        manifest.Versions.Should().HaveCount(N);
+        for (int i = 0; i < N; i++)
+            manifest.Versions.Should().Contain($"v-thread-{i:D2}");
+    }
+
+    /// <summary>
+    /// Concurrent SetActive + AppendVersion must compose: every appended version
+    /// survives, and the final SetActive winner is one of the values written.
+    /// Mirrors the chained train-then-calibrate flow that previously trampled.
+    /// </summary>
+    [Fact]
+    public void Concurrent_SetActive_and_AppendVersion_compose_without_loss()
+    {
+        const int N = 20;
+        ModelArtifact.UpdateManifest(_root, "temperature", "v-base");
+
+        var threads = new List<Thread>();
+        for (int i = 0; i < N; i++)
+        {
+            var idx = i;
+            threads.Add(new Thread(() =>
+            {
+                ModelArtifact.AppendVersion(_root, "temperature", $"v-{idx:D2}");
+                ModelArtifact.SetActive(_root, "temperature", new[] { "v-base", $"v-{idx:D2}" });
+            }));
+        }
+
+        foreach (var t in threads) t.Start();
+        foreach (var t in threads) t.Join();
+
+        var path = Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName);
+        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(File.ReadAllText(path))!;
+
+        // All N appended versions plus v-base must be present.
+        manifest.Versions.Should().Contain("v-base");
+        for (int i = 0; i < N; i++)
+            manifest.Versions.Should().Contain($"v-{i:D2}");
+
+        // Active is whichever thread wrote last; must contain v-base + exactly one v-{i}.
+        manifest.Active.Should().HaveCount(2);
+        manifest.Active.Should().Contain("v-base");
+        manifest.Active.Should().ContainSingle(v => v.StartsWith("v-", StringComparison.Ordinal) && v != "v-base");
+    }
 }
