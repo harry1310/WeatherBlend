@@ -73,6 +73,15 @@ public static class ParquetWriter
         // Partition by valid date so each file holds at most 24 hourly rows.
         foreach (var group in rows.GroupBy(r => r.ValidTimeUtc.Date))
         {
+            // Skip dates Open-Meteo hasn't published yet — its archive endpoint
+            // returns a `time` array of timestamps even for unpublished days,
+            // with every variable null. Persisting those as 24-row "scaffold"
+            // parquets clutters R2 and forces a write-then-overwrite cycle once
+            // real data arrives. Temperature2m is the canary: if it's null for
+            // every hour, the day isn't out yet. Mirrors the WHERE-clause
+            // filter every downstream query already applies.
+            if (group.All(r => r.Temperature2m is null)) continue;
+
             var first = group.First();
             var dateStr = group.Key.ToString("yyyy-MM-dd");
             var dir = Path.Combine(basePath, $"location={first.LocationName}", $"date={dateStr}");
