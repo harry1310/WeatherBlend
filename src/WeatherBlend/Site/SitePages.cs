@@ -212,7 +212,15 @@ public static partial class SitePages
 
         table td.num, table th.num { text-align: right; font-variant-numeric: tabular-nums; }
         table td.num.strong { font-weight: 700; color: var(--brand); }
+        table td.num.delta-good { color: #2e7d32; }
+        table td.num.delta-bad  { color: #c62828; }
         table small { color: var(--pico-muted-color); }
+        article.blender-card { padding: 1rem 1.25rem; margin: 0.75rem 0 1.25rem; }
+        article.blender-card > header { margin-bottom: 0.5rem; }
+        article.blender-card h4 { margin: 0; font-size: 1.05rem; }
+        article.blender-card h4 code { font-size: 0.85em; }
+        article.blender-card table { margin: 0; }
+        article.blender-card table th, article.blender-card table td { padding: 0.35rem 0.6rem; }
 
         svg.chart { width: 100%; height: auto; max-width: 100%; background: var(--pico-card-background-color); border-radius: 4px; margin: 0.5rem 0 1.5rem; }
         .chart-cjs { position: relative; margin: 0.5rem 0 1.5rem; background: var(--pico-card-background-color); border-radius: 4px; padding: 0.5rem 0.5rem 0.25rem; }

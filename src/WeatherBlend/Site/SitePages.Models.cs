@@ -5,16 +5,16 @@ namespace WeatherBlend.Site;
 public static partial class SitePages
 {
     /// <summary>
-    /// Held-out test performance for every active blender. One table per composite
-    /// (temperature, precipitation per station, dry-window per station × window) with
-    /// one row per version × lead. This is the numeric counterpart to the Skill page —
-    /// Skill shows the eyeball trajectory; Models shows the blind-test metric that
-    /// was actually computed during training.
+    /// Held-out test performance for every active blender. One small card per blender
+    /// (target × version) with a short prose description of what the blender is, plus
+    /// a tight per-lead table comparing its blind-test score against the best single
+    /// NWP at the same lead. The numeric counterpart to the Skill page — Skill shows
+    /// the eyeball trajectory; Models shows what training measured.
     ///
-    /// Scope is deliberately narrow: no hyperparameter / importance / calibration
-    /// tables. The raw <c>training_metadata.json</c> is on disk (and in R2) for the
-    /// curious; this page exists so a reader can answer "which blender is best at
-    /// +48h?" in one glance.
+    /// Replaces the previous one-big-table-per-composite layout, which was hard to
+    /// scan once we had three precipitation stations × three blender phases × four
+    /// leads on screen. Each card now answers "what is this blender, and is it
+    /// worth running?" in one glance.
     /// </summary>
     public static string RenderModels(SiteInputs input)
     {
@@ -25,7 +25,7 @@ public static partial class SitePages
                 <h2>Models</h2>
                 <p>Held-out test performance for each active blender, against ERA5 (temperature) or EA rainfall (precipitation, dry window).
                    Temperature scores are MAE in °C; precipitation and dry-window scores are Brier — lower is better in both cases.
-                   Test slices are time-split (walk-forward): train → validation → test, in that order, with no data leakage across the boundary.</p>
+                   The Δ column shows blend-vs-best-single as a percentage; negative means the blend wins.</p>
               </hgroup>
             """);
 
@@ -52,89 +52,107 @@ public static partial class SitePages
 
         foreach (var group in grouped)
         {
+            content.Append(Ci, $"""<h3>{Escape(PrettyComposite(group.Key))}</h3>""");
+            // Newest trained first within a composite group — readers most often want
+            // to see the most recent challenger / champion at the top.
             var ordered = group.OrderByDescending(m => m.TrainedAtUtc).ToList();
-            var first = ordered[0];
-            content.Append(Ci, $"""
-                <article>
-                  <h3>{Escape(PrettyComposite(group.Key))}</h3>
-                  <p class="skill-line">Metric: {Escape(first.MetricLabel)}.</p>
-                """);
-
-            content.Append(RenderComposite(ordered));
-            content.Append("</article>");
+            foreach (var m in ordered)
+                content.Append(RenderBlenderCard(group.Key, m));
         }
 
         content.Append("</section>");
         return WrapPage(input, "Models", "models", content.ToString());
     }
 
-    private static string RenderComposite(IReadOnlyList<ModelSummary> ordered)
+    private static string RenderBlenderCard(string composite, ModelSummary m)
     {
-        // One row per (version, lead). Sorting: newest trained first, then +24 → +48 → +72.
-        // Each version contributes up to three rows; the first row in a version is the
-        // only one that prints phase / trained-at so the table reads per-version.
+        var description = PhaseDescription(composite, m.Phase);
+        var phaseLabel = string.IsNullOrEmpty(m.Phase) ? "—" : m.Phase;
+
         var tbody = new StringBuilder();
-        foreach (var m in ordered)
+        foreach (var lead in PocLeads)
         {
-            bool firstLeadRow = true;
-            foreach (var lead in PocLeads)
+            if (!m.PerLead.TryGetValue(lead, out var s)) continue;
+
+            // Δ% vs best single. Both metrics are "lower is better" (MAE for temp,
+            // Brier for precip / dry-window), so a negative Δ means the blend won.
+            // Guard against best-single being 0 or NaN — emit "—" rather than ÷0.
+            string deltaCell;
+            if (s.BestSingleValMae > 0 && !double.IsNaN(s.BestSingleValMae) && !double.IsNaN(s.BlendTestScore))
             {
-                if (!m.PerLead.TryGetValue(lead, out var s)) continue;
-
-                var versionCell = firstLeadRow
-                    ? $"""<td rowspan="{CountLeads(m)}"><code>{Escape(m.Version)}</code></td>"""
-                    : "";
-                var phaseCell = firstLeadRow
-                    ? $"""<td rowspan="{CountLeads(m)}">{Escape(string.IsNullOrEmpty(m.Phase) ? "—" : m.Phase)}</td>"""
-                    : "";
-                var trainedCell = firstLeadRow
-                    ? $"""<td rowspan="{CountLeads(m)}"><time>{m.TrainedAtUtc:yyyy-MM-dd}</time></td>"""
-                    : "";
-
-                tbody.Append(Ci, $"""
-                    <tr>
-                      {versionCell}
-                      {phaseCell}
-                      {trainedCell}
-                      <td>+{lead}h</td>
-                      <td class="num"><strong>{s.BlendTestScore.ToString("0.000", Ci)}</strong></td>
-                      <td class="num">{s.BlendTestRmse.ToString("0.000", Ci)}</td>
-                      <td class="num">{s.BlendTestBias.ToString("+0.00;-0.00;0.00", Ci)}</td>
-                      <td class="num">{Escape(string.IsNullOrEmpty(s.BestSingle) ? "—" : s.BestSingle)}</td>
-                      <td class="num">{s.BestSingleValMae.ToString("0.000", Ci)}</td>
-                      <td class="num">{s.TestRows}</td>
-                    </tr>
-                    """);
-                firstLeadRow = false;
+                var pct = (s.BlendTestScore - s.BestSingleValMae) / s.BestSingleValMae * 100.0;
+                var cls = pct < 0 ? "delta-good" : "delta-bad";
+                deltaCell = $"""<td class="num {cls}">{pct.ToString("+0.0;-0.0;0.0", Ci)}%</td>""";
             }
+            else
+            {
+                deltaCell = """<td class="num">—</td>""";
+            }
+
+            tbody.Append(Ci, $"""
+                <tr>
+                  <td>+{lead}h</td>
+                  <td class="num"><strong>{s.BlendTestScore.ToString("0.000", Ci)}</strong></td>
+                  <td class="num">{Escape(string.IsNullOrEmpty(s.BestSingle) ? "—" : s.BestSingle)} <small>({s.BestSingleValMae.ToString("0.000", Ci)})</small></td>
+                  {deltaCell}
+                </tr>
+                """);
         }
 
         return $"""
-            <figure>
+            <article class="blender-card">
+              <header>
+                <hgroup>
+                  <h4>Phase {Escape(phaseLabel)} <small>· <code>{Escape(m.Version)}</code></small></h4>
+                  <p class="skill-line">{Escape(description)} Trained {m.TrainedAtUtc:yyyy-MM-dd}. Metric: {Escape(m.MetricLabel)}.</p>
+                </hgroup>
+              </header>
               <table>
                 <thead>
                   <tr>
-                    <th>Version</th>
-                    <th>Phase</th>
-                    <th>Trained</th>
                     <th>Lead</th>
-                    <th class="num">Blend score</th>
-                    <th class="num">RMSE</th>
-                    <th class="num">Bias</th>
+                    <th class="num">Blend</th>
                     <th class="num">Best single</th>
-                    <th class="num">Best-single val</th>
-                    <th class="num">Test rows</th>
+                    <th class="num">Δ vs best</th>
                   </tr>
                 </thead>
                 <tbody>
             {tbody}    </tbody>
               </table>
-            </figure>
+            </article>
             """;
     }
 
-    private static int CountLeads(ModelSummary m)
-        => PocLeads.Count(lead => m.PerLead.ContainsKey(lead));
+    /// <summary>
+    /// One-sentence prose summary of what each phase actually does — composed for
+    /// the Models page so the reader doesn't need to know the codebase to read the
+    /// table. Keeps the per-blender card honest without trying to recompute feature
+    /// counts at render time. Falls back to "Phase {x} blender." for unknown phases.
+    /// </summary>
+    private static string PhaseDescription(string composite, string phase)
+    {
+        var target = composite.Split('/')[0];
+        return (target, phase) switch
+        {
+            ("temperature", "2b") or ("temperature", "2b_redo")
+                => "Lean blender — six per-NWP temperatures, their mean/std/range, and cyclical hour/day-of-year encodings (~13 features).",
+            ("temperature", "2c")
+                => "Rich blender — adds per-NWP dew point, RH, cloud {total/low/mid/high}, wind speed/direction/gusts, surface pressure, plus cross-model aggregates (~88 features).",
+            ("precipitation", "3a")
+                => "Lean P(wet ≥ 0.1 mm/h) classifier — six per-NWP precipitation rates and ensemble agreement.",
+            ("precipitation", "3a_isotonic")
+                => "Phase 3a output passed through PAV isotonic calibration — same features, post-hoc score-to-probability remap.",
+            ("precipitation", "3c")
+                => "Rich P(wet) classifier — adds per-NWP cloud, humidity, CAPE, dew-point depression with feature-importance pruning (~55 features).",
+            ("dry_window", "3b")
+                => "Per-(station, window) classifier for whether at least one N-hour dry block occurs in the target UTC day.",
+            ("dry_window", "3d-shape")
+                => "Phase 3b features plus seven within-day shape descriptors (precip distribution moments).",
+            ("dry_window", "3d-calibrated")
+                => "Phase 3b output wrapped with per-lead PAV isotonic calibration.",
+            _ => $"Phase {phase} blender.",
+        };
+    }
 
     /// <summary>
     /// Pretty-print a composite key. Examples:
