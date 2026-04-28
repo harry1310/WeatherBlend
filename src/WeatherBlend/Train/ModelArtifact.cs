@@ -404,11 +404,7 @@ public static class ModelArtifact
 
             var tmp = manifestPath + ".tmp";
             WriteJson(tmp, manifest);
-            // File.Move(overwrite: true) is a single atomic rename on both Windows
-            // (MoveFileEx with MOVEFILE_REPLACE_EXISTING) and POSIX (rename(2)).
-            // Replaces the prior Delete-then-Move pattern that left a microsecond
-            // window where the manifest didn't exist on disk.
-            File.Move(tmp, manifestPath, overwrite: true);
+            AtomicReplace(tmp, manifestPath);
         }
     }
 
@@ -417,6 +413,52 @@ public static class ModelArtifact
     // there only so a wedged lock-holder fails loudly instead of hanging forever.
     private const int LockAcquireMaxAttempts = 50;
     private const int LockAcquireBackoffMs = 100;
+
+    /// <summary>
+    /// Replace <paramref name="dst"/> with <paramref name="src"/> atomically.
+    /// On Windows we prefer <see cref="File.Replace(string,string,string)"/>
+    /// (ReplaceFile Win32 API) because it tolerates concurrent readers holding
+    /// snapshot handles — <see cref="File.Move(string,string,bool)"/> with
+    /// REPLACE_EXISTING is rejected when any handle is open on the destination,
+    /// even readers opened with <c>FileShare.Delete</c>. On POSIX, both APIs
+    /// reduce to the same <c>rename(2)</c>; we fall back to Move if Replace
+    /// throws (e.g. cross-device or unsupported filesystem). Tiny per-call retry
+    /// loop covers the rare narrow window where Windows hasn't released the
+    /// previous reader handle yet.
+    /// </summary>
+    private static void AtomicReplace(string src, string dst)
+    {
+        if (!File.Exists(dst))
+        {
+            // Initial write — Replace requires an existing destination.
+            File.Move(src, dst);
+            return;
+        }
+        const int MaxAttempts = 20;
+        for (int attempt = 0; attempt < MaxAttempts; attempt++)
+        {
+            try
+            {
+                File.Replace(src, dst, destinationBackupFileName: null);
+                return;
+            }
+            catch (PlatformNotSupportedException)
+            {
+                // POSIX fallback — Move(overwrite) is atomic via rename(2).
+                File.Move(src, dst, overwrite: true);
+                return;
+            }
+            catch (IOException) when (attempt < MaxAttempts - 1)
+            {
+                // Transient Windows handle contention — back off briefly.
+                Thread.Sleep(5);
+            }
+            catch (UnauthorizedAccessException) when (attempt < MaxAttempts - 1)
+            {
+                Thread.Sleep(5);
+            }
+        }
+    }
 
     private static FileStream AcquireManifestLock(string lockPath)
     {
@@ -580,6 +622,40 @@ public static class ModelArtifact
     private static void WriteJson<T>(string path, T value)
         => File.WriteAllText(path, JsonSerializer.Serialize(value, JsonOpts));
 
+    /// <summary>
+    /// Read JSON with permissive file sharing so a concurrent writer can replace
+    /// the file underneath us. Windows' <see cref="File.Replace(string,string,string)"/>
+    /// has a microsecond window where the destination appears not-to-exist or
+    /// throws sharing-violation to a reader that opens at the wrong instant —
+    /// the swap itself is atomic at the filesystem level, but the path lookup
+    /// flickers. We retry transient missing/sharing/not-found errors a handful
+    /// of times so callers get a stable old-or-new snapshot. A path that's
+    /// genuinely absent for the full retry window (no concurrent writer)
+    /// returns <c>default</c> as before.
+    /// </summary>
     private static T? ReadJson<T>(string path)
-        => File.Exists(path) ? JsonSerializer.Deserialize<T>(File.ReadAllText(path)) : default;
+    {
+        const int MaxAttempts = 50;
+        for (int attempt = 0; attempt < MaxAttempts; attempt++)
+        {
+            try
+            {
+                using var fs = new FileStream(
+                    path, FileMode.Open, FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete);
+                return JsonSerializer.Deserialize<T>(fs);
+            }
+            catch (DirectoryNotFoundException)
+            {
+                // Containing dir never existed — nothing to retry.
+                return default;
+            }
+            catch (FileNotFoundException) { /* retry below */ }
+            catch (IOException)             { /* retry below */ }
+            catch (UnauthorizedAccessException) { /* retry below */ }
+            Thread.Sleep(2);
+        }
+        // After ~100ms of retries the file still isn't readable — treat as absent.
+        return default;
+    }
 }
