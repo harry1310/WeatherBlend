@@ -132,7 +132,7 @@ public class ConfigTests
         leanPrecip.OptionalModels.Should().HaveCount(6);
         leanPrecip.OptionalForLead(120).Should().HaveCount(5);
 
-        // Wind: 4 strict + UKMO optional + AIFS optional, MF excluded entirely.
+        // Wind: 4 strict + UKMO/AIFS optional, MF excluded entirely.
         var wind = bound.Blenders.Get("wind", "default");
         wind.RequiredModels.Should().HaveCount(4);
         wind.OptionalModels.Should().Equal("ukmo_seamless", "ecmwf_aifs025_single");

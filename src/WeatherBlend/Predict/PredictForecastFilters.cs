@@ -1,3 +1,5 @@
+using WeatherBlend.Train;
+
 namespace WeatherBlend.Predict;
 
 /// <summary>
@@ -22,7 +24,17 @@ public static class PredictForecastFilters
         DateTime latestValid)
     {
         var loc = locationName.Replace("'", "''");
+        // Defensive Model IN (...) filter against the canonical model list — without
+        // it, DuckDB happily reads any model partition under data/forecasts/ even when
+        // it has weird schema/dictionary encoding. Interpolated *_hourly variants had
+        // all-NULL RunTimeUtc dictionary blocks that crashed the union-by-name read in
+        // CI 2026-04-28 even after the partitions were thought to be deleted.
+        // Restricting to the canonical model list means stray experimental partitions
+        // can sit on disk without breaking predict.
+        var modelList = string.Join(", ",
+            FeatureBuilder.CanonicalModelOrder.Select(m => $"'{m.Replace("'", "''")}'"));
         return $@"LocationName = '{loc}'
+      AND Model IN ({modelList})
       AND (RunTimeSource IS NULL OR RunTimeSource <> 'offset_day')
       AND RunTimeUtc <= TIMESTAMP '{asOfRunTime:yyyy-MM-dd HH:mm:ss}'
       AND ValidTimeUtc BETWEEN TIMESTAMP '{earliestValid:yyyy-MM-dd HH:mm:ss}'

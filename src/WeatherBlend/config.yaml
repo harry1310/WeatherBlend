@@ -53,6 +53,15 @@ models:
     displayName: "Environment Canada GEM"
   - id: "ecmwf_aifs025_single"
     displayName: "ECMWF AIFS 0.25° (AI/GNN)"
+  # Backfilled 2026-04-28 for a future bake-off — different physics consortium
+  # (HIRLAM AROME) and different national service (JMA) from the existing 7.
+  # Not yet wired into any blender spec; data on disk only until bake-off decides.
+  - id: "knmi_harmonie_arome_europe"
+    displayName: "KNMI HARMONIE-AROME (HIRLAM, 2km Europe)"
+  - id: "jma_seamless"
+    displayName: "JMA Global Spectral Model (Japan)"
+  - id: "dmi_harmonie_arome_europe"
+    displayName: "DMI HARMONIE-AROME (HIRLAM, 2km Europe — sister of KNMI)"
 # Raw Met Office partitions (met_office_ukv, met_office_global, and their
 # *_hourly siblings) are deliberately NOT listed here. They get pulled into
 # the forecast tree by the dedicated collectors + interpolation script

@@ -29,10 +29,14 @@ public static class FeatureBuilder
 
     /// <summary>Canonical model ordering (matches the project's config.yaml models list).
     /// AIFS sits at the end so adding it doesn't shift existing per-model feature indexes.
-    /// Raw Met Office UKV/Global partitions exist on disk + R2 (collected daily) but
-    /// are deliberately NOT in this list — the 4-way bake-off 2026-04-28 found they
-    /// add zero signal vs the 7-model setup, so they're not blender input candidates.
-    /// See memory/project_met_office_raw_negative_result.md.</summary>
+    /// JMA / KNMI HARMONIE / DMI HARMONIE / raw Met Office UKV+Global partitions are in
+    /// the models registry (collected daily) but deliberately NOT in this list — the
+    /// bake-offs 2026-04-28 found their net effect on the blender ranges from zero
+    /// (raw MO, HARMONIE) to mixed (JMA: precip-only win pending Phase 3 rollout).
+    /// Adding to this list is only valid once a model is wired into a blender spec
+    /// AND has a per-model output field on the relevant PredictionRow type.
+    /// See memory/project_met_office_raw_negative_result.md +
+    /// project_jma_harmonie_bakeoff_2026-04-28.md.</summary>
     public static readonly IReadOnlyList<string> CanonicalModelOrder = new[]
     {
         "gfs_seamless",
