@@ -28,7 +28,11 @@ public static class FeatureBuilder
     public const string FeatureSet = "lean";
 
     /// <summary>Canonical model ordering (matches the project's config.yaml models list).
-    /// AIFS sits at the end so adding it doesn't shift existing per-model feature indexes.</summary>
+    /// AIFS sits at the end so adding it doesn't shift existing per-model feature indexes.
+    /// Raw Met Office UKV/Global partitions exist on disk + R2 (collected daily) but
+    /// are deliberately NOT in this list — the 4-way bake-off 2026-04-28 found they
+    /// add zero signal vs the 7-model setup, so they're not blender input candidates.
+    /// See memory/project_met_office_raw_negative_result.md.</summary>
     public static readonly IReadOnlyList<string> CanonicalModelOrder = new[]
     {
         "gfs_seamless",
