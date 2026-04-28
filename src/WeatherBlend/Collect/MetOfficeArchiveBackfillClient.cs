@@ -5,20 +5,25 @@ using Microsoft.Extensions.Logging;
 namespace WeatherBlend.Collect;
 
 /// <summary>
-/// Thin subprocess wrapper around the Python backfill script
-/// <c>scripts/met_office_archive_backfill.py</c>. Mirrors the
-/// <see cref="Wgrib2"/> pattern — we shell out because the file format
-/// (NetCDF4/HDF5 with 47 surface variables on a global 0.1° grid) has no
-/// mature .NET reader. xarray + h5netcdf in a Python venv is the path of
-/// least resistance and matches what every other tool in the meteo space
-/// does for this dataset.
+/// Thin subprocess wrapper around the Met Office Python backfill scripts
+/// (<c>scripts/met_office_archive_backfill.py</c> for the global 10km dataset
+/// and <c>scripts/met_office_ukv_archive_backfill.py</c> for the UKV 2km
+/// regional dataset). Mirrors the <see cref="Wgrib2"/> pattern — we shell out
+/// because the file format (NetCDF4/HDF5 on either a global 0.1° grid or a
+/// 2km Lambert Azimuthal projection) has no mature .NET reader. xarray +
+/// h5netcdf in a Python venv is the path of least resistance and matches
+/// what every other tool in the meteo space does for this dataset.
 ///
 /// The Python script does the actual work: anonymous S3 GET against
 /// <c>met-office-atmospheric-model-data</c>, single-cell extraction at
-/// Bonehill, write to WeatherBlend's hive forecast tree as
-/// <c>model=met_office_global</c>. The wrapper streams stdout/stderr to
-/// the logger so progress is visible during the long backfill (~15s/cycle
-/// × 250+ cycles = 60+ minutes typical).
+/// Bonehill, write to WeatherBlend's hive forecast tree under the script's
+/// own model id. The wrapper streams stdout/stderr to the logger so progress
+/// is visible during the long backfill (~15s/cycle × 250+ cycles = 60+
+/// minutes typical for global; UKV is similar).
+///
+/// Both scripts accept the same CLI surface (--start/--end/--cycles/--leads/
+/// --parallelism/--min-cycle-age-hours) so this single wrapper serves both —
+/// the caller picks the script name per dataset.
 ///
 /// Configuration (env vars):
 ///   WEATHERBLEND_PYTHON  — interpreter to use. Defaults to a sensible path
@@ -36,12 +41,13 @@ public sealed class MetOfficeArchiveBackfillClient
     }
 
     public async Task<int> RunAsync(
+        string scriptName,
         DateOnly start, DateOnly end,
         IReadOnlyList<int> cycles, IReadOnlyList<int> leads,
         int parallelism, int minCycleAgeHours, CancellationToken ct)
     {
         var python = ResolvePython();
-        var scriptPath = ResolveScriptPath();
+        var scriptPath = ResolveScriptPath(scriptName);
 
         if (!File.Exists(scriptPath))
             throw new FileNotFoundException(
@@ -137,11 +143,11 @@ public sealed class MetOfficeArchiveBackfillClient
         return null;
     }
 
-    private static string ResolveScriptPath()
+    private static string ResolveScriptPath(string scriptName)
     {
         var explicitRoot = Environment.GetEnvironmentVariable("WEATHERBLEND_REPO");
         if (!string.IsNullOrEmpty(explicitRoot))
-            return Path.Combine(explicitRoot, "scripts", "met_office_archive_backfill.py");
+            return Path.Combine(explicitRoot, "scripts", scriptName);
 
         // Walk up from AppContext.BaseDirectory (typically
         // <repo>/src/WeatherBlend/bin/Debug/net10.0) until we find a "scripts"
@@ -149,10 +155,10 @@ public sealed class MetOfficeArchiveBackfillClient
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null)
         {
-            var candidate = Path.Combine(dir.FullName, "scripts", "met_office_archive_backfill.py");
+            var candidate = Path.Combine(dir.FullName, "scripts", scriptName);
             if (File.Exists(candidate)) return candidate;
             dir = dir.Parent;
         }
-        return Path.Combine("scripts", "met_office_archive_backfill.py");
+        return Path.Combine("scripts", scriptName);
     }
 }

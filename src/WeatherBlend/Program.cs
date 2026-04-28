@@ -149,6 +149,7 @@ public static class Program
                 services.AddSingleton<MetOfficeArchiveBackfillClient>();
                 services.AddTransient<MetOfficeArchiveBackfillCommand>();
                 services.AddSingleton<MetOfficeGlobalArchiveCollector>();
+                services.AddSingleton<MetOfficeUkvArchiveCollector>();
                 services.AddTransient<IElementBlender, WindBlender>();
                 services.AddTransient<IElementBlender, HumidityBlender>();
                 services.AddTransient<IElementBlender, RadiationBlender>();

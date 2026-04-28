@@ -35,7 +35,11 @@ public sealed class MetOfficeArchiveBackfillCommand
             "Met Office archive backfill {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} cycles=[{Cycles}] leads=[{Leads}] parallelism={N}",
             start, end, string.Join(',', cycles), string.Join(',', leads), parallelism);
         // Historical backfill — every cycle in range is far older than any sensible
-        // publication delay, so the min-age floor is 0 (no skip).
-        return await _client.RunAsync(start, end, cycles, leads, parallelism, minCycleAgeHours: 0, ct);
+        // publication delay, so the min-age floor is 0 (no skip). The CLI command
+        // only operates on the global 10km dataset; the UKV 2km dataset has its
+        // own backfill script and (for now) only the daily collector path.
+        return await _client.RunAsync(
+            "met_office_archive_backfill.py",
+            start, end, cycles, leads, parallelism, minCycleAgeHours: 0, ct);
     }
 }

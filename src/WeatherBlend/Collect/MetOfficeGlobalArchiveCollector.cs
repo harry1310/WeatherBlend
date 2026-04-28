@@ -19,7 +19,9 @@ namespace WeatherBlend.Collect;
 ///     that landed late.
 ///   * Cycles = 0,12 only. 06Z and 18Z run a 20h horizon and are useless
 ///     for our 24/48/72h leads.
-///   * Leads = 24,48,72 — same as the rest of WeatherBlend.
+///   * Leads = 24,48,72,120 — covers every blender lead bucket. Lead 120 was
+///     added 2026-04-28 alongside the 4-way Met Office bake-off prep so the
+///     daily collect doesn't undo manual lead-120 backfills.
 ///
 /// The script is idempotent — re-pulling an existing date overwrites the
 /// parquet with whatever AWS now has. Net cost per collect run is small
@@ -27,8 +29,9 @@ namespace WeatherBlend.Collect;
 /// </summary>
 public sealed class MetOfficeGlobalArchiveCollector
 {
+    private const string ScriptName = "met_office_archive_backfill.py";
     private static readonly int[] DefaultCycles = { 0, 12 };
-    private static readonly int[] DefaultLeads = { 24, 48, 72 };
+    private static readonly int[] DefaultLeads = { 24, 48, 72, 120 };
     private const int DefaultLookbackDays = 3;
     private const int DefaultParallelism = 8;
     // AWS publishes a cycle's NetCDFs ~3-6h after run time; a 7h floor avoids the
@@ -54,6 +57,6 @@ public sealed class MetOfficeGlobalArchiveCollector
             "Met Office Global Det archive — refreshing {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} cycles=[{Cycles}] leads=[{Leads}] min-age={Age}h",
             start, today, string.Join(',', DefaultCycles), string.Join(',', DefaultLeads), MinCycleAgeHours);
         return await _client.RunAsync(
-            start, today, DefaultCycles, DefaultLeads, DefaultParallelism, MinCycleAgeHours, ct);
+            ScriptName, start, today, DefaultCycles, DefaultLeads, DefaultParallelism, MinCycleAgeHours, ct);
     }
 }
