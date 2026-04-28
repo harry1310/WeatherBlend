@@ -59,6 +59,30 @@ public class PrecipFeatureBuilderTests
     }
 
     [Fact]
+    public void BuildSpec_lean_precip_lead_96_mirrors_lead_120_dropping_MF()
+    {
+        // Lead 96h was added 2026-04-29. Same MF-cap reasoning as temperature.
+        var spec = PrecipFeatureBuilder.BuildSpec(LoadShippedConfig(), 96);
+        spec.OptionalModels.Should().Equal(
+            "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "gem_seamless", "ecmwf_aifs025_single", "jma_seamless");
+        spec.FeatureNames.Should().HaveCount(21);
+        spec.FeatureNames.Should().NotContain("precip_mf");
+    }
+
+    [Fact]
+    public void BuildSpec_rich_precip_lead_96_drops_MF_keeps_UKMO_AIFS_JMA()
+    {
+        var spec = WeatherBlend.Train.PrecipRichFeatureBuilder.BuildSpec(LoadShippedConfig(), 96);
+        spec.OptionalModels.Should().Equal(
+            "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "ukmo_seamless", "gem_seamless",
+            "ecmwf_aifs025_single", "jma_seamless");
+        spec.FeatureNames.Should().NotContain("precip_mf");
+        spec.FeatureNames.Should().Contain("precip_ukmo");
+        spec.FeatureNames.Should().Contain("precip_aifs");
+        spec.FeatureNames.Should().Contain("precip_jma");
+    }
+
+    [Fact]
     public void ComposeRow_with_spec_packs_features_and_label()
     {
         var spec = PrecipFeatureBuilder.BuildSpec(LoadShippedConfig(), 24);

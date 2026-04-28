@@ -57,6 +57,32 @@ public class FeatureBuilderTests
     }
 
     [Fact]
+    public void BuildSpec_lean_temperature_lead_96_mirrors_lead_120_dropping_MF()
+    {
+        // Lead 96h was added 2026-04-29. Open-Meteo Previous Runs caps
+        // meteofrance_seamless at ~72h, so MF must be excluded from required
+        // at any lead ≥96h or training would yield zero rows.
+        var spec = FeatureBuilder.BuildSpec(LoadShippedConfig(), 96);
+        spec.RequiredModels.Should().Equal("gfs_seamless", "ecmwf_ifs025", "icon_seamless", "gem_seamless");
+        spec.OptionalModels.Should().Equal("ecmwf_aifs025_single");
+        spec.FeatureNames.Should().HaveCount(12);
+        spec.FeatureNames.Should().NotContain("temp_mf");
+    }
+
+    [Fact]
+    public void BuildSpec_rich_temperature_lead_96_drops_MF_keeps_UKMO_and_aifs()
+    {
+        var spec = WeatherBlend.Train.RichFeatureBuilder.BuildSpec(LoadShippedConfig(), 96);
+        spec.RequiredModels.Should().Equal(
+            "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "ukmo_seamless", "gem_seamless");
+        spec.OptionalModels.Should().Equal("ecmwf_aifs025_single");
+        spec.Models.Should().HaveCount(6);
+        spec.FeatureNames.Should().NotContain("temp_mf");
+        spec.FeatureNames.Should().Contain("temp_ukmo");
+        spec.FeatureNames.Should().Contain("temp_aifs");
+    }
+
+    [Fact]
     public void ComposeRow_with_spec_packs_features_in_declared_order()
     {
         var spec = FeatureBuilder.BuildSpec(LoadShippedConfig(), 24);

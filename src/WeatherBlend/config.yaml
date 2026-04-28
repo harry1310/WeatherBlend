@@ -218,7 +218,12 @@ blenders:
       featureSet: lean
       requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, gem_seamless]
       optionalModels: [ecmwf_aifs025_single]
+      # Leads 96 + 120 drop MF — Open-Meteo Previous Runs caps meteofrance_seamless
+      # at ~72h (zero rows beyond), so requiring it would produce an empty training set.
       perLeadOverrides:
+        - lead: 96
+          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless]
+          optionalModels: [ecmwf_aifs025_single]
         - lead: 120
           requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless]
           optionalModels: [ecmwf_aifs025_single]
@@ -228,6 +233,9 @@ blenders:
       requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, ukmo_seamless, gem_seamless]
       optionalModels: [ecmwf_aifs025_single]
       perLeadOverrides:
+        - lead: 96
+          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, ukmo_seamless, gem_seamless]
+          optionalModels: [ecmwf_aifs025_single]
         - lead: 120
           requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, ukmo_seamless, gem_seamless]
           optionalModels: [ecmwf_aifs025_single]
@@ -241,6 +249,9 @@ blenders:
       requiredModels: []
       optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, gem_seamless, ecmwf_aifs025_single, jma_seamless]
       perLeadOverrides:
+        - lead: 96
+          requiredModels: []
+          optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless, ecmwf_aifs025_single, jma_seamless]
         - lead: 120
           requiredModels: []
           optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless, ecmwf_aifs025_single, jma_seamless]
@@ -250,6 +261,9 @@ blenders:
       requiredModels: []
       optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, ukmo_seamless, gem_seamless, ecmwf_aifs025_single, jma_seamless]
       perLeadOverrides:
+        - lead: 96
+          requiredModels: []
+          optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, ukmo_seamless, gem_seamless, ecmwf_aifs025_single, jma_seamless]
         - lead: 120
           requiredModels: []
           optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, ukmo_seamless, gem_seamless, ecmwf_aifs025_single, jma_seamless]

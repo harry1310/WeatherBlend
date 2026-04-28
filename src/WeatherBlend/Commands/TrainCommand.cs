@@ -30,7 +30,11 @@ public sealed class TrainCommand
 
     // Default leads for temperature + precipitation. Dry-window and Element
     // train commands keep their own narrower {24,48,72} arrays internally.
-    private static readonly int[] DefaultLeads = { 24, 48, 72, 120 };
+    // 96h added 2026-04-29 — Open-Meteo Previous Runs API exposes day-offset-4
+    // (= lead 96h) in the same parquet rows as 24/48/72/120, so no new collect
+    // shape is needed. Dry-window + Element blenders stay capped at {24,48,72}
+    // pending separate scoping (their leads list is set per-command).
+    private static readonly int[] DefaultLeads = { 24, 48, 72, 96, 120 };
 
     public TrainCommand(
         ILogger<TrainCommand> log,
@@ -63,7 +67,7 @@ public sealed class TrainCommand
         var leads = ParseLeads(lead);
         if (leads is null)
         {
-            _log.LogError("Invalid --lead value '{Lead}'. Expected 24, 48, 72, 120, or all.", lead);
+            _log.LogError("Invalid --lead value '{Lead}'. Expected 24, 48, 72, 96, 120, or all.", lead);
             return 2;
         }
 
@@ -81,17 +85,20 @@ public sealed class TrainCommand
             return 2;
         }
 
-        // Lead 120h is currently scoped to temperature + precipitation only.
+        // Leads 96h + 120h are currently scoped to temperature + precipitation only.
         // Dry-window and Element targets stay capped at 72h until separately scoped.
-        if ((t == "dry-window" || elementTarget is not null) && leads.Contains(120))
+        if (t == "dry-window" || elementTarget is not null)
         {
-            if (lead.Equals("120", StringComparison.OrdinalIgnoreCase))
+            foreach (var unsupported in new[] { 96, 120 })
             {
-                _log.LogError("--lead 120 is not supported for target '{T}' yet (temperature + precipitation only).", t);
-                return 2;
+                if (leads.Contains(unsupported) && lead.Equals(unsupported.ToString(), StringComparison.OrdinalIgnoreCase))
+                {
+                    _log.LogError("--lead {N} is not supported for target '{T}' yet (temperature + precipitation only).", unsupported, t);
+                    return 2;
+                }
             }
-            // "all" implicitly includes 120 — silently narrow rather than error.
-            leads = leads.Where(l => l != 120).ToArray();
+            // "all" implicitly includes 96 + 120 — silently narrow rather than error.
+            leads = leads.Where(l => l != 96 && l != 120).ToArray();
         }
 
         return t switch
@@ -123,6 +130,7 @@ public sealed class TrainCommand
         "24"  => new[] { 24 },
         "48"  => new[] { 48 },
         "72"  => new[] { 72 },
+        "96"  => new[] { 96 },
         "120" => new[] { 120 },
         _     => null,
     };

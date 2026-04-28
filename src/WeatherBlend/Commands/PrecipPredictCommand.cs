@@ -29,7 +29,7 @@ public sealed class PrecipPredictCommand
     private readonly ILogger<PrecipPredictCommand> _log;
     private readonly AppConfig _cfg;
 
-    private static readonly int[] DefaultLeads = { 24, 48, 72, 120 };
+    private static readonly int[] DefaultLeads = { 24, 48, 72, 96, 120 };
 
     public PrecipPredictCommand(ILogger<PrecipPredictCommand> log, AppConfig cfg)
     {
