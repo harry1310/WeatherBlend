@@ -204,8 +204,15 @@ public static class LineChartRenderer
             // Compact wire format — [x, y] pairs only. The JS side converts X (OADate)
             // to Unix ms; pre-formatted labels aren't needed because Chart.js calls
             // our tick-format callback for tooltip values too (via the same yFormat
-            // metadata we pass below).
-            var pts = s.Points.Select(p => new[] { p.X, p.Y }).ToArray();
+            // metadata we pass below). Non-finite values (NaN / ±Infinity) get
+            // dropped here — JSON has no representation for them, so leaving them
+            // in throws at JsonSerializer time and crashes the whole render.
+            // Chart.js handles the resulting gaps via spanGaps:true.
+            var pts = s.Points
+                .Where(p => double.IsFinite(p.X) && double.IsFinite(p.Y))
+                .Select(p => new[] { p.X, p.Y })
+                .ToArray();
+            if (pts.Length == 0) continue;
             datasets.Add(new
             {
                 label = s.Name,
@@ -216,15 +223,21 @@ public static class LineChartRenderer
         }
 
         // Annotation plugin payload — only emitted when non-empty so charts that
-        // don't need bands or a "today" line ship a tighter JSON config.
+        // don't need bands or a "today" line ship a tighter JSON config. Same
+        // finite-only guard on band edges and the today line.
         object? annotations = null;
-        if (spec.Bands.Count > 0 || spec.TodayLineX.HasValue)
+        var finiteBands = spec.Bands
+            .Where(b => double.IsFinite(b.XStart) && double.IsFinite(b.XEnd))
+            .Select(b => new[] { b.XStart, b.XEnd })
+            .ToArray();
+        var finiteTodayX = (spec.TodayLineX is { } t && double.IsFinite(t)) ? (double?)t : null;
+        if (finiteBands.Length > 0 || finiteTodayX.HasValue)
         {
             annotations = new
             {
-                bands = spec.Bands.Select(b => new[] { b.XStart, b.XEnd }).ToArray(),
+                bands = finiteBands,
                 bandColor = spec.BandColor,
-                todayX = spec.TodayLineX,
+                todayX = finiteTodayX,
             };
         }
 

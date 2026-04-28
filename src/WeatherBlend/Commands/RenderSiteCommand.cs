@@ -641,12 +641,24 @@ ORDER BY TruthStation, LeadHours, ValidTimeUtc";
         var glob = Path.Combine(_cfg.Storage.PredictionsPath, "utci", "**", "*.parquet")
             .Replace('\\', '/').Replace("'", "''");
 
-        // ApparentTemperatureC is now persisted by the predict pipeline alongside
-        // UTCI (Steadman 1994 shade form). Old parquets pre-dating that change
-        // return NULL via union_by_name; we filter those rows out below so the
-        // home card silently omits the chip rather than rendering "Feels NaN°C".
-        // Old rows age out within one predict cycle as the writer rewrites each
-        // day's file with the new schema.
+        // ApparentTemperatureC is persisted by the predict pipeline alongside UTCI
+        // (Steadman 1994 shade form). Caveat: until the first predict run produces
+        // a parquet with the new column, NO file in the tree carries it — and
+        // union_by_name only unifies columns present in at least one file, so a
+        // SELECT referencing the column would fail at binder time. Probe the
+        // schema first and skip the SELECT entirely if it's not there yet (chip
+        // silently absent on home cards). Once predict runs once, the column
+        // appears in the unified schema and the full query takes over.
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+
+        if (!ParquetSchemaHasColumn(conn, glob, "ApparentTemperatureC"))
+        {
+            _log.LogWarning(
+                "UTCI parquets don't carry ApparentTemperatureC yet — feels-like chip will be absent on home cards until predict runs once.");
+            return Array.Empty<SitePages.UtciForecastPoint>();
+        }
+
         var sql = $@"
 SELECT ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours, UtciC, Band,
        ApparentTemperatureC
@@ -658,8 +670,6 @@ WHERE LocationName = '{_cfg.Location.Name}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 ORDER BY LeadHours, ValidTimeUtc";
 
-        using var conn = new DuckDBConnection("DataSource=:memory:");
-        conn.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
 
@@ -686,6 +696,34 @@ ORDER BY LeadHours, ValidTimeUtc";
             return Array.Empty<SitePages.UtciForecastPoint>();
         }
         return rows;
+    }
+
+    /// <summary>
+    /// Cheap schema probe over a parquet glob. Returns false when no files match
+    /// (read_parquet throws "No files found"), or when the column is absent from
+    /// the union_by_name'd schema. Used to gate queries that reference newly-added
+    /// columns during the migration window between schema bumps.
+    /// </summary>
+    private static bool ParquetSchemaHasColumn(DuckDBConnection conn, string glob, string column)
+    {
+        var sql = $@"
+SELECT 1
+FROM (DESCRIBE SELECT * FROM read_parquet('{glob}',
+                                          hive_partitioning = false,
+                                          union_by_name = true))
+WHERE column_name = '{column.Replace("'", "''")}'
+LIMIT 1";
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        try
+        {
+            using var r = cmd.ExecuteReader();
+            return r.Read();
+        }
+        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
+        {
+            return false;
+        }
     }
 
     private IReadOnlyList<SitePages.DryWindowForecastPoint> QueryDryWindowPredictions(
