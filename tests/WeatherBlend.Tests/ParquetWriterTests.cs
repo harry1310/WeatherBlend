@@ -241,4 +241,65 @@ public class ParquetWriterTests : IDisposable
             .Should().BeInAscendingOrder();
         rows.Select(r => r.Value15MinMm).Should().Equal(0.1, 0.2, 0.3, 0.4);
     }
+
+    // -------- ERA5 NaN-only date guard --------
+
+    private static Era5Row Era5(DateTime t, double? temp) => new()
+    {
+        LocationName = "Bonehill Rocks",
+        ValidTimeUtc = DateTime.SpecifyKind(t, DateTimeKind.Utc),
+        Temperature2m = temp,
+    };
+
+    private string Era5FileFor(DateTime day)
+        => Path.Combine(_root, "location=Bonehill Rocks", $"date={day:yyyy-MM-dd}", "data.parquet");
+
+    [Fact]
+    public async Task WriteEra5Async_skips_dates_where_every_temperature_is_null()
+    {
+        // Open-Meteo returns 24 timestamps with all-null variables for days it
+        // hasn't published yet. Persisting those as scaffold parquets clutters
+        // R2 and forces a write-then-overwrite cycle when real data lands. The
+        // writer must skip the day entirely.
+        var day = new DateTime(2026, 4, 27, 0, 0, 0, DateTimeKind.Utc);
+        var rows = Enumerable.Range(0, 24).Select(h => Era5(day.AddHours(h), null)).ToList();
+
+        await ParquetWriter.WriteEra5Async(_root, rows);
+
+        File.Exists(Era5FileFor(day)).Should().BeFalse(
+            "all-null day shouldn't produce a scaffold parquet");
+    }
+
+    [Fact]
+    public async Task WriteEra5Async_writes_dates_with_at_least_one_real_temperature()
+    {
+        // A day with even one populated temperature value is real data and gets
+        // persisted. The other 23 hours stay nullable; downstream queries filter
+        // on Temperature2m IS NOT NULL anyway.
+        var day = new DateTime(2026, 4, 21, 0, 0, 0, DateTimeKind.Utc);
+        var rows = Enumerable.Range(0, 24)
+            .Select(h => Era5(day.AddHours(h), h == 12 ? 11.5 : (double?)null))
+            .ToList();
+
+        await ParquetWriter.WriteEra5Async(_root, rows);
+
+        File.Exists(Era5FileFor(day)).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task WriteEra5Async_partitions_each_date_independently()
+    {
+        // Mix one published day and one unpublished day in a single fetch — the
+        // published one writes; the unpublished one stays absent.
+        var d1 = new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc);   // real data
+        var d2 = new DateTime(2026, 4, 27, 0, 0, 0, DateTimeKind.Utc);   // not yet published
+        var rows = new List<Era5Row>();
+        rows.AddRange(Enumerable.Range(0, 24).Select(h => Era5(d1.AddHours(h), 5.0 + h * 0.1)));
+        rows.AddRange(Enumerable.Range(0, 24).Select(h => Era5(d2.AddHours(h), null)));
+
+        await ParquetWriter.WriteEra5Async(_root, rows);
+
+        File.Exists(Era5FileFor(d1)).Should().BeTrue();
+        File.Exists(Era5FileFor(d2)).Should().BeFalse();
+    }
 }

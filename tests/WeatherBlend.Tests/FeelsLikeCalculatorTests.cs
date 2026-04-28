@@ -181,6 +181,51 @@ public class FeelsLikeCalculatorTests
         windy.Should().BeLessThan(calm);
     }
 
+    // ---------- Steadman 1994 apparent temperature ----------
+    //
+    // AT = Ta + 0.33·e − 0.70·ws − 4.00 (BoM / BBC public "feels like").
+    // We pin the formula directly rather than published reference cases —
+    // there's no canonical numeric table the way UTCI has Bröde 2012 — but
+    // we do verify direction of effect against published comfort intuition.
+
+    [Fact]
+    public void Steadman1994_calm_dry_morning_lands_below_air_temp()
+    {
+        // Calm air, low humidity: e ≈ 5 hPa. AT = 10 + 0.33·5 − 0 − 4 = 7.65.
+        var at = FeelsLikeCalculator.Steadman1994(tempC: 10.0, vapourPressureHpa: 5.0, wind10mMs: 0.0);
+        at.Should().BeApproximately(7.65, 0.01);
+    }
+
+    [Fact]
+    public void Steadman1994_high_wind_drives_at_below_air_temperature()
+    {
+        // Same air, two wind speeds: 8 m/s should knock AT well below 0.5 m/s.
+        var calm  = FeelsLikeCalculator.Steadman1994(10.0, 7.0, 0.5);
+        var windy = FeelsLikeCalculator.Steadman1994(10.0, 7.0, 8.0);
+
+        windy.Should().BeLessThan(calm);
+        // 0.7 K per m/s linear → 8 - 0.5 = 7.5 m/s × 0.7 ≈ 5.25 K colder.
+        (calm - windy).Should().BeApproximately(5.25, 0.01);
+    }
+
+    [Fact]
+    public void Steadman1994_higher_humidity_pushes_at_warmer()
+    {
+        // Both calm; only humidity changes. 0.33 K per hPa of e — so 10 hPa more
+        // vapour pressure should add ~3.3 K to AT.
+        var dry   = FeelsLikeCalculator.Steadman1994(20.0,  5.0, 1.0);
+        var humid = FeelsLikeCalculator.Steadman1994(20.0, 15.0, 1.0);
+
+        (humid - dry).Should().BeApproximately(3.3, 0.01);
+    }
+
+    [Fact]
+    public void Steadman1994_zero_inputs_collapse_to_constant_offset()
+    {
+        // Edge case: no humidity, no wind, no air temp. AT = 0 + 0 − 0 − 4 = −4.
+        FeelsLikeCalculator.Steadman1994(0.0, 0.0, 0.0).Should().Be(-4.0);
+    }
+
     // ---------- bands ----------
 
     [Theory]

@@ -258,7 +258,7 @@ public static class LineChartRenderer
     /// raw numeric format), we still return <c>"date"</c> — the JS side renders a
     /// reasonable fallback rather than failing.
     /// </summary>
-    private static string ProbeXKind(Func<double, string> formatX)
+    internal static string ProbeXKind(Func<double, string> formatX)
     {
         var probe = new DateTime(2024, 4, 26, 12, 0, 0, DateTimeKind.Utc).ToOADate();
         var s = formatX(probe);
@@ -270,7 +270,7 @@ public static class LineChartRenderer
     /// number of decimal places, optional suffix (e.g. <c>"°"</c>, <c>"%"</c>),
     /// and whether trailing zeros should be trimmed (the C# <c>"0.#"</c> idiom).
     /// </summary>
-    private static (int Dec, string Suffix, bool Trim) ProbeYFormat(Func<double, string> formatY)
+    internal static (int Dec, string Suffix, bool Trim) ProbeYFormat(Func<double, string> formatY)
     {
         // Two probes: an integer-valued one (12.0) tells us whether trailing zeros
         // get trimmed; a fractional one (3.456) tells us how many decimals are kept.

@@ -411,11 +411,12 @@ public class SitePagesTests
     }
 
     [Fact]
-    public void RenderRainSkill_plots_observed_wet_hour_as_dots_not_a_line()
+    public void RenderRainSkill_renders_wet_period_background_bands_not_truth_dots()
     {
-        // The truth series is a 0/1 wet-hour indicator; a polyline connecting 0 and 1
-        // would imply fractional wet states that don't exist. PointsOnly must be on
-        // so the renderer emits circles only, no polyline, for the truth colour.
+        // We replaced the 0/1 truth-dot series with light-blue background bands so
+        // observed wet runs read as continuous stripes behind the P(wet) lines.
+        // Each chart's data-cjs config must carry the wet bands AND must not carry
+        // a discrete truth dataset coloured as the old red truth marker.
         var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
         var validTime = generatedAt.AddHours(24);
         var precipPreds = new[]
@@ -424,13 +425,14 @@ public class SitePagesTests
                 Station, "v3a", generatedAt, validTime, 24, 0.4, 0.2,
                 null, null, null, null, null, null),
         };
-        // Two truth hours: one wet, one dry — ensures both 0 and 1 land on the chart.
+        // Three contiguous wet hours → one merged band in the rendered chart.
         var truth = new Dictionary<string, IReadOnlyDictionary<DateTime, double>>(StringComparer.OrdinalIgnoreCase)
         {
             [Station] = new Dictionary<DateTime, double>
             {
-                [generatedAt.AddDays(-30).AddHours(1)] = 0.5, // wet
-                [generatedAt.AddDays(-30).AddHours(2)] = 0.0, // dry
+                [generatedAt.AddDays(-30).AddHours(1)] = 0.5,
+                [generatedAt.AddDays(-30).AddHours(2)] = 0.5,
+                [generatedAt.AddDays(-30).AddHours(3)] = 0.5,
             },
         };
         var input = MakeEmptyForecastInput() with
@@ -443,10 +445,10 @@ public class SitePagesTests
 
         var html = SitePages.RenderRainSkill(input);
 
-        // The truth colour (#ef5350) appears in the legend swatch and in each truth dot;
-        // it must NOT appear on a <polyline> because that would be the banned connecting line.
-        html.Should().NotContain("<polyline points=\"\" fill=\"none\" stroke=\"#ef5350\"");
+        // Bands appear in the JSON payload; old truth-colour discrete series must not.
+        html.Should().Contain("&quot;bands&quot;");
         html.Should().NotMatchRegex(@"<polyline[^>]*stroke=""#ef5350""");
+        html.Should().NotContain("Observed wet hour");
     }
 
     [Fact]
@@ -532,6 +534,340 @@ public class SitePagesTests
         var html = SitePages.RenderDryWindow(input, "does-not-exist");
 
         html.Should().Contain("Bellever Dartmoor");
+    }
+
+    // -------- annotations: today line, wet bands --------
+
+    [Fact]
+    public void RenderRainSkill_emits_today_line_in_chart_payload()
+    {
+        // Every rainfall skill chart needs a "today" reference line so readers can
+        // tell past rainfall (truth-validated) from future P(wet) (forecast-only).
+        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
+        var validTime = generatedAt.AddHours(24);
+        var precipPreds = new[]
+        {
+            new SitePages.PrecipForecastPoint(
+                Station, "v3a", generatedAt, validTime, 24, 0.4, 0.2,
+                null, null, null, null, null, null),
+        };
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            PrecipPredictions = precipPreds,
+            PhaseByVersion = new Dictionary<string, string> { ["v3a"] = "3a" },
+        };
+
+        var html = SitePages.RenderRainSkill(input);
+
+        html.Should().Contain("&quot;todayX&quot;");
+    }
+
+    [Fact]
+    public void RenderTempSkill_emits_today_line_in_chart_payload()
+    {
+        // Same today-line marker on the temperature skill page — both vs-truth
+        // charts should carry it so the reader sees where forecast horizon starts.
+        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
+        var phaseByVersion = new Dictionary<string, string> { ["v2b"] = "2b" };
+        var preds = new[]
+        {
+            new PredictionRow
+            {
+                LocationName = "Test",
+                ModelVersion = "v2b",
+                PredictionMadeAtUtc = generatedAt.AddHours(-1),
+                ValidTimeUtc = generatedAt.AddHours(-1),
+                LeadHours = 24,
+                BlendTemperature = 11.0,
+                FeatureVectorHash = "",
+            },
+        };
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            Predictions = preds,
+            PhaseByVersion = phaseByVersion,
+        };
+
+        var html = SitePages.RenderTempSkill(input);
+
+        html.Should().Contain("&quot;todayX&quot;");
+    }
+
+    // -------- ComputeWetBands --------
+
+    [Fact]
+    public void ComputeWetBands_merges_consecutive_wet_hours_into_one_band()
+    {
+        // Three abutting wet hours should collapse to a single band rather than
+        // rendering as three rectangles in the annotation payload.
+        var truth = new Dictionary<DateTime, double>
+        {
+            [Day.AddHours(10)] = 0.5,
+            [Day.AddHours(11)] = 0.5,
+            [Day.AddHours(12)] = 0.5,
+        };
+
+        var bands = SitePages.ComputeWetBands(truth, Day);
+
+        bands.Should().HaveCount(1);
+        bands[0].XStart.Should().Be(Day.AddHours(10).ToOADate());
+        bands[0].XEnd.Should().Be(Day.AddHours(13).ToOADate());   // last wet hour + 1
+    }
+
+    [Fact]
+    public void ComputeWetBands_splits_at_a_dry_gap()
+    {
+        // Two wet runs with a dry hour between them — must produce two bands.
+        var truth = new Dictionary<DateTime, double>
+        {
+            [Day.AddHours(10)] = 0.5,
+            [Day.AddHours(11)] = 0.5,
+            [Day.AddHours(12)] = 0.0,    // dry — flushes run
+            [Day.AddHours(13)] = 0.5,
+            [Day.AddHours(14)] = 0.5,
+        };
+
+        var bands = SitePages.ComputeWetBands(truth, Day);
+
+        bands.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public void ComputeWetBands_drops_hours_below_threshold()
+    {
+        // 0.05 mm/h is below the 0.1 mm threshold the blender's training label uses.
+        // It must not register as a wet hour.
+        var truth = new Dictionary<DateTime, double>
+        {
+            [Day.AddHours(10)] = 0.05,
+            [Day.AddHours(11)] = 0.05,
+        };
+
+        SitePages.ComputeWetBands(truth, Day).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ComputeWetBands_uses_exact_zero_one_threshold()
+    {
+        // 0.1 exactly is wet (≥ 0.1 mm threshold). The classifier elsewhere uses
+        // ≤ 0.1 → dry; ≥ 0.1 → wet for this band purpose.
+        var truth = new Dictionary<DateTime, double>
+        {
+            [Day.AddHours(10)] = 0.1,
+        };
+
+        SitePages.ComputeWetBands(truth, Day).Should().HaveCount(1);
+    }
+
+    [Fact]
+    public void ComputeWetBands_returns_empty_when_truth_dict_is_empty()
+    {
+        // Edge case: no rainfall truth synced yet. Returns an empty list rather
+        // than crashing — the chart renders without bands.
+        SitePages.ComputeWetBands(new Dictionary<DateTime, double>(), Day).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ComputeWetBands_ignores_hours_before_window_start()
+    {
+        // Truth dict can contain hours older than the chart window — those must
+        // be skipped so we don't render off-chart bands.
+        var truth = new Dictionary<DateTime, double>
+        {
+            [Day.AddHours(-5)] = 0.5,        // pre-window — drop
+            [Day.AddHours(10)] = 0.5,        // in-window — keep
+        };
+
+        var bands = SitePages.ComputeWetBands(truth, Day);
+
+        bands.Should().HaveCount(1);
+        bands[0].XStart.Should().Be(Day.AddHours(10).ToOADate());
+    }
+
+    // -------- PrettyUtciBand --------
+
+    [Theory]
+    [InlineData("NoStress",          "No stress")]
+    [InlineData("ModerateHeat",      "Moderate heat")]
+    [InlineData("VeryStrongCold",    "Very strong cold")]
+    [InlineData("ExtremeCold",       "Extreme cold")]
+    [InlineData("ExtremeHeat",       "Extreme heat")]
+    public void PrettyUtciBand_splits_camel_case_for_human_display(string raw, string expected)
+    {
+        SitePages.PrettyUtciBand(raw).Should().Be(expected);
+    }
+
+    [Fact]
+    public void PrettyUtciBand_returns_empty_for_empty_input()
+    {
+        SitePages.PrettyUtciBand("").Should().Be("");
+    }
+
+    // -------- Index page: feels-like chip --------
+
+    [Fact]
+    public void RenderIndex_renders_two_line_feels_like_chip_when_utci_matches_card()
+    {
+        // UTCI prediction at the same (lead, valid_time) as the temp card → chip
+        // shows both Steadman ("Feels like X") and UTCI bands. ApparentC is the
+        // Steadman value; UtciC is the Bröde polynomial output.
+        var generatedAt = new DateTime(2026, 4, 24, 0, 0, 0, DateTimeKind.Utc);
+        var validTime = generatedAt.AddHours(24);
+        var preds = new[]
+        {
+            new PredictionRow
+            {
+                LocationName = "Test",
+                ModelVersion = "v",
+                PredictionMadeAtUtc = generatedAt,
+                ValidTimeUtc = validTime,
+                LeadHours = 24,
+                BlendTemperature = 12.0,
+                FeatureVectorHash = "",
+            },
+        };
+        var utci = new[]
+        {
+            new SitePages.UtciForecastPoint(
+                Version: "v1",
+                PredictedAtUtc: generatedAt,
+                ValidTimeUtc: validTime,
+                LeadHours: 24,
+                UtciC: -3.4,
+                Band: "ModerateCold",
+                ApparentC: 6.7),
+        };
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            Predictions = preds,
+            CurrentVersion = "v",
+            UtciPredictions = utci,
+        };
+
+        var html = SitePages.RenderIndex(input);
+
+        html.Should().Contain("Feels like");
+        html.Should().Contain("6.7°C");           // Steadman value
+        html.Should().Contain("-3.4°C");          // UTCI value
+        html.Should().Contain("Moderate cold");   // Pretty band label
+    }
+
+    [Fact]
+    public void RenderIndex_omits_feels_like_chip_when_no_utci_for_card_lead()
+    {
+        // Card present but no UTCI row at this (lead, valid_time) — fall back
+        // silently to no chip rather than rendering "Feels like NaN°C" or similar.
+        var generatedAt = new DateTime(2026, 4, 24, 0, 0, 0, DateTimeKind.Utc);
+        var preds = new[]
+        {
+            new PredictionRow
+            {
+                LocationName = "Test", ModelVersion = "v",
+                PredictionMadeAtUtc = generatedAt,
+                ValidTimeUtc = generatedAt.AddHours(24),
+                LeadHours = 24,
+                BlendTemperature = 12.0,
+                FeatureVectorHash = "",
+            },
+        };
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            Predictions = preds,
+            CurrentVersion = "v",
+            // UtciPredictions left empty.
+        };
+
+        var html = SitePages.RenderIndex(input);
+
+        html.Should().NotContain("Feels like");
+    }
+
+    // -------- Models page: per-blender cards --------
+
+    [Fact]
+    public void RenderModels_emits_a_card_per_blender_with_phase_specific_description()
+    {
+        // The Models page rebuild puts one <article class="blender-card"> per
+        // (composite, version) pair, each carrying a phase-specific prose hint
+        // composed in C# rather than copied from the metadata file.
+        var trained = new DateTime(2026, 4, 20, 12, 0, 0, DateTimeKind.Utc);
+        var perLead = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            [24] = new(24, "gfs", BestSingleValMae: 1.20, BlendTestScore: 0.95,
+                      BlendTestRmse: 1.40, BlendTestBias: 0.05, TestRows: 420, TestCalendarMonths: 6),
+        };
+        var summaries = new[]
+        {
+            new SitePages.ModelSummary(
+                Composite: "temperature",
+                Version: "temp_v2b",
+                Phase: "2b",
+                DataSource: "era5",
+                TrainedAtUtc: trained,
+                MetricLabel: "Test MAE (°C)",
+                PerLead: perLead),
+        };
+        var input = MakeEmptyForecastInput() with { ModelSummaries = summaries };
+
+        var html = SitePages.RenderModels(input);
+
+        html.Should().Contain("blender-card");
+        html.Should().Contain("Lean blender");                  // Phase 2b prose
+        html.Should().Contain("13 features");                   // Phase 2b feature count hint
+        html.Should().Contain("temp_v2b");
+    }
+
+    [Fact]
+    public void RenderModels_marks_blend_win_with_delta_good_class()
+    {
+        // Blend MAE 0.95 vs best-single 1.20 → blend wins by ~21%. The Δ cell
+        // must carry the green "delta-good" class so blend-wins reads at a glance.
+        var trained = new DateTime(2026, 4, 20, 12, 0, 0, DateTimeKind.Utc);
+        var perLead = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            [24] = new(24, "gfs", BestSingleValMae: 1.20, BlendTestScore: 0.95,
+                      BlendTestRmse: 1.40, BlendTestBias: 0.05, TestRows: 420, TestCalendarMonths: 6),
+        };
+        var input = MakeEmptyForecastInput() with
+        {
+            ModelSummaries = new[]
+            {
+                new SitePages.ModelSummary("temperature", "v", "2b", "era5", trained, "Test MAE (°C)", perLead),
+            },
+        };
+
+        var html = SitePages.RenderModels(input);
+
+        html.Should().Contain("delta-good");
+        html.Should().NotContain("delta-bad");
+    }
+
+    [Fact]
+    public void RenderModels_marks_blend_loss_with_delta_bad_class()
+    {
+        // Inverse case: blend MAE 1.50 vs best-single 1.20 → blend loses by ~25%.
+        var trained = new DateTime(2026, 4, 20, 12, 0, 0, DateTimeKind.Utc);
+        var perLead = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            [24] = new(24, "gfs", BestSingleValMae: 1.20, BlendTestScore: 1.50,
+                      BlendTestRmse: 1.80, BlendTestBias: 0.05, TestRows: 420, TestCalendarMonths: 6),
+        };
+        var input = MakeEmptyForecastInput() with
+        {
+            ModelSummaries = new[]
+            {
+                new SitePages.ModelSummary("temperature", "v", "2b", "era5", trained, "Test MAE (°C)", perLead),
+            },
+        };
+
+        var html = SitePages.RenderModels(input);
+
+        html.Should().Contain("delta-bad");
+        html.Should().NotContain("delta-good");
     }
 
     private static SitePages.SiteInputs MakeEmptyForecastInput()
