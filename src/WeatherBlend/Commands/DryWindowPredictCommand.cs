@@ -355,11 +355,16 @@ ORDER BY ValidTimeUtc, Model;";
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
 
-        var slotByModel = DryWindowFeatureBuilder.ModelIds
+        // Slot index by canonical model order so the indices line up with
+        // FeatureBuilder.CanonicalModelOrder used at predict time below — when AIFS
+        // (slot 6) is in the trained spec, modelDayList[6] needs to exist. The legacy
+        // DryWindowFeatureBuilder.ModelIds is only 6 wide; using it here was the bug.
+        var canonOrder = WeatherBlend.Train.FeatureBuilder.CanonicalModelOrder;
+        var slotByModel = canonOrder
             .Select((id, i) => (id, i))
             .ToDictionary(x => x.id, x => x.i);
+        var slotCount = canonOrder.Count;
 
-        // Per-target-date buckets; each carries 6 ForecastDay slots aligned with ModelIds.
         var byDate = new Dictionary<DateOnly, List<DryWindowFeatureBuilder.ForecastDay?>>();
 
         using var r = cmd.ExecuteReader();
@@ -373,7 +378,8 @@ ORDER BY ValidTimeUtc, Model;";
             var date = DateOnly.FromDateTime(valid);
             if (!byDate.TryGetValue(date, out var list))
             {
-                list = new List<DryWindowFeatureBuilder.ForecastDay?>(6) { null, null, null, null, null, null };
+                list = new List<DryWindowFeatureBuilder.ForecastDay?>(slotCount);
+                for (int s = 0; s < slotCount; s++) list.Add(null);
                 byDate[date] = list;
             }
             if (list[slot] is null) list[slot] = new DryWindowFeatureBuilder.ForecastDay();
