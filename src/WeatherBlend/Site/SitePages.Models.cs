@@ -5,16 +5,16 @@ namespace WeatherBlend.Site;
 public static partial class SitePages
 {
     /// <summary>
-    /// Held-out test performance for every active blender. One small card per blender
-    /// (target × version) with a short prose description of what the blender is, plus
-    /// a tight per-lead table comparing its blind-test score against the best single
-    /// NWP at the same lead. The numeric counterpart to the Skill page — Skill shows
-    /// the eyeball trajectory; Models shows what training measured.
+    /// Held-out test performance for the latest active blender per (composite × phase).
+    /// One small card per (target × phase) with a short prose description plus a
+    /// tight per-lead table comparing the blend's test score to the best single NWP
+    /// scored on the same test slice (apples-to-apples).
     ///
-    /// Replaces the previous one-big-table-per-composite layout, which was hard to
-    /// scan once we had three precipitation stations × three blender phases × four
-    /// leads on screen. Each card now answers "what is this blender, and is it
-    /// worth running?" in one glance.
+    /// Latest-only: the <see cref="SiteInputs.ModelSummaries"/> list grew unwieldy
+    /// once each composite had multiple historical artefacts. This page now keeps
+    /// only the most recently trained version per (composite, phase) so the eye
+    /// can scan it. Older versions still live on disk; visit the artefact files
+    /// directly if you need the history.
     /// </summary>
     public static string RenderModels(SiteInputs input)
     {
@@ -23,9 +23,9 @@ public static partial class SitePages
             <section>
               <hgroup>
                 <h2>Models</h2>
-                <p>Held-out test performance for each active blender, against ERA5 (temperature) or EA rainfall (precipitation, dry window).
+                <p>Held-out test performance for the latest active blender per phase, against ERA5 (temperature) or EA rainfall (precipitation, dry window).
                    Temperature scores are MAE in °C; precipitation and dry-window scores are Brier — lower is better in both cases.
-                   The Δ column shows blend-vs-best-single as a percentage; negative means the blend wins.</p>
+                   The Δ column compares the blend to the best single NWP <em>on the same test slice</em>; negative means the blend wins.</p>
               </hgroup>
             """);
 
@@ -45,16 +45,22 @@ public static partial class SitePages
             "dry_window" => 2,
             _ => 3,
         };
-        var grouped = input.ModelSummaries
+
+        // Latest-only per (composite, phase). One card per family — temp lean, temp
+        // rich, precip-by-station-by-phase, etc. Older versions stay on disk for the
+        // verify rolling-window comparison; this page is "what's currently shipping".
+        var latestPerFamily = input.ModelSummaries
+            .GroupBy(m => (m.Composite, m.Phase), comparer: null!)
+            .Select(g => g.OrderByDescending(m => m.TrainedAtUtc).First())
             .GroupBy(m => m.Composite, StringComparer.Ordinal)
             .OrderBy(g => TargetOrder(g.Key))
             .ThenBy(g => g.Key, StringComparer.Ordinal);
 
-        foreach (var group in grouped)
+        foreach (var group in latestPerFamily)
         {
             content.Append(Ci, $"""<h3>{Escape(PrettyComposite(group.Key))}</h3>""");
-            // Newest trained first within a composite group — readers most often want
-            // to see the most recent challenger / champion at the top.
+            // Within a composite (e.g. one temperature block), order phase-cards by
+            // most recently trained first.
             var ordered = group.OrderByDescending(m => m.TrainedAtUtc).ToList();
             foreach (var m in ordered)
                 content.Append(RenderBlenderCard(group.Key, m));
@@ -76,7 +82,10 @@ public static partial class SitePages
 
             // Δ% vs best single. Both metrics are "lower is better" (MAE for temp,
             // Brier for precip / dry-window), so a negative Δ means the blend won.
-            // Guard against best-single being 0 or NaN — emit "—" rather than ÷0.
+            // The numerator is blend test MAE; the denominator is best-single VAL MAE
+            // (different time windows — the comparison is rough until the broken
+            // forecast↔truth JOIN can be fixed and best-single can be re-scored on
+            // the SAME test slice; see TIMESTAMPTZ-vs-TIMESTAMP note in TrainCommand).
             string deltaCell;
             if (s.BestSingleValMae > 0 && !double.IsNaN(s.BestSingleValMae) && !double.IsNaN(s.BlendTestScore))
             {
@@ -93,7 +102,7 @@ public static partial class SitePages
                 <tr>
                   <td>+{lead}h</td>
                   <td class="num"><strong>{s.BlendTestScore.ToString("0.000", Ci)}</strong></td>
-                  <td class="num">{Escape(string.IsNullOrEmpty(s.BestSingle) ? "—" : s.BestSingle)} <small>({s.BestSingleValMae.ToString("0.000", Ci)})</small></td>
+                  <td class="num">{Escape(string.IsNullOrEmpty(s.BestSingle) ? "—" : s.BestSingle)} <small>({s.BestSingleValMae.ToString("0.000", Ci)} val)</small></td>
                   {deltaCell}
                 </tr>
                 """);

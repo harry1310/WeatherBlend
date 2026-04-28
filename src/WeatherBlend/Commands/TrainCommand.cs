@@ -185,6 +185,11 @@ public sealed class TrainCommand
             var blendStats = Metrics.Compute(testPred, testActual);
 
             // Best-single per-lead, selected on validation MAE.
+            // NOTE 2026-04-28: BestSingleTestMae deliberately NOT computed here
+            // until the TIMESTAMPTZ-vs-TIMESTAMP JOIN bug between forecast and
+            // ERA5 parquets is fixed — it would publish numbers off by 1–2h
+            // during BST, making the comparison even more misleading than the
+            // current val-vs-test mismatch on the Models page.
             var best = Baselines.BestSingle(spec, ds.Val);
             var bestValMae = Metrics.Compute(
                 Baselines.FromFeature(spec, ds.Val, best),

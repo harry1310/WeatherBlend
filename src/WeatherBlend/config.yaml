@@ -209,9 +209,11 @@ blenders:
     # Previous Runs starts 2025-02-17 (~14 months at the time of writing).
     # In lean: optional (preserves the full training window from 2024-02-04;
     # AIFS slot is NaN pre-Feb-2025, valued post-Feb-2025).
-    # In rich: required (rich already restricts to post-2024-09 for UKMO; AIFS
-    # pushes that to post-2025-02-17, accepting the smaller window for the
-    # additional model-family signal).
+    # In rich: optional (same rationale).
+    # 2026-04-28 bake-off (scripts/aifs_bakeoff.py) tested AIFS-required as a
+    # full alternative: required cost more training data than the cleaner AIFS
+    # signal bought back for lean (blend MAE +14% at 24h), and was a wash for
+    # rich. Revisit once AIFS history extends further back into 2024.
     - target: temperature
       featureSet: lean
       requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, gem_seamless]
