@@ -148,6 +148,9 @@ public sealed class DryWindowTrainCommand
                     var bestValBrier = PrecipMetrics.Brier(
                         DryWindowBaselines.FromFeature(spec, ds.Val, best),
                         ds.Val.Select(r => r.Label ? 1.0 : 0.0).ToArray());
+                    var bestTestBrier = PrecipMetrics.Brier(
+                        DryWindowBaselines.FromFeature(spec, ds.Test, best),
+                        truthTest);
 
                     var climPred = DryWindowBaselines.Climatology(ds.Train, ds.Test, window);
                     var climBrier = PrecipMetrics.Brier(climPred, truthTest);
@@ -175,7 +178,8 @@ public sealed class DryWindowTrainCommand
                         TestRows  = ds.Test.Count,
                         TestCalendarMonths = testMonths,
                         BestSingle = best,
-                        BestSingleValMae = bestValBrier,  // reused column — documented in DeviationsFromBrief
+                        BestSingleValMae  = bestValBrier,  // reused column — documented in DeviationsFromBrief
+                        BestSingleTestMae = bestTestBrier,
                         BlendTestMae  = blendBrier,
                         BlendTestRmse = climBrier,        // reused for climatology Brier
                         BlendTestBias = fbias,

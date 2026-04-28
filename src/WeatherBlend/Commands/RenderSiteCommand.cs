@@ -218,6 +218,7 @@ public sealed class RenderSiteCommand
                         LeadHours:          kv.Value.LeadHours,
                         BestSingle:         kv.Value.BestSingle,
                         BestSingleValMae:   kv.Value.BestSingleValMae,
+                        BestSingleTestMae:  kv.Value.BestSingleTestMae,
                         BlendTestScore:     kv.Value.BlendTestMae,
                         BlendTestRmse:      kv.Value.BlendTestRmse,
                         BlendTestBias:      kv.Value.BlendTestBias,

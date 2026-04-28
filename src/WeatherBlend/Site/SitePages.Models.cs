@@ -80,16 +80,17 @@ public static partial class SitePages
         {
             if (!m.PerLead.TryGetValue(lead, out var s)) continue;
 
-            // Δ% vs best single. Both metrics are "lower is better" (MAE for temp,
-            // Brier for precip / dry-window), so a negative Δ means the blend won.
-            // The numerator is blend test MAE; the denominator is best-single VAL MAE
-            // (different time windows — the comparison is rough until the broken
-            // forecast↔truth JOIN can be fixed and best-single can be re-scored on
-            // the SAME test slice; see TIMESTAMPTZ-vs-TIMESTAMP note in TrainCommand).
+            // Δ% vs best single, computed on the SAME test slice (apples-to-apples).
+            // BestSingleTestMae populated from 2026-04-29+; older artefacts fall back
+            // to the val number with a "(val)" tag so the mismatch is visible.
+            var bestRef = s.BestSingleTestMae > 0 && !double.IsNaN(s.BestSingleTestMae)
+                ? s.BestSingleTestMae : s.BestSingleValMae;
+            var bestRefIsTest = s.BestSingleTestMae > 0 && !double.IsNaN(s.BestSingleTestMae);
+
             string deltaCell;
-            if (s.BestSingleValMae > 0 && !double.IsNaN(s.BestSingleValMae) && !double.IsNaN(s.BlendTestScore))
+            if (bestRef > 0 && !double.IsNaN(bestRef) && !double.IsNaN(s.BlendTestScore))
             {
-                var pct = (s.BlendTestScore - s.BestSingleValMae) / s.BestSingleValMae * 100.0;
+                var pct = (s.BlendTestScore - bestRef) / bestRef * 100.0;
                 var cls = pct < 0 ? "delta-good" : "delta-bad";
                 deltaCell = $"""<td class="num {cls}">{pct.ToString("+0.0;-0.0;0.0", Ci)}%</td>""";
             }
@@ -98,11 +99,12 @@ public static partial class SitePages
                 deltaCell = """<td class="num">—</td>""";
             }
 
+            var bestLabel = bestRefIsTest ? "" : " val";
             tbody.Append(Ci, $"""
                 <tr>
                   <td>+{lead}h</td>
                   <td class="num"><strong>{s.BlendTestScore.ToString("0.000", Ci)}</strong></td>
-                  <td class="num">{Escape(string.IsNullOrEmpty(s.BestSingle) ? "—" : s.BestSingle)} <small>({s.BestSingleValMae.ToString("0.000", Ci)} val)</small></td>
+                  <td class="num">{Escape(string.IsNullOrEmpty(s.BestSingle) ? "—" : s.BestSingle)} <small>({bestRef.ToString("0.000", Ci)}{bestLabel})</small></td>
                   {deltaCell}
                 </tr>
                 """);

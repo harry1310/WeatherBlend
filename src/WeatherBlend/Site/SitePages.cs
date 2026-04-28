@@ -141,6 +141,7 @@ public static partial class SitePages
         int LeadHours,
         string BestSingle,
         double BestSingleValMae,
+        double BestSingleTestMae,
         double BlendTestScore,
         double BlendTestRmse,
         double BlendTestBias,

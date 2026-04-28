@@ -184,16 +184,15 @@ public sealed class TrainCommand
             var testPred   = TemperatureTrainer.PredictVector(trained.Ml, trained.Model, spec, ds.Test);
             var blendStats = Metrics.Compute(testPred, testActual);
 
-            // Best-single per-lead, selected on validation MAE.
-            // NOTE 2026-04-28: BestSingleTestMae deliberately NOT computed here
-            // until the TIMESTAMPTZ-vs-TIMESTAMP JOIN bug between forecast and
-            // ERA5 parquets is fixed — it would publish numbers off by 1–2h
-            // during BST, making the comparison even more misleading than the
-            // current val-vs-test mismatch on the Models page.
+            // Best-single: pick on val (no leakage), then re-score on TEST so the
+            // Models page can compare blend-vs-best on the same chronological split.
             var best = Baselines.BestSingle(spec, ds.Val);
             var bestValMae = Metrics.Compute(
                 Baselines.FromFeature(spec, ds.Val, best),
                 ds.Val.Select(x => (double)x.Label).ToArray()).Mae;
+            var bestTestMae = Metrics.Compute(
+                Baselines.FromFeature(spec, ds.Test, best),
+                testActual).Mae;
 
             ModelArtifact.SaveLeadModel(trained.Ml, trained.Model, trained.InputSchema, versionDir, lead);
             importanceByLead[lead] = trained.FeatureImportance;
@@ -212,14 +211,17 @@ public sealed class TrainCommand
                 TestRows  = ds.Test.Count,
                 TestCalendarMonths = testMonths,
                 BestSingle = best,
-                BestSingleValMae = bestValMae,
+                BestSingleValMae  = bestValMae,
+                BestSingleTestMae = bestTestMae,
                 BlendTestMae  = blendStats.Mae,
                 BlendTestRmse = blendStats.Rmse,
                 BlendTestBias = blendStats.Bias,
             };
 
-            _log.LogInformation("Lead {Lead}h headline — blend MAE={Blend:0.000}°C, best_single[{Best}] val MAE={BestMae:0.000}°C, test months={M}",
-                lead, blendStats.Mae, best, bestValMae, testMonths);
+            var deltaPct = bestTestMae > 0 ? (blendStats.Mae - bestTestMae) / bestTestMae * 100 : double.NaN;
+            _log.LogInformation(
+                "Lead {Lead}h headline — blend MAE={Blend:0.000}°C, best[{Best}] test MAE={BestT:0.000}°C (val {BestV:0.000}°C), Δ {Delta:+0.0;-0.0;0.0}%, months={M}",
+                lead, blendStats.Mae, best, bestTestMae, bestValMae, deltaPct, testMonths);
         }
 
         // Shared artefacts — per-lead BlenderSpec is now the schema source of truth.
@@ -318,6 +320,9 @@ public sealed class TrainCommand
             var bestValMae = Metrics.Compute(
                 Baselines.FromFeature(spec, ds.Val, best),
                 ds.Val.Select(x => (double)x.Label).ToArray()).Mae;
+            var bestTestMaeRich = Metrics.Compute(
+                Baselines.FromFeature(spec, ds.Test, best),
+                testActual).Mae;
 
             ModelArtifact.SaveLeadModel(trained.Ml, trained.Model, trained.InputSchema, versionDir, lead);
             importanceByLead[lead] = trained.FeatureImportance;
@@ -336,14 +341,17 @@ public sealed class TrainCommand
                 TestRows  = ds.Test.Count,
                 TestCalendarMonths = testMonths,
                 BestSingle = best,
-                BestSingleValMae = bestValMae,
+                BestSingleValMae  = bestValMae,
+                BestSingleTestMae = bestTestMaeRich,
                 BlendTestMae  = blendStats.Mae,
                 BlendTestRmse = blendStats.Rmse,
                 BlendTestBias = blendStats.Bias,
             };
 
-            _log.LogInformation("Lead {Lead}h headline — blend MAE={Blend:0.000}°C, best_single[{Best}] val MAE={BestMae:0.000}°C, test months={M}",
-                lead, blendStats.Mae, best, bestValMae, testMonths);
+            var deltaPctRich = bestTestMaeRich > 0 ? (blendStats.Mae - bestTestMaeRich) / bestTestMaeRich * 100 : double.NaN;
+            _log.LogInformation(
+                "Lead {Lead}h headline — blend MAE={Blend:0.000}°C, best[{Best}] test MAE={BestT:0.000}°C (val {BestV:0.000}°C), Δ {Delta:+0.0;-0.0;0.0}%, months={M}",
+                lead, blendStats.Mae, best, bestTestMaeRich, bestValMae, deltaPctRich, testMonths);
         }
 
         ModelArtifact.SaveBlenderSpecs(versionDir, specsPerLead);
@@ -504,6 +512,9 @@ public sealed class TrainCommand
             var bestValBrier = PrecipMetrics.Brier(
                 PrecipBaselines.SingleModelWet(spec, ds.Val, best),
                 ds.Val.Select(r => r.Label ? 1.0 : 0.0).ToArray());
+            var bestTestBrier = PrecipMetrics.Brier(
+                PrecipBaselines.SingleModelWet(spec, ds.Test, best),
+                truthTest);
             var climPred = PrecipBaselines.Climatology(ds.Train, ds.Test);
             var climBrier = PrecipMetrics.Brier(climPred, truthTest);
             var bss = PrecipMetrics.BrierSkillScore(blendBrier, climBrier);
@@ -528,15 +539,17 @@ public sealed class TrainCommand
                 TestRows  = ds.Test.Count,
                 TestCalendarMonths = testMonths,
                 BestSingle = best,
-                BestSingleValMae = bestValBrier,   // reused column — Brier
+                BestSingleValMae  = bestValBrier,   // reused column — Brier
+                BestSingleTestMae = bestTestBrier,
                 BlendTestMae  = blendBrier,
                 BlendTestRmse = climBrier,         // reused column — climatology Brier
                 BlendTestBias = fbias,
             };
 
+            var deltaPctP = bestTestBrier > 0 ? (blendBrier - bestTestBrier) / bestTestBrier * 100 : double.NaN;
             _log.LogInformation(
-                "Lead {Lead}h headline — blend Brier={Brier:0.000}, climatology Brier={Clim:0.000}, BSS={Bss:+0.000;-0.000;0.000}, freq_bias={Fb:0.00}, best_single[{Best}] val Brier={BestBrier:0.000}",
-                lead, blendBrier, climBrier, bss, fbias, best, bestValBrier);
+                "Lead {Lead}h headline — blend Brier={Brier:0.000}, clim={Clim:0.000}, BSS={Bss:+0.000;-0.000;0.000}, fbias={Fb:0.00}, best[{Best}] test Brier={BestT:0.000} (val {BestV:0.000}), Δ {Delta:+0.0;-0.0;0.0}%",
+                lead, blendBrier, climBrier, bss, fbias, best, bestTestBrier, bestValBrier, deltaPctP);
         }
 
         ModelArtifact.SaveBlenderSpecs(versionDir, specsPerLead);
@@ -695,6 +708,9 @@ public sealed class TrainCommand
             var bestValBrier = PrecipMetrics.Brier(
                 PrecipBaselines.SingleModelWet(spec, ds.Val, best),
                 ds.Val.Select(r => r.Label ? 1.0 : 0.0).ToArray());
+            var bestTestBrierR = PrecipMetrics.Brier(
+                PrecipBaselines.SingleModelWet(spec, ds.Test, best),
+                truthTest);
             var climPred = PrecipBaselines.Climatology(ds.Train, ds.Test);
             var climBrier = PrecipMetrics.Brier(climPred, truthTest);
             var bss = PrecipMetrics.BrierSkillScore(blendBrier, climBrier);
@@ -719,15 +735,17 @@ public sealed class TrainCommand
                 TestRows  = ds.Test.Count,
                 TestCalendarMonths = testMonths,
                 BestSingle = best,
-                BestSingleValMae = bestValBrier,
+                BestSingleValMae  = bestValBrier,
+                BestSingleTestMae = bestTestBrierR,
                 BlendTestMae  = blendBrier,
                 BlendTestRmse = climBrier,
                 BlendTestBias = fbias,
             };
 
+            var deltaPctR = bestTestBrierR > 0 ? (blendBrier - bestTestBrierR) / bestTestBrierR * 100 : double.NaN;
             _log.LogInformation(
-                "Lead {Lead}h headline — blend Brier={Brier:0.000}, climatology Brier={Clim:0.000}, BSS={Bss:+0.000;-0.000;0.000}, freq_bias={Fb:0.00}, best_single[{Best}] val Brier={BestBrier:0.000}",
-                lead, blendBrier, climBrier, bss, fbias, best, bestValBrier);
+                "Lead {Lead}h headline — blend Brier={Brier:0.000}, clim={Clim:0.000}, BSS={Bss:+0.000;-0.000;0.000}, fbias={Fb:0.00}, best[{Best}] test Brier={BestT:0.000} (val {BestV:0.000}), Δ {Delta:+0.0;-0.0;0.0}%",
+                lead, blendBrier, climBrier, bss, fbias, best, bestTestBrierR, bestValBrier, deltaPctR);
         }
 
         ModelArtifact.SaveBlenderSpecs(versionDir, specsPerLead);

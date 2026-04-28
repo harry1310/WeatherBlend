@@ -235,7 +235,7 @@ public class SitePagesTests
         var trained = new DateTime(2026, 4, 20, 12, 0, 0, DateTimeKind.Utc);
         var perLead = new Dictionary<int, SitePages.PerLeadMetric>
         {
-            [24] = new(24, "gfs", 1.23, 0.987, 1.42, +0.05, 420, 6),
+            [24] = new(24, "gfs", 1.23, 1.18, 0.987, 1.42, +0.05, 420, 6),
         };
         var summaries = new[]
         {
@@ -797,7 +797,7 @@ public class SitePagesTests
         var trained = new DateTime(2026, 4, 20, 12, 0, 0, DateTimeKind.Utc);
         var perLead = new Dictionary<int, SitePages.PerLeadMetric>
         {
-            [24] = new(24, "gfs", BestSingleValMae: 1.20, BlendTestScore: 0.95,
+            [24] = new(24, "gfs", BestSingleValMae: 1.20, BestSingleTestMae: 1.20, BlendTestScore: 0.95,
                       BlendTestRmse: 1.40, BlendTestBias: 0.05, TestRows: 420, TestCalendarMonths: 6),
         };
         var summaries = new[]
@@ -829,7 +829,7 @@ public class SitePagesTests
         var trained = new DateTime(2026, 4, 20, 12, 0, 0, DateTimeKind.Utc);
         var perLead = new Dictionary<int, SitePages.PerLeadMetric>
         {
-            [24] = new(24, "gfs", BestSingleValMae: 1.20, BlendTestScore: 0.95,
+            [24] = new(24, "gfs", BestSingleValMae: 1.20, BestSingleTestMae: 1.20, BlendTestScore: 0.95,
                       BlendTestRmse: 1.40, BlendTestBias: 0.05, TestRows: 420, TestCalendarMonths: 6),
         };
         var input = MakeEmptyForecastInput() with
@@ -853,7 +853,7 @@ public class SitePagesTests
         var trained = new DateTime(2026, 4, 20, 12, 0, 0, DateTimeKind.Utc);
         var perLead = new Dictionary<int, SitePages.PerLeadMetric>
         {
-            [24] = new(24, "gfs", BestSingleValMae: 1.20, BlendTestScore: 1.50,
+            [24] = new(24, "gfs", BestSingleValMae: 1.20, BestSingleTestMae: 1.20, BlendTestScore: 1.50,
                       BlendTestRmse: 1.80, BlendTestBias: 0.05, TestRows: 420, TestCalendarMonths: 6),
         };
         var input = MakeEmptyForecastInput() with
