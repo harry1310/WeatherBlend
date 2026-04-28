@@ -225,6 +225,12 @@ public static partial class SitePages
         svg.chart { width: 100%; height: auto; max-width: 100%; background: var(--pico-card-background-color); border-radius: 4px; margin: 0.5rem 0 1.5rem; }
         .chart-cjs { position: relative; margin: 0.5rem 0 1.5rem; background: var(--pico-card-background-color); border-radius: 4px; padding: 0.5rem 0.5rem 0.25rem; }
         .chart-cjs canvas { width: 100% !important; height: 100% !important; }
+        /* Stacked precip charts share an X axis: render flush with each other so
+           the eye reads them as one panel split into prob/mm-h halves. */
+        .chart-stack { margin: 0.5rem 0 1.5rem; }
+        .chart-stack .chart-cjs { margin: 0; border-radius: 0; }
+        .chart-stack .chart-cjs:first-child { border-top-left-radius: 4px; border-top-right-radius: 4px; padding-bottom: 0; }
+        .chart-stack .chart-cjs:last-child { border-top: 1px solid var(--pico-muted-border-color); border-bottom-left-radius: 4px; border-bottom-right-radius: 4px; padding-top: 0; }
         .chart-title { font-size: 14px; font-weight: 600; fill: var(--pico-color); }
         .chart-grid { stroke: var(--pico-muted-border-color); stroke-width: 0.5; }
         .chart-frame { fill: none; stroke: var(--pico-muted-border-color); stroke-width: 1; }

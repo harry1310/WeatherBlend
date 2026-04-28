@@ -127,7 +127,8 @@ public static partial class SitePages
     private static string RenderPrecipSection(SiteInputs input, int lead)
     {
         var s = new StringBuilder();
-        s.Append("<h3>Precipitation — P(wet ≥ 0.1 mm/h)</h3>");
+        s.Append("<h3>Precipitation — P(wet ≥ 0.1 mm/h) vs NWP inputs</h3>");
+        s.Append("<p class=\"skill-line\">Top: blender's hourly P(wet) plus climatology. Bottom: each NWP's raw precip rate (mm/h) at the same valid times. Stacked rather than overlaid because the units don't share an axis.</p>");
 
         var stations = input.PrecipPredictions
             .Select(p => p.Station).Distinct()
@@ -139,17 +140,27 @@ public static partial class SitePages
             return s.ToString();
         }
 
+        // NWP colour palette — matched to the temperature chart so a reader who
+        // knows "ECMWF is blue" up there reads it the same way down here.
+        var nwpSpecs = new (string Label, string Color, Func<PrecipForecastPoint, double?> Get)[]
+        {
+            ("GFS",   "#ef5350", p => p.PrecipGfs),
+            ("ECMWF", "#42a5f5", p => p.PrecipEcmwf),
+            ("ICON",  "#66bb6a", p => p.PrecipIcon),
+            ("MF",    "#ffa726", p => p.PrecipMf),
+            ("UKMO",  "#5c6bc0", p => p.PrecipUkmo),
+            ("GEM",   "#26a69a", p => p.PrecipGem),
+        };
+
         foreach (var station in stations)
         {
-            // One chart per station at this lead, with the station's champion version as
-            // the primary line and climatology as a reference. Challenger lines (3a/3c)
-            // live on the Skill page.
-            input.PrecipCurrentByStation.TryGetValue(station, out var champion);
-
+            // Pool across blender versions before picking freshest per ValidTime.
+            // Same rationale as the temp chart: champion-only collapses to ~one
+            // point per anchor; the per-NWP columns are identical regardless of
+            // blender version anyway, so pooling doesn't change the input story.
             var latestPerValid = input.PrecipPredictions
                 .Where(r => r.Station == station
                             && r.LeadHours == lead
-                            && (string.IsNullOrEmpty(champion) || r.Version == champion)
                             && r.ValidTimeUtc >= input.GeneratedAtUtc.AddHours(-1))
                 .GroupBy(r => r.ValidTimeUtc)
                 .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
@@ -162,77 +173,55 @@ public static partial class SitePages
             {
                 s.Append(RenderEmptyChart(
                     $"P(wet) — {PrettyStation(station)} — +{lead}h",
-                    "No champion forecast at this lead in the forward window."));
+                    "No forecast at this lead in the forward window."));
                 continue;
             }
 
-            var series = new List<LineSeries>
+            // Top: P(wet) + climatology, probability axis (0..1).
+            var probSeries = new List<LineSeries>
             {
-                new($"P(wet) +{lead}h", "#7c4dff",
+                new($"P(wet)", "#7c4dff",
                     latestPerValid.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet)).ToList()),
+                new("Climatology", "#9e9e9e",
+                    latestPerValid.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ClimatologyPWet)).ToList()),
             };
 
-            var climPts = latestPerValid
-                .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ClimatologyPWet))
-                .ToList();
-            if (climPts.Count > 0)
-                series.Add(new LineSeries("Climatology", "#9e9e9e", climPts));
+            // Bottom: per-NWP precip rate, mm/h axis. Skip series where every
+            // point is null so the legend stays clean.
+            var nwpSeries = new List<LineSeries>();
+            foreach (var (label, color, get) in nwpSpecs)
+            {
+                var pts = latestPerValid
+                    .Select(r => (Valid: r.ValidTimeUtc, Val: get(r)))
+                    .Where(t => t.Val.HasValue)
+                    .Select(t => (X: t.Valid.ToOADate(), Y: t.Val!.Value))
+                    .ToList();
+                if (pts.Count > 0)
+                    nwpSeries.Add(new LineSeries(label, color, pts));
+            }
 
-            s.Append(LineChartRenderer.Render(new LineChartSpec
+            s.Append("<div class=\"chart-stack\">");
+            s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
             {
                 Title = $"P(wet) — {PrettyStation(station)} — +{lead}h",
-                XLabel = "Valid time (UTC)",
+                XLabel = "",                               // X label only on the bottom chart
                 YLabel = "Probability",
-                Series = series,
-                Height = 260,
+                Series = probSeries,
+                Height = 220,
                 FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
                 FormatY = v => v.ToString("0.00", Ci),
             }));
-
-            // Compact per-NWP hourly breakdown for the next ~48h at this lead. Same
-            // columns as the temperature table above, so the page reads consistently.
-            var detail = latestPerValid.Take(24).ToList();
-            if (detail.Count == 0) continue;
-
-            var tbody = new StringBuilder();
-            foreach (var r in detail)
+            s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
             {
-                tbody.Append(Ci, $"""
-                    <tr>
-                      <td><time>{r.ValidTimeUtc:MM-dd HH:mm}Z</time></td>
-                      <td class="num"><strong>{r.ProbWet.ToString("0.00", Ci)}</strong></td>
-                      <td class="num">{r.ClimatologyPWet.ToString("0.00", Ci)}</td>
-                      <td class="num">{FmtNullable(r.PrecipGfs)}</td>
-                      <td class="num">{FmtNullable(r.PrecipEcmwf)}</td>
-                      <td class="num">{FmtNullable(r.PrecipIcon)}</td>
-                      <td class="num">{FmtNullable(r.PrecipMf)}</td>
-                      <td class="num">{FmtNullable(r.PrecipUkmo)}</td>
-                      <td class="num">{FmtNullable(r.PrecipGem)}</td>
-                    </tr>
-                    """);
-            }
-
-            s.Append(Ci, $"""
-                <figure>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Valid time (UTC)</th>
-                        <th class="num">P(wet)</th>
-                        <th class="num">Clim.</th>
-                        <th class="num">GFS mm</th>
-                        <th class="num">ECMWF mm</th>
-                        <th class="num">ICON mm</th>
-                        <th class="num">MF mm</th>
-                        <th class="num">UKMO mm</th>
-                        <th class="num">GEM mm</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                {tbody}    </tbody>
-                  </table>
-                </figure>
-                """);
+                Title = "",                                // title only on the top chart
+                XLabel = "Valid time (UTC)",
+                YLabel = "Precip rate (mm/h)",
+                Series = nwpSeries,
+                Height = 220,
+                FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
+                FormatY = v => v.ToString("0.0", Ci),
+            }));
+            s.Append("</div>");
         }
 
         return s.ToString();

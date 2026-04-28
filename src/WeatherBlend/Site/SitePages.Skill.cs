@@ -349,7 +349,7 @@ public static partial class SitePages
             }
 
             content.Append(Ci, $"<h5>{Escape(spec.ShortTitle)}</h5>");
-            content.Append(LineChartRenderer.Render(new LineChartSpec
+            content.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
             {
                 Title = $"P(wet) vs observed wet-hour — {PrettyStation(station)} — Phase {spec.Key}",
                 XLabel = "Time (UTC)",
@@ -367,7 +367,7 @@ public static partial class SitePages
             if (truthPts.Count > 0)
                 cvc.Add(new LineSeries("Observed wet hour (≥ 0.1 mm)", "#ef5350", truthPts, PointsOnly: true));
             content.Append("<h5>Three-way comparison — +24h lead</h5>");
-            content.Append(LineChartRenderer.Render(new LineChartSpec
+            content.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
             {
                 Title = $"3a vs 3a_isotonic vs 3c vs observed — {PrettyStation(station)} — +24h",
                 XLabel = "Time (UTC)",
