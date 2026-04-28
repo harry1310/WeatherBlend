@@ -143,10 +143,12 @@ public static class Program
                 services.AddTransient<ElementVerifyCommand>();
                 // ElementBakeoffCommand removed in Phase 5 of unify-model-membership refactor.
                 services.AddTransient<FeelsLikePredictCommand>();
-                services.AddSingleton<MetOfficeArchiveBackfillClient>();
-                services.AddTransient<MetOfficeArchiveBackfillCommand>();
-                services.AddSingleton<MetOfficeGlobalArchiveCollector>();
-                services.AddSingleton<MetOfficeUkvArchiveCollector>();
+                // Met Office Global / UKV (raw AWS S3 backfill via Python) removed
+                // 2026-04-29 — bake-off rejected as blender inputs (negative result)
+                // and their parquet writer was the sole source of TIMESTAMPTZ schema
+                // that mis-aligned forecast↔truth JOINs during BST. DataHub Spot +
+                // Land Observations C# clients (MetOfficeSpotClient,
+                // MetOfficeObservationsClient) are unrelated and stay.
                 services.AddTransient<IElementBlender, WindBlender>();
                 services.AddTransient<IElementBlender, HumidityBlender>();
                 services.AddTransient<IElementBlender, RadiationBlender>();
@@ -222,44 +224,8 @@ public static class Program
         }, gfsStartOpt, gfsEndOpt, gfsCyclesOpt);
         root.AddCommand(gfsBackfill);
 
-        // ---- met-office-archive-backfill ----
-        var moStartOpt = new Option<DateOnly>("--start", "Start cycle date (yyyy-MM-dd), UTC")
-            { IsRequired = true };
-        var moEndOpt = new Option<DateOnly>(
-            name: "--end",
-            description: "End cycle date (yyyy-MM-dd), UTC (inclusive). Default: yesterday.",
-            getDefaultValue: () => DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-1)));
-        var moCyclesOpt = new Option<string>(
-            name: "--cycles",
-            description: "Comma-separated cycle hours. Default 0,12 — 06/18Z only run 20h and aren't useful for 24/48/72h leads.",
-            getDefaultValue: () => "0,12");
-        var moLeadsOpt = new Option<string>(
-            name: "--leads",
-            description: "Comma-separated lead hours.",
-            getDefaultValue: () => "24,48,72");
-        var moParallelismOpt = new Option<int>(
-            name: "--parallelism",
-            description: "Concurrent NetCDF downloads per cycle.",
-            getDefaultValue: () => 12);
-        var metOfficeArchive = new Command(
-            "met-office-archive-backfill",
-            "Backfill historical Met Office Global Det 10km from AWS Open Data into model=met_office_global. " +
-            "Anonymous S3 access; 2-year rolling archive; ~15s/cycle wall time.")
-        {
-            moStartOpt, moEndOpt, moCyclesOpt, moLeadsOpt, moParallelismOpt,
-        };
-        metOfficeArchive.SetHandler(async (start, end, cyclesStr, leadsStr, parallelism) =>
-        {
-            var cycles = cyclesStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(s => int.Parse(s, System.Globalization.CultureInfo.InvariantCulture))
-                .ToArray();
-            var leads = leadsStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(s => int.Parse(s, System.Globalization.CultureInfo.InvariantCulture))
-                .ToArray();
-            var cmd = host.Services.GetRequiredService<MetOfficeArchiveBackfillCommand>();
-            Environment.ExitCode = await cmd.RunAsync(start, end, cycles, leads, parallelism, CancellationToken.None);
-        }, moStartOpt, moEndOpt, moCyclesOpt, moLeadsOpt, moParallelismOpt);
-        root.AddCommand(metOfficeArchive);
+        // The `met-office-archive-backfill` CLI command was removed 2026-04-29 along
+        // with the Python S3 collector. See Program.cs DI block for the why.
 
         var status = new Command("status", "Show what data is on disk");
         status.SetHandler(async ctx =>

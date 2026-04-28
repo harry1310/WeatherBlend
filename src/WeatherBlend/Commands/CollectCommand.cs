@@ -19,8 +19,6 @@ public sealed class CollectCommand
     private readonly EaHydrologyClient _rainfall;
     private readonly MetOfficeSpotClient _metOfficeSpot;
     private readonly MetOfficeObservationsClient _metOfficeObs;
-    private readonly MetOfficeGlobalArchiveCollector _metOfficeGlobal;
-    private readonly MetOfficeUkvArchiveCollector _metOfficeUkv;
     private readonly ILogger<CollectCommand> _log;
 
     public CollectCommand(
@@ -30,8 +28,6 @@ public sealed class CollectCommand
         EaHydrologyClient rainfall,
         MetOfficeSpotClient metOfficeSpot,
         MetOfficeObservationsClient metOfficeObs,
-        MetOfficeGlobalArchiveCollector metOfficeGlobal,
-        MetOfficeUkvArchiveCollector metOfficeUkv,
         ILogger<CollectCommand> log)
     {
         _cfg = cfg;
@@ -40,8 +36,6 @@ public sealed class CollectCommand
         _rainfall = rainfall;
         _metOfficeSpot = metOfficeSpot;
         _metOfficeObs = metOfficeObs;
-        _metOfficeGlobal = metOfficeGlobal;
-        _metOfficeUkv = metOfficeUkv;
         _log = log;
     }
 
@@ -187,56 +181,10 @@ public sealed class CollectCommand
             _log.LogError(ex, "  Met Office Obs: FAILED");
         }
 
-        // Met Office Global Det archive (AWS Open Data, NetCDF via Python).
-        // Deliberately near the end of collect — it shells out to Python and
-        // is more likely to fail than the HTTP-only collectors (missing
-        // interpreter, missing pip deps, AWS hiccup). Wrapped in its own
-        // try/catch and placed after every primary-data collector so a Python
-        // failure cannot block the rest of collect (forecasts, METAR, rainfall,
-        // MO Spot, MO Obs — the things `predict` actually needs). Met Office
-        // Global is a comparison baseline only, not a blender input.
-        try
-        {
-            var rc = await _metOfficeGlobal.CollectAsync(ct);
-            if (rc != 0)
-            {
-                errors++;
-                _log.LogWarning("  Met Office Global: backfill exited {Code} (non-fatal)", rc);
-            }
-            else
-            {
-                _log.LogInformation("  Met Office Global: refreshed");
-            }
-        }
-        catch (Exception ex)
-        {
-            errors++;
-            _log.LogError(ex, "  Met Office Global: FAILED (non-fatal — blenders don't depend on this source)");
-        }
-
-        // Met Office UKV 2km archive (AWS Open Data, NetCDF via Python).
-        // Same Python-shell-out pattern as the global collector above. UKV IS
-        // intended as a blender input (4-way Met Office bake-off), but until
-        // that's wired in, blender training still falls back gracefully when
-        // UKV rows are missing — so this collector is also non-fatal.
-        try
-        {
-            var rc = await _metOfficeUkv.CollectAsync(ct);
-            if (rc != 0)
-            {
-                errors++;
-                _log.LogWarning("  Met Office UKV: backfill exited {Code} (non-fatal)", rc);
-            }
-            else
-            {
-                _log.LogInformation("  Met Office UKV: refreshed");
-            }
-        }
-        catch (Exception ex)
-        {
-            errors++;
-            _log.LogError(ex, "  Met Office UKV: FAILED (non-fatal)");
-        }
+        // Met Office Global Det + UKV 2km AWS-archive collectors removed
+        // 2026-04-29 — bake-off rejected as blender inputs and the Python
+        // writer was poisoning the forecast-tree schema (see Program.cs
+        // DI-block comment for the full why).
 
         return errors;
     }

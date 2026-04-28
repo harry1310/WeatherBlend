@@ -62,12 +62,12 @@ models:
     displayName: "JMA Global Spectral Model (Japan)"
   - id: "dmi_harmonie_arome_europe"
     displayName: "DMI HARMONIE-AROME (HIRLAM, 2km Europe — sister of KNMI)"
-# Raw Met Office partitions (met_office_ukv, met_office_global, and their
-# *_hourly siblings) are deliberately NOT listed here. They get pulled into
-# the forecast tree by the dedicated collectors + interpolation script
-# (memory/project_met_office_raw_negative_result.md), but the 4-way bake-off
-# 2026-04-28 found they add zero signal vs the existing 7-model setup, so
-# they're not registered as blender input candidates.
+# Raw Met Office UKV / Global partitions used to be backfilled here via
+# Python scripts. Removed 2026-04-29 — the 4-way bake-off found they add zero
+# signal (see memory/project_met_office_raw_negative_result.md), AND their
+# Python parquet writer was the sole source of TIMESTAMPTZ schema in the
+# forecast tree, which mis-aligned every forecast↔truth JOIN by 1–2h during
+# BST. The DataHub Spot + Land Observations clients are unaffected and stay.
 
 # Variables to pull. Two lists because Open-Meteo's per-model forecast endpoint
 # and the ERA5 archive endpoint expose slightly different sets — keeping them
