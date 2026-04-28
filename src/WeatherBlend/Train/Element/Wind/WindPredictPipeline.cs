@@ -84,12 +84,12 @@ public static class WindPredictPipeline
             // Per-model output fields: populate only spec.Models, null elsewhere.
             // ElementPredictionRow has 7 named slots (Gfs..Gem + Aifs). Wind blender
             // doesn't include JMA — guard against any future stray ci ≥ 7.
-            var modelSpd = new double?[7];
-            var modelRun = new DateTime?[7];
+            var modelSpd = new double?[ElementPredictionRow.PerModelFieldCount];
+            var modelRun = new DateTime?[ElementPredictionRow.PerModelFieldCount];
             for (int i = 0; i < N; i++)
             {
                 var ci = canonOrder.IndexOf(spec.Models[i]);
-                if (ci >= 7) continue;     // JMA — not in wind output schema
+                if (ci >= ElementPredictionRow.PerModelFieldCount) continue;     // JMA — not in wind output schema
                 modelSpd[ci] = double.IsNaN(spd[i]) ? null : spd[i];
                 modelRun[ci] = p.RunTimes[ci];
             }

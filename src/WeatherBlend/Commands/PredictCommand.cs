@@ -242,16 +242,15 @@ public sealed class PredictCommand
             var featureHash = FeatureHashing.HashFloats(row.Features);
 
             // Build PredictionRow per-model fields: populate only spec.Models, null elsewhere.
-            // Output PredictionRow has 7 named per-model fields (TempGfs..TempAifs).
-            // Temperature blender doesn't include JMA (canonical idx 7), so the loop's
-            // `ci < 7` guard catches anyone who later adds JMA to the temp spec
-            // without also adding TempJma to PredictionRow.
-            var perModelTemp = new double?[7];
-            var perModelRun  = new DateTime?[7];
+            // Sized + skip-guarded from PredictionRow.PerModelFieldCount so adding a
+            // new TempXxx field on the row type is the single change needed; this
+            // pipeline picks it up automatically.
+            var perModelTemp = new double?[PredictionRow.PerModelFieldCount];
+            var perModelRun  = new DateTime?[PredictionRow.PerModelFieldCount];
             for (int i = 0; i < spec.Models.Count; i++)
             {
                 var ci = canonOrder.IndexOf(spec.Models[i]);
-                if (ci >= 7) continue;     // JMA — not in temp output schema (no TempJma field)
+                if (ci >= PredictionRow.PerModelFieldCount) continue;
                 perModelTemp[ci] = specTemps[i];
                 perModelRun[ci]  = pivot.RunTime[ci];
             }

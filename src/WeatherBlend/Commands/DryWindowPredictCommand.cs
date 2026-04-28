@@ -216,12 +216,13 @@ public sealed class DryWindowPredictCommand
             var climProb = climatology.Predict(targetDate);
 
             // Build per-model output fields: populate only spec.Models, null elsewhere.
-            // Output DryWindowPredictionRow has 8 named slots (Gfs..Gem + Aifs + Jma).
-            var perModelHasDry  = new double?[8];
-            var perModelSum     = new double?[8];
+            // Sized from DryWindowPredictionRow.PerModelFieldCount (8: Gfs..Gem + Aifs + Jma).
+            var perModelHasDry  = new double?[DryWindowPredictionRow.PerModelFieldCount];
+            var perModelSum     = new double?[DryWindowPredictionRow.PerModelFieldCount];
             for (int i = 0; i < spec.Models.Count; i++)
             {
                 var ci = canonOrder.IndexOf(spec.Models[i]);
+                if (ci >= DryWindowPredictionRow.PerModelFieldCount) continue;
                 var hasDry = row.Features[spec.IndexOf($"has_dry_window_{WeatherBlend.Train.FeatureBuilder.ShortName(spec.Models[i])}")];
                 var sum    = row.Features[spec.IndexOf($"precip_sum_{WeatherBlend.Train.FeatureBuilder.ShortName(spec.Models[i])}")];
                 perModelHasDry[ci] = NanToNullDouble(hasDry);

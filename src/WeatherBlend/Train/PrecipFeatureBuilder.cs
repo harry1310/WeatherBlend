@@ -335,10 +335,13 @@ ORDER BY p.ValidTimeUtc;
         if (orderedModels.Count == 0)
             throw new InvalidOperationException($"No models active for {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h.");
 
+        // prob_* features removed 2026-04-28 — every prob_<model> had 0.000 gain at every
+        // lead in lean + rich precip (Open-Meteo's precipitation_probability adds nothing
+        // the trees can't infer from the precipitation rate). Old artefacts with prob_*
+        // in their feature_schema can't predict under this code — retrain required.
         var n = orderedModels.Count;
-        var featureNames = new List<string>(2 * n + 4 + 7 + 4);
+        var featureNames = new List<string>(n + 4 + 7 + 4);
         foreach (var m in orderedModels) featureNames.Add($"precip_{FeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) featureNames.Add($"prob_{FeatureBuilder.ShortName(m)}");
         featureNames.AddRange(new[] { "precip_mean", "precip_std", "precip_max", "precip_agreement_wet_01" });
         featureNames.AddRange(new[]
         {
@@ -385,10 +388,7 @@ ORDER BY p.ValidTimeUtc;
 
         var precipPivot = string.Join(",\n        ",
             spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN Precipitation END) AS precip_{FeatureBuilder.ShortName(m)}"));
-        var probPivot = string.Join(",\n        ",
-            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN PrecipitationProbability END) AS prob_{FeatureBuilder.ShortName(m)}"));
         var precipSelect = string.Join(", ", spec.Models.Select(m => $"p.precip_{FeatureBuilder.ShortName(m)}"));
-        var probSelect = string.Join(", ", spec.Models.Select(m => $"p.prob_{FeatureBuilder.ShortName(m)}"));
 
         var requiredNotNull = spec.RequiredModels.Count > 0
             ? string.Join("\n  AND ", spec.RequiredModels.Select(m => $"p.precip_{FeatureBuilder.ShortName(m)} IS NOT NULL"))
@@ -410,7 +410,7 @@ WITH hourly_truth AS (
 latest AS (
     SELECT
         ValidTimeUtc, Model,
-        Precipitation, PrecipitationProbability,
+        Precipitation,
         RelativeHumidity2m, Temperature2m, DewPoint2m,
         CloudCoverLow, CloudCoverMid, CloudCoverHigh,
         Cape, WindSpeed10m,
@@ -428,7 +428,6 @@ pivoted AS (
     SELECT
         ValidTimeUtc,
         {precipPivot},
-        {probPivot},
         AVG(RelativeHumidity2m) AS rh_mean,
         AVG(Temperature2m - DewPoint2m) AS dew_depression_mean,
         AVG(CloudCoverLow)  AS cloud_low_mean,
@@ -443,7 +442,6 @@ pivoted AS (
 SELECT
     p.ValidTimeUtc,
     {precipSelect},
-    {probSelect},
     p.rh_mean, p.dew_depression_mean,
     p.cloud_low_mean, p.cloud_mid_mean, p.cloud_high_mean,
     p.cape_mean, p.wind_speed_mean,
@@ -462,16 +460,13 @@ ORDER BY p.ValidTimeUtc;
         var rows = new List<BinaryTrainingRow>();
         var n = spec.Models.Count;
         var precip = new double[n];
-        var probs = new double[n];
         while (r.Read())
         {
             ct.ThrowIfCancellationRequested();
             var valid = r.GetDateTime(0);
             for (int i = 0; i < n; i++)
                 precip[i] = r.IsDBNull(1 + i) ? double.NaN : r.GetDouble(1 + i);
-            for (int i = 0; i < n; i++)
-                probs[i] = r.IsDBNull(1 + n + i) ? double.NaN : r.GetDouble(1 + n + i);
-            var baseIdx = 1 + 2 * n;
+            var baseIdx = 1 + n;
             var rh     = r.IsDBNull(baseIdx + 0) ? double.NaN : r.GetDouble(baseIdx + 0);
             var dewDep = r.IsDBNull(baseIdx + 1) ? double.NaN : r.GetDouble(baseIdx + 1);
             var cL     = r.IsDBNull(baseIdx + 2) ? double.NaN : r.GetDouble(baseIdx + 2);
@@ -481,13 +476,13 @@ ORDER BY p.ValidTimeUtc;
             var wind   = r.IsDBNull(baseIdx + 6) ? double.NaN : r.GetDouble(baseIdx + 6);
             var truth  = r.GetDouble(baseIdx + 7);
 
-            rows.Add(ComposeRow(spec, valid, precip, probs, rh, dewDep, cL, cM, cH, cape, wind, truth));
+            rows.Add(ComposeRow(spec, valid, precip, rh, dewDep, cL, cM, cH, cape, wind, truth));
         }
         return rows;
     }
 
     /// <summary>
-    /// Pack per-model precip + prob + spread + covariates + calendar into a
+    /// Pack per-model precip + spread + covariates + calendar into a
     /// <see cref="BinaryTrainingRow"/> with <c>Features.Length == spec.FeatureCount</c>.
     /// Spread aggregates skip NaN entries (NaN-safe — important because
     /// precipitation defaults to the lenient COALESCE-any policy).
@@ -496,7 +491,6 @@ ORDER BY p.ValidTimeUtc;
         BlenderSpec spec,
         DateTime validTimeUtc,
         IReadOnlyList<double> perModelPrecip,
-        IReadOnlyList<double> perModelProb,
         double rhMean,
         double dewDepressionMean,
         double cloudLowMean,
@@ -511,10 +505,6 @@ ORDER BY p.ValidTimeUtc;
             throw new ArgumentException(
                 $"Expected {n} model precip values (one per spec.Models), got {perModelPrecip.Count}.",
                 nameof(perModelPrecip));
-        if (perModelProb.Count != n)
-            throw new ArgumentException(
-                $"Expected {n} model probability values, got {perModelProb.Count}.",
-                nameof(perModelProb));
 
         // Ensemble spread features — NaN-safe.
         double sum = 0, sumSq = 0, max = double.NegativeInfinity;
@@ -549,7 +539,6 @@ ORDER BY p.ValidTimeUtc;
         var features = new float[spec.FeatureCount];
         int idx = 0;
         for (int i = 0; i < n; i++) features[idx++] = (float)perModelPrecip[i];
-        for (int i = 0; i < n; i++) features[idx++] = (float)perModelProb[i];
         features[idx++] = (float)mean;
         features[idx++] = (float)std;
         features[idx++] = (float)max;

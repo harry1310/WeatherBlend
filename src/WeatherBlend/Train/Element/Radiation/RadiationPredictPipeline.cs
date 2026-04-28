@@ -76,12 +76,12 @@ public static class RadiationPredictPipeline
             var yhat = TemperatureTrainer.PredictVector(ml, loadedModel, spec, new[] { row })[0];
 
             // ElementPredictionRow has 7 named slots (Gfs..Gem + Aifs).
-            var modelSw  = new double?[7];
-            var modelRun = new DateTime?[7];
+            var modelSw  = new double?[ElementPredictionRow.PerModelFieldCount];
+            var modelRun = new DateTime?[ElementPredictionRow.PerModelFieldCount];
             for (int i = 0; i < N; i++)
             {
                 var ci = canonOrder.IndexOf(spec.Models[i]);
-                if (ci >= 7) continue;     // JMA — not in radiation output schema (no JMA SW data via Open-Meteo anyway)
+                if (ci >= ElementPredictionRow.PerModelFieldCount) continue;     // JMA — not in radiation output schema (no JMA SW data via Open-Meteo anyway)
                 modelSw[ci]  = double.IsNaN(sw[i]) ? null : sw[i];
                 modelRun[ci] = p.RunTimes[ci];
             }

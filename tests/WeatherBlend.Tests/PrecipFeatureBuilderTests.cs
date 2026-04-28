@@ -33,13 +33,13 @@ public class PrecipFeatureBuilderTests
         spec.OptionalModels.Should().Equal(
             "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "meteofrance_seamless", "gem_seamless",
             "ecmwf_aifs025_single", "jma_seamless");
-        // Layout: 7 precip + 7 prob + 4 spread + 7 covariates + 4 calendar = 29.
-        spec.FeatureNames.Should().HaveCount(29);
+        // Layout: 7 precip + 4 spread + 7 covariates + 4 calendar = 22 (prob_* dropped).
+        spec.FeatureNames.Should().HaveCount(22);
         spec.FeatureNames.Should().StartWith(new[]
         {
             "precip_gfs", "precip_ecmwf", "precip_icon", "precip_mf", "precip_gem", "precip_aifs", "precip_jma",
-            "prob_gfs", "prob_ecmwf", "prob_icon", "prob_mf", "prob_gem", "prob_aifs", "prob_jma",
         });
+        spec.FeatureNames.Should().NotContain("prob_gfs");
         spec.FeatureNames.Should().Contain("precip_agreement_wet_01");
     }
 
@@ -49,8 +49,8 @@ public class PrecipFeatureBuilderTests
         var spec = PrecipFeatureBuilder.BuildSpec(LoadShippedConfig(), 120);
         spec.OptionalModels.Should().Equal(
             "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "gem_seamless", "ecmwf_aifs025_single", "jma_seamless");
-        // 6 precip + 6 prob + 4 spread + 7 covariates + 4 calendar = 27.
-        spec.FeatureNames.Should().HaveCount(27);
+        // 6 precip + 4 spread + 7 covariates + 4 calendar = 21 (prob_* dropped).
+        spec.FeatureNames.Should().HaveCount(21);
         spec.FeatureNames.Should().NotContain("precip_mf");
         spec.FeatureNames.Should().NotContain("prob_mf");
         spec.FeatureNames.Should().NotContain("precip_ukmo");
@@ -64,10 +64,9 @@ public class PrecipFeatureBuilderTests
         var spec = PrecipFeatureBuilder.BuildSpec(LoadShippedConfig(), 24);
         // 7 models in spec at lead 24h: gfs/ecmwf/icon/mf/gem/aifs/jma.
         var precip = new[] { 0.0, 0.05, 0.2, 0.5, 1.0, 0.3, 0.4 };
-        var probs  = new[] { 0.1, 0.2,  0.3, 0.4, 0.5, 0.6, 0.7 };
         var row = PrecipFeatureBuilder.ComposeRow(
             spec, new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc),
-            precip, probs,
+            precip,
             rhMean: 80, dewDepressionMean: 2,
             cloudLowMean: 50, cloudMidMean: 30, cloudHighMean: 20,
             capeMean: 100, windSpeedMean: 5,
@@ -88,9 +87,9 @@ public class PrecipFeatureBuilderTests
     [Fact]
     public void ComposeRow_throws_when_perModelPrecip_count_does_not_match_spec()
     {
-        var spec = PrecipFeatureBuilder.BuildSpec(LoadShippedConfig(), 24);  // 6 models incl AIFS
+        var spec = PrecipFeatureBuilder.BuildSpec(LoadShippedConfig(), 24);  // 7 models with JMA
         var act = () => PrecipFeatureBuilder.ComposeRow(
-            spec, DateTime.UtcNow, new[] { 0.0, 0.0 }, new[] { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 },
+            spec, DateTime.UtcNow, new[] { 0.0, 0.0 },
             0, 0, 0, 0, 0, 0, 0, 0);
         act.Should().Throw<ArgumentException>();
     }

@@ -440,14 +440,14 @@ ORDER BY 1;
         if (orderedModels.Count == 0)
             throw new InvalidOperationException($"No models active for {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h.");
 
-        // Layout (N = orderedModels.Count):
-        //   N precip + N prob + 4 spread + 7 covariates + 4 calendar  (= 2N+15, the lean precip block)
-        //   N dew + N rh + N dew_depression + N pressure              (= 4N rich secondaries)
+        // Layout (N = orderedModels.Count) — prob_* removed 2026-04-28 (zero-gain
+        // features, see PrecipFeatureBuilder.BuildSpec for full reasoning):
+        //   N precip + 4 spread + 7 covariates + 4 calendar  (= N+15, the lean precip block)
+        //   N dew + N rh + N dew_depression + N pressure     (= 4N rich secondaries)
         //   4 EA persistence
-        // Total = 6N + 19. N=6 → 55 features (matches legacy); N=5 → 49.
+        // Total = 5N + 19. N=8 (with JMA) → 59 features; N=7 → 54.
         var names = new List<string>();
         foreach (var m in orderedModels) names.Add($"precip_{FeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"prob_{FeatureBuilder.ShortName(m)}");
         names.AddRange(new[] { "precip_mean", "precip_std", "precip_max", "precip_agreement_wet_01" });
         names.AddRange(new[]
         {
@@ -524,8 +524,6 @@ ORDER BY 1;
         for (int i = 0; i < n; i++)
             sb.AppendLine($"        MAX(CASE WHEN Model = '{spec.Models[i]}' THEN Precipitation END) AS precip_{FeatureBuilder.ShortName(spec.Models[i])},");
         for (int i = 0; i < n; i++)
-            sb.AppendLine($"        MAX(CASE WHEN Model = '{spec.Models[i]}' THEN PrecipitationProbability END) AS prob_{FeatureBuilder.ShortName(spec.Models[i])},");
-        for (int i = 0; i < n; i++)
             sb.AppendLine($"        MAX(CASE WHEN Model = '{spec.Models[i]}' THEN DewPoint2m END) AS dew_{FeatureBuilder.ShortName(spec.Models[i])},");
         for (int i = 0; i < n; i++)
             sb.AppendLine($"        MAX(CASE WHEN Model = '{spec.Models[i]}' THEN RelativeHumidity2m END) AS rh_{FeatureBuilder.ShortName(spec.Models[i])},");
@@ -544,8 +542,6 @@ ORDER BY 1;
         sb.AppendLine(")");
         sb.AppendLine("SELECT ValidTimeUtc,");
         for (int i = 0; i < n; i++) sb.Append($"    precip_{FeatureBuilder.ShortName(spec.Models[i])},");
-        sb.AppendLine();
-        for (int i = 0; i < n; i++) sb.Append($"    prob_{FeatureBuilder.ShortName(spec.Models[i])},");
         sb.AppendLine();
         for (int i = 0; i < n; i++) sb.Append($"    dew_{FeatureBuilder.ShortName(spec.Models[i])},");
         sb.AppendLine();
@@ -573,7 +569,6 @@ ORDER BY 1;
 
         var rows = new List<BinaryTrainingRow>();
         var precip = new double[n];
-        var probs  = new double[n];
         var dew    = new double[n];
         var rh     = new double[n];
         var dewdep = new double[n];
@@ -588,7 +583,6 @@ ORDER BY 1;
 
             int col = 1;
             for (int i = 0; i < n; i++) { precip[i] = r.IsDBNull(col) ? double.NaN : r.GetDouble(col); col++; }
-            for (int i = 0; i < n; i++) { probs[i]  = r.IsDBNull(col) ? double.NaN : r.GetDouble(col); col++; }
             for (int i = 0; i < n; i++) { dew[i]    = r.IsDBNull(col) ? double.NaN : r.GetDouble(col); col++; }
             for (int i = 0; i < n; i++) { rh[i]     = r.IsDBNull(col) ? double.NaN : r.GetDouble(col); col++; }
             for (int i = 0; i < n; i++) { dewdep[i] = r.IsDBNull(col) ? double.NaN : r.GetDouble(col); col++; }
@@ -604,7 +598,7 @@ ORDER BY 1;
             var runTime = valid.AddHours(-spec.LeadHours);
             var persistence = ComputePersistence(hourlyRain, runTime);
 
-            rows.Add(ComposeRow(spec, valid, precip, probs, dew, rh, dewdep, pres,
+            rows.Add(ComposeRow(spec, valid, precip, dew, rh, dewdep, pres,
                 rhMean, dewDepMn, cL, cM, cH, cape, wind,
                 persistence.Prev24hMm, persistence.Prev72hMm,
                 persistence.WetHoursLast24h, persistence.DryHoursTrailing,
@@ -622,7 +616,6 @@ ORDER BY 1;
         BlenderSpec spec,
         DateTime validTimeUtc,
         IReadOnlyList<double> perModelPrecip,
-        IReadOnlyList<double> perModelProb,
         IReadOnlyList<double> perModelDew,
         IReadOnlyList<double> perModelRh,
         IReadOnlyList<double> perModelDewDepression,
@@ -642,13 +635,13 @@ ORDER BY 1;
     {
         var n = spec.Models.Count;
         if (perModelPrecip.Count != n) throw new ArgumentException($"Expected {n} model precip values", nameof(perModelPrecip));
-        if (perModelProb.Count   != n) throw new ArgumentException($"Expected {n} model prob values",   nameof(perModelProb));
         if (perModelDew.Count    != n) throw new ArgumentException($"Expected {n} model dew values",    nameof(perModelDew));
         if (perModelRh.Count     != n) throw new ArgumentException($"Expected {n} model rh values",     nameof(perModelRh));
         if (perModelDewDepression.Count != n) throw new ArgumentException($"Expected {n} model depression values", nameof(perModelDewDepression));
         if (perModelPressure.Count != n) throw new ArgumentException($"Expected {n} model pressure values", nameof(perModelPressure));
 
-        // First 2N+15 features: per-model precip + prob + 4 spread + 7 covariates + 4 calendar.
+        // First N+15 features: per-model precip + 4 spread + 7 covariates + 4 calendar.
+        // (prob_* removed 2026-04-28 — see PrecipFeatureBuilder.BuildSpec.)
         // Inlined here (rather than delegated to PrecipFeatureBuilder.ComposeRow) because the
         // lean composer asserts it filled the WHOLE vector — feeding it a rich spec would trip
         // the assertion. Same NaN-safe spread logic, just packed directly into the rich vector.
@@ -685,7 +678,6 @@ ORDER BY 1;
 
         int idx = 0;
         for (int i = 0; i < n; i++) features[idx++] = (float)perModelPrecip[i];
-        for (int i = 0; i < n; i++) features[idx++] = (float)perModelProb[i];
         features[idx++] = (float)mean;
         features[idx++] = (float)std;
         features[idx++] = (float)max;

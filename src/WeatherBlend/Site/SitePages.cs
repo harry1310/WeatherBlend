@@ -161,7 +161,9 @@ public static partial class SitePages
         double? PrecipIcon,
         double? PrecipMf,
         double? PrecipUkmo,
-        double? PrecipGem);
+        double? PrecipGem,
+        double? PrecipAifs,
+        double? PrecipJma);
 
     public sealed record UtciForecastPoint(
         string Version,

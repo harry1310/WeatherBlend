@@ -115,7 +115,7 @@ public class SitePagesTests
             new SitePages.PrecipForecastPoint(
                 Station, "v_3a", generatedAt, generatedAt.AddHours(lead), lead, 0.42, 0.18,
                 PrecipGfs: null, PrecipEcmwf: null, PrecipIcon: null,
-                PrecipMf: null, PrecipUkmo: null, PrecipGem: null)).ToArray();
+                PrecipMf: null, PrecipUkmo: null, PrecipGem: null, PrecipAifs: null, PrecipJma: null)).ToArray();
 
         var input = new SitePages.SiteInputs
         {
@@ -357,10 +357,10 @@ public class SitePagesTests
         {
             new SitePages.PrecipForecastPoint(
                 "ea_bellever_dartmoor", "v3a", generatedAt, validTime, 24, 0.4, 0.2,
-                null, null, null, null, null, null),
+                null, null, null, null, null, null, null, null),
             new SitePages.PrecipForecastPoint(
                 "ea_princetown", "v3a", generatedAt, validTime, 24, 0.5, 0.2,
-                null, null, null, null, null, null),
+                null, null, null, null, null, null, null, null),
         };
         var input = MakeEmptyForecastInput() with
         {
@@ -392,10 +392,10 @@ public class SitePagesTests
         {
             new SitePages.PrecipForecastPoint(
                 "ea_bellever_dartmoor", "v3a", generatedAt, validTime, 24, 0.4, 0.2,
-                null, null, null, null, null, null),
+                null, null, null, null, null, null, null, null),
             new SitePages.PrecipForecastPoint(
                 "ea_princetown", "v3a", generatedAt, validTime, 24, 0.5, 0.2,
-                null, null, null, null, null, null),
+                null, null, null, null, null, null, null, null),
         };
         var input = MakeEmptyForecastInput() with
         {
@@ -423,7 +423,7 @@ public class SitePagesTests
         {
             new SitePages.PrecipForecastPoint(
                 Station, "v3a", generatedAt, validTime, 24, 0.4, 0.2,
-                null, null, null, null, null, null),
+                null, null, null, null, null, null, null, null),
         };
         // Three contiguous wet hours → one merged band in the rendered chart.
         var truth = new Dictionary<string, IReadOnlyDictionary<DateTime, double>>(StringComparer.OrdinalIgnoreCase)
@@ -463,10 +463,10 @@ public class SitePagesTests
         {
             new SitePages.PrecipForecastPoint(
                 "ea_bellever_dartmoor", "v3a", generatedAt, validTime, 24, 0.4, 0.2,
-                null, null, null, null, null, null),
+                null, null, null, null, null, null, null, null),
             new SitePages.PrecipForecastPoint(
                 "ea_princetown", "v3a", generatedAt, validTime, 24, 0.5, 0.2,
-                null, null, null, null, null, null),
+                null, null, null, null, null, null, null, null),
         };
         var input = MakeEmptyForecastInput() with
         {
@@ -549,7 +549,7 @@ public class SitePagesTests
         {
             new SitePages.PrecipForecastPoint(
                 Station, "v3a", generatedAt, validTime, 24, 0.4, 0.2,
-                null, null, null, null, null, null),
+                null, null, null, null, null, null, null, null),
         };
         var input = MakeEmptyForecastInput() with
         {
@@ -899,7 +899,7 @@ public class SitePagesTests
             .Select(v => new SitePages.PrecipForecastPoint(
                 Station, v.Version, generatedAt, validTime, 24, 0.42, 0.18,
                 PrecipGfs: null, PrecipEcmwf: null, PrecipIcon: null,
-                PrecipMf: null, PrecipUkmo: null, PrecipGem: null))
+                PrecipMf: null, PrecipUkmo: null, PrecipGem: null, PrecipAifs: null, PrecipJma: null))
             .ToArray();
 
         var phaseByVersion = versions

@@ -72,12 +72,12 @@ public static class CloudPredictPipeline
             var yhat = TemperatureTrainer.PredictVector(ml, loadedModel, spec, new[] { row })[0];
 
             // ElementPredictionRow has 7 named slots (Gfs..Gem + Aifs).
-            var modelCc  = new double?[7];
-            var modelRun = new DateTime?[7];
+            var modelCc  = new double?[ElementPredictionRow.PerModelFieldCount];
+            var modelRun = new DateTime?[ElementPredictionRow.PerModelFieldCount];
             for (int i = 0; i < N; i++)
             {
                 var ci = canonOrder.IndexOf(spec.Models[i]);
-                if (ci >= 7) continue;     // JMA — not in cloud output schema
+                if (ci >= ElementPredictionRow.PerModelFieldCount) continue;     // JMA — not in cloud output schema
                 modelCc[ci]  = double.IsNaN(cc[i]) ? null : cc[i];
                 modelRun[ci] = p.RunTimes[ci];
             }

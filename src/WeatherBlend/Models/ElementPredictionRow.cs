@@ -16,6 +16,12 @@ namespace WeatherBlend.Models;
 /// </summary>
 public sealed class ElementPredictionRow
 {
+    /// <summary>
+    /// Number of named per-model slots (ModelGfs..ModelAifs).
+    /// See <see cref="PredictionRow.PerModelFieldCount"/> for the rationale.
+    /// </summary>
+    public const int PerModelFieldCount = 7;
+
     [SetsRequiredMembers]
     public ElementPredictionRow()
     {

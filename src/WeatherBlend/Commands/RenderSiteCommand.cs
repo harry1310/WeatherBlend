@@ -588,7 +588,7 @@ ORDER BY PredictionMadeAtUtc DESC, LeadHours";
         var sql = $@"
 SELECT TruthStation, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
        ProbWet, ClimatologyPWet,
-       PrecipGfs, PrecipEcmwf, PrecipIcon, PrecipMf, PrecipUkmo, PrecipGem
+       PrecipGfs, PrecipEcmwf, PrecipIcon, PrecipMf, PrecipUkmo, PrecipGem, PrecipAifs, PrecipJma
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
 WHERE LocationName = '{_cfg.Location.Name}'
   AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
@@ -620,7 +620,9 @@ ORDER BY TruthStation, LeadHours, ValidTimeUtc";
                     PrecipIcon:      r.IsDBNull(9)  ? null : r.GetDouble(9),
                     PrecipMf:        r.IsDBNull(10) ? null : r.GetDouble(10),
                     PrecipUkmo:      r.IsDBNull(11) ? null : r.GetDouble(11),
-                    PrecipGem:       r.IsDBNull(12) ? null : r.GetDouble(12)));
+                    PrecipGem:       r.IsDBNull(12) ? null : r.GetDouble(12),
+                    PrecipAifs:      r.IsDBNull(13) ? null : r.GetDouble(13),
+                    PrecipJma:       r.IsDBNull(14) ? null : r.GetDouble(14)));
             }
         }
         catch (DuckDBException ex) when (ex.Message.Contains("No files found"))

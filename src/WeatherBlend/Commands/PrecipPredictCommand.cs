@@ -198,19 +198,17 @@ public sealed class PrecipPredictCommand
                 continue;
             }
 
-            // Pull spec.Models precip + prob from the canonical 6-slot pivot, in spec order.
+            // Pull spec.Models precip from the canonical pivot, in spec order.
+            // prob_* removed 2026-04-28 (zero-gain, see PrecipFeatureBuilder).
             int N = spec.Models.Count;
             var specPrecip = new double[N];
-            var specProb   = new double[N];
             var missingRequired = new List<string>();
             var requiredSet = spec.RequiredModels.ToHashSet(StringComparer.OrdinalIgnoreCase);
             for (int i = 0; i < N; i++)
             {
                 var ci = canonOrder.IndexOf(spec.Models[i]);
                 var pv = pivot.Precip[ci];
-                var qv = pivot.Prob[ci];
                 specPrecip[i] = pv ?? double.NaN;
-                specProb[i]   = qv ?? double.NaN;
                 if (!pv.HasValue && requiredSet.Contains(spec.Models[i]))
                     missingRequired.Add(spec.Models[i]);
             }
@@ -242,7 +240,7 @@ public sealed class PrecipPredictCommand
                 var runTime = valid.AddHours(-lead);
                 var persist = PrecipRichFeatureBuilder.ComputePersistence(hourlyRain!, runTime);
                 row = PrecipRichFeatureBuilder.ComposeRow(
-                    spec, valid, specPrecip, specProb, dew, rh, dewDep, pres,
+                    spec, valid, specPrecip, dew, rh, dewDep, pres,
                     rhMean: pivot.RhMean, dewDepressionMean: pivot.DewDepressionMean,
                     cloudLowMean: pivot.CloudLowMean, cloudMidMean: pivot.CloudMidMean,
                     cloudHighMean: pivot.CloudHighMean,
@@ -256,7 +254,7 @@ public sealed class PrecipPredictCommand
             else
             {
                 row = PrecipFeatureBuilder.ComposeRow(
-                    spec, valid, specPrecip, specProb,
+                    spec, valid, specPrecip,
                     rhMean: pivot.RhMean, dewDepressionMean: pivot.DewDepressionMean,
                     cloudLowMean: pivot.CloudLowMean, cloudMidMean: pivot.CloudMidMean,
                     cloudHighMean: pivot.CloudHighMean,
@@ -273,23 +271,21 @@ public sealed class PrecipPredictCommand
             var climPWet = climatology.Predict(valid);
 
             // Build per-model output fields: populate only spec.Models, null elsewhere.
-            // Output PrecipPredictionRow has 8 named precip slots (Gfs..Gem + Aifs + Jma)
-            // and 6 legacy prob slots (Gfs..Gem). New AIFS/JMA models don't get prob
-            // slots — the prob_* training features are zero-gain and slated for removal.
-            var perModelPrecip = new double?[8];
-            var perModelProb   = new double?[6];
-            var perModelRun    = new DateTime?[8];
+            // Sized from PrecipPredictionRow.PerModelFieldCount.
+            var perModelPrecip = new double?[PrecipPredictionRow.PerModelFieldCount];
+            var perModelRun    = new DateTime?[PrecipPredictionRow.PerModelFieldCount];
             for (int i = 0; i < N; i++)
             {
                 var ci = canonOrder.IndexOf(spec.Models[i]);
+                if (ci >= PrecipPredictionRow.PerModelFieldCount) continue;
                 perModelPrecip[ci] = specPrecip[i];
                 perModelRun[ci]    = pivot.RunTime[ci];
-                if (ci < 6) perModelProb[ci] = specProb[i];
             }
 
             // Spread features live at offset 2N in both lean and rich layouts
             // (precip per model, then prob per model, then mean/std/max/agreement).
-            var spreadStart = 2 * N;
+            // Spread features at offset N now that prob_* is gone (was 2*N pre-cleanup).
+            var spreadStart = N;
             predictions.Add(new PrecipPredictionRow
             {
                 LocationName = _cfg.Location.Name,
@@ -304,9 +300,6 @@ public sealed class PrecipPredictCommand
                 PrecipIcon  = perModelPrecip[2], PrecipMf    = perModelPrecip[3],
                 PrecipUkmo  = perModelPrecip[4], PrecipGem   = perModelPrecip[5],
                 PrecipAifs  = perModelPrecip[6], PrecipJma   = perModelPrecip[7],
-                ProbGfsModel   = perModelProb[0], ProbEcmwfModel = perModelProb[1],
-                ProbIconModel  = perModelProb[2], ProbMfModel    = perModelProb[3],
-                ProbUkmoModel  = perModelProb[4], ProbGemModel   = perModelProb[5],
                 RunTimeGfs   = perModelRun[0], RunTimeEcmwf = perModelRun[1],
                 RunTimeIcon  = perModelRun[2], RunTimeMf    = perModelRun[3],
                 RunTimeUkmo  = perModelRun[4], RunTimeGem   = perModelRun[5],
@@ -396,7 +389,6 @@ public sealed class PrecipPredictCommand
     // for Phase 3a's lean composer and keep the prediction-row covariate summary.
     private sealed record PivotedRow(
         double?[] Precip,
-        double?[] Prob,
         DateTime?[] RunTime,
         double?[] Dew,
         double?[] Rh,
@@ -430,7 +422,7 @@ public sealed class PrecipPredictCommand
         var sql = $@"
 WITH latest AS (
     SELECT ValidTimeUtc, Model, RunTimeUtc,
-           Precipitation, PrecipitationProbability,
+           Precipitation,
            RelativeHumidity2m, Temperature2m, DewPoint2m,
            CloudCoverLow, CloudCoverMid, CloudCoverHigh,
            Cape, WindSpeed10m, SurfacePressure,
@@ -442,7 +434,7 @@ WITH latest AS (
     WHERE {liveCycleFilter}
 )
 SELECT ValidTimeUtc, Model, RunTimeUtc,
-       Precipitation, PrecipitationProbability,
+       Precipitation,
        RelativeHumidity2m, Temperature2m, DewPoint2m,
        CloudCoverLow, CloudCoverMid, CloudCoverHigh,
        Cape, WindSpeed10m, SurfacePressure
@@ -471,16 +463,15 @@ ORDER BY ValidTimeUtc, Model;";
             var model = reader.GetString(1);
             var runTime = reader.GetDateTime(2);
             var precip = reader.IsDBNull(3) ? (double?)null : reader.GetDouble(3);
-            var prob   = reader.IsDBNull(4) ? (double?)null : reader.GetDouble(4);
-            var rh     = reader.IsDBNull(5) ? (double?)null : reader.GetDouble(5);
-            var t2m    = reader.IsDBNull(6) ? (double?)null : reader.GetDouble(6);
-            var td     = reader.IsDBNull(7) ? (double?)null : reader.GetDouble(7);
-            var cL     = reader.IsDBNull(8) ? (double?)null : reader.GetDouble(8);
-            var cM     = reader.IsDBNull(9) ? (double?)null : reader.GetDouble(9);
-            var cH     = reader.IsDBNull(10) ? (double?)null : reader.GetDouble(10);
-            var cape   = reader.IsDBNull(11) ? (double?)null : reader.GetDouble(11);
-            var wind   = reader.IsDBNull(12) ? (double?)null : reader.GetDouble(12);
-            var pres   = reader.IsDBNull(13) ? (double?)null : reader.GetDouble(13);
+            var rh     = reader.IsDBNull(4) ? (double?)null : reader.GetDouble(4);
+            var t2m    = reader.IsDBNull(5) ? (double?)null : reader.GetDouble(5);
+            var td     = reader.IsDBNull(6) ? (double?)null : reader.GetDouble(6);
+            var cL     = reader.IsDBNull(7) ? (double?)null : reader.GetDouble(7);
+            var cM     = reader.IsDBNull(8) ? (double?)null : reader.GetDouble(8);
+            var cH     = reader.IsDBNull(9) ? (double?)null : reader.GetDouble(9);
+            var cape   = reader.IsDBNull(10) ? (double?)null : reader.GetDouble(10);
+            var wind   = reader.IsDBNull(11) ? (double?)null : reader.GetDouble(11);
+            var pres   = reader.IsDBNull(12) ? (double?)null : reader.GetDouble(12);
 
             if (!modelSlot.TryGetValue(model, out var slot))
                 continue;
@@ -491,7 +482,6 @@ ORDER BY ValidTimeUtc, Model;";
                 scratch[valid] = s;
             }
             s.Precip[slot]   = precip;
-            s.Prob[slot]     = prob;
             s.RunTime[slot]  = runTime;
             s.Dew[slot]      = td;
             s.Rh[slot]       = rh;
@@ -508,7 +498,6 @@ ORDER BY ValidTimeUtc, Model;";
             kv => kv.Key,
             kv => new PivotedRow(
                 Precip: kv.Value.Precip,
-                Prob: kv.Value.Prob,
                 RunTime: kv.Value.RunTime,
                 Dew: kv.Value.Dew,
                 Rh: kv.Value.Rh,
@@ -526,7 +515,6 @@ ORDER BY ValidTimeUtc, Model;";
     private sealed class Scratch
     {
         public double?[] Precip { get; } = new double?[8];
-        public double?[] Prob { get; } = new double?[8];
         public DateTime?[] RunTime { get; } = new DateTime?[8];
         public double?[] Dew { get; } = new double?[8];
         public double?[] Rh { get; } = new double?[8];

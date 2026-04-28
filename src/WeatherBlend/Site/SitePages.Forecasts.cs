@@ -144,6 +144,8 @@ public static partial class SitePages
 
         // NWP colour palette — matched to the temperature chart so a reader who
         // knows "ECMWF is blue" up there reads it the same way down here.
+        // AIFS pink (matches temp chart). JMA gets amber to flag it as "precip
+        // bake-off addition only" — visually distinct from the 6 NWPs + AIFS.
         var nwpSpecs = new (string Label, string Color, Func<PrecipForecastPoint, double?> Get)[]
         {
             ("GFS",   "#ef5350", p => p.PrecipGfs),
@@ -152,6 +154,8 @@ public static partial class SitePages
             ("MF",    "#ffa726", p => p.PrecipMf),
             ("UKMO",  "#5c6bc0", p => p.PrecipUkmo),
             ("GEM",   "#26a69a", p => p.PrecipGem),
+            ("AIFS",  "#ec407a", p => p.PrecipAifs),
+            ("JMA",   "#ffc107", p => p.PrecipJma),
         };
 
         foreach (var station in stations)

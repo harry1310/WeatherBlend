@@ -14,6 +14,12 @@ namespace WeatherBlend.Models;
 /// </summary>
 public sealed class PrecipPredictionRow
 {
+    /// <summary>
+    /// Number of named per-model precip slots (PrecipGfs..PrecipJma).
+    /// See <see cref="PredictionRow.PerModelFieldCount"/> for the rationale.
+    /// </summary>
+    public const int PerModelFieldCount = 8;
+
     [SetsRequiredMembers]
     public PrecipPredictionRow()
     {
@@ -50,18 +56,12 @@ public sealed class PrecipPredictionRow
     public double? PrecipAifs { get; init; }
     public double? PrecipJma { get; init; }
 
-    // ProbXxxModel fields kept for back-compat with already-shipped artefacts.
-    // The prob_* training features are zero-gain everywhere (Open-Meteo's
-    // precipitation_probability adds nothing the trees can't infer from the
-    // raw rate); slated for removal in a follow-up commit. Not adding ProbAifs
-    // / ProbJma here — they're equally zero-gain and would just be more
-    // never-populated columns.
-    public double? ProbGfsModel { get; init; }
-    public double? ProbEcmwfModel { get; init; }
-    public double? ProbIconModel { get; init; }
-    public double? ProbMfModel { get; init; }
-    public double? ProbUkmoModel { get; init; }
-    public double? ProbGemModel { get; init; }
+    // ProbXxxModel fields removed 2026-04-28 — every prob_* training feature
+    // had 0.000 gain at every lead (Open-Meteo's precipitation_probability adds
+    // nothing the trees can't infer from the raw precipitation rate). Old
+    // prediction parquets that still contain these columns are read by the new
+    // verify/site SQL via union_by_name + explicit column list, so the now-
+    // unselected columns are simply ignored.
 
     public DateTime? RunTimeGfs { get; init; }
     public DateTime? RunTimeEcmwf { get; init; }
