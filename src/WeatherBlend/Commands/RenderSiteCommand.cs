@@ -641,17 +641,19 @@ ORDER BY TruthStation, LeadHours, ValidTimeUtc";
         var glob = Path.Combine(_cfg.Storage.PredictionsPath, "utci", "**", "*.parquet")
             .Replace('\\', '/').Replace("'", "''");
 
-        // Pull TemperatureC, VapourPressureHpa, WindSpeed10mMs alongside UTCI so we
-        // can compute Steadman 1994 apparent-temperature in C# at render time. The
-        // formula is one line (Ta + 0.33·e − 0.70·ws − 4) and re-deriving it here
-        // means the home-card chip Just Works on existing parquets — no predict
-        // re-run needed to populate a new persisted column.
+        // ApparentTemperatureC is now persisted by the predict pipeline alongside
+        // UTCI (Steadman 1994 shade form). Old parquets pre-dating that change
+        // return NULL via union_by_name; we filter those rows out below so the
+        // home card silently omits the chip rather than rendering "Feels NaN°C".
+        // Old rows age out within one predict cycle as the writer rewrites each
+        // day's file with the new schema.
         var sql = $@"
 SELECT ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours, UtciC, Band,
-       TemperatureC, VapourPressureHpa, WindSpeed10mMs
+       ApparentTemperatureC
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
 WHERE LocationName = '{_cfg.Location.Name}'
   AND UtciC IS NOT NULL
+  AND ApparentTemperatureC IS NOT NULL
   AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 ORDER BY LeadHours, ValidTimeUtc";
@@ -668,9 +670,6 @@ ORDER BY LeadHours, ValidTimeUtc";
             while (r.Read())
             {
                 ct.ThrowIfCancellationRequested();
-                var ta = r.GetDouble(6);
-                var ePa = r.GetDouble(7);
-                var ws = r.GetDouble(8);
                 rows.Add(new SitePages.UtciForecastPoint(
                     Version:        r.GetString(0),
                     PredictedAtUtc: r.GetDateTime(1),
@@ -678,7 +677,7 @@ ORDER BY LeadHours, ValidTimeUtc";
                     LeadHours:      r.GetInt32(3),
                     UtciC:          r.GetDouble(4),
                     Band:           r.IsDBNull(5) ? "" : r.GetString(5),
-                    ApparentC:      WeatherBlend.Predict.Utci.FeelsLikeCalculator.Steadman1994(ta, ePa, ws)));
+                    ApparentC:      r.GetDouble(6)));
             }
         }
         catch (DuckDBException ex) when (ex.Message.Contains("No files found"))

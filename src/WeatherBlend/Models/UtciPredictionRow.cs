@@ -50,6 +50,16 @@ public sealed class UtciPredictionRow
     /// rather than enum for portable parquet readers.</summary>
     public required string Band { get; init; }
 
+    /// <summary>
+    /// Steadman 1994 outdoor "apparent temperature" (°C) — the BBC/BoM-style
+    /// shade-form companion to UTCI. Derived from the same Ta + e + ws inputs
+    /// captured above, so persistence here means the home-card chip (and any
+    /// future verify pipeline) reads it directly from the row instead of
+    /// recomputing in the renderer. <see cref="UtciC"/> stays the rigorous
+    /// biothermal index; this one is the public-facing "feels like".
+    /// </summary>
+    public required double ApparentTemperatureC { get; init; }
+
     public required string TempModelVersion { get; init; }
     public required string HumidityModelVersion { get; init; }
     public required string WindModelVersion { get; init; }

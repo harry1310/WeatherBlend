@@ -79,6 +79,10 @@ public static class UtciPredictPipeline
             double lUp = FeelsLikeCalculator.LongwaveUpWm2(ta);
             double tmrt = FeelsLikeCalculator.Tmrt(ta, sw, cc / 100.0, rh);
             double utci = FeelsLikeCalculator.Utci(ta, pHpa, ws, tmrt);
+            // Companion BBC/BoM-style shade apparent temperature, persisted alongside
+            // UTCI so the home-card chip reads both from the row instead of
+            // recomputing one of them at render time.
+            double apparent = FeelsLikeCalculator.Steadman1994(ta, pHpa, ws);
 
             rows.Add(new UtciPredictionRow
             {
@@ -99,6 +103,7 @@ public static class UtciPredictPipeline
                 MeanRadiantTemperatureC = tmrt,
                 UtciC = utci,
                 Band = FeelsLikeCalculator.Band(utci).ToString(),
+                ApparentTemperatureC = apparent,
                 TempModelVersion = temp.Version,
                 HumidityModelVersion = hum.Version,
                 WindModelVersion = wnd.Version,
