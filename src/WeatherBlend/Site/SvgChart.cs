@@ -38,6 +38,25 @@ public sealed record LineChartSpec
 
     /// <summary>Formats a Y value for the axis label.</summary>
     public Func<double, string> FormatY { get; init; } = v => v.ToString("0.##", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// Vertical background bands, each (X start, X end) in OADate. Rendered behind
+    /// the data via the Chart.js annotation plugin — used on rainfall skill charts
+    /// to highlight observed wet hours instead of plotting them as 0/1 dots.
+    /// X values are OADate to match <see cref="LineSeries.Points"/>; the JS layer
+    /// converts both to Unix ms in the same step.
+    /// </summary>
+    public IReadOnlyList<(double XStart, double XEnd)> Bands { get; init; }
+        = Array.Empty<(double, double)>();
+
+    /// <summary>CSS colour string used to fill <see cref="Bands"/>. Defaults to a
+    /// pale blue that reads as "wet" without competing with the line series.</summary>
+    public string BandColor { get; init; } = "rgba(33, 150, 243, 0.18)";
+
+    /// <summary>Optional vertical reference line at this X (OADate). Rendered
+    /// dashed via the annotation plugin. Used to mark "today" on skill charts so
+    /// a reader can see at a glance which side of the chart is the future.</summary>
+    public double? TodayLineX { get; init; }
 }
 
 public static class LineChartRenderer
@@ -196,6 +215,19 @@ public static class LineChartRenderer
             });
         }
 
+        // Annotation plugin payload — only emitted when non-empty so charts that
+        // don't need bands or a "today" line ship a tighter JSON config.
+        object? annotations = null;
+        if (spec.Bands.Count > 0 || spec.TodayLineX.HasValue)
+        {
+            annotations = new
+            {
+                bands = spec.Bands.Select(b => new[] { b.XStart, b.XEnd }).ToArray(),
+                bandColor = spec.BandColor,
+                todayX = spec.TodayLineX,
+            };
+        }
+
         var cfg = new
         {
             title = spec.Title,
@@ -206,6 +238,7 @@ public static class LineChartRenderer
             ySuffix,
             yTrim,
             datasets,
+            annotations,
         };
 
         var json = JsonSerializer.Serialize(cfg);

@@ -297,6 +297,46 @@ public static partial class SitePages
               spanGaps: true,
             }));
 
+            // Annotation plugin payload — wet bands and the "today" reference line.
+            // Server emits cfg.annotations only when something's there, so most
+            // charts pass an empty annotations object and the plugin no-ops.
+            const annoCfg = {};
+            if (cfg.annotations) {
+              const ann = cfg.annotations;
+              if (ann.bands && ann.bands.length) {
+                ann.bands.forEach((b, i) => {
+                  annoCfg['band' + i] = {
+                    type: 'box',
+                    xMin: oaToMs(b[0]),
+                    xMax: oaToMs(b[1]),
+                    yMin: -Infinity, yMax: Infinity,
+                    backgroundColor: ann.bandColor || 'rgba(33,150,243,0.18)',
+                    borderWidth: 0,
+                    drawTime: 'beforeDatasetsDraw',
+                  };
+                });
+              }
+              if (ann.todayX != null) {
+                annoCfg['today'] = {
+                  type: 'line',
+                  xMin: oaToMs(ann.todayX),
+                  xMax: oaToMs(ann.todayX),
+                  borderColor: 'rgba(102,102,102,0.7)',
+                  borderWidth: 1.25,
+                  borderDash: [4, 4],
+                  label: {
+                    display: true,
+                    content: 'today',
+                    position: 'start',
+                    backgroundColor: 'rgba(102,102,102,0.7)',
+                    color: '#fff',
+                    font: { family: 'ui-monospace, monospace', size: 10 },
+                    padding: { x: 4, y: 2 },
+                  },
+                };
+              }
+            }
+
             new Chart(canvas, {
               type: 'line',
               data: { datasets },
@@ -308,6 +348,7 @@ public static partial class SitePages
                 normalized: true,
                 interaction: { mode: 'nearest', axis: 'x', intersect: false },
                 plugins: {
+                  annotation: { annotations: annoCfg },
                   title: { display: !!cfg.title, text: cfg.title || '', font: { size: 14, weight: '600' }, padding: { top: 4, bottom: 8 } },
                   legend: { position: 'top', align: 'end', labels: { boxWidth: 12, boxHeight: 12, usePointStyle: false, font: { size: 11 } } },
                   tooltip: {
@@ -369,6 +410,7 @@ public static partial class SitePages
               <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
               <link rel="stylesheet" href="styles.css">
               <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+              <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.1.0/dist/chartjs-plugin-annotation.min.js"></script>
               <script src="chart.js" defer></script>
             </head>
             <body>
@@ -475,6 +517,60 @@ public static partial class SitePages
             else sb.Append(c);
         }
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Collapse hourly rainfall truth into a list of wet-run intervals
+    /// (start, end), each in OADate. A wet hour is one with ≥ 0.1 mm rainfall —
+    /// the same threshold the precip blender's training label uses. Consecutive
+    /// wet hours merge into a single band so the skill page renders a continuous
+    /// blue stripe rather than a row of abutting rectangles. End-of-run is the
+    /// next hour's tick (start + N·1h), so a single wet hour at 14:00 covers
+    /// the visual span 14:00..15:00.
+    /// </summary>
+    internal static List<(double XStart, double XEnd)> ComputeWetBands(
+        IReadOnlyDictionary<DateTime, double> hourlyRainfallMm,
+        DateTime windowStartUtc)
+    {
+        var bands = new List<(double, double)>();
+        if (hourlyRainfallMm.Count == 0) return bands;
+        var ordered = hourlyRainfallMm
+            .Where(kv => kv.Key >= windowStartUtc)
+            .OrderBy(kv => kv.Key)
+            .ToList();
+        DateTime? runStart = null;
+        DateTime? runLast = null;
+        foreach (var (hour, mm) in ordered)
+        {
+            if (mm >= 0.1)
+            {
+                if (runStart is null)
+                {
+                    runStart = hour;
+                    runLast = hour;
+                }
+                else if (runLast is { } prev && hour == prev.AddHours(1))
+                {
+                    runLast = hour;
+                }
+                else
+                {
+                    // Gap — flush the previous run, start a new one.
+                    bands.Add((runStart!.Value.ToOADate(), runLast!.Value.AddHours(1).ToOADate()));
+                    runStart = hour;
+                    runLast = hour;
+                }
+            }
+            else if (runStart is not null)
+            {
+                bands.Add((runStart!.Value.ToOADate(), runLast!.Value.AddHours(1).ToOADate()));
+                runStart = null;
+                runLast = null;
+            }
+        }
+        if (runStart is not null)
+            bands.Add((runStart!.Value.ToOADate(), runLast!.Value.AddHours(1).ToOADate()));
+        return bands;
     }
 
     private static string Escape(string s) =>

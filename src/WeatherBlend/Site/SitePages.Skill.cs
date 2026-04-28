@@ -206,6 +206,7 @@ public static partial class SitePages
             Height = 360,
             FormatX = v => DateTime.FromOADate(v).ToString("MM-dd", Ci),
             FormatY = v => v.ToString("0.#", Ci) + "°",
+            TodayLineX = input.GeneratedAtUtc.ToOADate(),
         });
     }
 
@@ -253,25 +254,27 @@ public static partial class SitePages
                 Series = series,
                 FormatX = v => DateTime.FromOADate(v).ToString("MM-dd", Ci),
                 FormatY = v => v.ToString("0.00", Ci),
+                TodayLineX = input.GeneratedAtUtc.ToOADate(),
             }));
         }
         return content.ToString();
     }
 
     // -------------------------------------------------------------------------------
-    // Eyeball: precipitation vs observed rainfall. Overlays observed hourly rainfall
-    // (capped at 1 mm/h so it shares the 0-1 probability axis) on a per-phase P(wet)
-    // line, then a three-way 24h comparison of every phase against truth.
+    // Eyeball: precipitation vs observed rainfall. P(wet) lines per phase / lead,
+    // with observed wet hours rendered as light-blue background bands instead of
+    // discrete dots — gives a continuous "this was a wet period" stripe behind the
+    // forecast lines. A dashed vertical "today" line marks where the future starts.
     // -------------------------------------------------------------------------------
     private static string RenderPrecipVsTruthBlock(SiteInputs input, string? currentStation)
     {
         var content = new StringBuilder();
         content.Append("""
-            <p class="skill-line">P(wet) is the blender's probability that the next hour sees ≥ 0.1 mm. Truth is plotted
-               as discrete dots at 0 (dry) or 1 (wet) using that same 0.1 mm threshold, so the only meaningful comparison
-               at any hour is where P(wet) sits relative to the dot — a connecting line would imply non-existent
-               intermediate states. Hours with fewer than 4 of 4 15-min readings are dropped to avoid flipping wet↔dry
-               at the boundary.</p>
+            <p class="skill-line">P(wet) is the blender's probability that the next hour sees ≥ 0.1 mm. Light-blue vertical bands
+               behind the lines mark hours where the gauge actually recorded ≥ 0.1 mm — so reading the chart is "during the
+               blue stripe, did our P(wet) lines climb?". A dashed vertical line marks today; everything to the right is
+               forecast-only. Hours with fewer than 4 of 4 15-min readings are dropped to avoid flipping wet↔dry at the
+               boundary.</p>
             """);
 
         if (currentStation is null)
@@ -292,19 +295,11 @@ public static partial class SitePages
 
         var stationPredictions = input.PrecipPredictions.Where(p => p.Station == station).ToList();
 
-        // Collapse truth to a 0/1 wet-hour indicator so it shares the 0-1 axis with
-        // P(wet) honestly — plotting capped mm/h against a probability is an apples-
-        // to-oranges overlay. The 0.1 mm threshold is the same one the blender's
-        // training label uses, so the lines are directly comparable point-by-point.
-        List<(double X, double Y)> truthPts = new();
-        if (input.RainfallTruth.TryGetValue(station, out var truth) && truth.Count > 0)
-        {
-            truthPts = truth
-                .Where(kv => kv.Key >= input.WindowStartUtc)
-                .OrderBy(kv => kv.Key)
-                .Select(kv => (X: kv.Key.ToOADate(), Y: kv.Value >= 0.1 ? 1.0 : 0.0))
-                .ToList();
-        }
+        // Wet-period strips replace the previous 0/1 truth-dot series. Same
+        // ≥ 0.1 mm threshold the blender was trained on.
+        var wetBands = input.RainfallTruth.TryGetValue(station, out var truth)
+            ? ComputeWetBands(truth, input.WindowStartUtc)
+            : new List<(double, double)>();
 
         (int lead, string color)[] leadSpecs =
         {
@@ -337,8 +332,6 @@ public static partial class SitePages
                 if (pts.Count > 0)
                     series.Add(new LineSeries($"P(wet) +{lead}h", color, pts));
             }
-            if (truthPts.Count > 0)
-                series.Add(new LineSeries("Observed wet hour (≥ 0.1 mm)", "#ef5350", truthPts, PointsOnly: true));
 
             if (series.Count == 0)
             {
@@ -351,31 +344,33 @@ public static partial class SitePages
             content.Append(Ci, $"<h5>{Escape(spec.ShortTitle)}</h5>");
             content.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
             {
-                Title = $"P(wet) vs observed wet-hour — {PrettyStation(station)} — Phase {spec.Key}",
+                Title = $"P(wet) vs observed wet hours — {PrettyStation(station)} — Phase {spec.Key}",
                 XLabel = "Time (UTC)",
-                YLabel = "P(wet) / observed wet-hour",
+                YLabel = "P(wet)",
                 Series = series,
                 Height = 280,
                 FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
                 FormatY = v => v.ToString("0.00", Ci),
+                Bands = wetBands,
+                TodayLineX = input.GeneratedAtUtc.ToOADate(),
             }));
         }
 
         var cvc = BuildChampionVsChallengerSeries(stationPredictions, input.PhaseByVersion, input.WindowStartUtc, leadHours: 24);
         if (cvc.Count >= 2)
         {
-            if (truthPts.Count > 0)
-                cvc.Add(new LineSeries("Observed wet hour (≥ 0.1 mm)", "#ef5350", truthPts, PointsOnly: true));
             content.Append("<h5>Three-way comparison — +24h lead</h5>");
             content.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
             {
                 Title = $"3a vs 3a_isotonic vs 3c vs observed — {PrettyStation(station)} — +24h",
                 XLabel = "Time (UTC)",
-                YLabel = "P(wet) / observed wet-hour",
+                YLabel = "P(wet)",
                 Series = cvc,
                 Height = 280,
                 FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
                 FormatY = v => v.ToString("0.00", Ci),
+                Bands = wetBands,
+                TodayLineX = input.GeneratedAtUtc.ToOADate(),
             }));
         }
 
