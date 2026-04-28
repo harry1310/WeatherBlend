@@ -447,9 +447,9 @@ ORDER BY ValidTimeUtc, Model;";
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
 
-        var modelSlot = PrecipFeatureBuilder.ModelColumns
-            .Select((m, i) => (m.ModelId, Index: i))
-            .ToDictionary(x => x.ModelId, x => x.Index);
+        var modelSlot = FeatureBuilder.CanonicalModelOrder
+            .Select((id, i) => (id, Index: i))
+            .ToDictionary(x => x.id, x => x.Index);
 
         // Scratch accumulators per valid-time — the covariate means are computed
         // after the read loop so a missing model row doesn't skew the average.

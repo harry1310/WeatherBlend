@@ -21,34 +21,6 @@ public sealed class DryWindowClimatology
     public int SourceRowCount { get; set; }
     public int WindowHours { get; set; }
 
-    public static DryWindowClimatology BuildFromTraining(IReadOnlyList<DryWindowTrainingRow> trainRows, int windowHours)
-    {
-        if (trainRows.Count == 0)
-        {
-            return new DryWindowClimatology { WindowHours = windowHours };
-        }
-
-        var sums = new Dictionary<int, (int Pos, int N)>();
-        foreach (var r in trainRows)
-        {
-            var m = r.TargetDateUtc.Month;
-            sums.TryGetValue(m, out var cur);
-            sums[m] = (cur.Pos + (r.HasDryWindow ? 1 : 0), cur.N + 1);
-        }
-
-        var pDry = sums.ToDictionary(
-            kv => kv.Key.ToString("D2"),
-            kv => (double)kv.Value.Pos / kv.Value.N);
-
-        return new DryWindowClimatology
-        {
-            PDryByMonth = pDry,
-            GlobalPositiveRate = (double)trainRows.Count(r => r.HasDryWindow) / trainRows.Count,
-            SourceRowCount = trainRows.Count,
-            WindowHours = windowHours,
-        };
-    }
-
     public double Predict(DateTime targetDateUtc)
     {
         var key = targetDateUtc.Month.ToString("D2");

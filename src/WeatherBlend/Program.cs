@@ -123,7 +123,6 @@ public static class Program
                 services.AddTransient<GfsBackfillCommand>();
                 services.AddTransient<StatusCommand>();
                 services.AddTransient<TrainCommand>();
-                services.AddTransient<EvaluateCommand>();
                 services.AddTransient<InspectCommand>();
                 services.AddTransient<CompareCommand>();
                 services.AddTransient<PredictCommand>();
@@ -136,11 +135,9 @@ public static class Program
                 services.AddTransient<DryWindowDiagnosticCommand>();
                 services.AddTransient<DryWindowTrainCommand>();
                 services.AddTransient<DryWindowCalibrateCommand>();
-                services.AddTransient<DryWindowReportCommand>();
                 services.AddTransient<DryWindowAblateCommand>();
                 services.AddTransient<DryWindowPredictCommand>();
                 services.AddTransient<DryWindowVerifyCommand>();
-                services.AddTransient<ScoreHistoricalCommand>();
                 services.AddTransient<ElementTrainCommand>();
                 services.AddTransient<ElementPredictCommand>();
                 services.AddTransient<ElementVerifyCommand>();
@@ -307,25 +304,6 @@ public static class Program
             ctx.ExitCode = await cmd.RunAsync(target, lead, station, window, featureSet, ctx.GetCancellationToken());
         });
         root.AddCommand(train);
-
-        var evalTargetOpt = new Option<string>(
-            name: "--target",
-            description: "Target variable: temperature",
-            getDefaultValue: () => "temperature");
-        var modelVersionOpt = new Option<string>(
-            name: "--model-version",
-            description: "Version directory name (e.g. 'v2026-04-20_140000') or 'current'",
-            getDefaultValue: () => "current");
-        var evaluate = new Command("evaluate", "Run verification report against the held-out test set")
-        {
-            evalTargetOpt, modelVersionOpt,
-        };
-        evaluate.SetHandler(async (target, version) =>
-        {
-            var cmd = host.Services.GetRequiredService<EvaluateCommand>();
-            await cmd.RunAsync(target, version, CancellationToken.None);
-        }, evalTargetOpt, modelVersionOpt);
-        root.AddCommand(evaluate);
 
         var pathOpt = new Option<string>("--path", "Path to a parquet file") { IsRequired = true };
         var inspect = new Command("inspect", "Dump a parquet file") { pathOpt };
@@ -534,16 +512,6 @@ public static class Program
         });
         root.AddCommand(dryWindowDiag);
 
-        var dryWindowReport = new Command(
-            "dry-window-report",
-            "Phase 3b post-training evaluation: reload current artefacts, score on test partition, write markdown report");
-        dryWindowReport.SetHandler(async ctx =>
-        {
-            var cmd = host.Services.GetRequiredService<DryWindowReportCommand>();
-            ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
-        });
-        root.AddCommand(dryWindowReport);
-
         // The `bakeoff` command was removed in Phase 5 of the unify-model-membership refactor.
         // It diagnosed UKMO inclusion vs exclusion on a shared UKMO-present test set; the
         // resulting per-element decisions are now baked into config.yaml's blenders section.
@@ -557,23 +525,6 @@ public static class Program
             ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
         });
         root.AddCommand(dryWindowAblate);
-
-        var scoreTargetOpt = new Option<string>(
-            name: "--target",
-            description: "Target variable: temperature | precipitation | dry-window | all",
-            getDefaultValue: () => "all");
-        var scoreHistorical = new Command(
-            "score-historical",
-            "Compute per-NWP-model test-set accuracy (MAE / Brier) for every active artefact and persist per_model_test.json next to the model.")
-        {
-            scoreTargetOpt,
-        };
-        scoreHistorical.SetHandler(async (target) =>
-        {
-            var cmd = host.Services.GetRequiredService<ScoreHistoricalCommand>();
-            Environment.ExitCode = await cmd.RunAsync(target, CancellationToken.None);
-        }, scoreTargetOpt);
-        root.AddCommand(scoreHistorical);
 
         var globOpt = new Option<string>("--glob", "Parquet glob across models for one run") { IsRequired = true };
         var compare = new Command("compare", "Cross-model agreement summary for a run") { globOpt };

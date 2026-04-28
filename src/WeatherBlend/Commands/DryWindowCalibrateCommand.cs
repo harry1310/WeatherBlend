@@ -4,6 +4,7 @@ using WeatherBlend.Config;
 using WeatherBlend.Evaluate.DryWindow;
 using WeatherBlend.Evaluate.Precip;
 using WeatherBlend.Train;
+using WeatherBlend.Train.Common;
 using WeatherBlend.Train.DryWindow;
 
 namespace WeatherBlend.Commands;
@@ -112,12 +113,14 @@ public sealed class DryWindowCalibrateCommand
             ct.ThrowIfCancellationRequested();
             _log.LogInformation("--- Lead {Lead}h ---", lead);
 
+            var spec = DryWindowFeatureBuilder.BuildSpec(
+                _cfg.Blenders, lead, DryWindowFeatureBuilder.Phase3b);
             var rows = DryWindowFeatureBuilder.BuildForLead(
                 _cfg.Storage.ForecastsPath,
                 _cfg.Storage.RainfallPath,
                 _cfg.Location.Name,
                 friendly,
-                lead,
+                spec,
                 windowHours,
                 ct);
             if (rows.Count < 100)
@@ -133,8 +136,8 @@ public sealed class DryWindowCalibrateCommand
                 ds.Test.Count);
 
             var model = ModelArtifact.LoadLeadModel(ml, sourceDir, lead, out _);
-            var rawVal = DryWindowTrainer.PredictProbability(ml, model, ds.Val);
-            var truthVal = ds.Val.Select(r => r.HasDryWindow ? 1.0 : 0.0).ToArray();
+            var rawVal = DryWindowTrainer.PredictVectorProbability(ml, model, spec, ds.Val);
+            var truthVal = ds.Val.Select(r => r.Label ? 1.0 : 0.0).ToArray();
 
             var calibrator = IsotonicCalibrator.Fit(rawVal, truthVal);
             calibration.ByLead[lead.ToString()] = calibrator;
@@ -142,9 +145,9 @@ public sealed class DryWindowCalibrateCommand
 
             // Calibrated test-set Brier so the metadata has a headline figure
             // comparable to the 3b BlendTestMae column.
-            var rawTest = DryWindowTrainer.PredictProbability(ml, model, ds.Test);
+            var rawTest = DryWindowTrainer.PredictVectorProbability(ml, model, spec, ds.Test);
             var calTest = rawTest.Select(calibrator.Apply).ToArray();
-            var truthTest = ds.Test.Select(r => r.HasDryWindow ? 1.0 : 0.0).ToArray();
+            var truthTest = ds.Test.Select(r => r.Label ? 1.0 : 0.0).ToArray();
             var rawBrier = PrecipMetrics.Brier(rawTest, truthTest);
             var calBrier = PrecipMetrics.Brier(calTest, truthTest);
             var climPred = DryWindowBaselines.Climatology(ds.Train, ds.Test, windowHours);

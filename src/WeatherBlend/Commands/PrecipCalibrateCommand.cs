@@ -3,6 +3,7 @@ using Microsoft.ML;
 using WeatherBlend.Config;
 using WeatherBlend.Evaluate.Precip;
 using WeatherBlend.Train;
+using WeatherBlend.Train.Common;
 
 namespace WeatherBlend.Commands;
 
@@ -97,12 +98,13 @@ public sealed class PrecipCalibrateCommand
             ct.ThrowIfCancellationRequested();
             _log.LogInformation("--- Lead {Lead}h ---", lead);
 
+            var spec = PrecipFeatureBuilder.BuildSpec(_cfg.Blenders, lead);
             var rows = PrecipFeatureBuilder.BuildForLead(
                 _cfg.Storage.ForecastsPath,
                 _cfg.Storage.RainfallPath,
                 _cfg.Location.Name,
                 friendly,
-                lead,
+                spec,
                 ct);
             if (rows.Count < 500)
             {
@@ -110,15 +112,15 @@ public sealed class PrecipCalibrateCommand
                 return 3;
             }
 
-            var ds = PrecipDataset.Split(rows);
+            var ds = BinaryDataset.Split(rows);
             _log.LogInformation("Split → train {TN}, val {VN} (wet {VW} / {VP:P1}), test {EN}",
                 ds.Train.Count, ds.Val.Count, ds.ValWet,
                 ds.Val.Count == 0 ? 0 : (double)ds.ValWet / ds.Val.Count,
                 ds.Test.Count);
 
             var model = ModelArtifact.LoadLeadModel(ml, sourceDir, lead, out _);
-            var rawVal = PrecipOccurrenceTrainer.PredictProbability(ml, model, ds.Val);
-            var truthVal = ds.Val.Select(r => r.WetBinary ? 1.0 : 0.0).ToArray();
+            var rawVal = PrecipOccurrenceTrainer.PredictVectorProbability(ml, model, spec, ds.Val);
+            var truthVal = ds.Val.Select(r => r.Label ? 1.0 : 0.0).ToArray();
 
             var calibrator = IsotonicCalibrator.Fit(rawVal, truthVal);
             calibration.ByLead[lead.ToString()] = calibrator;
@@ -126,9 +128,9 @@ public sealed class PrecipCalibrateCommand
 
             // Report calibrated test-set Brier so the metadata has a headline
             // figure comparable to 3a/3c's BlendTestMae field.
-            var rawTest = PrecipOccurrenceTrainer.PredictProbability(ml, model, ds.Test);
+            var rawTest = PrecipOccurrenceTrainer.PredictVectorProbability(ml, model, spec, ds.Test);
             var calTest = rawTest.Select(calibrator.Apply).ToArray();
-            var truthTest = ds.Test.Select(r => r.WetBinary ? 1.0 : 0.0).ToArray();
+            var truthTest = ds.Test.Select(r => r.Label ? 1.0 : 0.0).ToArray();
             var rawBrier = PrecipMetrics.Brier(rawTest, truthTest);
             var calBrier = PrecipMetrics.Brier(calTest, truthTest);
             var climPred = PrecipBaselines.Climatology(ds.Train, ds.Test);
