@@ -53,6 +53,8 @@ public sealed class DryWindowPredictionRow
     public double? HasDryWindowMf    { get; init; }
     public double? HasDryWindowUkmo  { get; init; }
     public double? HasDryWindowGem   { get; init; }
+    public double? HasDryWindowAifs  { get; init; }
+    public double? HasDryWindowJma   { get; init; }
 
     // Per-model day totals (nullable if model was missing any hour).
     public double? PrecipSumGfs   { get; init; }
@@ -61,6 +63,8 @@ public sealed class DryWindowPredictionRow
     public double? PrecipSumMf    { get; init; }
     public double? PrecipSumUkmo  { get; init; }
     public double? PrecipSumGem   { get; init; }
+    public double? PrecipSumAifs  { get; init; }
+    public double? PrecipSumJma   { get; init; }
 
     /// <summary>SHA-256 hex of the 53 feature floats in schema order.</summary>
     public required string FeatureVectorHash { get; init; }

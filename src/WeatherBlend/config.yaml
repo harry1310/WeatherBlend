@@ -237,39 +237,39 @@ blenders:
     - target: precipitation
       featureSet: lean
       requiredModels: []
-      optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, gem_seamless, ecmwf_aifs025_single]
+      optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, gem_seamless, ecmwf_aifs025_single, jma_seamless]
       perLeadOverrides:
         - lead: 120
           requiredModels: []
-          optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless, ecmwf_aifs025_single]
+          optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless, ecmwf_aifs025_single, jma_seamless]
 
     - target: precipitation
       featureSet: rich
       requiredModels: []
-      optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, ukmo_seamless, gem_seamless, ecmwf_aifs025_single]
+      optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, ukmo_seamless, gem_seamless, ecmwf_aifs025_single, jma_seamless]
       perLeadOverrides:
         - lead: 120
           requiredModels: []
-          optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, ukmo_seamless, gem_seamless, ecmwf_aifs025_single]
+          optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, ukmo_seamless, gem_seamless, ecmwf_aifs025_single, jma_seamless]
 
     # ---- Dry-window ----
     - target: dry_window
       featureSet: base
       requiredModels: []
-      optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, gem_seamless, ecmwf_aifs025_single]
+      optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, gem_seamless, ecmwf_aifs025_single, jma_seamless]
       perLeadOverrides:
         - lead: 120
           requiredModels: []
-          optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless, ecmwf_aifs025_single]
+          optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless, ecmwf_aifs025_single, jma_seamless]
 
     - target: dry_window
       featureSet: shape
       requiredModels: []
-      optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, gem_seamless, ecmwf_aifs025_single]
+      optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, gem_seamless, ecmwf_aifs025_single, jma_seamless]
       perLeadOverrides:
         - lead: 120
           requiredModels: []
-          optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless, ecmwf_aifs025_single]
+          optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless, ecmwf_aifs025_single, jma_seamless]
 
     # ---- Element blenders (single-variant) ----
     # Wind: 4 strict + UKMO optional (UKMO wind has intra-2024-09+ gaps).

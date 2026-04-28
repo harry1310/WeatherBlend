@@ -117,8 +117,8 @@ public sealed class ElementVerifyCommand
         var sql = $@"
 SELECT LocationName, Element, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
        BlendValue,
-       ModelGfs, ModelEcmwf, ModelIcon, ModelMf, ModelUkmo, ModelGem,
-       RunTimeGfs, RunTimeEcmwf, RunTimeIcon, RunTimeMf, RunTimeUkmo, RunTimeGem,
+       ModelGfs, ModelEcmwf, ModelIcon, ModelMf, ModelUkmo, ModelGem, ModelAifs,
+       RunTimeGfs, RunTimeEcmwf, RunTimeIcon, RunTimeMf, RunTimeUkmo, RunTimeGem, RunTimeAifs,
        Mean, Std, Range,
        FeatureVectorHash
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
@@ -154,16 +154,18 @@ ORDER BY ModelVersion, LeadHours, ValidTimeUtc";
                     ModelMf    = NullableDouble(r, 10),
                     ModelUkmo  = NullableDouble(r, 11),
                     ModelGem   = NullableDouble(r, 12),
-                    RunTimeGfs   = NullableDate(r, 13),
-                    RunTimeEcmwf = NullableDate(r, 14),
-                    RunTimeIcon  = NullableDate(r, 15),
-                    RunTimeMf    = NullableDate(r, 16),
-                    RunTimeUkmo  = NullableDate(r, 17),
-                    RunTimeGem   = NullableDate(r, 18),
-                    Mean  = NullableDouble(r, 19),
-                    Std   = NullableDouble(r, 20),
-                    Range = NullableDouble(r, 21),
-                    FeatureVectorHash = r.IsDBNull(22) ? "" : r.GetString(22),
+                    ModelAifs  = NullableDouble(r, 13),
+                    RunTimeGfs   = NullableDate(r, 14),
+                    RunTimeEcmwf = NullableDate(r, 15),
+                    RunTimeIcon  = NullableDate(r, 16),
+                    RunTimeMf    = NullableDate(r, 17),
+                    RunTimeUkmo  = NullableDate(r, 18),
+                    RunTimeGem   = NullableDate(r, 19),
+                    RunTimeAifs  = NullableDate(r, 20),
+                    Mean  = NullableDouble(r, 21),
+                    Std   = NullableDouble(r, 22),
+                    Range = NullableDouble(r, 23),
+                    FeatureVectorHash = r.IsDBNull(24) ? "" : r.GetString(24),
                 });
             }
         }

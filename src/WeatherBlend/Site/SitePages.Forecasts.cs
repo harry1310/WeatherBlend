@@ -85,6 +85,7 @@ public static partial class SitePages
         // NWPs first so the brand-purple Blend draws last and sits visually on top.
         // Colours chosen for hue separation; UKMO uses indigo rather than purple to
         // stay distinct from the brand colour reserved for the blend itself.
+        // AIFS uses pink (#ec407a) as the visually-distinct AI/GNN family member.
         var nwpSpecs = new (string Label, string Color, Func<PredictionRow, double?> Get)[]
         {
             ("GFS",   "#ef5350", p => p.TempGfs),
@@ -93,6 +94,7 @@ public static partial class SitePages
             ("MF",    "#ffa726", p => p.TempMf),
             ("UKMO",  "#5c6bc0", p => p.TempUkmo),
             ("GEM",   "#26a69a", p => p.TempGem),
+            ("AIFS",  "#ec407a", p => p.TempAifs),
         };
 
         var series = new List<LineSeries>();

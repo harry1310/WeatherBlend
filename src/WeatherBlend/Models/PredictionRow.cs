@@ -47,6 +47,7 @@ public sealed class PredictionRow
     public double? TempMf { get; init; }
     public double? TempUkmo { get; init; }
     public double? TempGem { get; init; }
+    public double? TempAifs { get; init; }
 
     // Which cycle each per-model temperature came from. Different NWPs post at
     // different cadences (ECMWF 2x/day, GFS/ICON/GEM 4x/day, ...) and latencies
@@ -59,6 +60,7 @@ public sealed class PredictionRow
     public DateTime? RunTimeMf { get; init; }
     public DateTime? RunTimeUkmo { get; init; }
     public DateTime? RunTimeGem { get; init; }
+    public DateTime? RunTimeAifs { get; init; }
 
     public double? TempMean { get; init; }
     public double? TempStd { get; init; }

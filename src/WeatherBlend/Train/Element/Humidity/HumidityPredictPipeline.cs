@@ -73,13 +73,13 @@ public static class HumidityPredictPipeline
             var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
             var yhat = TemperatureTrainer.PredictVector(ml, loadedModel, spec, new[] { row })[0];
 
-            // ElementPredictionRow has 6 named slots; AIFS contributes implicitly via BlendValue.
-            var modelRh  = new double?[6];
-            var modelRun = new DateTime?[6];
+            // ElementPredictionRow has 7 named slots (Gfs..Gem + Aifs).
+            var modelRh  = new double?[7];
+            var modelRun = new DateTime?[7];
             for (int i = 0; i < N; i++)
             {
                 var ci = canonOrder.IndexOf(spec.Models[i]);
-                if (ci >= 6) continue;     // AIFS — not in 6-wide output yet
+                if (ci >= 7) continue;     // JMA — not in humidity output schema
                 modelRh[ci]  = double.IsNaN(rh[i]) ? null : rh[i];
                 modelRun[ci] = p.RunTimes[ci];
             }
@@ -97,8 +97,10 @@ public static class HumidityPredictPipeline
                 BlendValue = yhat,
                 ModelGfs   = modelRh[0], ModelEcmwf = modelRh[1], ModelIcon  = modelRh[2],
                 ModelMf    = modelRh[3], ModelUkmo  = modelRh[4], ModelGem   = modelRh[5],
+                ModelAifs  = modelRh[6],
                 RunTimeGfs = modelRun[0], RunTimeEcmwf = modelRun[1], RunTimeIcon = modelRun[2],
                 RunTimeMf  = modelRun[3], RunTimeUkmo  = modelRun[4], RunTimeGem  = modelRun[5],
+                RunTimeAifs = modelRun[6],
                 Mean = row.Features[spreadStart + 0],
                 Std  = row.Features[spreadStart + 1],
                 Range = row.Features[spreadStart + 2],
@@ -148,9 +150,9 @@ ORDER BY ValidTimeUtc, Model;";
             if (!working.TryGetValue(valid, out var slot))
             {
                 slot = (
-                    Enumerable.Repeat(float.NaN, 7).ToArray(),
-                    Enumerable.Repeat(float.NaN, 7).ToArray(),
-                    new DateTime?[7]);
+                    Enumerable.Repeat(float.NaN, 8).ToArray(),
+                    Enumerable.Repeat(float.NaN, 8).ToArray(),
+                    new DateTime?[8]);
                 working[valid] = slot;
             }
             slot.Rt[idx]  = r.GetDateTime(2);

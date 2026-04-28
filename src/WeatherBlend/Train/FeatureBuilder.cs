@@ -46,6 +46,7 @@ public static class FeatureBuilder
         "ukmo_seamless",
         "gem_seamless",
         "ecmwf_aifs025_single",
+        "jma_seamless",
     };
 
     /// <summary>Stable short suffix used in feature column names (temp_gfs, temp_ecmwf, ...).</summary>
@@ -58,6 +59,7 @@ public static class FeatureBuilder
         "ukmo_seamless" => "ukmo",
         "gem_seamless" => "gem",
         "ecmwf_aifs025_single" => "aifs",
+        "jma_seamless" => "jma",
         _ => throw new ArgumentException($"Unknown modelId '{modelId}'", nameof(modelId)),
     };
 

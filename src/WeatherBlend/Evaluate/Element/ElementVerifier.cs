@@ -25,6 +25,7 @@ public static class ElementVerifier
         ("mf",    p => p.ModelMf),
         ("ukmo",  p => p.ModelUkmo),
         ("gem",   p => p.ModelGem),
+        ("aifs",  p => p.ModelAifs),
     };
 
     public sealed class Inputs

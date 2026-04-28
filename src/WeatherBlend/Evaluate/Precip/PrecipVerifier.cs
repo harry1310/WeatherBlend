@@ -20,7 +20,7 @@ public static class PrecipVerifier
 {
     /// <summary>Slots match the (GFS, ECMWF, ICON, MF, UKMO, GEM) ordering used elsewhere.</summary>
     internal static readonly string[] ModelNames =
-        { "gfs", "ecmwf", "icon", "mf", "ukmo", "gem" };
+        { "gfs", "ecmwf", "icon", "mf", "ukmo", "gem", "aifs", "jma" };
 
     public const double WetThresholdMm = PrecipFeatureBuilder.WetThresholdMm;
 
@@ -198,6 +198,8 @@ public static class PrecipVerifier
             "mf"    => p.PrecipMf,
             "ukmo"  => p.PrecipUkmo,
             "gem"   => p.PrecipGem,
+            "aifs"  => p.PrecipAifs,
+            "jma"   => p.PrecipJma,
             _ => null,
         };
         if (!mm.HasValue) return double.NaN;

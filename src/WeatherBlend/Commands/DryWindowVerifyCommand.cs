@@ -241,8 +241,9 @@ SELECT LocationName, TruthStation, WindowHours, ModelVersion,
        ProbHasDryWindow, ClimatologyProbHasDryWindow,
        AgreementHasDryWindow, PrecipSumMean, LongestDryRunMean, WetHourCountMean,
        HasDryWindowGfs, HasDryWindowEcmwf, HasDryWindowIcon,
-       HasDryWindowMf,  HasDryWindowUkmo,  HasDryWindowGem,
+       HasDryWindowMf,  HasDryWindowUkmo,  HasDryWindowGem,  HasDryWindowAifs,  HasDryWindowJma,
        PrecipSumGfs, PrecipSumEcmwf, PrecipSumIcon, PrecipSumMf, PrecipSumUkmo, PrecipSumGem,
+       PrecipSumAifs, PrecipSumJma,
        FeatureVectorHash
 FROM read_parquet([{string.Join(", ", globs)}], hive_partitioning = false, union_by_name = true)
 WHERE TargetDateUtc >= TIMESTAMP '{windowStart:yyyy-MM-dd HH:mm:ss}'
@@ -282,13 +283,17 @@ ORDER BY TruthStation, WindowHours, ModelVersion, LeadHours, TargetDateUtc";
                     HasDryWindowMf    = Nullable(r, 16),
                     HasDryWindowUkmo  = Nullable(r, 17),
                     HasDryWindowGem   = Nullable(r, 18),
-                    PrecipSumGfs   = Nullable(r, 19),
-                    PrecipSumEcmwf = Nullable(r, 20),
-                    PrecipSumIcon  = Nullable(r, 21),
-                    PrecipSumMf    = Nullable(r, 22),
-                    PrecipSumUkmo  = Nullable(r, 23),
-                    PrecipSumGem   = Nullable(r, 24),
-                    FeatureVectorHash = r.IsDBNull(25) ? "" : r.GetString(25),
+                    HasDryWindowAifs  = Nullable(r, 19),
+                    HasDryWindowJma   = Nullable(r, 20),
+                    PrecipSumGfs   = Nullable(r, 21),
+                    PrecipSumEcmwf = Nullable(r, 22),
+                    PrecipSumIcon  = Nullable(r, 23),
+                    PrecipSumMf    = Nullable(r, 24),
+                    PrecipSumUkmo  = Nullable(r, 25),
+                    PrecipSumGem   = Nullable(r, 26),
+                    PrecipSumAifs  = Nullable(r, 27),
+                    PrecipSumJma   = Nullable(r, 28),
+                    FeatureVectorHash = r.IsDBNull(29) ? "" : r.GetString(29),
                 });
             }
         }
@@ -379,6 +384,7 @@ ORDER BY 1";
         void Add(double? v) { if (v.HasValue) { sum += v.Value; n++; } }
         Add(p.HasDryWindowGfs); Add(p.HasDryWindowEcmwf); Add(p.HasDryWindowIcon);
         Add(p.HasDryWindowMf);  Add(p.HasDryWindowUkmo);  Add(p.HasDryWindowGem);
+        Add(p.HasDryWindowAifs); Add(p.HasDryWindowJma);
         return n == 0 ? double.NaN : sum / n;
     }
 

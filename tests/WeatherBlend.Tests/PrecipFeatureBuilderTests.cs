@@ -31,13 +31,14 @@ public class PrecipFeatureBuilderTests
         spec.FeatureSet.Should().Be("lean");
         spec.RequiredModels.Should().BeEmpty();
         spec.OptionalModels.Should().Equal(
-            "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "meteofrance_seamless", "gem_seamless", "ecmwf_aifs025_single");
-        // Layout: 6 precip + 6 prob + 4 spread + 7 covariates + 4 calendar = 27.
-        spec.FeatureNames.Should().HaveCount(27);
+            "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "meteofrance_seamless", "gem_seamless",
+            "ecmwf_aifs025_single", "jma_seamless");
+        // Layout: 7 precip + 7 prob + 4 spread + 7 covariates + 4 calendar = 29.
+        spec.FeatureNames.Should().HaveCount(29);
         spec.FeatureNames.Should().StartWith(new[]
         {
-            "precip_gfs", "precip_ecmwf", "precip_icon", "precip_mf", "precip_gem", "precip_aifs",
-            "prob_gfs", "prob_ecmwf", "prob_icon", "prob_mf", "prob_gem", "prob_aifs",
+            "precip_gfs", "precip_ecmwf", "precip_icon", "precip_mf", "precip_gem", "precip_aifs", "precip_jma",
+            "prob_gfs", "prob_ecmwf", "prob_icon", "prob_mf", "prob_gem", "prob_aifs", "prob_jma",
         });
         spec.FeatureNames.Should().Contain("precip_agreement_wet_01");
     }
@@ -47,22 +48,23 @@ public class PrecipFeatureBuilderTests
     {
         var spec = PrecipFeatureBuilder.BuildSpec(LoadShippedConfig(), 120);
         spec.OptionalModels.Should().Equal(
-            "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "gem_seamless", "ecmwf_aifs025_single");
-        // 5 precip + 5 prob + 4 spread + 7 covariates + 4 calendar = 25.
-        spec.FeatureNames.Should().HaveCount(25);
+            "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "gem_seamless", "ecmwf_aifs025_single", "jma_seamless");
+        // 6 precip + 6 prob + 4 spread + 7 covariates + 4 calendar = 27.
+        spec.FeatureNames.Should().HaveCount(27);
         spec.FeatureNames.Should().NotContain("precip_mf");
         spec.FeatureNames.Should().NotContain("prob_mf");
         spec.FeatureNames.Should().NotContain("precip_ukmo");
         spec.FeatureNames.Should().Contain("precip_aifs");
+        spec.FeatureNames.Should().Contain("precip_jma");
     }
 
     [Fact]
     public void ComposeRow_with_spec_packs_features_and_label()
     {
         var spec = PrecipFeatureBuilder.BuildSpec(LoadShippedConfig(), 24);
-        // 6 models in spec at lead 24h: gfs/ecmwf/icon/mf/gem/aifs.
-        var precip = new[] { 0.0, 0.05, 0.2, 0.5, 1.0, 0.3 };
-        var probs  = new[] { 0.1, 0.2,  0.3, 0.4, 0.5, 0.6 };
+        // 7 models in spec at lead 24h: gfs/ecmwf/icon/mf/gem/aifs/jma.
+        var precip = new[] { 0.0, 0.05, 0.2, 0.5, 1.0, 0.3, 0.4 };
+        var probs  = new[] { 0.1, 0.2,  0.3, 0.4, 0.5, 0.6, 0.7 };
         var row = PrecipFeatureBuilder.ComposeRow(
             spec, new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc),
             precip, probs,
@@ -76,11 +78,11 @@ public class PrecipFeatureBuilderTests
             row.Features[i].Should().BeApproximately((float)precip[i], 1e-5f);
         row.Label.Should().BeTrue();          // 0.3 mm/h ≥ 0.1 mm threshold
         row.TruthMmHour.Should().BeApproximately(0.3f, 1e-5f);
-        // Mean of (0.0, 0.05, 0.2, 0.5, 1.0, 0.3) = 0.3417; max = 1.0;
-        // agreement = 4/6 (precip≥0.1mm: 0.2, 0.5, 1.0, 0.3).
-        row.Features[spec.IndexOf("precip_mean")].Should().BeApproximately(2.05f / 6f, 1e-4f);
+        // Mean of (0.0, 0.05, 0.2, 0.5, 1.0, 0.3, 0.4) = 2.45/7 ≈ 0.35; max = 1.0;
+        // agreement = 5/7 (precip≥0.1mm: 0.2, 0.5, 1.0, 0.3, 0.4).
+        row.Features[spec.IndexOf("precip_mean")].Should().BeApproximately(2.45f / 7f, 1e-4f);
         row.Features[spec.IndexOf("precip_max")].Should().BeApproximately(1.0f, 1e-4f);
-        row.Features[spec.IndexOf("precip_agreement_wet_01")].Should().BeApproximately(4f / 6f, 1e-4f);
+        row.Features[spec.IndexOf("precip_agreement_wet_01")].Should().BeApproximately(5f / 7f, 1e-4f);
     }
 
     [Fact]

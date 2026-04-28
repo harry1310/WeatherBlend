@@ -151,7 +151,7 @@ public static partial class SitePages
         var blend = scored.Select(p => p.BlendTemperature).ToArray();
         var blendMae = Mae(blend, truth);
 
-        // Best single across the six per-model columns.
+        // Best single across the per-model columns (6 NWPs + AIFS).
         (string name, double mae)[] singles =
         {
             ("GFS",   MaeWithGaps(scored.Select(p => p.TempGfs).ToArray(),   truth)),
@@ -160,6 +160,7 @@ public static partial class SitePages
             ("MF",    MaeWithGaps(scored.Select(p => p.TempMf).ToArray(),    truth)),
             ("UKMO",  MaeWithGaps(scored.Select(p => p.TempUkmo).ToArray(),  truth)),
             ("GEM",   MaeWithGaps(scored.Select(p => p.TempGem).ToArray(),   truth)),
+            ("AIFS",  MaeWithGaps(scored.Select(p => p.TempAifs).ToArray(),  truth)),
         };
         var best = singles.Where(s => !double.IsNaN(s.mae)).OrderBy(s => s.mae).FirstOrDefault();
         if (best.name is null || double.IsNaN(best.mae))

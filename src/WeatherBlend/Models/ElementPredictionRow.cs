@@ -45,6 +45,7 @@ public sealed class ElementPredictionRow
     public double? ModelMf { get; init; }
     public double? ModelUkmo { get; init; }
     public double? ModelGem { get; init; }
+    public double? ModelAifs { get; init; }
 
     public DateTime? RunTimeGfs { get; init; }
     public DateTime? RunTimeEcmwf { get; init; }
@@ -52,6 +53,7 @@ public sealed class ElementPredictionRow
     public DateTime? RunTimeMf { get; init; }
     public DateTime? RunTimeUkmo { get; init; }
     public DateTime? RunTimeGem { get; init; }
+    public DateTime? RunTimeAifs { get; init; }
 
     public double? Mean { get; init; }
     public double? Std { get; init; }

@@ -273,18 +273,18 @@ public sealed class PrecipPredictCommand
             var climPWet = climatology.Predict(valid);
 
             // Build per-model output fields: populate only spec.Models, null elsewhere.
-            // Output PrecipPredictionRow has 6 named slots; AIFS (canonical idx 6) is in
-            // the trained model + BlendValue but not exposed as a named field yet.
-            var perModelPrecip = new double?[7];
-            var perModelProb   = new double?[7];
-            var perModelRun    = new DateTime?[7];
+            // Output PrecipPredictionRow has 8 named precip slots (Gfs..Gem + Aifs + Jma)
+            // and 6 legacy prob slots (Gfs..Gem). New AIFS/JMA models don't get prob
+            // slots — the prob_* training features are zero-gain and slated for removal.
+            var perModelPrecip = new double?[8];
+            var perModelProb   = new double?[6];
+            var perModelRun    = new DateTime?[8];
             for (int i = 0; i < N; i++)
             {
                 var ci = canonOrder.IndexOf(spec.Models[i]);
-                if (ci >= 6) continue;     // AIFS — not in 6-wide output yet
                 perModelPrecip[ci] = specPrecip[i];
-                perModelProb[ci]   = specProb[i];
                 perModelRun[ci]    = pivot.RunTime[ci];
+                if (ci < 6) perModelProb[ci] = specProb[i];
             }
 
             // Spread features live at offset 2N in both lean and rich layouts
@@ -303,12 +303,14 @@ public sealed class PrecipPredictCommand
                 PrecipGfs   = perModelPrecip[0], PrecipEcmwf = perModelPrecip[1],
                 PrecipIcon  = perModelPrecip[2], PrecipMf    = perModelPrecip[3],
                 PrecipUkmo  = perModelPrecip[4], PrecipGem   = perModelPrecip[5],
+                PrecipAifs  = perModelPrecip[6], PrecipJma   = perModelPrecip[7],
                 ProbGfsModel   = perModelProb[0], ProbEcmwfModel = perModelProb[1],
                 ProbIconModel  = perModelProb[2], ProbMfModel    = perModelProb[3],
                 ProbUkmoModel  = perModelProb[4], ProbGemModel   = perModelProb[5],
                 RunTimeGfs   = perModelRun[0], RunTimeEcmwf = perModelRun[1],
                 RunTimeIcon  = perModelRun[2], RunTimeMf    = perModelRun[3],
                 RunTimeUkmo  = perModelRun[4], RunTimeGem   = perModelRun[5],
+                RunTimeAifs  = perModelRun[6], RunTimeJma   = perModelRun[7],
                 PrecipMean = NanToNull(row.Features[spreadStart + 0]),
                 PrecipStd  = NanToNull(row.Features[spreadStart + 1]),
                 PrecipMax  = NanToNull(row.Features[spreadStart + 2]),
@@ -523,18 +525,18 @@ ORDER BY ValidTimeUtc, Model;";
 
     private sealed class Scratch
     {
-        public double?[] Precip { get; } = new double?[7];
-        public double?[] Prob { get; } = new double?[7];
-        public DateTime?[] RunTime { get; } = new DateTime?[7];
-        public double?[] Dew { get; } = new double?[7];
-        public double?[] Rh { get; } = new double?[7];
-        public double?[] Temp2m { get; } = new double?[7];
-        public double?[] CloudLow { get; } = new double?[7];
-        public double?[] CloudMid { get; } = new double?[7];
-        public double?[] CloudHigh { get; } = new double?[7];
-        public double?[] Cape { get; } = new double?[7];
-        public double?[] WindSpeed { get; } = new double?[7];
-        public double?[] Pressure { get; } = new double?[7];
+        public double?[] Precip { get; } = new double?[8];
+        public double?[] Prob { get; } = new double?[8];
+        public DateTime?[] RunTime { get; } = new DateTime?[8];
+        public double?[] Dew { get; } = new double?[8];
+        public double?[] Rh { get; } = new double?[8];
+        public double?[] Temp2m { get; } = new double?[8];
+        public double?[] CloudLow { get; } = new double?[8];
+        public double?[] CloudMid { get; } = new double?[8];
+        public double?[] CloudHigh { get; } = new double?[8];
+        public double?[] Cape { get; } = new double?[8];
+        public double?[] WindSpeed { get; } = new double?[8];
+        public double?[] Pressure { get; } = new double?[8];
     }
 
     private static double MeanOfSlots(double?[] slots)

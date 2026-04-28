@@ -144,7 +144,7 @@ public sealed class PrecipVerifyCommand
         var sql = $@"
 SELECT LocationName, TruthStation, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
        ProbWet, ClimatologyPWet,
-       PrecipGfs, PrecipEcmwf, PrecipIcon, PrecipMf, PrecipUkmo, PrecipGem,
+       PrecipGfs, PrecipEcmwf, PrecipIcon, PrecipMf, PrecipUkmo, PrecipGem, PrecipAifs, PrecipJma,
        PrecipAgreementWet01,
        FeatureVectorHash
 FROM read_parquet([{globs}], hive_partitioning = false, union_by_name = true)
@@ -181,8 +181,10 @@ ORDER BY TruthStation, ModelVersion, LeadHours, ValidTimeUtc";
                     PrecipMf    = NullableDouble(r, 11),
                     PrecipUkmo  = NullableDouble(r, 12),
                     PrecipGem   = NullableDouble(r, 13),
-                    PrecipAgreementWet01 = NullableDouble(r, 14),
-                    FeatureVectorHash   = r.IsDBNull(15) ? "" : r.GetString(15),
+                    PrecipAifs  = NullableDouble(r, 14),
+                    PrecipJma   = NullableDouble(r, 15),
+                    PrecipAgreementWet01 = NullableDouble(r, 16),
+                    FeatureVectorHash   = r.IsDBNull(17) ? "" : r.GetString(17),
                 });
             }
         }

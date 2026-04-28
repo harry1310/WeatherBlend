@@ -47,7 +47,15 @@ public sealed class PrecipPredictionRow
     public double? PrecipMf { get; init; }
     public double? PrecipUkmo { get; init; }
     public double? PrecipGem { get; init; }
+    public double? PrecipAifs { get; init; }
+    public double? PrecipJma { get; init; }
 
+    // ProbXxxModel fields kept for back-compat with already-shipped artefacts.
+    // The prob_* training features are zero-gain everywhere (Open-Meteo's
+    // precipitation_probability adds nothing the trees can't infer from the
+    // raw rate); slated for removal in a follow-up commit. Not adding ProbAifs
+    // / ProbJma here — they're equally zero-gain and would just be more
+    // never-populated columns.
     public double? ProbGfsModel { get; init; }
     public double? ProbEcmwfModel { get; init; }
     public double? ProbIconModel { get; init; }
@@ -61,6 +69,8 @@ public sealed class PrecipPredictionRow
     public DateTime? RunTimeMf { get; init; }
     public DateTime? RunTimeUkmo { get; init; }
     public DateTime? RunTimeGem { get; init; }
+    public DateTime? RunTimeAifs { get; init; }
+    public DateTime? RunTimeJma { get; init; }
 
     // Ensemble spread aggregates — same definitions as the training feature row.
     public double? PrecipMean { get; init; }

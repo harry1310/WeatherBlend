@@ -19,7 +19,7 @@ public static class Verifier
     // Same ordering as FeatureBuilder.ModelColumns — kept local to avoid a circular dep
     // and because verify's per-model ordering is verification-specific anyway.
     internal static readonly string[] ModelNames =
-        { "temp_gfs", "temp_ecmwf", "temp_icon", "temp_mf", "temp_ukmo", "temp_gem" };
+        { "temp_gfs", "temp_ecmwf", "temp_icon", "temp_mf", "temp_ukmo", "temp_gem", "temp_aifs" };
 
     public sealed class Inputs
     {
@@ -187,6 +187,7 @@ public static class Verifier
         "temp_mf"    => p.TempMf,
         "temp_ukmo"  => p.TempUkmo,
         "temp_gem"   => p.TempGem,
+        "temp_aifs"  => p.TempAifs,
         _ => null,
     };
 }

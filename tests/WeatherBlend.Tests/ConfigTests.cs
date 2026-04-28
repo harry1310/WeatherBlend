@@ -126,11 +126,11 @@ public class ConfigTests
         leanTemp.RequiredForLead(120).Should().NotContain("meteofrance_seamless");
         leanTemp.OptionalForLead(120).Should().Equal("ecmwf_aifs025_single");
 
-        // Lean precip: nothing required, all 6 optional (5 NWPs + AIFS, COALESCE-any).
+        // Lean precip: nothing required, 7 optional (5 NWPs + AIFS + JMA, COALESCE-any).
         var leanPrecip = bound.Blenders.Get("precipitation", "lean");
         leanPrecip.RequiredModels.Should().BeEmpty();
-        leanPrecip.OptionalModels.Should().HaveCount(6);
-        leanPrecip.OptionalForLead(120).Should().HaveCount(5);
+        leanPrecip.OptionalModels.Should().HaveCount(7);
+        leanPrecip.OptionalForLead(120).Should().HaveCount(6);
 
         // Wind: 4 strict + UKMO/AIFS optional, MF excluded entirely.
         var wind = bound.Blenders.Get("wind", "default");

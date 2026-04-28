@@ -242,15 +242,16 @@ public sealed class PredictCommand
             var featureHash = FeatureHashing.HashFloats(row.Features);
 
             // Build PredictionRow per-model fields: populate only spec.Models, null elsewhere.
-            // Output PredictionRow has 6 named per-model fields (TempGfs..TempGem); AIFS
-            // (canonical index 6) contributes implicitly via BlendTemperature but isn't
-            // exposed as a named field yet — schema-add follow-up.
-            var perModelTemp = new double?[6];
-            var perModelRun  = new DateTime?[6];
+            // Output PredictionRow has 7 named per-model fields (TempGfs..TempAifs).
+            // Temperature blender doesn't include JMA (canonical idx 7), so the loop's
+            // `ci < 7` guard catches anyone who later adds JMA to the temp spec
+            // without also adding TempJma to PredictionRow.
+            var perModelTemp = new double?[7];
+            var perModelRun  = new DateTime?[7];
             for (int i = 0; i < spec.Models.Count; i++)
             {
                 var ci = canonOrder.IndexOf(spec.Models[i]);
-                if (ci >= 6) continue;     // AIFS slot — not in 6-wide output yet
+                if (ci >= 7) continue;     // JMA — not in temp output schema (no TempJma field)
                 perModelTemp[ci] = specTemps[i];
                 perModelRun[ci]  = pivot.RunTime[ci];
             }
@@ -268,9 +269,11 @@ public sealed class PredictCommand
                 BlendTemperature = yhat,
                 TempGfs   = perModelTemp[0], TempEcmwf = perModelTemp[1], TempIcon  = perModelTemp[2],
                 TempMf    = perModelTemp[3], TempUkmo  = perModelTemp[4], TempGem   = perModelTemp[5],
+                TempAifs  = perModelTemp[6],
                 RunTimeGfs   = perModelRun[0], RunTimeEcmwf = perModelRun[1],
                 RunTimeIcon  = perModelRun[2], RunTimeMf    = perModelRun[3],
                 RunTimeUkmo  = perModelRun[4], RunTimeGem   = perModelRun[5],
+                RunTimeAifs  = perModelRun[6],
                 TempMean  = row.Features[spreadStart + 0],
                 TempStd   = row.Features[spreadStart + 1],
                 TempRange = row.Features[spreadStart + 2],
@@ -457,8 +460,8 @@ ORDER BY ValidTimeUtc, Model;";
     private sealed class WorkingPivot
     {
         // Sized to FeatureBuilder.CanonicalModelOrder.Count (7 incl. AIFS).
-        public double?[] Temp = new double?[7];
-        public DateTime?[] RunTime = new DateTime?[7];
+        public double?[] Temp = new double?[8];
+        public DateTime?[] RunTime = new DateTime?[8];
         public double[] Dew = NanArray();
         public double[] Rh = NanArray();
         public double[] Cloud = NanArray();
@@ -471,7 +474,7 @@ ORDER BY ValidTimeUtc, Model;";
         public double[] Pressure = NanArray();
 
         public static WorkingPivot New() => new();
-        private static double[] NanArray() => Enumerable.Repeat(double.NaN, 7).ToArray();
+        private static double[] NanArray() => Enumerable.Repeat(double.NaN, 8).ToArray();
     }
 
     private static double? NullableDouble(IDataReader r, int ord)
