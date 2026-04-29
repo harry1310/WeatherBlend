@@ -25,6 +25,76 @@ public static partial class SitePages
     /// </summary>
     internal static readonly int[] PocLeads = { 24, 48, 72, 120 };
 
+    // -------------------------------------------------------------------------
+    // NWP display table — single source of truth for per-NWP labels + colours
+    // and the small "what NWPs participate in this target" lists. Without it,
+    // every chart that draws a per-NWP line had to re-spell GFS=#ef5350,
+    // ECMWF=#42a5f5, ... and they drifted the moment a new model landed
+    // (AIFS in #ec407a needed three edits, JMA #ffc107 needed four).
+    //
+    // Per-NWP getter is row-type-specific (PredictionRow.TempGfs vs
+    // PrecipForecastPoint.PrecipGfs), so each call site composes its own
+    // <see cref="NwpDisplaySpec{TRow}"/> list from the shared label+colour
+    // pair plus a row-shaped accessor lambda.
+    // -------------------------------------------------------------------------
+
+    /// <summary>One NWP's display metadata + the row accessor that pulls its
+    /// value out of a target-specific row type (a <c>PredictionRow</c>'s
+    /// <c>TempGfs</c>, a <c>PrecipForecastPoint</c>'s <c>PrecipGfs</c>, etc.).</summary>
+    public sealed record NwpDisplaySpec<TRow>(string Label, string Color, Func<TRow, double?> Get);
+
+    /// <summary>Per-NWP colour constants. Hue-separated so seven (or eight) NWP
+    /// lines on a single chart stay legible. UKMO is indigo rather than purple
+    /// to leave purple free for the brand-coloured Blend line. AIFS pink and
+    /// JMA amber tag the AI / late-arriving family members visually.</summary>
+    internal static class NwpPalette
+    {
+        public const string Gfs   = "#ef5350";
+        public const string Ecmwf = "#42a5f5";
+        public const string Icon  = "#66bb6a";
+        public const string Mf    = "#ffa726";
+        public const string Ukmo  = "#5c6bc0";
+        public const string Gem   = "#26a69a";
+        public const string Aifs  = "#ec407a";
+        public const string Jma   = "#ffc107";
+
+        /// <summary>Brand colour reserved for the blend's own line on per-NWP
+        /// overlay charts. Not for any NWP.</summary>
+        public const string Blend = "#7c4dff";
+    }
+
+    /// <summary>NWPs that feed the temperature blender — the seven that
+    /// emit <c>Temperature2m</c> at hourly resolution. JMA is precip-only,
+    /// not in this list.</summary>
+    internal static IReadOnlyList<NwpDisplaySpec<Models.PredictionRow>> NwpsForTemperature() =>
+        new NwpDisplaySpec<Models.PredictionRow>[]
+        {
+            new("GFS",   NwpPalette.Gfs,   p => p.TempGfs),
+            new("ECMWF", NwpPalette.Ecmwf, p => p.TempEcmwf),
+            new("ICON",  NwpPalette.Icon,  p => p.TempIcon),
+            new("MF",    NwpPalette.Mf,    p => p.TempMf),
+            new("UKMO",  NwpPalette.Ukmo,  p => p.TempUkmo),
+            new("GEM",   NwpPalette.Gem,   p => p.TempGem),
+            new("AIFS",  NwpPalette.Aifs,  p => p.TempAifs),
+        };
+
+    /// <summary>NWPs that feed the precipitation blender — the seven temp
+    /// inputs plus JMA which contributes precip-only. Same colour scheme as
+    /// <see cref="NwpsForTemperature"/> so a reader who learnt "ECMWF is blue"
+    /// up there reads it the same way down here.</summary>
+    internal static IReadOnlyList<NwpDisplaySpec<PrecipForecastPoint>> NwpsForPrecipitation() =>
+        new NwpDisplaySpec<PrecipForecastPoint>[]
+        {
+            new("GFS",   NwpPalette.Gfs,   p => p.PrecipGfs),
+            new("ECMWF", NwpPalette.Ecmwf, p => p.PrecipEcmwf),
+            new("ICON",  NwpPalette.Icon,  p => p.PrecipIcon),
+            new("MF",    NwpPalette.Mf,    p => p.PrecipMf),
+            new("UKMO",  NwpPalette.Ukmo,  p => p.PrecipUkmo),
+            new("GEM",   NwpPalette.Gem,   p => p.PrecipGem),
+            new("AIFS",  NwpPalette.Aifs,  p => p.PrecipAifs),
+            new("JMA",   NwpPalette.Jma,   p => p.PrecipJma),
+        };
+
     public sealed record SiteInputs
     {
         public required string LocationDisplay { get; init; }

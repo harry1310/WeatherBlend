@@ -83,35 +83,24 @@ public static partial class SitePages
         }
 
         // NWPs first so the brand-purple Blend draws last and sits visually on top.
-        // Colours chosen for hue separation; UKMO uses indigo rather than purple to
-        // stay distinct from the brand colour reserved for the blend itself.
-        // AIFS uses pink (#ec407a) as the visually-distinct AI/GNN family member.
-        var nwpSpecs = new (string Label, string Color, Func<PredictionRow, double?> Get)[]
-        {
-            ("GFS",   "#ef5350", p => p.TempGfs),
-            ("ECMWF", "#42a5f5", p => p.TempEcmwf),
-            ("ICON",  "#66bb6a", p => p.TempIcon),
-            ("MF",    "#ffa726", p => p.TempMf),
-            ("UKMO",  "#5c6bc0", p => p.TempUkmo),
-            ("GEM",   "#26a69a", p => p.TempGem),
-            ("AIFS",  "#ec407a", p => p.TempAifs),
-        };
-
+        // The per-NWP label + colour table lives in SitePages.NwpsForTemperature();
+        // dropping it here means a colour change or model addition is one edit, not
+        // four-files-worth of grep-and-replace.
         var series = new List<LineSeries>();
-        foreach (var (label, color, get) in nwpSpecs)
+        foreach (var nwp in NwpsForTemperature())
         {
             var pts = future
-                .Select(p => (Valid: p.ValidTimeUtc, Val: get(p)))
+                .Select(p => (Valid: p.ValidTimeUtc, Val: nwp.Get(p)))
                 .Where(t => t.Val.HasValue)
                 .Select(t => (X: t.Valid.ToOADate(), Y: t.Val!.Value))
                 .ToList();
             if (pts.Count > 0)
-                series.Add(new LineSeries(label, color, pts));
+                series.Add(new LineSeries(nwp.Label, nwp.Color, pts));
         }
         var blendPts = future
             .Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.BlendTemperature))
             .ToList();
-        series.Add(new LineSeries("Blend", "#7c4dff", blendPts));
+        series.Add(new LineSeries("Blend", NwpPalette.Blend, blendPts));
 
         s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
         {
@@ -142,21 +131,10 @@ public static partial class SitePages
             return s.ToString();
         }
 
-        // NWP colour palette — matched to the temperature chart so a reader who
-        // knows "ECMWF is blue" up there reads it the same way down here.
-        // AIFS pink (matches temp chart). JMA gets amber to flag it as "precip
-        // bake-off addition only" — visually distinct from the 6 NWPs + AIFS.
-        var nwpSpecs = new (string Label, string Color, Func<PrecipForecastPoint, double?> Get)[]
-        {
-            ("GFS",   "#ef5350", p => p.PrecipGfs),
-            ("ECMWF", "#42a5f5", p => p.PrecipEcmwf),
-            ("ICON",  "#66bb6a", p => p.PrecipIcon),
-            ("MF",    "#ffa726", p => p.PrecipMf),
-            ("UKMO",  "#5c6bc0", p => p.PrecipUkmo),
-            ("GEM",   "#26a69a", p => p.PrecipGem),
-            ("AIFS",  "#ec407a", p => p.PrecipAifs),
-            ("JMA",   "#ffc107", p => p.PrecipJma),
-        };
+        // Same shared NWP table as the temperature chart, with JMA appended
+        // (precip-only). Colours are matched so "ECMWF is blue" reads the same
+        // up there and down here.
+        var nwpSpecs = NwpsForPrecipitation();
 
         foreach (var station in stations)
         {
@@ -195,15 +173,15 @@ public static partial class SitePages
             // Bottom: per-NWP precip rate, mm/h axis. Skip series where every
             // point is null so the legend stays clean.
             var nwpSeries = new List<LineSeries>();
-            foreach (var (label, color, get) in nwpSpecs)
+            foreach (var nwp in nwpSpecs)
             {
                 var pts = latestPerValid
-                    .Select(r => (Valid: r.ValidTimeUtc, Val: get(r)))
+                    .Select(r => (Valid: r.ValidTimeUtc, Val: nwp.Get(r)))
                     .Where(t => t.Val.HasValue)
                     .Select(t => (X: t.Valid.ToOADate(), Y: t.Val!.Value))
                     .ToList();
                 if (pts.Count > 0)
-                    nwpSeries.Add(new LineSeries(label, color, pts));
+                    nwpSeries.Add(new LineSeries(nwp.Label, nwp.Color, pts));
             }
 
             s.Append("<div class=\"chart-stack\">");

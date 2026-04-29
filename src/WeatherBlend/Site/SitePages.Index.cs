@@ -152,17 +152,14 @@ public static partial class SitePages
         var blend = scored.Select(p => p.BlendTemperature).ToArray();
         var blendMae = Mae(blend, truth);
 
-        // Best single across the per-model columns (6 NWPs + AIFS).
-        (string name, double mae)[] singles =
-        {
-            ("GFS",   MaeWithGaps(scored.Select(p => p.TempGfs).ToArray(),   truth)),
-            ("ECMWF", MaeWithGaps(scored.Select(p => p.TempEcmwf).ToArray(), truth)),
-            ("ICON",  MaeWithGaps(scored.Select(p => p.TempIcon).ToArray(),  truth)),
-            ("MF",    MaeWithGaps(scored.Select(p => p.TempMf).ToArray(),    truth)),
-            ("UKMO",  MaeWithGaps(scored.Select(p => p.TempUkmo).ToArray(),  truth)),
-            ("GEM",   MaeWithGaps(scored.Select(p => p.TempGem).ToArray(),   truth)),
-            ("AIFS",  MaeWithGaps(scored.Select(p => p.TempAifs).ToArray(),  truth)),
-        };
+        // Best single across whichever NWPs the temperature blender consumes.
+        // Auto-grows as new models land (NwpsForTemperature is the single
+        // source of truth) — no edit here when the next NWP joins the table.
+        var singles = NwpsForTemperature()
+            .Select(nwp => (
+                name: nwp.Label,
+                mae:  MaeWithGaps(scored.Select(nwp.Get).ToArray(), truth)))
+            .ToArray();
         var best = singles.Where(s => !double.IsNaN(s.mae)).OrderBy(s => s.mae).FirstOrDefault();
         if (best.name is null || double.IsNaN(best.mae))
         {
