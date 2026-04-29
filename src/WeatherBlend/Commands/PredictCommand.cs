@@ -455,12 +455,16 @@ ORDER BY ValidTimeUtc, Model;";
     }
 
     // Internal mutable per-valid-time accumulator. Becomes an immutable PivotedRow
-    // once we've finished slotting all six models in.
+    // once we've finished slotting every model in.
     private sealed class WorkingPivot
     {
-        // Sized to FeatureBuilder.CanonicalModelOrder.Count (7 incl. AIFS).
-        public double?[] Temp = new double?[8];
-        public DateTime?[] RunTime = new DateTime?[8];
+        // Sized to FeatureBuilder.CanonicalModelOrder.Count so a new NWP added
+        // to the canonical order auto-grows these arrays. Indexed by canon-order
+        // position; distinct from PredictionRow.PerModelFieldCount (output slots,
+        // currently 7 — temp blender skips JMA).
+        private static int N => FeatureBuilder.CanonicalModelOrder.Count;
+        public double?[] Temp = new double?[N];
+        public DateTime?[] RunTime = new DateTime?[N];
         public double[] Dew = NanArray();
         public double[] Rh = NanArray();
         public double[] Cloud = NanArray();
@@ -473,7 +477,7 @@ ORDER BY ValidTimeUtc, Model;";
         public double[] Pressure = NanArray();
 
         public static WorkingPivot New() => new();
-        private static double[] NanArray() => Enumerable.Repeat(double.NaN, 8).ToArray();
+        private static double[] NanArray() => Enumerable.Repeat(double.NaN, N).ToArray();
     }
 
     private static double? NullableDouble(IDataReader r, int ord)

@@ -499,17 +499,23 @@ ORDER BY ValidTimeUtc, Model;";
 
     private sealed class Scratch
     {
-        public double?[] Precip { get; } = new double?[8];
-        public DateTime?[] RunTime { get; } = new DateTime?[8];
-        public double?[] Dew { get; } = new double?[8];
-        public double?[] Rh { get; } = new double?[8];
-        public double?[] Temp2m { get; } = new double?[8];
-        public double?[] CloudLow { get; } = new double?[8];
-        public double?[] CloudMid { get; } = new double?[8];
-        public double?[] CloudHigh { get; } = new double?[8];
-        public double?[] Cape { get; } = new double?[8];
-        public double?[] WindSpeed { get; } = new double?[8];
-        public double?[] Pressure { get; } = new double?[8];
+        // Indexed by canon-order position (FeatureBuilder.CanonicalModelOrder.IndexOf(model)).
+        // Sourcing the size from CanonicalModelOrder.Count means a new NWP added to
+        // the canonical order auto-grows these arrays — without it, we'd get the
+        // same IndexOutOfRange that bit DryWindowPredictCommand at AIFS-add time.
+        // Note: distinct from PrecipPredictionRow.PerModelFieldCount (output slots).
+        private static int N => FeatureBuilder.CanonicalModelOrder.Count;
+        public double?[] Precip { get; } = new double?[N];
+        public DateTime?[] RunTime { get; } = new DateTime?[N];
+        public double?[] Dew { get; } = new double?[N];
+        public double?[] Rh { get; } = new double?[N];
+        public double?[] Temp2m { get; } = new double?[N];
+        public double?[] CloudLow { get; } = new double?[N];
+        public double?[] CloudMid { get; } = new double?[N];
+        public double?[] CloudHigh { get; } = new double?[N];
+        public double?[] Cape { get; } = new double?[N];
+        public double?[] WindSpeed { get; } = new double?[N];
+        public double?[] Pressure { get; } = new double?[N];
     }
 
     internal static double MeanOfSlots(double?[] slots)

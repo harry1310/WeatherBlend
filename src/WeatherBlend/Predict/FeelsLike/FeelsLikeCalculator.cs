@@ -56,7 +56,7 @@ public static class FeelsLikeCalculator
             0.000016261698, 7.0229056e-10, -1.8680009e-13,
         };
         double e = 2.7150305 * Math.Log(tk);
-        for (int i = 0; i < 7; i++)
+        for (int i = 0; i < g.Length; i++)
             e += g[i] * Math.Pow(tk, i - 2);
         return Math.Exp(e) * 0.01;  // Pa → hPa
     }
