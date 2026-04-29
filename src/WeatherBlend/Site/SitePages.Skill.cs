@@ -126,6 +126,13 @@ public static partial class SitePages
             ("2c", "Phase 2c rich (88 features)",
                 "Adds per-model dew point, RH, cloud {total/low/mid/high}, wind speed/dir/gusts, surface pressure, plus cross-model aggregates. Challenger."),
         };
+
+        // Section-wide X range so 2b and 2c read as aligned panels — past extent
+        // pinned to WindowStartUtc, forward to the latest prediction valid_time
+        // across either phase. Truth (ERA5 + METAR) doesn't extend past now, so
+        // the right edge always belongs to a prediction; left edge to truth.
+        var (xMin, xMax) = TempSectionRange(input);
+
         bool anyDrawn = false;
         foreach (var spec in phaseSpecs)
         {
@@ -140,7 +147,7 @@ public static partial class SitePages
                     <p class="skill-line">{Escape(spec.Description)}</p>
                   </hgroup>
                 """);
-            content.Append(RenderTempVsTruthChart(input, filtered, spec.Key));
+            content.Append(RenderTempVsTruthChart(input, filtered, spec.Key, xMin, xMax));
             content.Append("</article>");
         }
 
@@ -150,10 +157,35 @@ public static partial class SitePages
         return content.ToString();
     }
 
+    private static (double? Min, double? Max) TempSectionRange(SiteInputs input)
+    {
+        double? min = input.WindowStartUtc.ToOADate();
+        double? max = null;
+        foreach (var p in input.Predictions)
+        {
+            var x = p.ValidTimeUtc.ToOADate();
+            if (max is null || x > max) max = x;
+        }
+        // If no predictions at all, fall back to truth extent so the chart
+        // still has a sensible x range (auto-scaling kicks in if both nulled).
+        if (max is null)
+        {
+            foreach (var kv in input.TruthByTime)
+            {
+                var x = kv.Key.ToOADate();
+                if (max is null || x > max) max = x;
+            }
+        }
+        if (max is null) return (null, null);
+        return (min, max);
+    }
+
     private static string RenderTempVsTruthChart(
         SiteInputs input,
         IReadOnlyList<PredictionRow> filtered,
-        string phaseKey)
+        string phaseKey,
+        double? xMin,
+        double? xMax)
     {
         var series = new List<LineSeries>();
 
@@ -208,6 +240,8 @@ public static partial class SitePages
             FormatX = v => DateTime.FromOADate(v).ToString("MM-dd", Ci),
             FormatY = v => v.ToString("0.#", Ci) + "°",
             TodayLineX = input.GeneratedAtUtc.ToOADate(),
+            XMin = xMin,
+            XMax = xMax,
         });
     }
 
@@ -219,6 +253,18 @@ public static partial class SitePages
     {
         if (input.RollingMae.Count == 0)
             return "<p><em>No rolling MAE points computed — the window is too short or there's no matching ERA5 truth yet.</em></p>";
+
+        // Section-wide X range across every lead × version so the per-lead
+        // charts stack as one panel — sparser leads no longer get a tighter
+        // window than the dense ones.
+        double? xMin = null;
+        double? xMax = null;
+        foreach (var r in input.RollingMae)
+        {
+            var x = r.WindowEndUtc.ToOADate();
+            if (xMin is null || x < xMin) xMin = x;
+            if (xMax is null || x > xMax) xMax = x;
+        }
 
         var content = new StringBuilder();
         foreach (var lead in Leads.Full)
@@ -256,6 +302,8 @@ public static partial class SitePages
                 FormatX = v => DateTime.FromOADate(v).ToString("MM-dd", Ci),
                 FormatY = v => v.ToString("0.00", Ci),
                 TodayLineX = input.GeneratedAtUtc.ToOADate(),
+                XMin = xMin,
+                XMax = xMax,
             }));
         }
         return content.ToString();
@@ -301,6 +349,15 @@ public static partial class SitePages
         var wetBands = input.RainfallTruth.TryGetValue(station, out var truth)
             ? ComputeWetBands(truth, input.WindowStartUtc)
             : new List<(double, double)>();
+
+        // Section-wide X range so all P(wet) charts at this station — per-phase
+        // plus the champion-vs-challenger overlay — share the same time axis.
+        // Past extent pinned to WindowStartUtc; right edge to the latest
+        // prediction valid_time at this station.
+        double? xMin = stationPredictions.Count > 0 ? input.WindowStartUtc.ToOADate() : null;
+        double? xMax = stationPredictions.Count > 0
+            ? stationPredictions.Max(p => p.ValidTimeUtc).ToOADate()
+            : null;
 
         (int lead, string color)[] leadSpecs =
         {
@@ -354,6 +411,8 @@ public static partial class SitePages
                 FormatY = v => v.ToString("0.00", Ci),
                 Bands = wetBands,
                 TodayLineX = input.GeneratedAtUtc.ToOADate(),
+                XMin = xMin,
+                XMax = xMax,
             }));
         }
 
@@ -372,6 +431,8 @@ public static partial class SitePages
                 FormatY = v => v.ToString("0.00", Ci),
                 Bands = wetBands,
                 TodayLineX = input.GeneratedAtUtc.ToOADate(),
+                XMin = xMin,
+                XMax = xMax,
             }));
         }
 

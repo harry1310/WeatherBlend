@@ -57,6 +57,15 @@ public sealed record LineChartSpec
     /// dashed via the annotation plugin. Used to mark "today" on skill charts so
     /// a reader can see at a glance which side of the chart is the future.</summary>
     public double? TodayLineX { get; init; }
+
+    /// <summary>Optional X-axis lower bound (OADate). When set, Chart.js pins
+    /// scales.x.min to this value instead of auto-scaling from the data. Used
+    /// to align multiple charts in a section to the same time window so they
+    /// read as one panel split into rows.</summary>
+    public double? XMin { get; init; }
+
+    /// <summary>Optional X-axis upper bound (OADate). Pair of <see cref="XMin"/>.</summary>
+    public double? XMax { get; init; }
 }
 
 public static class LineChartRenderer
@@ -252,6 +261,10 @@ public static class LineChartRenderer
             yTrim,
             datasets,
             annotations,
+            // Nullable so the JS side can detect "use auto-scaling" via `?? null`.
+            // Non-finite values are dropped client-side just like band/today edges.
+            xMin = (spec.XMin is { } xn && double.IsFinite(xn)) ? (double?)xn : null,
+            xMax = (spec.XMax is { } xx && double.IsFinite(xx)) ? (double?)xx : null,
         };
 
         var json = JsonSerializer.Serialize(cfg);

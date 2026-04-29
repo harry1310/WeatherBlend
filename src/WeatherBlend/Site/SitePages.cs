@@ -365,8 +365,11 @@ public static partial class SitePages
               borderColor: ds.color,
               backgroundColor: ds.color,
               borderWidth: 1.75,
-              pointRadius: ds.discrete ? 2 : (ds.points.length <= 30 ? 3 : 0),
-              pointHoverRadius: 5,
+              // Smaller dots across the board — discrete-truth markers stay just
+              // visible, short-series points are barely-there, dense series stay
+              // line-only. Hover keeps the same target so the picker is still easy.
+              pointRadius: ds.discrete ? 1.5 : (ds.points.length <= 30 ? 1.5 : 0),
+              pointHoverRadius: 4,
               showLine: !ds.discrete,
               tension: 0,
               spanGaps: true,
@@ -442,6 +445,11 @@ public static partial class SitePages
                 scales: {
                   x: {
                     type: 'linear',
+                    // Server-supplied min/max pin the X axis so multiple charts
+                    // in a section share the same time window. When unset, fall
+                    // back to Chart.js's per-chart auto-scaling.
+                    min: cfg.xMin != null ? oaToMs(cfg.xMin) : undefined,
+                    max: cfg.xMax != null ? oaToMs(cfg.xMax) : undefined,
                     title: { display: !!cfg.xLabel, text: cfg.xLabel || '' },
                     ticks: {
                       autoSkip: true, maxTicksLimit: 8,
