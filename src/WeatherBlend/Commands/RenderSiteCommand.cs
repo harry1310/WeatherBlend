@@ -704,7 +704,7 @@ ORDER BY LeadHours, ValidTimeUtc";
     /// the union_by_name'd schema. Used to gate queries that reference newly-added
     /// columns during the migration window between schema bumps.
     /// </summary>
-    private static bool ParquetSchemaHasColumn(DuckDBConnection conn, string glob, string column)
+    internal static bool ParquetSchemaHasColumn(DuckDBConnection conn, string glob, string column)
     {
         var sql = $@"
 SELECT 1

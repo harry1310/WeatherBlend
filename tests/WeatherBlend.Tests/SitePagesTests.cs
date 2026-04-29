@@ -90,18 +90,18 @@ public class SitePagesTests
     [Fact]
     public void RenderRainSkill_renders_a_precipitation_chart_per_phase_present()
     {
-        // Three predictions for one station, one per phase. Rain-skill page groups per phase.
+        // Two phases per station post-calibration-purge: lean 3a + rich 3c.
+        // (3a_isotonic was retired alongside 3d-calibrated — neither is Active
+        // in any manifest and the trainer no longer emits them.)
         var input = MakePrecipInput(new[]
         {
-            ("v_3a",  "3a"),
-            ("v_iso", "3a_isotonic"),
-            ("v_3c",  "3c"),
+            ("v_3a", "3a"),
+            ("v_3c", "3c"),
         });
 
         var html = SitePages.RenderRainSkill(input);
 
         html.Should().Contain("Phase 3a (lean)");
-        html.Should().Contain("Phase 3a_isotonic (lean + PAV calibration)");
         html.Should().Contain("Phase 3c (rich)");
     }
 
