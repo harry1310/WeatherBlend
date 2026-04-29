@@ -264,7 +264,11 @@ public static partial class SitePages
         nav.site-nav a.active { font-weight: 600; color: var(--brand); }
 
         .forecast-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; }
-        .forecast-card { padding: 0.75rem 0.85rem; }
+        /* Flex layout so the footer pins to the cell's lower edge regardless of
+           whether the feels-like chip is present — cards with shorter content
+           (e.g. 96/120h leads with no feels-like row) used to float the footer
+           up, leaving made-time misaligned across the grid. */
+        .forecast-card { padding: 0.75rem 0.85rem; display: flex; flex-direction: column; }
         .forecast-card h3 { margin: 0 0 0.1rem; font-size: 1rem; }
         .forecast-card header small { color: var(--pico-muted-color); font-size: 0.8rem; }
         .forecast-card .temp { font-size: 2rem; font-weight: 700; color: var(--temp-color, var(--brand)); line-height: 1.1; margin: 0.35rem 0 0.25rem; }
@@ -275,7 +279,7 @@ public static partial class SitePages
         .forecast-card .feels { font-size: 0.85rem; color: var(--pico-muted-color); margin: 0 0 0.35rem; font-variant-numeric: tabular-nums; }
         .forecast-card .feels strong { font-weight: 700; }
         .forecast-card .feels small { margin-left: 0.35rem; }
-        .forecast-card footer { margin-top: 0.25rem; padding-top: 0.4rem; border-top: 1px solid var(--pico-muted-border-color); }
+        .forecast-card footer { margin-top: auto; padding-top: 0.4rem; border-top: 1px solid var(--pico-muted-border-color); }
         .forecast-card footer small { color: var(--pico-muted-color); font-size: 0.75rem; }
 
         nav.lead-nav { margin: 0 0 1.25rem; padding: 0; }

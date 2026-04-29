@@ -92,7 +92,7 @@ public static partial class SitePages
                   <div class="temp" style="--temp-color: {tempColor}">{p.BlendTemperature.ToString("0.0", Ci)}°C</div>
                   {feelsCell}
                   {pwetCell}
-                  <footer><small>+{p.LeadHours}h lead</small></footer>
+                  <footer><small>+{p.LeadHours}h · made {p.PredictionMadeAtUtc:MM-dd HH:mm}Z</small></footer>
                 </article>
                 """);
         }
