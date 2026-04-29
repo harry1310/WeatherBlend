@@ -263,17 +263,20 @@ public static partial class SitePages
         nav.site-nav a { text-decoration: none; }
         nav.site-nav a.active { font-weight: 600; color: var(--brand); }
 
-        .forecast-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
-        .forecast-card { padding: 1rem; }
-        .forecast-card h3 { margin: 0 0 0.25rem; }
-        .forecast-card .temp { font-size: 2.5rem; font-weight: 700; color: var(--temp-color, var(--brand)); line-height: 1.1; margin: 0.5rem 0 0.25rem; }
+        .forecast-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; }
+        .forecast-card { padding: 0.75rem 0.85rem; }
+        .forecast-card h3 { margin: 0 0 0.1rem; font-size: 1rem; }
+        .forecast-card header small { color: var(--pico-muted-color); font-size: 0.8rem; }
+        .forecast-card .temp { font-size: 2rem; font-weight: 700; color: var(--temp-color, var(--brand)); line-height: 1.1; margin: 0.35rem 0 0.25rem; }
         .forecast-card-empty .temp { color: var(--pico-muted-color); }
-        .forecast-card .pwet { font-size: 0.95rem; color: var(--pwet); margin: 0 0 0.5rem; font-variant-numeric: tabular-nums; }
+        .forecast-card .pwet { font-size: 0.9rem; color: var(--pwet); margin: 0 0 0.35rem; font-variant-numeric: tabular-nums; }
         .forecast-card .pwet strong { font-weight: 700; }
-        .forecast-card .pwet small { color: var(--pico-muted-color); margin-left: 0.35rem; }
-        .forecast-card .feels { font-size: 0.95rem; color: var(--pico-muted-color); margin: 0 0 0.5rem; font-variant-numeric: tabular-nums; }
+        .forecast-card .pwet .rain { margin-left: 0.25rem; }
+        .forecast-card .feels { font-size: 0.85rem; color: var(--pico-muted-color); margin: 0 0 0.35rem; font-variant-numeric: tabular-nums; }
         .forecast-card .feels strong { font-weight: 700; }
         .forecast-card .feels small { margin-left: 0.35rem; }
+        .forecast-card footer { margin-top: 0.25rem; padding-top: 0.4rem; border-top: 1px solid var(--pico-muted-border-color); }
+        .forecast-card footer small { color: var(--pico-muted-color); font-size: 0.75rem; }
 
         nav.lead-nav { margin: 0 0 1.25rem; padding: 0; }
         nav.lead-nav ul { display: flex; gap: 0.75rem; list-style: none; padding: 0; margin: 0; }

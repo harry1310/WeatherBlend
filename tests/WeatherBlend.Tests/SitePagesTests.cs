@@ -145,8 +145,9 @@ public class SitePagesTests
     [Fact]
     public void RenderIndex_tags_each_card_header_with_day_of_week()
     {
-        // Home cards should label each lead with its day name, so readers can map
-        // "+48h" onto "Saturday" without doing mental arithmetic on the UTC timestamp.
+        // Home cards now key off valid_time, not lead — each card's header is
+        // "{day} {HH:mm}Z". Readers should see the day name for each forward
+        // prediction without doing mental arithmetic on the UTC timestamp.
         var generatedAt = new DateTime(2026, 4, 24, 0, 0, 0, DateTimeKind.Utc); // Fri
         var preds = new[] { 24, 48, 72 }.Select(lead =>
             new PredictionRow
@@ -168,23 +169,22 @@ public class SitePagesTests
 
         var html = SitePages.RenderIndex(input);
 
-        html.Should().Contain("+24h · Sat");   // Fri + 24h = Sat
-        html.Should().Contain("+48h · Sun");
-        html.Should().Contain("+72h · Mon");
+        html.Should().Contain("Sat 00:00Z");   // Fri + 24h = Sat
+        html.Should().Contain("Sun 00:00Z");   // Fri + 48h = Sun
+        html.Should().Contain("Mon 00:00Z");   // Fri + 72h = Mon
     }
 
     [Fact]
-    public void RenderIndex_shows_day_of_week_even_when_lead_has_no_prediction()
+    public void RenderIndex_falls_back_to_empty_state_when_no_future_predictions()
     {
-        // Empty card for a missing lead still tells the reader which day is affected,
-        // derived from GeneratedAtUtc + lead hours.
+        // No forward predictions in window → grid shows the empty-state card
+        // rather than a blank page or a stale entry.
         var generatedAt = new DateTime(2026, 4, 24, 0, 0, 0, DateTimeKind.Utc);
         var input = MakeEmptyForecastInput() with { GeneratedAtUtc = generatedAt };
 
         var html = SitePages.RenderIndex(input);
 
-        html.Should().Contain("+24h · Sat");
-        html.Should().Contain("No prediction available");
+        html.Should().Contain("No forward predictions available");
     }
 
     [Fact]
