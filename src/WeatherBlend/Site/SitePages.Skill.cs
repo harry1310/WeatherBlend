@@ -424,13 +424,22 @@ public static partial class SitePages
                     foreach (var lead in leadOrder)
                     {
                         if (byLead.TryGetValue(lead, out var d))
-                            leadCells.Append(Ci, $"<td class=\"num\">{d.ProbHasDryWindow.ToString("0.00", Ci)}</td>");
+                        {
+                            var color = ProbabilityColor(d.ProbHasDryWindow);
+                            leadCells.Append(Ci, $"<td class=\"num\" style=\"color: {color}; font-weight: 600\">{d.ProbHasDryWindow.ToString("0.00", Ci)}</td>");
+                        }
                         else
+                        {
                             leadCells.Append("<td class=\"num\">—</td>");
+                        }
                     }
 
+                    // Tick / cross matches the prob-cell gradient endpoints so the
+                    // verdict reads as "did the prediction pay off?" at a glance.
                     var observedCell = observed.TryGetValue((station, window, date), out var obs)
-                        ? (obs ? "<strong>dry</strong>" : "wet")
+                        ? (obs
+                            ? "<span style=\"color: #43a047; font-weight: 700\">&#x2713;</span>"
+                            : "<span style=\"color: #e53935; font-weight: 700\">&#x2717;</span>")
                         : "—";
 
                     tbody.Append(Ci, $"""

@@ -691,4 +691,39 @@ public static partial class SitePages
 
     private static string FormatRgb(int r, int g, int b)
         => $"rgb({r.ToString(Ci)} {g.ToString(Ci)} {b.ToString(Ci)})";
+
+    /// <summary>
+    /// CSS colour for a probability in <c>[0, 1]</c> on a "dry-window goodness"
+    /// scale: 1.0 (dry block almost certain) is green, 0.0 (no dry block almost
+    /// certain) is red, 0.5 sits at amber. Anchors are RGB-interpolated so the
+    /// gradient walks smoothly across the table without jumping through brown.
+    /// NaN renders as the muted text colour so missing cells don't shout.
+    /// </summary>
+    internal static string ProbabilityColor(double prob)
+    {
+        if (double.IsNaN(prob)) return "var(--pico-muted-color)";
+        (double t, int r, int g, int b)[] anchors =
+        {
+            (0.00, 229,  57,  53),  // red    #e53935
+            (0.50, 255, 167,  38),  // amber  #ffa726
+            (1.00,  67, 160,  71),  // green  #43a047
+        };
+        if (prob <= anchors[0].t) return FormatRgb(anchors[0].r, anchors[0].g, anchors[0].b);
+        if (prob >= anchors[^1].t) return FormatRgb(anchors[^1].r, anchors[^1].g, anchors[^1].b);
+        for (int i = 0; i < anchors.Length - 1; i++)
+        {
+            var a = anchors[i];
+            var b = anchors[i + 1];
+            if (prob >= a.t && prob <= b.t)
+            {
+                var k = (prob - a.t) / (b.t - a.t);
+                int r = (int)Math.Round(a.r + (b.r - a.r) * k);
+                int g = (int)Math.Round(a.g + (b.g - a.g) * k);
+                int bl = (int)Math.Round(a.b + (b.b - a.b) * k);
+                return FormatRgb(r, g, bl);
+            }
+        }
+        var last = anchors[^1];
+        return FormatRgb(last.r, last.g, last.b);
+    }
 }

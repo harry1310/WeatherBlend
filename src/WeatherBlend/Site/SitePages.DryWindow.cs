@@ -87,18 +87,16 @@ public static partial class SitePages
                 foreach (var date in dates)
                 {
                     var byLead = latest.Where(d => d.TargetDateUtc == date).ToDictionary(d => d.LeadHours);
-                    var anyClim = byLead.Values.FirstOrDefault();
-                    var clim = anyClim is null ? "—" : anyClim.ClimatologyProbHasDryWindow.ToString("0.00", Ci);
 
                     var leadCells = new StringBuilder();
                     foreach (var lead in leadOrder)
                     {
                         if (byLead.TryGetValue(lead, out var d))
                         {
-                            // Bold cell when the blender meaningfully diverges from climatology.
-                            var diff = d.ProbHasDryWindow - d.ClimatologyProbHasDryWindow;
-                            var cls = Math.Abs(diff) >= 0.10 ? " class=\"num strong\"" : " class=\"num\"";
-                            leadCells.Append(Ci, $"<td{cls}>{d.ProbHasDryWindow.ToString("0.00", Ci)}</td>");
+                            // Cell text colour walks the green→red gradient so the eye
+                            // can scan the column without reading every digit.
+                            var color = ProbabilityColor(d.ProbHasDryWindow);
+                            leadCells.Append(Ci, $"<td class=\"num\" style=\"color: {color}; font-weight: 600\">{d.ProbHasDryWindow.ToString("0.00", Ci)}</td>");
                         }
                         else
                         {
@@ -115,7 +113,6 @@ public static partial class SitePages
                         <tr>
                           <td><time>{date:yyyy-MM-dd}</time></td>
                           {leadCells}
-                          <td class="num">{clim}</td>
                           <td class="num">{agreement}</td>
                         </tr>
                         """);
@@ -132,7 +129,6 @@ public static partial class SitePages
                             <th class="num">+24h</th>
                             <th class="num">+48h</th>
                             <th class="num">+72h</th>
-                            <th class="num">Climatology</th>
                             <th class="num">Model agreement</th>
                           </tr>
                         </thead>
