@@ -1,6 +1,6 @@
-using DuckDB.NET.Data;
 using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
+using WeatherBlend.Storage;
 using WeatherBlend.Train.DryWindow;
 
 namespace WeatherBlend.Commands;
@@ -102,8 +102,7 @@ public sealed class DryWindowDiagnosticCommand
     private IReadOnlyList<DryWindowLabelBuilder.HourlyTruth> QueryHourlyTruth(
         string stationName, CancellationToken ct)
     {
-        var glob = Path.Combine(_cfg.Storage.RainfallPath, "**", "*.parquet")
-            .Replace('\\', '/').Replace("'", "''");
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.RainfallPath, "**", "*.parquet"));
         var escStation = stationName.Replace("'", "''");
         var escLocation = _cfg.Location.Name.Replace("'", "''");
 
@@ -119,27 +118,11 @@ GROUP BY 1
 HAVING COUNT(*) = 4
 ORDER BY 1";
 
-        using var conn = new DuckDBConnection("DataSource=:memory:");
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-
-        var rows = new List<DryWindowLabelBuilder.HourlyTruth>();
-        try
-        {
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
-            {
-                ct.ThrowIfCancellationRequested();
-                var hourUtc = DateTime.SpecifyKind(r.GetDateTime(0), DateTimeKind.Utc);
-                rows.Add(new DryWindowLabelBuilder.HourlyTruth(hourUtc, r.GetDouble(1)));
-            }
-        }
-        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
-        {
-            _log.LogWarning("Rainfall tree empty for {Station}.", stationName);
-        }
-        return rows;
+        return ParquetReader.Query(sql, r =>
+            new DryWindowLabelBuilder.HourlyTruth(
+                DateTime.SpecifyKind(r.GetDateTime(0), DateTimeKind.Utc),
+                r.GetDouble(1)),
+            _log, $"Rainfall tree empty for {stationName}.", ct);
     }
 
     private static string BuildReport(

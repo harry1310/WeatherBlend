@@ -2,11 +2,11 @@ using System.Data;
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
-using DuckDB.NET.Data;
 using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
 using WeatherBlend.Evaluate.Precip;
 using WeatherBlend.Models;
+using WeatherBlend.Storage;
 using WeatherBlend.Train;
 using WeatherBlend.Train.DryWindow;
 
@@ -216,7 +216,7 @@ public sealed class DryWindowVerifyCommand
         return m.Success ? m.Groups["slug"].Value : null;
     }
 
-    private List<DryWindowPredictionRow> QueryPredictions(
+    private IReadOnlyList<DryWindowPredictionRow> QueryPredictions(
         IReadOnlyList<KeyValuePair<string, ModelArtifact.StationEntry>> entries,
         DateTime windowStart, DateTime windowEnd, CancellationToken ct)
     {
@@ -227,12 +227,11 @@ public sealed class DryWindowVerifyCommand
             {
                 var slug = ParseSlug(kv.Key)!;
                 var window = int.Parse(kv.Key.Split("/window_")[1].TrimEnd('h'), CultureInfo.InvariantCulture);
-                return "'" + Path.Combine(_cfg.Storage.PredictionsPath, "dry_window", slug,
-                    $"window_{window}h", "**", "*.parquet")
-                    .Replace('\\', '/').Replace("'", "''") + "'";
+                return "'" + ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath, "dry_window", slug,
+                    $"window_{window}h", "**", "*.parquet")) + "'";
             })
             .ToArray();
-        if (globs.Length == 0) return new List<DryWindowPredictionRow>();
+        if (globs.Length == 0) return Array.Empty<DryWindowPredictionRow>();
 
         var sql = $@"
 SELECT LocationName, TruthStation, WindowHours, ModelVersion,
@@ -249,59 +248,45 @@ WHERE TargetDateUtc >= TIMESTAMP '{windowStart:yyyy-MM-dd HH:mm:ss}'
   AND TargetDateUtc <= TIMESTAMP '{windowEnd:yyyy-MM-dd HH:mm:ss}'
 ORDER BY TruthStation, WindowHours, ModelVersion, LeadHours, TargetDateUtc";
 
-        using var conn = new DuckDBConnection("DataSource=:memory:");
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-
-        var rows = new List<DryWindowPredictionRow>();
-        try
+        // ParquetReader.Query catches DuckDB's "No files found" signal — note
+        // that the list-form throws "IO Error: No files found that match the
+        // pattern ..." (verified in DuckDbReadParquetProbeTests), so the
+        // standard substring match handles it. If ANY (station, window)
+        // glob is missing, the entire query fails — keeping today's
+        // "missing → empty result" semantics is intentional.
+        return ParquetReader.Query(sql, r => new DryWindowPredictionRow
         {
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
-            {
-                ct.ThrowIfCancellationRequested();
-                rows.Add(new DryWindowPredictionRow
-                {
-                    LocationName = r.GetString(0),
-                    TruthStation = r.GetString(1),
-                    WindowHours  = r.GetInt32(2),
-                    ModelVersion = r.GetString(3),
-                    PredictionMadeAtUtc = r.GetDateTime(4),
-                    TargetDateUtc       = r.GetDateTime(5),
-                    LeadHours           = r.GetInt32(6),
-                    ProbHasDryWindow    = r.GetDouble(7),
-                    ClimatologyProbHasDryWindow = r.GetDouble(8),
-                    AgreementHasDryWindow = Nullable(r,  9),
-                    PrecipSumMean         = Nullable(r, 10),
-                    LongestDryRunMean     = Nullable(r, 11),
-                    WetHourCountMean      = Nullable(r, 12),
-                    HasDryWindowGfs   = Nullable(r, 13),
-                    HasDryWindowEcmwf = Nullable(r, 14),
-                    HasDryWindowIcon  = Nullable(r, 15),
-                    HasDryWindowMf    = Nullable(r, 16),
-                    HasDryWindowUkmo  = Nullable(r, 17),
-                    HasDryWindowGem   = Nullable(r, 18),
-                    HasDryWindowAifs  = Nullable(r, 19),
-                    HasDryWindowJma   = Nullable(r, 20),
-                    PrecipSumGfs   = Nullable(r, 21),
-                    PrecipSumEcmwf = Nullable(r, 22),
-                    PrecipSumIcon  = Nullable(r, 23),
-                    PrecipSumMf    = Nullable(r, 24),
-                    PrecipSumUkmo  = Nullable(r, 25),
-                    PrecipSumGem   = Nullable(r, 26),
-                    PrecipSumAifs  = Nullable(r, 27),
-                    PrecipSumJma   = Nullable(r, 28),
-                    FeatureVectorHash = r.IsDBNull(29) ? "" : r.GetString(29),
-                });
-            }
-        }
-        catch (DuckDBException ex) when (ex.Message.Contains("No files found") || ex.Message.Contains("IO Error"))
-        {
-            _log.LogWarning("Prediction tree empty for requested (station, window) — nothing to verify.");
-            return rows;
-        }
-        return rows;
+            LocationName = r.GetString(0),
+            TruthStation = r.GetString(1),
+            WindowHours  = r.GetInt32(2),
+            ModelVersion = r.GetString(3),
+            PredictionMadeAtUtc = r.GetDateTime(4),
+            TargetDateUtc       = r.GetDateTime(5),
+            LeadHours           = r.GetInt32(6),
+            ProbHasDryWindow    = r.GetDouble(7),
+            ClimatologyProbHasDryWindow = r.GetDouble(8),
+            AgreementHasDryWindow = Nullable(r,  9),
+            PrecipSumMean         = Nullable(r, 10),
+            LongestDryRunMean     = Nullable(r, 11),
+            WetHourCountMean      = Nullable(r, 12),
+            HasDryWindowGfs   = Nullable(r, 13),
+            HasDryWindowEcmwf = Nullable(r, 14),
+            HasDryWindowIcon  = Nullable(r, 15),
+            HasDryWindowMf    = Nullable(r, 16),
+            HasDryWindowUkmo  = Nullable(r, 17),
+            HasDryWindowGem   = Nullable(r, 18),
+            HasDryWindowAifs  = Nullable(r, 19),
+            HasDryWindowJma   = Nullable(r, 20),
+            PrecipSumGfs   = Nullable(r, 21),
+            PrecipSumEcmwf = Nullable(r, 22),
+            PrecipSumIcon  = Nullable(r, 23),
+            PrecipSumMf    = Nullable(r, 24),
+            PrecipSumUkmo  = Nullable(r, 25),
+            PrecipSumGem   = Nullable(r, 26),
+            PrecipSumAifs  = Nullable(r, 27),
+            PrecipSumJma   = Nullable(r, 28),
+            FeatureVectorHash = r.IsDBNull(29) ? "" : r.GetString(29),
+        }, _log, "Prediction tree empty for requested (station, window) — nothing to verify.", ct);
     }
 
     private IReadOnlyDictionary<(string Station, int WindowHours), IReadOnlyDictionary<DateOnly, bool>>
@@ -338,8 +323,7 @@ ORDER BY TruthStation, WindowHours, ModelVersion, LeadHours, TargetDateUtc";
     private IReadOnlyList<DryWindowLabelBuilder.HourlyTruth> QueryHourlyTruth(
         string stationName, DateTime start, DateTime end, CancellationToken ct)
     {
-        var glob = Path.Combine(_cfg.Storage.RainfallPath, "**", "*.parquet")
-            .Replace('\\', '/').Replace("'", "''");
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.RainfallPath, "**", "*.parquet"));
 
         var sql = $@"
 SELECT date_trunc('hour', ObservedTimeUtc) AS valid_time,
@@ -354,27 +338,11 @@ GROUP BY 1
 HAVING COUNT(*) = 4
 ORDER BY 1";
 
-        using var conn = new DuckDBConnection("DataSource=:memory:");
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-
-        var rows = new List<DryWindowLabelBuilder.HourlyTruth>();
-        try
-        {
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
-            {
-                ct.ThrowIfCancellationRequested();
-                var h = DateTime.SpecifyKind(r.GetDateTime(0), DateTimeKind.Utc);
-                rows.Add(new DryWindowLabelBuilder.HourlyTruth(h, r.GetDouble(1)));
-            }
-        }
-        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
-        {
-            _log.LogWarning("No rainfall parquet for station {Station}.", stationName);
-        }
-        return rows;
+        return ParquetReader.Query(sql, r =>
+            new DryWindowLabelBuilder.HourlyTruth(
+                DateTime.SpecifyKind(r.GetDateTime(0), DateTimeKind.Utc),
+                r.GetDouble(1)),
+            _log, $"No rainfall parquet for station {stationName}.", ct);
     }
 
     private static double MeanOfModels(DryWindowPredictionRow p)

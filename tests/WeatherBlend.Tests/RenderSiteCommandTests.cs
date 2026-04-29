@@ -7,11 +7,13 @@ using Xunit;
 namespace WeatherBlend.Tests;
 
 /// <summary>
-/// Integration tests for <see cref="RenderSiteCommand"/> helpers that touch
-/// disk + DuckDB. The schema-probe test pins yesterday's regression — when
-/// no parquet in the tree carried <c>ApparentTemperatureC</c>,
-/// <c>union_by_name=true</c> excluded it from the unified schema and
-/// DuckDB binder-errored on any SELECT referencing it.
+/// Integration tests pinning the original <c>ApparentTemperatureC</c> regression
+/// against the schema-probe path now exposed by
+/// <see cref="WeatherBlend.Storage.ParquetReader.HasColumn"/>. When no parquet
+/// in the tree carried the column, <c>union_by_name=true</c> excluded it from
+/// the unified schema and DuckDB binder-errored on any SELECT referencing it.
+/// Probing first prevents the crash; these tests pin the probe's behaviour
+/// across the variants the renderer cares about.
 /// </summary>
 public class RenderSiteCommandTests : IDisposable
 {
@@ -40,7 +42,7 @@ public class RenderSiteCommandTests : IDisposable
         var glob = Path.Combine(_root, "**", "*.parquet").Replace('\\', '/');
         using var conn = OpenConn();
 
-        RenderSiteCommand.ParquetSchemaHasColumn(conn, glob, "ApparentTemperatureC")
+        WeatherBlend.Storage.ParquetReader.HasColumn(conn, glob, "ApparentTemperatureC")
             .Should().BeFalse();
     }
 
@@ -59,10 +61,10 @@ public class RenderSiteCommandTests : IDisposable
         var glob = Path.Combine(_root, "**", "*.parquet").Replace('\\', '/');
         using var conn = OpenConn();
 
-        RenderSiteCommand.ParquetSchemaHasColumn(conn, glob, "ApparentTemperatureC")
+        WeatherBlend.Storage.ParquetReader.HasColumn(conn, glob, "ApparentTemperatureC")
             .Should().BeFalse();
         // Sanity: a column that DOES exist still resolves true on the same tree.
-        RenderSiteCommand.ParquetSchemaHasColumn(conn, glob, "UtciC")
+        WeatherBlend.Storage.ParquetReader.HasColumn(conn, glob, "UtciC")
             .Should().BeTrue();
     }
 
@@ -85,7 +87,7 @@ public class RenderSiteCommandTests : IDisposable
         var glob = Path.Combine(_root, "**", "*.parquet").Replace('\\', '/');
         using var conn = OpenConn();
 
-        RenderSiteCommand.ParquetSchemaHasColumn(conn, glob, "ApparentTemperatureC")
+        WeatherBlend.Storage.ParquetReader.HasColumn(conn, glob, "ApparentTemperatureC")
             .Should().BeTrue();
     }
 
@@ -99,7 +101,7 @@ public class RenderSiteCommandTests : IDisposable
         using var conn = OpenConn();
 
         // No injection — the predicate just doesn't match anything.
-        RenderSiteCommand.ParquetSchemaHasColumn(conn, glob, "Bobby'); DROP TABLE--")
+        WeatherBlend.Storage.ParquetReader.HasColumn(conn, glob, "Bobby'); DROP TABLE--")
             .Should().BeFalse();
     }
 

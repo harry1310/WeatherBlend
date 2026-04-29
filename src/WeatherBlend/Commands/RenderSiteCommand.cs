@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
 using WeatherBlend.Models;
 using WeatherBlend.Site;
+using WeatherBlend.Storage;
 using WeatherBlend.Train;
 
 namespace WeatherBlend.Commands;
@@ -398,8 +399,7 @@ public sealed class RenderSiteCommand
     {
         ct.ThrowIfCancellationRequested();
 
-        var glob = Path.Combine(_cfg.Storage.RainfallPath, "**", "*.parquet")
-            .Replace('\\', '/').Replace("'", "''");
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.RainfallPath, "**", "*.parquet"));
 
         // Same 4-of-4 aggregation as PrecipVerify so a partial hour can't flip wet↔dry.
         var sql = $@"
@@ -415,26 +415,13 @@ GROUP BY 1
 HAVING COUNT(*) = 4
 ORDER BY 1";
 
-        using var conn = new DuckDBConnection("DataSource=:memory:");
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-
-        var hourly = new Dictionary<DateTime, double>();
-        try
-        {
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
-            {
-                ct.ThrowIfCancellationRequested();
-                hourly[r.GetDateTime(0)] = r.GetDouble(1);
-            }
-        }
-        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
-        {
-            _log.LogWarning("Rainfall tree empty for {Station}.", stationName);
-        }
-        return hourly;
+        var rows = ParquetReader.Query(
+            sql,
+            r => (Hour: r.GetDateTime(0), Mm: r.GetDouble(1)),
+            _log,
+            $"Rainfall tree empty for {stationName}.",
+            ct);
+        return rows.ToDictionary(x => x.Hour, x => x.Mm);
     }
 
     // Kept local (rather than importing Slugify from PrecipVerifyCommand) so this file
@@ -512,8 +499,7 @@ ORDER BY 1";
         // Scope to the temperature subtree only — sibling subtrees (precipitation,
         // dry_window) have different schemas and would surface as nulls or wrong
         // columns under union_by_name.
-        var glob = Path.Combine(_cfg.Storage.PredictionsPath, "temperature", "**", "*.parquet")
-            .Replace('\\', '/').Replace("'", "''");
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath, "temperature", "**", "*.parquet"));
 
         var sql = $@"
 SELECT LocationName, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
@@ -529,53 +515,33 @@ WHERE LocationName = '{_cfg.Location.Name}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 ORDER BY PredictionMadeAtUtc DESC, LeadHours";
 
-        using var conn = new DuckDBConnection("DataSource=:memory:");
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-
-        var rows = new List<PredictionRow>();
-        try
+        return ParquetReader.Query(sql, r => new PredictionRow
         {
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
-            {
-                ct.ThrowIfCancellationRequested();
-                rows.Add(new PredictionRow
-                {
-                    LocationName        = r.GetString(0),
-                    ModelVersion        = r.GetString(1),
-                    PredictionMadeAtUtc = r.GetDateTime(2),
-                    ValidTimeUtc        = r.GetDateTime(3),
-                    LeadHours           = r.GetInt32(4),
-                    BlendTemperature    = r.GetDouble(5),
-                    TempGfs   = NullableDouble(r,  6),
-                    TempEcmwf = NullableDouble(r,  7),
-                    TempIcon  = NullableDouble(r,  8),
-                    TempMf    = NullableDouble(r,  9),
-                    TempUkmo  = NullableDouble(r, 10),
-                    TempGem   = NullableDouble(r, 11),
-                    TempAifs  = NullableDouble(r, 12),
-                    RunTimeGfs   = NullableDate(r, 13),
-                    RunTimeEcmwf = NullableDate(r, 14),
-                    RunTimeIcon  = NullableDate(r, 15),
-                    RunTimeMf    = NullableDate(r, 16),
-                    RunTimeUkmo  = NullableDate(r, 17),
-                    RunTimeGem   = NullableDate(r, 18),
-                    RunTimeAifs  = NullableDate(r, 19),
-                    TempMean  = NullableDouble(r, 20),
-                    TempStd   = NullableDouble(r, 21),
-                    TempRange = NullableDouble(r, 22),
-                    FeatureVectorHash = r.IsDBNull(23) ? "" : r.GetString(23),
-                });
-            }
-        }
-        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
-        {
-            _log.LogWarning("Predictions tree empty — rendering an empty-state site.");
-            return Array.Empty<PredictionRow>();
-        }
-        return rows;
+            LocationName        = r.GetString(0),
+            ModelVersion        = r.GetString(1),
+            PredictionMadeAtUtc = r.GetDateTime(2),
+            ValidTimeUtc        = r.GetDateTime(3),
+            LeadHours           = r.GetInt32(4),
+            BlendTemperature    = r.GetDouble(5),
+            TempGfs   = NullableDouble(r,  6),
+            TempEcmwf = NullableDouble(r,  7),
+            TempIcon  = NullableDouble(r,  8),
+            TempMf    = NullableDouble(r,  9),
+            TempUkmo  = NullableDouble(r, 10),
+            TempGem   = NullableDouble(r, 11),
+            TempAifs  = NullableDouble(r, 12),
+            RunTimeGfs   = NullableDate(r, 13),
+            RunTimeEcmwf = NullableDate(r, 14),
+            RunTimeIcon  = NullableDate(r, 15),
+            RunTimeMf    = NullableDate(r, 16),
+            RunTimeUkmo  = NullableDate(r, 17),
+            RunTimeGem   = NullableDate(r, 18),
+            RunTimeAifs  = NullableDate(r, 19),
+            TempMean  = NullableDouble(r, 20),
+            TempStd   = NullableDouble(r, 21),
+            TempRange = NullableDouble(r, 22),
+            FeatureVectorHash = r.IsDBNull(23) ? "" : r.GetString(23),
+        }, _log, "Predictions tree empty — rendering an empty-state site.", ct);
     }
 
     private IReadOnlyList<SitePages.PrecipForecastPoint> QueryPrecipPredictions(
@@ -583,8 +549,7 @@ ORDER BY PredictionMadeAtUtc DESC, LeadHours";
     {
         ct.ThrowIfCancellationRequested();
 
-        var glob = Path.Combine(_cfg.Storage.PredictionsPath, "precipitation", "**", "*.parquet")
-            .Replace('\\', '/').Replace("'", "''");
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath, "precipitation", "**", "*.parquet"));
 
         var sql = $@"
 SELECT TruthStation, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
@@ -596,42 +561,23 @@ WHERE LocationName = '{_cfg.Location.Name}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 ORDER BY TruthStation, LeadHours, ValidTimeUtc";
 
-        using var conn = new DuckDBConnection("DataSource=:memory:");
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-
-        var rows = new List<SitePages.PrecipForecastPoint>();
-        try
-        {
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
-            {
-                ct.ThrowIfCancellationRequested();
-                rows.Add(new SitePages.PrecipForecastPoint(
-                    Station:         r.GetString(0),
-                    Version:         r.GetString(1),
-                    PredictedAtUtc:  r.GetDateTime(2),
-                    ValidTimeUtc:    r.GetDateTime(3),
-                    LeadHours:       r.GetInt32(4),
-                    ProbWet:         r.GetDouble(5),
-                    ClimatologyPWet: r.GetDouble(6),
-                    PrecipGfs:       r.IsDBNull(7)  ? null : r.GetDouble(7),
-                    PrecipEcmwf:     r.IsDBNull(8)  ? null : r.GetDouble(8),
-                    PrecipIcon:      r.IsDBNull(9)  ? null : r.GetDouble(9),
-                    PrecipMf:        r.IsDBNull(10) ? null : r.GetDouble(10),
-                    PrecipUkmo:      r.IsDBNull(11) ? null : r.GetDouble(11),
-                    PrecipGem:       r.IsDBNull(12) ? null : r.GetDouble(12),
-                    PrecipAifs:      r.IsDBNull(13) ? null : r.GetDouble(13),
-                    PrecipJma:       r.IsDBNull(14) ? null : r.GetDouble(14)));
-            }
-        }
-        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
-        {
-            _log.LogWarning("Precipitation predictions tree empty — precip page will render an empty state.");
-            return Array.Empty<SitePages.PrecipForecastPoint>();
-        }
-        return rows;
+        return ParquetReader.Query(sql, r => new SitePages.PrecipForecastPoint(
+            Station:         r.GetString(0),
+            Version:         r.GetString(1),
+            PredictedAtUtc:  r.GetDateTime(2),
+            ValidTimeUtc:    r.GetDateTime(3),
+            LeadHours:       r.GetInt32(4),
+            ProbWet:         r.GetDouble(5),
+            ClimatologyPWet: r.GetDouble(6),
+            PrecipGfs:       r.IsDBNull(7)  ? null : r.GetDouble(7),
+            PrecipEcmwf:     r.IsDBNull(8)  ? null : r.GetDouble(8),
+            PrecipIcon:      r.IsDBNull(9)  ? null : r.GetDouble(9),
+            PrecipMf:        r.IsDBNull(10) ? null : r.GetDouble(10),
+            PrecipUkmo:      r.IsDBNull(11) ? null : r.GetDouble(11),
+            PrecipGem:       r.IsDBNull(12) ? null : r.GetDouble(12),
+            PrecipAifs:      r.IsDBNull(13) ? null : r.GetDouble(13),
+            PrecipJma:       r.IsDBNull(14) ? null : r.GetDouble(14)),
+            _log, "Precipitation predictions tree empty — precip page will render an empty state.", ct);
     }
 
     private IReadOnlyList<SitePages.FeelsLikeForecastPoint> QueryFeelsLikePredictions(
@@ -639,20 +585,18 @@ ORDER BY TruthStation, LeadHours, ValidTimeUtc";
     {
         ct.ThrowIfCancellationRequested();
 
-        var glob = Path.Combine(_cfg.Storage.PredictionsPath,
-                                WeatherBlend.Commands.FeelsLikePredictCommand.PredictionsSubdir,
-                                "**", "*.parquet")
-            .Replace('\\', '/').Replace("'", "''");
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath,
+                                                   WeatherBlend.Commands.FeelsLikePredictCommand.PredictionsSubdir,
+                                                   "**", "*.parquet"));
 
         // Both UtciC and ApparentTemperatureC are required on every row (Steadman
         // 1994 added alongside UTCI as part of the predictUTCI → predictFeelsLike
-        // refactor). Until the first feels-like predict run lands on the new
-        // parquet path, no files match and we return empty silently — the chip
-        // is just absent on home cards.
+        // refactor). Probe the schema first so a pre-Steadman parquet doesn't
+        // surface as a typed-mapping crash; reuse the conn for the main query.
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
 
-        if (!ParquetSchemaHasColumn(conn, glob, "ApparentTemperatureC"))
+        if (!ParquetReader.HasColumn(conn, glob, "ApparentTemperatureC"))
         {
             _log.LogWarning(
                 "Feels-like predictions tree empty or pre-Steadman — chip will be absent on home cards until predict runs once.");
@@ -670,60 +614,15 @@ WHERE LocationName = '{_cfg.Location.Name}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 ORDER BY LeadHours, ValidTimeUtc";
 
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-
-        var rows = new List<SitePages.FeelsLikeForecastPoint>();
-        try
-        {
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
-            {
-                ct.ThrowIfCancellationRequested();
-                rows.Add(new SitePages.FeelsLikeForecastPoint(
-                    Version:        r.GetString(0),
-                    PredictedAtUtc: r.GetDateTime(1),
-                    ValidTimeUtc:   r.GetDateTime(2),
-                    LeadHours:      r.GetInt32(3),
-                    UtciC:          r.GetDouble(4),
-                    Band:           r.IsDBNull(5) ? "" : r.GetString(5),
-                    ApparentC:      r.GetDouble(6)));
-            }
-        }
-        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
-        {
-            _log.LogWarning("Feels-like predictions tree empty — chip will be absent on home cards.");
-            return Array.Empty<SitePages.FeelsLikeForecastPoint>();
-        }
-        return rows;
-    }
-
-    /// <summary>
-    /// Cheap schema probe over a parquet glob. Returns false when no files match
-    /// (read_parquet throws "No files found"), or when the column is absent from
-    /// the union_by_name'd schema. Used to gate queries that reference newly-added
-    /// columns during the migration window between schema bumps.
-    /// </summary>
-    internal static bool ParquetSchemaHasColumn(DuckDBConnection conn, string glob, string column)
-    {
-        var sql = $@"
-SELECT 1
-FROM (DESCRIBE SELECT * FROM read_parquet('{glob}',
-                                          hive_partitioning = false,
-                                          union_by_name = true))
-WHERE column_name = '{column.Replace("'", "''")}'
-LIMIT 1";
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-        try
-        {
-            using var r = cmd.ExecuteReader();
-            return r.Read();
-        }
-        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
-        {
-            return false;
-        }
+        return ParquetReader.Query(conn, sql, r => new SitePages.FeelsLikeForecastPoint(
+            Version:        r.GetString(0),
+            PredictedAtUtc: r.GetDateTime(1),
+            ValidTimeUtc:   r.GetDateTime(2),
+            LeadHours:      r.GetInt32(3),
+            UtciC:          r.GetDouble(4),
+            Band:           r.IsDBNull(5) ? "" : r.GetString(5),
+            ApparentC:      r.GetDouble(6)),
+            _log, "Feels-like predictions tree empty — chip will be absent on home cards.", ct);
     }
 
     private IReadOnlyList<SitePages.DryWindowForecastPoint> QueryDryWindowPredictions(
@@ -731,8 +630,7 @@ LIMIT 1";
     {
         ct.ThrowIfCancellationRequested();
 
-        var glob = Path.Combine(_cfg.Storage.PredictionsPath, "dry_window", "**", "*.parquet")
-            .Replace('\\', '/').Replace("'", "''");
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath, "dry_window", "**", "*.parquet"));
 
         // Dry-window predictions are anchored on TargetDateUtc (UTC midnight of the
         // labelled day), not ValidTimeUtc. Bound on TargetDate instead.
@@ -745,36 +643,17 @@ WHERE LocationName = '{_cfg.Location.Name}'
   AND TargetDateUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 ORDER BY TruthStation, WindowHours, LeadHours, TargetDateUtc";
 
-        using var conn = new DuckDBConnection("DataSource=:memory:");
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-
-        var rows = new List<SitePages.DryWindowForecastPoint>();
-        try
-        {
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
-            {
-                ct.ThrowIfCancellationRequested();
-                rows.Add(new SitePages.DryWindowForecastPoint(
-                    Station:                     r.GetString(0),
-                    WindowHours:                 r.GetInt32(1),
-                    Version:                     r.GetString(2),
-                    PredictedAtUtc:              r.GetDateTime(3),
-                    TargetDateUtc:               r.GetDateTime(4),
-                    LeadHours:                   r.GetInt32(5),
-                    ProbHasDryWindow:            r.GetDouble(6),
-                    ClimatologyProbHasDryWindow: r.GetDouble(7),
-                    AgreementHasDryWindow:       r.IsDBNull(8) ? null : r.GetDouble(8)));
-            }
-        }
-        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
-        {
-            _log.LogWarning("Dry-window predictions tree empty — dry-window page will render an empty state.");
-            return Array.Empty<SitePages.DryWindowForecastPoint>();
-        }
-        return rows;
+        return ParquetReader.Query(sql, r => new SitePages.DryWindowForecastPoint(
+            Station:                     r.GetString(0),
+            WindowHours:                 r.GetInt32(1),
+            Version:                     r.GetString(2),
+            PredictedAtUtc:              r.GetDateTime(3),
+            TargetDateUtc:               r.GetDateTime(4),
+            LeadHours:                   r.GetInt32(5),
+            ProbHasDryWindow:            r.GetDouble(6),
+            ClimatologyProbHasDryWindow: r.GetDouble(7),
+            AgreementHasDryWindow:       r.IsDBNull(8) ? null : r.GetDouble(8)),
+            _log, "Dry-window predictions tree empty — dry-window page will render an empty state.", ct);
     }
 
     private IReadOnlyList<(DateTime ObservedTimeUtc, double Temperature2m)> QueryMetar(
@@ -789,8 +668,7 @@ ORDER BY TruthStation, WindowHours, LeadHours, TargetDateUtc";
             return Array.Empty<(DateTime, double)>();
         }
 
-        var glob = Path.Combine(_cfg.Storage.ObservationsPath, "**", "*.parquet")
-            .Replace('\\', '/').Replace("'", "''");
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.ObservationsPath, "**", "*.parquet"));
 
         // Filter on in-file Station column (authoritative per CLAUDE.md gotcha about
         // hive-key vs column collision). Primary station only — secondary fallback
@@ -805,34 +683,15 @@ WHERE LocationName = '{_cfg.Location.Name}'
   AND ObservedTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 ORDER BY ObservedTimeUtc";
 
-        using var conn = new DuckDBConnection("DataSource=:memory:");
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-
-        var rows = new List<(DateTime, double)>();
-        try
-        {
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
-            {
-                ct.ThrowIfCancellationRequested();
-                rows.Add((r.GetDateTime(0), r.GetDouble(1)));
-            }
-        }
-        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
-        {
-            _log.LogWarning("METAR tree empty — METAR chart series will be empty.");
-        }
-        return rows;
+        return ParquetReader.Query(sql, r => (r.GetDateTime(0), r.GetDouble(1)),
+            _log, "METAR tree empty — METAR chart series will be empty.", ct);
     }
 
     private IReadOnlyDictionary<DateTime, double> QueryTruth(DateTime start, DateTime end, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
-        var glob = Path.Combine(_cfg.Storage.Era5Path, "**", "*.parquet")
-            .Replace('\\', '/').Replace("'", "''");
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.Era5Path, "**", "*.parquet"));
 
         var sql = $@"
 SELECT ValidTimeUtc, Temperature2m
@@ -842,26 +701,9 @@ WHERE LocationName = '{_cfg.Location.Name}'
   AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'";
 
-        using var conn = new DuckDBConnection("DataSource=:memory:");
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-
-        var truth = new Dictionary<DateTime, double>();
-        try
-        {
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
-            {
-                ct.ThrowIfCancellationRequested();
-                truth[r.GetDateTime(0)] = r.GetDouble(1);
-            }
-        }
-        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
-        {
-            _log.LogWarning("ERA5 tree empty — skill charts will be empty.");
-        }
-        return truth;
+        var rows = ParquetReader.Query(sql, r => (Time: r.GetDateTime(0), Temp: r.GetDouble(1)),
+            _log, "ERA5 tree empty — skill charts will be empty.", ct);
+        return rows.ToDictionary(x => x.Time, x => x.Temp);
     }
 
     private static double? NullableDouble(IDataReader r, int ord)

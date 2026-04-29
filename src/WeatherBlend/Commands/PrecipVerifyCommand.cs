@@ -1,9 +1,9 @@
 using System.Data;
-using DuckDB.NET.Data;
 using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
 using WeatherBlend.Evaluate.Precip;
 using WeatherBlend.Models;
+using WeatherBlend.Storage;
 using WeatherBlend.Train;
 
 namespace WeatherBlend.Commands;
@@ -138,8 +138,7 @@ public sealed class PrecipVerifyCommand
         // Only read the station subtrees we're verifying. Passing a per-station glob
         // list into read_parquet() keeps cross-station noise out of the scan.
         var globs = string.Join(", ", stations.Select(s =>
-            "'" + Path.Combine(_cfg.Storage.PredictionsPath, "precipitation", s, "**", "*.parquet")
-                .Replace('\\', '/').Replace("'", "''") + "'"));
+            "'" + ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath, "precipitation", s, "**", "*.parquet")) + "'"));
 
         var sql = $@"
 SELECT LocationName, TruthStation, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
@@ -153,47 +152,27 @@ WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 ORDER BY TruthStation, ModelVersion, LeadHours, ValidTimeUtc";
 
-        using var conn = new DuckDBConnection("DataSource=:memory:");
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-
-        var rows = new List<PrecipPredictionRow>();
-        try
+        return ParquetReader.Query(sql, r => new PrecipPredictionRow
         {
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
-            {
-                ct.ThrowIfCancellationRequested();
-                rows.Add(new PrecipPredictionRow
-                {
-                    LocationName        = r.GetString(0),
-                    TruthStation        = r.GetString(1),
-                    ModelVersion        = r.GetString(2),
-                    PredictionMadeAtUtc = r.GetDateTime(3),
-                    ValidTimeUtc        = r.GetDateTime(4),
-                    LeadHours           = r.GetInt32(5),
-                    ProbWet             = r.GetDouble(6),
-                    ClimatologyPWet     = r.GetDouble(7),
-                    PrecipGfs   = NullableDouble(r,  8),
-                    PrecipEcmwf = NullableDouble(r,  9),
-                    PrecipIcon  = NullableDouble(r, 10),
-                    PrecipMf    = NullableDouble(r, 11),
-                    PrecipUkmo  = NullableDouble(r, 12),
-                    PrecipGem   = NullableDouble(r, 13),
-                    PrecipAifs  = NullableDouble(r, 14),
-                    PrecipJma   = NullableDouble(r, 15),
-                    PrecipAgreementWet01 = NullableDouble(r, 16),
-                    FeatureVectorHash   = r.IsDBNull(17) ? "" : r.GetString(17),
-                });
-            }
-        }
-        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
-        {
-            _log.LogWarning("Predictions tree empty for requested stations — nothing to verify.");
-            return Array.Empty<PrecipPredictionRow>();
-        }
-        return rows;
+            LocationName        = r.GetString(0),
+            TruthStation        = r.GetString(1),
+            ModelVersion        = r.GetString(2),
+            PredictionMadeAtUtc = r.GetDateTime(3),
+            ValidTimeUtc        = r.GetDateTime(4),
+            LeadHours           = r.GetInt32(5),
+            ProbWet             = r.GetDouble(6),
+            ClimatologyPWet     = r.GetDouble(7),
+            PrecipGfs   = NullableDouble(r,  8),
+            PrecipEcmwf = NullableDouble(r,  9),
+            PrecipIcon  = NullableDouble(r, 10),
+            PrecipMf    = NullableDouble(r, 11),
+            PrecipUkmo  = NullableDouble(r, 12),
+            PrecipGem   = NullableDouble(r, 13),
+            PrecipAifs  = NullableDouble(r, 14),
+            PrecipJma   = NullableDouble(r, 15),
+            PrecipAgreementWet01 = NullableDouble(r, 16),
+            FeatureVectorHash   = r.IsDBNull(17) ? "" : r.GetString(17),
+        }, _log, "Predictions tree empty for requested stations — nothing to verify.", ct);
     }
 
     private IReadOnlyDictionary<string, IReadOnlyDictionary<DateTime, double>> QueryTruth(
@@ -227,8 +206,7 @@ ORDER BY TruthStation, ModelVersion, LeadHours, ValidTimeUtc";
     private IReadOnlyDictionary<DateTime, double> QueryHourlyTruth(
         string stationName, DateTime start, DateTime end, CancellationToken ct)
     {
-        var glob = Path.Combine(_cfg.Storage.RainfallPath, "**", "*.parquet")
-            .Replace('\\', '/').Replace("'", "''");
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.RainfallPath, "**", "*.parquet"));
 
         // Same aggregation rule as training: four readings per hour required, else drop.
         // Otherwise a partial hour understates observed mm and can flip wet→dry at boundary.
@@ -245,26 +223,9 @@ GROUP BY 1
 HAVING COUNT(*) = 4
 ORDER BY 1";
 
-        using var conn = new DuckDBConnection("DataSource=:memory:");
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-
-        var truth = new Dictionary<DateTime, double>();
-        try
-        {
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
-            {
-                ct.ThrowIfCancellationRequested();
-                truth[r.GetDateTime(0)] = r.GetDouble(1);
-            }
-        }
-        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
-        {
-            _log.LogWarning("Rainfall tree empty for station {Station} — cannot verify.", stationName);
-        }
-        return truth;
+        var rows = ParquetReader.Query(sql, r => (Hour: r.GetDateTime(0), Mm: r.GetDouble(1)),
+            _log, $"Rainfall tree empty for station {stationName} — cannot verify.", ct);
+        return rows.ToDictionary(x => x.Hour, x => x.Mm);
     }
 
     private IReadOnlyDictionary<(string Station, string Version), ModelArtifact.TrainingMetadata>

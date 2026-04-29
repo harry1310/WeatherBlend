@@ -1,9 +1,9 @@
 using System.Data;
-using DuckDB.NET.Data;
 using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
 using WeatherBlend.Evaluate.Element;
 using WeatherBlend.Models;
+using WeatherBlend.Storage;
 using WeatherBlend.Train;
 using WeatherBlend.Train.Element;
 
@@ -111,8 +111,7 @@ public sealed class ElementVerifyCommand
     private IReadOnlyList<ElementPredictionRow> QueryPredictions(
         ElementTarget target, DateTime start, DateTime end, CancellationToken ct)
     {
-        var glob = Path.Combine(_cfg.Storage.PredictionsPath, target.ModelDirName, "**", "*.parquet")
-            .Replace('\\', '/').Replace("'", "''");
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath, target.ModelDirName, "**", "*.parquet"));
 
         var sql = $@"
 SELECT LocationName, Element, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
@@ -127,60 +126,40 @@ WHERE LocationName = '{_cfg.Location.Name}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 ORDER BY ModelVersion, LeadHours, ValidTimeUtc";
 
-        using var conn = new DuckDBConnection("DataSource=:memory:");
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-
-        var rows = new List<ElementPredictionRow>();
-        try
+        return ParquetReader.Query(sql, r => new ElementPredictionRow
         {
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
-            {
-                ct.ThrowIfCancellationRequested();
-                rows.Add(new ElementPredictionRow
-                {
-                    LocationName        = r.GetString(0),
-                    Element             = r.GetString(1),
-                    ModelVersion        = r.GetString(2),
-                    PredictionMadeAtUtc = r.GetDateTime(3),
-                    ValidTimeUtc        = r.GetDateTime(4),
-                    LeadHours           = r.GetInt32(5),
-                    BlendValue          = r.GetDouble(6),
-                    ModelGfs   = NullableDouble(r,  7),
-                    ModelEcmwf = NullableDouble(r,  8),
-                    ModelIcon  = NullableDouble(r,  9),
-                    ModelMf    = NullableDouble(r, 10),
-                    ModelUkmo  = NullableDouble(r, 11),
-                    ModelGem   = NullableDouble(r, 12),
-                    ModelAifs  = NullableDouble(r, 13),
-                    RunTimeGfs   = NullableDate(r, 14),
-                    RunTimeEcmwf = NullableDate(r, 15),
-                    RunTimeIcon  = NullableDate(r, 16),
-                    RunTimeMf    = NullableDate(r, 17),
-                    RunTimeUkmo  = NullableDate(r, 18),
-                    RunTimeGem   = NullableDate(r, 19),
-                    RunTimeAifs  = NullableDate(r, 20),
-                    Mean  = NullableDouble(r, 21),
-                    Std   = NullableDouble(r, 22),
-                    Range = NullableDouble(r, 23),
-                    FeatureVectorHash = r.IsDBNull(24) ? "" : r.GetString(24),
-                });
-            }
-        }
-        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
-        {
-            _log.LogWarning("Predictions tree empty for {Target} — nothing to verify.", target.CliName);
-        }
-        return rows;
+            LocationName        = r.GetString(0),
+            Element             = r.GetString(1),
+            ModelVersion        = r.GetString(2),
+            PredictionMadeAtUtc = r.GetDateTime(3),
+            ValidTimeUtc        = r.GetDateTime(4),
+            LeadHours           = r.GetInt32(5),
+            BlendValue          = r.GetDouble(6),
+            ModelGfs   = NullableDouble(r,  7),
+            ModelEcmwf = NullableDouble(r,  8),
+            ModelIcon  = NullableDouble(r,  9),
+            ModelMf    = NullableDouble(r, 10),
+            ModelUkmo  = NullableDouble(r, 11),
+            ModelGem   = NullableDouble(r, 12),
+            ModelAifs  = NullableDouble(r, 13),
+            RunTimeGfs   = NullableDate(r, 14),
+            RunTimeEcmwf = NullableDate(r, 15),
+            RunTimeIcon  = NullableDate(r, 16),
+            RunTimeMf    = NullableDate(r, 17),
+            RunTimeUkmo  = NullableDate(r, 18),
+            RunTimeGem   = NullableDate(r, 19),
+            RunTimeAifs  = NullableDate(r, 20),
+            Mean  = NullableDouble(r, 21),
+            Std   = NullableDouble(r, 22),
+            Range = NullableDouble(r, 23),
+            FeatureVectorHash = r.IsDBNull(24) ? "" : r.GetString(24),
+        }, _log, $"Predictions tree empty for {target.CliName} — nothing to verify.", ct);
     }
 
     private IReadOnlyDictionary<DateTime, double> QueryTruth(
         string truthCol, DateTime start, DateTime end, CancellationToken ct)
     {
-        var glob = Path.Combine(_cfg.Storage.Era5Path, "**", "*.parquet")
-            .Replace('\\', '/').Replace("'", "''");
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.Era5Path, "**", "*.parquet"));
 
         var sql = $@"
 SELECT ValidTimeUtc, {truthCol}
@@ -190,26 +169,9 @@ WHERE LocationName = '{_cfg.Location.Name}'
   AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'";
 
-        using var conn = new DuckDBConnection("DataSource=:memory:");
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-
-        var truth = new Dictionary<DateTime, double>();
-        try
-        {
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
-            {
-                ct.ThrowIfCancellationRequested();
-                truth[r.GetDateTime(0)] = r.GetDouble(1);
-            }
-        }
-        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
-        {
-            _log.LogWarning("ERA5 tree empty — cannot verify.");
-        }
-        return truth;
+        var rows = ParquetReader.Query(sql, r => (Time: r.GetDateTime(0), Val: r.GetDouble(1)),
+            _log, "ERA5 tree empty — cannot verify.", ct);
+        return rows.ToDictionary(x => x.Time, x => x.Val);
     }
 
     private IReadOnlyDictionary<string, ModelArtifact.TrainingMetadata> LoadMetadataForVersions(

@@ -1,9 +1,9 @@
 using System.Data;
-using DuckDB.NET.Data;
 using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
 using WeatherBlend.Evaluate;
 using WeatherBlend.Models;
+using WeatherBlend.Storage;
 using WeatherBlend.Train;
 
 namespace WeatherBlend.Commands;
@@ -114,8 +114,7 @@ public sealed class VerifyCommand
         // Scope to the temperature subtree only — precipitation / dry-window predictions
         // live alongside and don't share the temperature schema, so a top-level glob
         // would pull rows missing TempGfs/…/BlendTemperature and fail the query.
-        var glob = Path.Combine(_cfg.Storage.PredictionsPath, "temperature", "**", "*.parquet")
-            .Replace('\\', '/').Replace("'", "''");
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath, "temperature", "**", "*.parquet"));
 
         // hive_partitioning=false — the `model_version=` hive key collides with the
         // in-file ModelVersion column under case-insensitive resolution. Same rule
@@ -133,53 +132,33 @@ WHERE LocationName = '{_cfg.Location.Name}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 ORDER BY ModelVersion, LeadHours, ValidTimeUtc";
 
-        using var conn = new DuckDBConnection("DataSource=:memory:");
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-
-        var rows = new List<PredictionRow>();
-        try
+        return ParquetReader.Query(sql, r => new PredictionRow
         {
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
-            {
-                ct.ThrowIfCancellationRequested();
-                rows.Add(new PredictionRow
-                {
-                    LocationName        = r.GetString(0),
-                    ModelVersion        = r.GetString(1),
-                    PredictionMadeAtUtc = r.GetDateTime(2),
-                    ValidTimeUtc        = r.GetDateTime(3),
-                    LeadHours           = r.GetInt32(4),
-                    BlendTemperature    = r.GetDouble(5),
-                    TempGfs   = NullableDouble(r,  6),
-                    TempEcmwf = NullableDouble(r,  7),
-                    TempIcon  = NullableDouble(r,  8),
-                    TempMf    = NullableDouble(r,  9),
-                    TempUkmo  = NullableDouble(r, 10),
-                    TempGem   = NullableDouble(r, 11),
-                    TempAifs  = NullableDouble(r, 12),
-                    RunTimeGfs   = NullableDate(r, 13),
-                    RunTimeEcmwf = NullableDate(r, 14),
-                    RunTimeIcon  = NullableDate(r, 15),
-                    RunTimeMf    = NullableDate(r, 16),
-                    RunTimeUkmo  = NullableDate(r, 17),
-                    RunTimeGem   = NullableDate(r, 18),
-                    RunTimeAifs  = NullableDate(r, 19),
-                    TempMean  = NullableDouble(r, 20),
-                    TempStd   = NullableDouble(r, 21),
-                    TempRange = NullableDouble(r, 22),
-                    FeatureVectorHash = r.IsDBNull(23) ? "" : r.GetString(23),
-                });
-            }
-        }
-        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
-        {
-            _log.LogWarning("Predictions tree empty — nothing to verify.");
-            return Array.Empty<PredictionRow>();
-        }
-        return rows;
+            LocationName        = r.GetString(0),
+            ModelVersion        = r.GetString(1),
+            PredictionMadeAtUtc = r.GetDateTime(2),
+            ValidTimeUtc        = r.GetDateTime(3),
+            LeadHours           = r.GetInt32(4),
+            BlendTemperature    = r.GetDouble(5),
+            TempGfs   = NullableDouble(r,  6),
+            TempEcmwf = NullableDouble(r,  7),
+            TempIcon  = NullableDouble(r,  8),
+            TempMf    = NullableDouble(r,  9),
+            TempUkmo  = NullableDouble(r, 10),
+            TempGem   = NullableDouble(r, 11),
+            TempAifs  = NullableDouble(r, 12),
+            RunTimeGfs   = NullableDate(r, 13),
+            RunTimeEcmwf = NullableDate(r, 14),
+            RunTimeIcon  = NullableDate(r, 15),
+            RunTimeMf    = NullableDate(r, 16),
+            RunTimeUkmo  = NullableDate(r, 17),
+            RunTimeGem   = NullableDate(r, 18),
+            RunTimeAifs  = NullableDate(r, 19),
+            TempMean  = NullableDouble(r, 20),
+            TempStd   = NullableDouble(r, 21),
+            TempRange = NullableDouble(r, 22),
+            FeatureVectorHash = r.IsDBNull(23) ? "" : r.GetString(23),
+        }, _log, "Predictions tree empty — nothing to verify.", ct);
     }
 
     private IReadOnlyDictionary<DateTime, double> QueryTruth(
@@ -187,8 +166,7 @@ ORDER BY ModelVersion, LeadHours, ValidTimeUtc";
     {
         ct.ThrowIfCancellationRequested();
 
-        var glob = Path.Combine(_cfg.Storage.Era5Path, "**", "*.parquet")
-            .Replace('\\', '/').Replace("'", "''");
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.Era5Path, "**", "*.parquet"));
 
         var sql = $@"
 SELECT ValidTimeUtc, Temperature2m
@@ -198,26 +176,9 @@ WHERE LocationName = '{_cfg.Location.Name}'
   AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'";
 
-        using var conn = new DuckDBConnection("DataSource=:memory:");
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-
-        var truth = new Dictionary<DateTime, double>();
-        try
-        {
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
-            {
-                ct.ThrowIfCancellationRequested();
-                truth[r.GetDateTime(0)] = r.GetDouble(1);
-            }
-        }
-        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
-        {
-            _log.LogWarning("ERA5 tree empty — cannot verify.");
-        }
-        return truth;
+        var rows = ParquetReader.Query(sql, r => (Time: r.GetDateTime(0), Temp: r.GetDouble(1)),
+            _log, "ERA5 tree empty — cannot verify.", ct);
+        return rows.ToDictionary(x => x.Time, x => x.Temp);
     }
 
     private IReadOnlyDictionary<string, ModelArtifact.TrainingMetadata> LoadMetadataForVersions(
