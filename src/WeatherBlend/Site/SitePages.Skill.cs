@@ -157,17 +157,23 @@ public static partial class SitePages
         return content.ToString();
     }
 
+    /// <summary>
+    /// 30-day rolling window ending at the latest prediction valid_time across
+    /// the section. Anchoring on the data's right edge instead of the input
+    /// rolling-window-start keeps the chart visually consistent across renders
+    /// (a sparse-data day doesn't widen the window) and tracks the forward
+    /// forecast horizon — when predictions extend +120h the window slides
+    /// with them. Falls back to truth extent when no predictions exist; both
+    /// nulls → caller passes through to Chart.js auto-scaling.
+    /// </summary>
     private static (double? Min, double? Max) TempSectionRange(SiteInputs input)
     {
-        double? min = input.WindowStartUtc.ToOADate();
         double? max = null;
         foreach (var p in input.Predictions)
         {
             var x = p.ValidTimeUtc.ToOADate();
             if (max is null || x > max) max = x;
         }
-        // If no predictions at all, fall back to truth extent so the chart
-        // still has a sensible x range (auto-scaling kicks in if both nulled).
         if (max is null)
         {
             foreach (var kv in input.TruthByTime)
@@ -177,7 +183,7 @@ public static partial class SitePages
             }
         }
         if (max is null) return (null, null);
-        return (min, max);
+        return (max - 30.0, max);
     }
 
     private static string RenderTempVsTruthChart(
@@ -254,17 +260,17 @@ public static partial class SitePages
         if (input.RollingMae.Count == 0)
             return "<p><em>No rolling MAE points computed — the window is too short or there's no matching ERA5 truth yet.</em></p>";
 
-        // Section-wide X range across every lead × version so the per-lead
-        // charts stack as one panel — sparser leads no longer get a tighter
-        // window than the dense ones.
-        double? xMin = null;
+        // 30-day rolling window ending at the latest WindowEndUtc across every
+        // lead × version. All per-lead panels share the same right edge and
+        // back 30 days, so sparser leads no longer crop tighter than the dense
+        // ones and the panel reads as one strip.
         double? xMax = null;
         foreach (var r in input.RollingMae)
         {
             var x = r.WindowEndUtc.ToOADate();
-            if (xMin is null || x < xMin) xMin = x;
             if (xMax is null || x > xMax) xMax = x;
         }
+        double? xMin = xMax is { } m ? m - 30.0 : null;
 
         var content = new StringBuilder();
         foreach (var lead in Leads.Full)
@@ -350,14 +356,13 @@ public static partial class SitePages
             ? ComputeWetBands(truth, input.WindowStartUtc)
             : new List<(double, double)>();
 
-        // Section-wide X range so all P(wet) charts at this station — per-phase
-        // plus the champion-vs-challenger overlay — share the same time axis.
-        // Past extent pinned to WindowStartUtc; right edge to the latest
-        // prediction valid_time at this station.
-        double? xMin = stationPredictions.Count > 0 ? input.WindowStartUtc.ToOADate() : null;
+        // 30-day rolling window ending at the latest prediction valid_time for
+        // this station. Per-phase charts plus the champion-vs-challenger
+        // overlay all share the same time axis and stack as one panel.
         double? xMax = stationPredictions.Count > 0
             ? stationPredictions.Max(p => p.ValidTimeUtc).ToOADate()
             : null;
+        double? xMin = xMax is { } m ? m - 30.0 : null;
 
         (int lead, string color)[] leadSpecs =
         {
