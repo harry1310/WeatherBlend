@@ -119,11 +119,6 @@ public static partial class SitePages
             }
         }
 
-        var skill = ComputeHeadlineSkill(input);
-        var versionNote = string.IsNullOrEmpty(input.CurrentVersion)
-            ? "No champion pinned in MANIFEST — cards may drift between active versions."
-            : $"Champion version: <code>{Escape(input.CurrentVersion)}</code>. Charts comparing every active version against truth live on the <a href=\"skill-temperature.html\">temperature skill page</a>.";
-
         var body = new StringBuilder();
         body.Append(Ci, $"""
             <section>
@@ -133,60 +128,9 @@ public static partial class SitePages
               </hgroup>
               <div class="forecast-grid">
             {cards}  </div>
-              <p class="skill-line">{versionNote}</p>
-              <p class="skill-line">{Escape(skill)}</p>
             </section>
             """);
 
         return WrapPage(input, "Home", "index", body.ToString());
-    }
-
-    private static string ComputeHeadlineSkill(SiteInputs input)
-    {
-        var scored = input.Predictions
-            .Where(p => p.LeadHours == 24 && input.TruthByTime.ContainsKey(p.ValidTimeUtc))
-            .ToList();
-        if (scored.Count == 0) return "No scored predictions yet — skill headline will appear once ERA5 catches up.";
-
-        var truth = scored.Select(p => input.TruthByTime[p.ValidTimeUtc]).ToArray();
-        var blend = scored.Select(p => p.BlendTemperature).ToArray();
-        var blendMae = Mae(blend, truth);
-
-        // Best single across whichever NWPs the temperature blender consumes.
-        // Auto-grows as new models land (NwpsForTemperature is the single
-        // source of truth) — no edit here when the next NWP joins the table.
-        var singles = NwpsForTemperature()
-            .Select(nwp => (
-                name: nwp.Label,
-                mae:  MaeWithGaps(scored.Select(nwp.Get).ToArray(), truth)))
-            .ToArray();
-        var best = singles.Where(s => !double.IsNaN(s.mae)).OrderBy(s => s.mae).FirstOrDefault();
-        if (best.name is null || double.IsNaN(best.mae))
-        {
-            return $"Over {scored.Count} scored 24h predictions, blend MAE is {blendMae.ToString("0.00", Ci)}°C.";
-        }
-
-        var pct = (best.mae - blendMae) / best.mae * 100.0;
-        var verb = blendMae < best.mae ? "beat" : "trailed";
-        return $"Over {scored.Count} scored 24h predictions, blend MAE is {blendMae.ToString("0.00", Ci)}°C — {verb} best single ({best.name}, {best.mae.ToString("0.00", Ci)}°C) by {Math.Abs(pct).ToString("0.0", Ci)}%.";
-    }
-
-    private static double Mae(double[] pred, double[] truth)
-    {
-        double sum = 0;
-        int n = Math.Min(pred.Length, truth.Length);
-        for (int i = 0; i < n; i++) sum += Math.Abs(pred[i] - truth[i]);
-        return n == 0 ? double.NaN : sum / n;
-    }
-
-    private static double MaeWithGaps(double?[] pred, double[] truth)
-    {
-        double sum = 0;
-        int n = 0;
-        for (int i = 0; i < pred.Length && i < truth.Length; i++)
-        {
-            if (pred[i] is double v) { sum += Math.Abs(v - truth[i]); n++; }
-        }
-        return n == 0 ? double.NaN : sum / n;
     }
 }
