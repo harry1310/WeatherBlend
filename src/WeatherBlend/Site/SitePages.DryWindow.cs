@@ -6,10 +6,11 @@ namespace WeatherBlend.Site;
 public static partial class SitePages
 {
     /// <summary>
-    /// Dry-window page. <paramref name="stationSlug"/> picks which station to render;
-    /// <c>null</c> means the first station, which ships as <c>dry-window.html</c>. The
-    /// other stations ship as <c>dry-window-{slug}.html</c>. Each variant shows
-    /// the active phases (3b, 3d-shape) × all windows for the one station.
+    /// Dry daytime window page. <paramref name="stationSlug"/> picks which station
+    /// to render; <c>null</c> means the first station, which ships as
+    /// <c>dry-window.html</c> (filename preserved so existing links don't break).
+    /// The other stations ship as <c>dry-window-{slug}.html</c>. Each variant
+    /// shows the active phases × all windows for the one station.
     /// </summary>
     public static string RenderDryWindow(SiteInputs input, string? stationSlug = null)
     {
@@ -17,11 +18,14 @@ public static partial class SitePages
         content.Append("""
             <section>
               <hgroup>
-                <h2>Dry window — P(∃ N-hour dry block in target UTC day)</h2>
-                <p>Per-station, per-window blender. Bellever + Princetown × {3, 4, 6}h × leads 24/48/72h. Truth from EA Hydrology gauges with a 4-of-4 hourly gate.
-                   Two phases run side-by-side via the per-composite <code>Active</code> manifest list — <strong>Phase 3b (lean, 53 features)</strong> as the production champion
-                   and <strong>Phase 3d-shape (60 features)</strong> adding 7 within-day shape features derived from the ensemble-mean hourly precip vector.
-                   Tables below are grouped by phase so feature-richness deltas are visible at a glance.</p>
+                <h2>Dry daytime window — P(∃ N-hour dry block in 09–18 local)</h2>
+                <p>Per-station, per-window blender. Truth from EA Hydrology gauges with a 4-of-4 hourly gate.
+                   The label asks "is there a contiguous N-hour dry block somewhere within 09:00–18:00 local time?" — the realistic
+                   outdoor-walking window at Bonehill year-round, in BST or GMT (DST handled per target day).
+                   Currently shipping <strong>Phase 3b (lean, 59 features)</strong>: per-NWP precip aggregates (sum, max-hour, wet-hour count, longest dry run, has-dry-window indicator, max prob),
+                   ensemble cross-NWP summaries, RH/dew-depression/cloud/CAPE/wind covariates, and DOY calendar encodings. Bellever's blender ships PAV-calibrated;
+                   Princetown and Hexworthy ship raw (their raw outputs were already well-calibrated, PAV overfit the small validation slice).
+                   Phase 3d-shape (60-feature variant adding within-window rain-structure features) was tested 2026-04-29 and gave no consistent Brier improvement, so it doesn't render.</p>
               </hgroup>
             """);
 
@@ -29,7 +33,7 @@ public static partial class SitePages
         {
             content.Append("<p><em>No dry-window predictions in window. Run <code>predict --target dry-window --truth-station all --window all</code>.</em></p>");
             content.Append("</section>");
-            return WrapPage(input, "Dry window", "dry-window", content.ToString());
+            return WrapPage(input, "Dry daytime window", "dry-window", content.ToString());
         }
 
         var stations = input.DryWindowPredictions.Select(d => d.Station).Distinct().OrderBy(s => s, StringComparer.Ordinal).ToList();
@@ -47,7 +51,7 @@ public static partial class SitePages
         {
             content.Append("<p><em>No dry-window predictions for the selected station.</em></p>");
             content.Append("</section>");
-            return WrapPage(input, "Dry window", "dry-window", content.ToString());
+            return WrapPage(input, "Dry daytime window", "dry-window", content.ToString());
         }
 
         content.Append(Ci, $"<h3>{Escape(PrettyStation(currentStation))}</h3>");
@@ -118,9 +122,18 @@ public static partial class SitePages
                         """);
                 }
 
+                // When only one phase is active, the per-phase header is just
+                // noise — the section already names the window. Skip it and let
+                // the table sit directly under the <h4>. The header returns
+                // automatically the moment a second phase joins All.
+                if (DryWindowPhases.All.Count > 1)
+                {
+                    content.Append(Ci, $"""
+                        <h5>{Escape(phase.LongTitle)}</h5>
+                        <p class="skill-line">{Escape(phase.Description)}</p>
+                        """);
+                }
                 content.Append(Ci, $"""
-                    <h5>{Escape(phase.LongTitle)}</h5>
-                    <p class="skill-line">{Escape(phase.Description)}</p>
                     <figure>
                       <table>
                         <thead>
@@ -146,9 +159,9 @@ public static partial class SitePages
         }
 
         content.Append("""
-            <p class="skill-line">A dry "hour" requires all four 15-min EA gauge readings to be ≤ 0.1 mm. Cross-midnight dry stretches are not credited (UTC-day boundary). Daylight filtering is deferred to the application layer.</p>
+            <p class="skill-line">A dry "hour" requires all four 15-min EA gauge readings to be ≤ 0.1 mm. Search is bounded to 09:00–18:00 local time (Europe/London, DST-aware) — overnight dry stretches don't count, and a dry block that bridges 18:00 into the evening isn't credited. Cross-midnight dry stretches are not credited (UTC-day boundary).</p>
             </section>
             """);
-        return WrapPage(input, "Dry window", "dry-window", content.ToString());
+        return WrapPage(input, "Dry daytime window", "dry-window", content.ToString());
     }
 }

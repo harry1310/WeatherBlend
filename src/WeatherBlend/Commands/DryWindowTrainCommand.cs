@@ -24,7 +24,11 @@ public sealed class DryWindowTrainCommand
 
     private static readonly int[] DefaultLeads = Leads.Short;
     private static readonly int[] DefaultWindows = { 3, 4, 6 };
-    private static readonly string[] Phase3bStations = { "Bellever Dartmoor", "Princetown" };
+    // Trained stations are now read from `_cfg.Location.Rainfall.Stations`. The
+    // hardcoded {Bellever, Princetown} list was set in Phase 3b before
+    // Hexworthy joined the rainfall config (2026-04-26) and never got
+    // updated, leaving the dry-window family with 2 stations while precip
+    // had 3. Reading from config eliminates that drift root cause.
 
     public DryWindowTrainCommand(ILogger<DryWindowTrainCommand> log, AppConfig cfg)
     {
@@ -108,6 +112,7 @@ public sealed class DryWindowTrainCommand
                         stationName,
                         spec,
                         window,
+                        _cfg.DryWindow.BuildDaytimeWindow(),
                         ct);
 
                     var pos = rows.Count(r => r.Label);
@@ -139,10 +144,19 @@ public sealed class DryWindowTrainCommand
                         ds.TrainStart, ds.TrainEnd, ds.ValStart, ds.ValEnd, ds.TestStart, ds.TestEnd);
 
                     var trained = DryWindowTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
+                    var calibrationEnabled = _cfg.DryWindow.ShouldCalibrate(stationName);
 
                     var truthTest = ds.Test.Select(r => r.Label ? 1.0 : 0.0).ToArray();
-                    var blendProb = DryWindowTrainer.PredictVectorProbability(trained.Ml, trained.Model, spec, ds.Test);
-                    var blendBrier = PrecipMetrics.Brier(blendProb, truthTest);
+                    var blendProbRaw = DryWindowTrainer.PredictVectorProbability(trained.Ml, trained.Model, spec, ds.Test);
+                    var blendProbCal = trained.Calibrator.PredictMany(blendProbRaw);
+                    var blendBrierRaw = PrecipMetrics.Brier(blendProbRaw, truthTest);
+                    var blendBrierCal = PrecipMetrics.Brier(blendProbCal, truthTest);
+
+                    // Shipping probabilities = calibrated iff this station opted in.
+                    // Both numbers logged + persisted regardless so the experiment trail
+                    // stays in metadata.
+                    var blendProbShipping = calibrationEnabled ? blendProbCal : blendProbRaw;
+                    var blendBrierShipping = calibrationEnabled ? blendBrierCal : blendBrierRaw;
 
                     var best = DryWindowBaselines.BestSingle(spec, ds.Val);
                     var bestValBrier = PrecipMetrics.Brier(
@@ -154,12 +168,16 @@ public sealed class DryWindowTrainCommand
 
                     var climPred = DryWindowBaselines.Climatology(ds.Train, ds.Test, window);
                     var climBrier = PrecipMetrics.Brier(climPred, truthTest);
-                    var bss = PrecipMetrics.BrierSkillScore(blendBrier, climBrier);
+                    var bss = PrecipMetrics.BrierSkillScore(blendBrierShipping, climBrier);
 
-                    var blendBinary = blendProb.Select(p => p >= 0.5 ? 1.0 : 0.0).ToArray();
+                    // Frequency bias measured on the SHIPPING probabilities — what readers
+                    // see on the site is what the diagnostic should describe.
+                    var blendBinary = blendProbShipping.Select(p => p >= 0.5 ? 1.0 : 0.0).ToArray();
                     var fbias = PrecipMetrics.FrequencyBias(blendBinary, truthTest);
 
                     ModelArtifact.SaveLeadModel(trained.Ml, trained.Model, trained.InputSchema, versionDir, lead);
+                    if (calibrationEnabled)
+                        ModelArtifact.SaveLeadCalibrator(trained.Calibrator, versionDir, lead);
                     importanceByLead[lead] = trained.FeatureImportance;
                     anyLeadTrained = true;
 
@@ -180,15 +198,20 @@ public sealed class DryWindowTrainCommand
                         BestSingle = best,
                         BestSingleValMae  = bestValBrier,  // reused column — documented in DeviationsFromBrief
                         BestSingleTestMae = bestTestBrier,
-                        BlendTestMae  = blendBrier,
-                        BlendTestRmse = climBrier,        // reused for climatology Brier
-                        BlendTestBias = fbias,
+                        BlendTestMae  = blendBrierShipping, // matches the deployed prediction
+                        BlendTestRmse = climBrier,          // reused for climatology Brier
+                        BlendTestBias = fbias,              // bias of the SHIPPING prediction
+                        CalibratedBlendTestMae = blendBrierCal, // for the experiment trail
                     };
 
+                    var calDelta = blendBrierCal - blendBrierRaw;
+                    var calPct = blendBrierRaw > 0 ? calDelta / blendBrierRaw * 100.0 : 0.0;
+                    var calTag = calibrationEnabled ? "calibrated SHIPPED" : "raw shipped, calibrated for reference";
                     _log.LogInformation(
-                        "Lead {Lead}h — blend Brier={Brier:0.0000}, clim Brier={Clim:0.0000}, BSS={Bss:+0.0000;-0.0000;0.0000}, " +
-                        "freq_bias={Fb:0.00}, best_single[{Best}] val Brier={BestBrier:0.0000}",
-                        lead, blendBrier, climBrier, bss, fbias, best, bestValBrier);
+                        "Lead {Lead}h — raw Brier={BrierRaw:0.0000}, calibrated={BrierCal:0.0000} ({CalPct:+0.0;-0.0;0.0}%), {Tag}, " +
+                        "clim={Clim:0.0000}, BSS={Bss:+0.0000;-0.0000;0.0000}, " +
+                        "freq_bias={Fb:0.00}, best_single[{Best}] test Brier={BestBrier:0.0000}",
+                        lead, blendBrierRaw, blendBrierCal, calPct, calTag, climBrier, bss, fbias, best, bestTestBrier);
 
                     modelsTrained++;
                 }
@@ -228,20 +251,22 @@ public sealed class DryWindowTrainCommand
                 ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
                 if (phase == DryWindowFeatureBuilder.Phase3b)
                 {
-                    // 3b is the champion — replace Current and reset Active to just this version.
+                    // 3b is the only phase the site renders (2026-04-29). Reset Active to just
+                    // this version so any stale 3d-shape (or older 3b) entries from earlier
+                    // training cycles are dropped from the predict/render rotation.
                     ModelArtifact.UpdateStationManifest(modelsRoot, "dry_window", compositeKey, versionName);
+                    ModelArtifact.SetStationActive(modelsRoot, "dry_window", compositeKey, new[] { versionName });
                 }
                 else
                 {
-                    // 3d-shape (challenger) — keep 3b's Current pointer, extend Active so
-                    // predict/verify produce rows for both. Stale 3d-shape entries get
-                    // dropped so each train run leaves at most one of each phase active.
+                    // 3d-shape can still be trained ad-hoc via --feature-set rich for
+                    // experimentation, but it does not enter the Active rotation — predict
+                    // and the site filter for 3b only. Append the artefact so its version dir
+                    // is reachable manually if needed, but leave Active unchanged.
                     ModelArtifact.AppendStationVersion(modelsRoot, "dry_window", compositeKey, versionName);
-                    var existing = ModelArtifact.ResolveStationActive(modelsRoot, "dry_window", compositeKey);
-                    var nextActive = existing
-                        .Where(v => !v.Contains("phase3d_shape", StringComparison.Ordinal))
-                        .Append(versionName);
-                    ModelArtifact.SetStationActive(modelsRoot, "dry_window", compositeKey, nextActive);
+                    _log.LogInformation(
+                        "{Key}: 3d-shape artefact saved but NOT added to Active list — predict/render skip it by design.",
+                        compositeKey);
                 }
 
                 _log.LogInformation("Saved artefacts → {Dir}", versionDir);
@@ -260,13 +285,10 @@ public sealed class DryWindowTrainCommand
     {
         if (string.IsNullOrWhiteSpace(stationArg) || stationArg.Equals("all", StringComparison.OrdinalIgnoreCase))
         {
-            var found = Phase3bStations
-                .Where(t => _cfg.Location.Rainfall.Stations.Any(s => s.Name.Equals(t, StringComparison.OrdinalIgnoreCase)))
-                .ToArray();
+            var found = _cfg.Location.Rainfall.Stations.Select(s => s.Name).ToArray();
             if (found.Length == 0)
             {
-                _log.LogError("Phase-3b stations missing from config. Expected one of: [{S}]",
-                    string.Join(", ", Phase3bStations));
+                _log.LogError("No rainfall stations in config — nothing to train.");
                 return null;
             }
             return found;

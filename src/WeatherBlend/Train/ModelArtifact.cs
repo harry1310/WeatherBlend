@@ -149,6 +149,18 @@ public static class ModelArtifact
         public double BlendTestMae { get; set; }
         public double BlendTestRmse { get; set; }
         public double BlendTestBias { get; set; }
+
+        /// <summary>
+        /// Dry-window only (0.0 elsewhere or on legacy artefacts predating
+        /// the field). Blend Brier on the held-out test set AFTER applying
+        /// the per-lead isotonic calibrator fit on the validation set —
+        /// always populated by the dry-window trainer regardless of whether
+        /// the calibrator is actually shipped, so the metadata captures the
+        /// raw-vs-calibrated experiment trail. Default 0.0 (not NaN) so
+        /// the schema serialises cleanly through System.Text.Json without
+        /// AllowNamedFloatingPointLiterals.
+        /// </summary>
+        public double CalibratedBlendTestMae { get; set; }
     }
 
     public static string BuildVersionDir(string modelsRoot, string target, DateTime nowUtc, string? suffix = null)
@@ -188,6 +200,36 @@ public static class ModelArtifact
     {
         var path = Path.Combine(versionDir, LeadModelFileName(leadHours));
         return ml.Model.Load(path, out schema);
+    }
+
+    /// <summary>Per-lead isotonic calibrator filename, e.g. <c>calibrator_24h.json</c>.</summary>
+    public static string LeadCalibratorFileName(int leadHours) => $"calibrator_{leadHours}h.json";
+
+    /// <summary>
+    /// Save a fitted isotonic calibrator alongside the per-lead LightGBM zip.
+    /// Optional — predict gracefully degrades to "raw probabilities, uncalibrated"
+    /// when the file is absent (older artefacts, or models trained before the
+    /// calibration layer landed).
+    /// </summary>
+    public static void SaveLeadCalibrator(WeatherBlend.Train.Common.IsotonicCalibrator calibrator,
+                                          string versionDir, int leadHours)
+    {
+        Directory.CreateDirectory(versionDir);
+        var path = Path.Combine(versionDir, LeadCalibratorFileName(leadHours));
+        File.WriteAllText(path, calibrator.ToJson());
+    }
+
+    /// <summary>
+    /// Load a per-lead isotonic calibrator if one was saved at training time.
+    /// Returns <c>null</c> when absent — callers apply only when present so old
+    /// artefacts predict identically to how they trained (just uncalibrated).
+    /// </summary>
+    public static WeatherBlend.Train.Common.IsotonicCalibrator? TryLoadLeadCalibrator(
+        string versionDir, int leadHours)
+    {
+        var path = Path.Combine(versionDir, LeadCalibratorFileName(leadHours));
+        if (!File.Exists(path)) return null;
+        return WeatherBlend.Train.Common.IsotonicCalibrator.FromJson(File.ReadAllText(path));
     }
 
     /// <summary>

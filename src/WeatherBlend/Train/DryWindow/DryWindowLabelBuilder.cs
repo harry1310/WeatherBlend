@@ -3,25 +3,40 @@ using WeatherBlend.Train;
 namespace WeatherBlend.Train.DryWindow;
 
 /// <summary>
-/// Phase 3b target construction. Given hourly rainfall totals at a gauge,
-/// emit one binary label per (UTC calendar day, window length) answering
-/// "did there exist a run of N consecutive hours within that UTC day where
-/// every hour was &lt; 0.1 mm".
+/// Dry-daytime-window target construction. Given hourly rainfall totals at a
+/// gauge, emit one binary label per (UTC calendar day, window length)
+/// answering "did there exist a run of N consecutive dry hours within the
+/// configured local-time daytime window for that day". A dry hour is one
+/// strictly below the 0.1 mm/h threshold (4 of 4 15-minute EA readings).
 ///
 /// Rules:
-///   - UTC calendar day boundaries only. A dry period that spans midnight
-///     (22:00 Monday → 02:00 Tuesday) is split by this convention and
-///     contributes to neither day's label. Documented as a limitation.
-///   - A day is usable only if every hour in [00:00, 23:00] has a truth
-///     reading that passed hourly-aggregation quality filtering (4 of 4
-///     15-minute readings). Any missing or filtered hour → day dropped
-///     for all window lengths; unknowable whether the gap hid a dry run.
+///   - The daytime window is given as an IANA-tz local-hour range (e.g.
+///     09–18 Europe/London) and resolved to per-target-day UTC bounds via
+///     <see cref="DaytimeWindow.UtcHourRangeFor"/>. DST is handled at scan
+///     time, so the meaning of "daytime" stays stable through BST↔GMT
+///     transitions.
+///   - A day is usable only if every UTC hour falling inside the resolved
+///     daytime range has a truth reading. A gap inside the daytime window
+///     drops the day for every window length; gaps outside (e.g. an
+///     overnight hour) don't matter because we never look at them.
+///   - Cross-midnight dry stretches that bridge the local daytime window
+///     of two adjacent UTC days are not credited — each day is scored
+///     independently. For 09–18 London this never matters.
 ///   - Wet threshold matches the 3a occurrence classifier (0.1 mm/h) so
 ///     the two phases speak the same language about "wet".
+///
+/// The legacy "anywhere in 24h UTC" behaviour is still reachable by passing
+/// a 0–24 daytime spec, used by tests pinning the original semantics.
 /// </summary>
 public static class DryWindowLabelBuilder
 {
     public const double WetThresholdMm = PrecipFeatureBuilder.WetThresholdMm;
+
+    /// <summary>
+    /// Singleton "scan the whole UTC day" spec — preserves the pre-daytime
+    /// label semantics for tests and any caller that hasn't been migrated.
+    /// </summary>
+    public static readonly DaytimeWindow FullUtcDay = new(0, 24, TimeZoneInfo.Utc);
 
     /// <summary>One quality-passed hour of rainfall. <paramref name="HourUtc"/>
     /// is expected to be midnight-aligned (<c>date_trunc('hour', ObservedTimeUtc)</c>).</summary>
@@ -40,21 +55,25 @@ public static class DryWindowLabelBuilder
     }
 
     /// <summary>
-    /// Build labels for the full span implied by <paramref name="hourly"/>. The span
-    /// runs from the first full UTC day in the data to the last full UTC day. Days
-    /// between those bounds with fewer than 24 readings are marked unusable and
-    /// excluded from <see cref="BuildResult.Labels"/>.
+    /// Build labels for the full span implied by <paramref name="hourly"/>.
+    /// Each day is scored against the per-day UTC hour range derived from
+    /// <paramref name="daytime"/>. Days that lack a truth reading at any hour
+    /// inside that range are dropped. Window lengths greater than the
+    /// daytime duration are rejected — there is no possible positive label.
     /// </summary>
     public static BuildResult Build(
         IReadOnlyList<HourlyTruth> hourly,
-        IReadOnlyList<int> windowLengths)
+        IReadOnlyList<int> windowLengths,
+        DaytimeWindow daytime)
     {
         if (windowLengths.Count == 0)
             throw new ArgumentException("At least one window length required.", nameof(windowLengths));
         foreach (var n in windowLengths)
         {
-            if (n < 1 || n > 24)
-                throw new ArgumentException($"Window length {n} out of range [1,24].", nameof(windowLengths));
+            if (n < 1 || n > daytime.DurationHours)
+                throw new ArgumentException(
+                    $"Window length {n} out of range [1, {daytime.DurationHours}] for the configured daytime window.",
+                    nameof(windowLengths));
         }
 
         if (hourly.Count == 0)
@@ -77,8 +96,7 @@ public static class DryWindowLabelBuilder
         }
 
         // Iterate the contiguous date range so missing days are counted as dropped
-        // rather than silently skipped. A missing whole day means no label at all —
-        // that's the same as a day with any missing hour.
+        // rather than silently skipped.
         var firstDate = byDate.Keys.Min();
         var lastDate  = byDate.Keys.Max();
 
@@ -94,9 +112,21 @@ public static class DryWindowLabelBuilder
                 continue;
             }
 
-            // Need all 24 hours populated. Missing hour → drop the day for every window length.
+            var (startHour, endHour) = daytime.UtcHourRangeFor(d);
+            if (startHour >= endHour)
+            {
+                // Daytime window doesn't overlap this UTC day at all (only
+                // possible for far-east tzs that push the window outside the
+                // calendar day). Skip without counting as either usable or
+                // dropped — the day is genuinely irrelevant to the model.
+                candidate--;
+                continue;
+            }
+
+            // Need every hour inside the daytime range populated. A gap inside
+            // the window hides a possible dry/wet flip; drop the day.
             bool complete = true;
-            for (int h = 0; h < 24; h++)
+            for (int h = startHour; h < endHour; h++)
             {
                 if (!hours[h].HasValue) { complete = false; break; }
             }
@@ -108,36 +138,32 @@ public static class DryWindowLabelBuilder
 
             usable++;
             foreach (var n in windowLengths)
-                labels.Add(new DailyLabel(d, n, HasDryWindow(hours, n)));
+                labels.Add(new DailyLabel(d, n, HasDryWindow(hours, n, startHour, endHour)));
         }
 
         return new BuildResult(labels, candidate, usable, dropped);
     }
 
     /// <summary>
-    /// Does any length-<paramref name="n"/> sliding window inside the 24 hours
-    /// have every hour &lt; 0.1 mm? Dry = strictly below the wet threshold.
+    /// Does any length-<paramref name="n"/> sliding window inside the
+    /// half-open UTC hour range <c>[startHour, endHour)</c> have every hour
+    /// &lt; 0.1 mm? Dry = strictly below the wet threshold.
     /// </summary>
     /// <remarks>
-    /// Assumes <paramref name="hours"/> is fully populated (caller-checked).
-    /// Returns false for <paramref name="n"/> greater than 24 — not reachable
-    /// via the public API because <see cref="Build"/> rejects out-of-range
-    /// window lengths up front.
+    /// Assumes <paramref name="hours"/> is populated for every index in
+    /// <c>[startHour, endHour)</c> (caller-checked). Returns false when
+    /// <paramref name="n"/> exceeds the window duration.
     /// </remarks>
-    public static bool HasDryWindow(double?[] hours, int n)
+    public static bool HasDryWindow(double?[] hours, int n, int startHour, int endHour)
     {
-        if (n < 1 || n > 24) return false;
+        if (n < 1 || n > endHour - startHour) return false;
 
-        // Mark each hour dry/wet once.
-        Span<bool> dry = stackalloc bool[24];
-        for (int i = 0; i < 24; i++)
-            dry[i] = hours[i].HasValue && hours[i]!.Value < WetThresholdMm;
-
-        // Count consecutive dry hours; any run of length ≥ n qualifies.
+        // Walk the daytime hours, tracking the current consecutive-dry run.
         int run = 0;
-        for (int i = 0; i < 24; i++)
+        for (int i = startHour; i < endHour; i++)
         {
-            run = dry[i] ? run + 1 : 0;
+            var dry = hours[i].HasValue && hours[i]!.Value < WetThresholdMm;
+            run = dry ? run + 1 : 0;
             if (run >= n) return true;
         }
         return false;

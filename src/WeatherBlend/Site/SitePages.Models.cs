@@ -156,7 +156,7 @@ public static partial class SitePages
         {
             ["temperature"]   = new[] { "2b", "2c" },
             ["precipitation"] = new[] { "3a", "3c" },
-            ["dry_window"]    = new[] { "3b", "3d-shape" },
+            ["dry_window"]    = new[] { "3b" },  // 3d-shape dropped 2026-04-29 (no Brier gain on daytime label)
         };
 
     /// <summary>
@@ -217,7 +217,7 @@ public static partial class SitePages
     /// Pretty-print a composite key. Examples:
     ///   "temperature"                              → "Temperature"
     ///   "precipitation/ea_bellever_dartmoor"       → "Precipitation — Bellever Dartmoor"
-    ///   "dry_window/ea_bellever_dartmoor/6h"       → "Dry window — Bellever Dartmoor — 6-hour"
+    ///   "dry_window/ea_bellever_dartmoor/6h"       → "Dry daytime window — Bellever Dartmoor — 6-hour"
     /// </summary>
     private static string PrettyComposite(string key)
     {
@@ -228,7 +228,7 @@ public static partial class SitePages
         {
             "temperature" => "Temperature",
             "precipitation" => "Precipitation",
-            "dry_window" => "Dry window",
+            "dry_window" => "Dry daytime window",
             _ => parts[0],
         };
         if (parts.Length == 1) return target;

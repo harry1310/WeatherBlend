@@ -25,9 +25,6 @@ public sealed class DryWindowDiagnosticCommand
 
     private static readonly int[] Windows = { 3, 4, 6 };
 
-    // Bellever primary + Princetown secondary per the phase-3b brief.
-    private static readonly string[] Phase3bStations = { "Bellever Dartmoor", "Princetown" };
-
     public DryWindowDiagnosticCommand(ILogger<DryWindowDiagnosticCommand> log, AppConfig cfg)
     {
         _log = log;
@@ -36,14 +33,12 @@ public sealed class DryWindowDiagnosticCommand
 
     public async Task<int> RunAsync(CancellationToken ct)
     {
-        var stationNames = Phase3bStations
-            .Where(target => _cfg.Location.Rainfall.Stations
-                .Any(s => s.Name.Equals(target, StringComparison.OrdinalIgnoreCase)))
-            .ToArray();
+        // Read every rainfall station from config — same source as the trainer
+        // and the precip family, so all three families stay in lockstep.
+        var stationNames = _cfg.Location.Rainfall.Stations.Select(s => s.Name).ToArray();
         if (stationNames.Length == 0)
         {
-            _log.LogError("No phase-3b rainfall stations configured. Expected one of: [{Stations}]",
-                string.Join(", ", Phase3bStations));
+            _log.LogError("No rainfall stations configured.");
             return 2;
         }
 
@@ -62,7 +57,7 @@ public sealed class DryWindowDiagnosticCommand
                 continue;
             }
 
-            var result = DryWindowLabelBuilder.Build(hourly, Windows);
+            var result = DryWindowLabelBuilder.Build(hourly, Windows, _cfg.DryWindow.BuildDaytimeWindow());
             perStation[station] = result;
 
             _log.LogInformation(

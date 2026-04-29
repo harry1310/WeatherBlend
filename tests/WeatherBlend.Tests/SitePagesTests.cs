@@ -855,7 +855,12 @@ public class SitePagesTests
         // Lean version code appears before rich version code for each target.
         html.IndexOf("v_lean").Should().BeLessThan(html.IndexOf("v_rich"));
         html.IndexOf("v_lean_p").Should().BeLessThan(html.IndexOf("v_rich_p"));
-        html.IndexOf("v_lean_dw").Should().BeLessThan(html.IndexOf("v_shape"));
+        // Dry-window: 3b is the only allowlisted phase (2026-04-29, see
+        // ActivePhasesByTarget). 3d-shape ("v_shape") is filtered out
+        // entirely, so v_lean_dw renders alone with no rich card to order
+        // against. Pin both: lean renders, shape doesn't.
+        html.Should().Contain("v_lean_dw");
+        html.Should().NotContain("v_shape");
     }
 
     [Fact]

@@ -186,17 +186,24 @@ public sealed class DryWindowPredictCommand
                 specModelDays.Add(modelDayList[ci]);
             }
 
+            var (startHour, endHour) = _cfg.DryWindow.BuildDaytimeWindow()
+                .UtcHourRangeFor(DateOnly.FromDateTime(targetDate));
             var row = DryWindowFeatureBuilder.ComposeRow(
                 spec,
                 DateOnly.FromDateTime(targetDate),
                 windowHours,
                 specModelDays,
                 label: false,
-                truthMmDay: 0.0);
+                truthMmDay: 0.0,
+                startHour: startHour,
+                endHour: endHour);
 
             var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
             var probs = DryWindowTrainer.PredictVectorProbability(ml, loadedModel, spec, new[] { row });
-            var prob = probs[0];
+            // Apply isotonic calibration if the artefact carries one — older
+            // pre-calibration models simply return raw probs unchanged.
+            var calibrator = ModelArtifact.TryLoadLeadCalibrator(versionDir, lead);
+            var prob = calibrator is null ? probs[0] : calibrator.Predict(probs[0]);
             var climProb = climatology.Predict(targetDate);
 
             // Build per-model output fields: populate only spec.Models, null elsewhere.

@@ -308,7 +308,7 @@ ORDER BY TruthStation, WindowHours, ModelVersion, LeadHours, TargetDateUtc";
             var hourly = QueryHourlyTruth(stationName, start, end, ct);
             if (hourly.Count == 0) continue;
 
-            var labels = DryWindowLabelBuilder.Build(hourly, windowLengths);
+            var labels = DryWindowLabelBuilder.Build(hourly, windowLengths, _cfg.DryWindow.BuildDaytimeWindow());
             foreach (var w in windowLengths)
             {
                 var byDate = labels.Labels

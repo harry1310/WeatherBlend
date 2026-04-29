@@ -30,7 +30,8 @@ public sealed class DryWindowTrainer
         DataViewSchema InputSchema,
         Hyperparameters Hyperparameters,
         IReadOnlyList<string> FeatureNames,
-        IReadOnlyList<(string Name, double Gain)> FeatureImportance);
+        IReadOnlyList<(string Name, double Gain)> FeatureImportance,
+        IsotonicCalibrator Calibrator);
 
     /// <summary>
     /// Vector-native fit: takes generic <see cref="CommonRow"/> rows whose
@@ -87,7 +88,18 @@ public sealed class DryWindowTrainer
             .OrderByDescending(t => t.Gain)
             .ToArray();
 
-        return new TrainedClassifier(ml, predictor, trainDv.Schema, hp, spec.FeatureNames.ToArray(), importance);
+        // Fit isotonic calibrator on validation predictions. PAV maps raw LightGBM
+        // probability → empirical positive rate, correcting the systematic
+        // over-prediction bias visible in the freq_bias diagnostic. Fit on val
+        // (NOT train — that would be perfectly calibrated by definition; NOT test
+        // — that would leak). Test is scored both raw and calibrated downstream.
+        var valPredicted = predictor.Transform(valDv);
+        var valRawProbs = valPredicted.GetColumn<float>("Probability").Select(p => (double)p).ToArray();
+        var valLabels = val.Select(r => r.Label).ToArray();
+        var calibrator = IsotonicCalibrator.Fit(valRawProbs, valLabels);
+
+        return new TrainedClassifier(ml, predictor, trainDv.Schema, hp,
+            spec.FeatureNames.ToArray(), importance, calibrator);
     }
 
     public static double[] PredictVectorProbability(

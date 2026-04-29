@@ -46,13 +46,21 @@ public static class DryWindowPhases
         ChampionVsChallengerLabel: "Phase 3d-shape (challenger)",
         Color: "#7c4dff");
 
-    /// <summary>Canonical render order: 3b → 3d-shape.</summary>
+    /// <summary>
+    /// Phases the site renders. <see cref="Phase3dShape"/> is intentionally
+    /// excluded as of 2026-04-29 — the shape-features-vs-lean bake-off on
+    /// the new daytime label produced no consistent improvement (mean
+    /// +1.6% Brier worse, 7 wins / 9 losses / 11 ties across 27 cells).
+    /// The <c>Phase3dShape</c> constant + training pipeline are kept so a
+    /// future revisit (e.g. with a larger validation slice) is one-line:
+    /// re-add it here.
+    /// </summary>
     public static readonly IReadOnlyList<DryWindowPhase> All = new[]
     {
-        Phase3b, Phase3dShape,
+        Phase3b,
     };
 
-    /// <summary>Phases that participate in the side-by-side overlay — both.</summary>
+    /// <summary>Phases that participate in side-by-side overlay charts.</summary>
     public static readonly IReadOnlyList<DryWindowPhase> Comparable = All;
 
     /// <summary>

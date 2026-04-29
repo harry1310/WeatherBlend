@@ -11,6 +11,53 @@ public sealed class AppConfig
     public HttpConfig Http { get; set; } = new();
     public MetOfficeConfig MetOffice { get; set; } = new();
     public BlendersConfig Blenders { get; set; } = new();
+    public DryWindowConfig DryWindow { get; set; } = new();
+}
+
+/// <summary>
+/// Per-target-family knobs for the dry-window blender:
+///   * <see cref="AllowedWindow"/> — local-time hour range (e.g. 9–18) within
+///     which dry-block searches happen for both label construction (truth)
+///     and per-NWP feature aggregation. DST is handled at scan time via the
+///     IANA tz id.
+///   * <see cref="CalibrationStations"/> — opt-in PAV (isotonic) calibration
+///     applied at predict time. Only stations whose raw blender is
+///     materially mis-calibrated benefit; on well-calibrated stations PAV
+///     overfits the small (~125-row) validation set and makes things worse
+///     (the 2026-04-29 dry-daytime experiment confirmed this empirically).
+///     Stations not listed here ship raw probabilities.
+/// </summary>
+public sealed class DryWindowConfig
+{
+    public DaytimeWindowConfig AllowedWindow { get; set; } = new();
+
+    /// <summary>
+    /// Station names (matched case-insensitively against
+    /// <c>Location.Rainfall.Stations[].Name</c>) for which the trainer should
+    /// save a PAV calibrator alongside the LightGBM artefact. Predict applies
+    /// the calibrator iff the file is present on disk, so toggling a station
+    /// off here just skips saving — no separate predict-side flag needed.
+    /// </summary>
+    public List<string> CalibrationStations { get; set; } = new();
+
+    /// <summary>
+    /// Resolve to a runtime <see cref="WeatherBlend.Train.DryWindow.DaytimeWindow"/>
+    /// usable by the label builder and feature builder. Throws on a malformed
+    /// tz id, which would otherwise surface as a confusing per-row exception.
+    /// </summary>
+    public WeatherBlend.Train.DryWindow.DaytimeWindow BuildDaytimeWindow()
+        => new(AllowedWindow.StartLocalHour, AllowedWindow.EndLocalHour, AllowedWindow.Tz);
+
+    /// <summary>True iff <paramref name="stationName"/> appears in <see cref="CalibrationStations"/>.</summary>
+    public bool ShouldCalibrate(string stationName)
+        => CalibrationStations.Any(s => string.Equals(s, stationName, StringComparison.OrdinalIgnoreCase));
+}
+
+public sealed class DaytimeWindowConfig
+{
+    public int StartLocalHour { get; set; } = 9;
+    public int EndLocalHour { get; set; } = 18;
+    public string Tz { get; set; } = "Europe/London";
 }
 
 public sealed class VariablesConfig

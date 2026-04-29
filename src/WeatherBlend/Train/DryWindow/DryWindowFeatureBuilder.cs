@@ -112,14 +112,18 @@ ORDER BY 1";
 
         public bool AnyPresent { get; private set; }
 
-        public bool IsComplete
+        /// <summary>
+        /// True iff every hour inside <c>[startHour, endHour)</c> has a precip
+        /// value. Replaces the old "all 24 hours" check — under the daytime
+        /// regime, missing overnight hours are fine because we never look
+        /// at them, and demanding them would needlessly drop days for
+        /// models that only ship a daytime band.
+        /// </summary>
+        public bool IsCompleteWithin(int startHour, int endHour)
         {
-            get
-            {
-                for (int h = 0; h < 24; h++)
-                    if (!Precip[h].HasValue) return false;
-                return true;
-            }
+            for (int h = startHour; h < endHour; h++)
+                if (!Precip[h].HasValue) return false;
+            return true;
         }
 
         public void SetHour(int hour, ForecastRow row)
@@ -172,11 +176,13 @@ ORDER BY 1";
         double CapeMax, double WindMean, double WindMax);
 
     /// <summary>
-    /// Build an "ensemble-mean" time series from the available models, then
-    /// reduce each variable to day-level aggregates. NaN at an hour means no
-    /// model supplied that variable — the aggregate skips it.
+    /// Build an "ensemble-mean" time series from the available models within
+    /// the daytime window <c>[startHour, endHour)</c>, then reduce each
+    /// variable to day-level aggregates. NaN at an hour means no model
+    /// supplied that variable — the aggregate skips it.
     /// </summary>
-    private static EnvelopeResult EnvelopeCovariates(IReadOnlyList<ForecastDay?> modelDays)
+    private static EnvelopeResult EnvelopeCovariates(
+        IReadOnlyList<ForecastDay?> modelDays, int startHour, int endHour)
     {
         double rhSum = 0, rhCount = 0, rhMin = double.PositiveInfinity;
         double ddMax = double.NegativeInfinity;
@@ -185,7 +191,7 @@ ORDER BY 1";
         double capeMax = double.NegativeInfinity;
         double windSum = 0, windCount = 0, windMax = double.NegativeInfinity;
 
-        for (int h = 0; h < 24; h++)
+        for (int h = startHour; h < endHour; h++)
         {
             double rhH = 0, tH = 0, tdH = 0, clH = 0, cmH = 0, chH = 0, capeH = 0, windH = 0;
             int rhN = 0, tN = 0, tdN = 0, clN = 0, cmN = 0, chN = 0, capeN = 0, windN = 0;
@@ -248,22 +254,24 @@ ORDER BY 1";
         double MorningPrecipSum, double AfternoonPrecipSum);
 
     /// <summary>
-    /// Phase 3d shape features. Builds an ensemble-mean hourly precip vector
-    /// (NaN-skip across models per hour, treating "no model supplied this hour"
-    /// as zero — same convention as per-model walks in <see cref="ComposeRow"/>),
-    /// then derives within-day rain structure summaries:
-    ///   first/last wet hour (sentinels 24/-1 when fully dry),
+    /// Phase 3d shape features computed within the daytime window
+    /// <c>[startHour, endHour)</c>. Builds an ensemble-mean hourly precip
+    /// vector (NaN-skip across models per hour, treating "no model supplied
+    /// this hour" as zero — same convention as per-model walks in
+    /// <see cref="ComposeRow"/>), then derives within-window rain-structure
+    /// summaries:
+    ///   first/last wet hour (UTC; sentinels endHour/(startHour-1) when fully dry),
     ///   longest contiguous dry/wet runs in hours,
     ///   number of rain events (maximal wet runs separated by ≥1 dry hour),
-    ///   morning (06–11) and afternoon (12–17) precip totals.
+    ///   first-half / second-half precip totals (window split at midpoint).
     /// Returns NaN for every feature if no model contributed any hour.
     /// </summary>
-    internal static ShapeResult ShapeFeatures(IReadOnlyList<ForecastDay?> modelDays)
+    internal static ShapeResult ShapeFeatures(
+        IReadOnlyList<ForecastDay?> modelDays, int startHour, int endHour)
     {
         var meanPrecip = new double[24];
-        var present = new bool[24];
         bool any = false;
-        for (int h = 0; h < 24; h++)
+        for (int h = startHour; h < endHour; h++)
         {
             double sum = 0;
             int n = 0;
@@ -275,7 +283,6 @@ ORDER BY 1";
             if (n > 0)
             {
                 meanPrecip[h] = sum / n;
-                present[h] = true;
                 any = true;
             }
             else
@@ -294,7 +301,7 @@ ORDER BY 1";
         int dryRun = 0, wetRun = 0, longestDry = 0, longestWet = 0;
         int nEvents = 0;
         bool inWet = false;
-        for (int h = 0; h < 24; h++)
+        for (int h = startHour; h < endHour; h++)
         {
             bool wet = meanPrecip[h] >= WetThresholdMm;
             if (wet)
@@ -315,18 +322,22 @@ ORDER BY 1";
             }
         }
 
-        double morning = 0, afternoon = 0;
-        for (int h = 6; h <= 11; h++) morning   += meanPrecip[h];
-        for (int h = 12; h <= 17; h++) afternoon += meanPrecip[h];
+        // Split the window in half for the first-half/second-half precip totals.
+        // Replaces the legacy fixed 06–11 / 12–17 split — now the split scales
+        // with whatever daytime window is configured.
+        var midHour = startHour + (endHour - startHour) / 2;
+        double firstHalf = 0, secondHalf = 0;
+        for (int h = startHour; h < midHour;  h++) firstHalf  += meanPrecip[h];
+        for (int h = midHour;   h < endHour;  h++) secondHalf += meanPrecip[h];
 
         return new ShapeResult(
-            FirstWetHour: firstWet < 0 ? 24.0 : firstWet,
-            LastWetHour:  lastWet,
+            FirstWetHour: firstWet < 0 ? endHour : firstWet,
+            LastWetHour:  lastWet < 0 ? startHour - 1 : lastWet,
             LongestDryRun: longestDry,
             LongestWetRun: longestWet,
             NRainEvents: nEvents,
-            MorningPrecipSum: morning,
-            AfternoonPrecipSum: afternoon);
+            MorningPrecipSum: firstHalf,
+            AfternoonPrecipSum: secondHalf);
     }
 
     private static string NormaliseGlob(string path)
@@ -410,9 +421,10 @@ ORDER BY 1";
     /// <summary>
     /// Build day-anchored training rows for one (station, lead, window) blender.
     /// SQL pivot pulls only spec.Models. Per-model day features are NaN if a model
-    /// doesn't supply a complete 24-hour day. Required-model gate isn't enforced
-    /// at the day level — dry-window's policy is "include the day if any model
-    /// supplied any hour" (matches legacy AnyPresent check).
+    /// doesn't supply every hour inside the configured daytime window.
+    /// Required-model gate isn't enforced at the day level — dry-window's
+    /// policy is "include the day if any model supplied any hour" (matches
+    /// legacy AnyPresent check).
     /// </summary>
     public static List<CommonRow> BuildForLead(
         string forecastsPath,
@@ -421,14 +433,16 @@ ORDER BY 1";
         string stationName,
         BlenderSpec spec,
         int windowHours,
+        DaytimeWindow daytime,
         CancellationToken ct = default)
     {
-        if (windowHours < 1 || windowHours > 24)
-            throw new ArgumentOutOfRangeException(nameof(windowHours));
+        if (windowHours < 1 || windowHours > daytime.DurationHours)
+            throw new ArgumentOutOfRangeException(nameof(windowHours),
+                $"Window length {windowHours} exceeds the daytime range ({daytime.DurationHours}h).");
 
-        // Step 1: hourly truth + per-day labels (same as legacy).
+        // Step 1: hourly truth + per-day labels.
         var truth = LoadHourlyTruth(rainfallPath, locationName, stationName, ct);
-        var labels = DryWindowLabelBuilder.Build(truth, new[] { windowHours });
+        var labels = DryWindowLabelBuilder.Build(truth, new[] { windowHours }, daytime);
         if (labels.Labels.Count == 0) return new List<CommonRow>();
 
         var labelByDate = labels.Labels
@@ -471,8 +485,10 @@ ORDER BY 1";
             // Drop the day if no model supplied any hour — would yield an all-NaN feature vector.
             if (!modelDays.Any(d => d is { AnyPresent: true })) continue;
 
+            var (startHour, endHour) = daytime.UtcHourRangeFor(date);
             var row = ComposeRow(spec, date, windowHours, modelDays, label,
-                truthMmByDate.TryGetValue(date, out var mmDay) ? mmDay : 0.0);
+                truthMmByDate.TryGetValue(date, out var mmDay) ? mmDay : 0.0,
+                startHour, endHour);
             rows.Add(row);
         }
         return rows;
@@ -481,7 +497,9 @@ ORDER BY 1";
     /// <summary>
     /// Pack the dry-window feature vector. Layout matches <see cref="BuildSpec"/>'s
     /// <c>FeatureNames</c>: 6 per-model groups × N + 6 ensemble summaries + 9 covariates
-    /// + 2 calendar [+ 7 shape features when spec.FeatureSet == "shape"].
+    /// + 2 calendar [+ 7 shape features when spec.FeatureSet == "shape"]. All
+    /// per-model and ensemble aggregates are restricted to the daytime hour
+    /// range <c>[startHour, endHour)</c>.
     /// </summary>
     internal static CommonRow ComposeRow(
         BlenderSpec spec,
@@ -489,13 +507,15 @@ ORDER BY 1";
         int windowHours,
         IReadOnlyList<ForecastDay?> modelDays,
         bool label,
-        double truthMmDay)
+        double truthMmDay,
+        int startHour,
+        int endHour)
     {
         var n = spec.Models.Count;
         if (modelDays.Count != n)
             throw new ArgumentException($"Expected {n} model days, got {modelDays.Count}", nameof(modelDays));
 
-        // Per-model features. NaN when the model doesn't have a complete 24-hour day.
+        // Per-model features. NaN when the model doesn't supply every daytime hour.
         var perModelSum        = new double[n];
         var perModelMaxHour    = new double[n];
         var perModelWetCount   = new double[n];
@@ -506,7 +526,7 @@ ORDER BY 1";
         for (int i = 0; i < n; i++)
         {
             var day = modelDays[i];
-            if (day is null || !day.IsComplete)
+            if (day is null || !day.IsCompleteWithin(startHour, endHour))
             {
                 perModelSum[i] = double.NaN;
                 perModelMaxHour[i] = double.NaN;
@@ -520,7 +540,7 @@ ORDER BY 1";
             double sum = 0, maxHr = 0, probMax = double.NaN;
             int wetHours = 0, run = 0, longest = 0;
             bool hasAnyProb = false;
-            for (int h = 0; h < 24; h++)
+            for (int h = startHour; h < endHour; h++)
             {
                 var p = day.Precip[h] ?? 0.0;
                 sum += p;
@@ -548,8 +568,8 @@ ORDER BY 1";
         var wetHoursMean = NaNMean(perModelWetCount);
         var agreement    = NaNMean(perModelHasDry);
 
-        var env = EnvelopeCovariates(modelDays);
-        var shape = ShapeFeatures(modelDays);
+        var env = EnvelopeCovariates(modelDays, startHour, endHour);
+        var shape = ShapeFeatures(modelDays, startHour, endHour);
 
         var doyAngle = 2.0 * Math.PI * (targetDate.DayOfYear - 1) / 365.0;
         var includeShape = spec.FeatureSet == "shape";

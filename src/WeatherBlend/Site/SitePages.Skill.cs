@@ -68,9 +68,10 @@ public static partial class SitePages
         content.Append("<h3>P(wet) vs observed wet-hour</h3>");
         content.Append(RenderPrecipVsTruthBlock(input, currentStation));
 
-        content.Append("<hr/><h3>Dry window — predicted vs observed</h3>");
+        content.Append("<hr/><h3>Dry daytime window — predicted vs observed</h3>");
         content.Append(Ci, $"""
-            <p class="skill-line">One row per target UTC day × window length. The "observed" column is blank for dates
+            <p class="skill-line">One row per target UTC day × window length. Both prediction and observed verdict are scoped
+               to the 09–18 local-time daytime window (Europe/London, DST-aware). The "observed" column is blank for dates
                beyond the last full rainfall day.</p>
             """);
         content.Append(RenderDryWindowVsTruthTable(input, currentStation));

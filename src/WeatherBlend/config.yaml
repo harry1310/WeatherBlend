@@ -336,3 +336,24 @@ blenders:
         - lead: 72
           requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless]
           optionalModels: [ecmwf_aifs025_single]
+
+# Dry-window blender — local-time daytime allowed-window. Both labels (truth)
+# and per-NWP feature aggregates (longest dry run, has-dry-window indicator,
+# wet hour count, precip sum, envelope covariates, shape features) restrict
+# their per-day scan to this window. Stored in local hours + IANA tz so DST
+# doesn't slide the window against wall-clock walking time twice a year.
+# Default: 09–18 Europe/London = the realistic outdoor-walking window at
+# Bonehill Rocks year-round, in BST or GMT.
+dryWindow:
+  allowedWindow:
+    startLocalHour: 9
+    endLocalHour: 18
+    tz: "Europe/London"
+  # Per-station PAV calibration opt-in. Bellever's raw blender ran with
+  # frequency bias 1.2–1.5 (over-predicts dry); PAV corrects this and
+  # delivers Brier −4 to −11% on every (window × lead). Princetown and
+  # Hexworthy started near bias 1.0 — applying PAV there overfits the
+  # ~125-row validation set and makes Brier WORSE by +5 to +25% on
+  # average. Empirically validated 2026-04-29.
+  calibrationStations:
+    - "Bellever Dartmoor"

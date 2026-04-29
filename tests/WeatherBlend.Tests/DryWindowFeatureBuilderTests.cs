@@ -36,7 +36,7 @@ public class DryWindowFeatureBuilderTests
         var dry = DayOf(_ => 0.0);
         var modelDays = new List<DryWindowFeatureBuilder.ForecastDay?> { dry, dry, dry, dry, dry, dry };
 
-        var shape = DryWindowFeatureBuilder.ShapeFeatures(modelDays);
+        var shape = DryWindowFeatureBuilder.ShapeFeatures(modelDays, 0, 24);
 
         shape.FirstWetHour.Should().Be(24.0);
         shape.LastWetHour.Should().Be(-1.0);
@@ -53,15 +53,18 @@ public class DryWindowFeatureBuilderTests
         var wet = DayOf(_ => 0.5);
         var modelDays = new List<DryWindowFeatureBuilder.ForecastDay?> { wet, wet };
 
-        var shape = DryWindowFeatureBuilder.ShapeFeatures(modelDays);
+        var shape = DryWindowFeatureBuilder.ShapeFeatures(modelDays, 0, 24);
 
         shape.FirstWetHour.Should().Be(0.0);
         shape.LastWetHour.Should().Be(23.0);
         shape.LongestDryRun.Should().Be(0.0);
         shape.LongestWetRun.Should().Be(24.0);
         shape.NRainEvents.Should().Be(1.0);
-        shape.MorningPrecipSum.Should().BeApproximately(3.0, 1e-9);
-        shape.AfternoonPrecipSum.Should().BeApproximately(3.0, 1e-9);
+        // First half (h=0..11) and second half (h=12..23) each sum to 12 × 0.5 = 6.0
+        // under the (0, 24) window with midpoint=12. The legacy test pinned the old
+        // fixed 06–11 / 12–17 split.
+        shape.MorningPrecipSum.Should().BeApproximately(6.0, 1e-9);
+        shape.AfternoonPrecipSum.Should().BeApproximately(6.0, 1e-9);
     }
 
     [Fact]
@@ -70,7 +73,7 @@ public class DryWindowFeatureBuilderTests
         var d = DayOf(h => (h >= 3 && h <= 5) || (h >= 10 && h <= 14) ? 0.4 : 0.0);
         var modelDays = new List<DryWindowFeatureBuilder.ForecastDay?> { d };
 
-        var shape = DryWindowFeatureBuilder.ShapeFeatures(modelDays);
+        var shape = DryWindowFeatureBuilder.ShapeFeatures(modelDays, 0, 24);
 
         shape.NRainEvents.Should().Be(2.0);
         shape.LongestWetRun.Should().Be(5.0);
@@ -80,31 +83,35 @@ public class DryWindowFeatureBuilderTests
     }
 
     [Fact]
-    public void ShapeFeatures_morning_and_afternoon_buckets_only_count_their_hours()
+    public void ShapeFeatures_first_half_and_second_half_split_at_midpoint_of_window()
     {
+        // Window splits at startHour + (endHour-startHour)/2. For (0, 24) the midpoint
+        // is 12 — h=6 is first half, h=12 is second half.
         var d = DayOf(h => (h == 6 || h == 12) ? 1.5 : 0.0);
-        var shape = DryWindowFeatureBuilder.ShapeFeatures(new List<DryWindowFeatureBuilder.ForecastDay?> { d });
+        var shape = DryWindowFeatureBuilder.ShapeFeatures(new List<DryWindowFeatureBuilder.ForecastDay?> { d }, 0, 24);
 
-        shape.MorningPrecipSum.Should().BeApproximately(1.5, 1e-9);
-        shape.AfternoonPrecipSum.Should().BeApproximately(1.5, 1e-9);
+        shape.MorningPrecipSum.Should().BeApproximately(1.5, 1e-9);    // h=6 → first half
+        shape.AfternoonPrecipSum.Should().BeApproximately(1.5, 1e-9);  // h=12 → second half
 
-        // Hour-2 wet sits outside both buckets — verify exclusivity.
-        var d2 = DayOf(h => (h == 2) ? 1.0 : 0.0);
-        var shape2 = DryWindowFeatureBuilder.ShapeFeatures(new List<DryWindowFeatureBuilder.ForecastDay?> { d2 });
-        shape2.MorningPrecipSum.Should().Be(0.0);
-        shape2.AfternoonPrecipSum.Should().Be(0.0);
+        // Constrain the window to a 9-hour daytime span (e.g. 09–18). Midpoint = 13.
+        // h=10 lands in first half; h=15 lands in second half; h=20 sits outside the
+        // window entirely and is ignored.
+        var d2 = DayOf(h => (h == 10 || h == 15 || h == 20) ? 1.0 : 0.0);
+        var shape2 = DryWindowFeatureBuilder.ShapeFeatures(new List<DryWindowFeatureBuilder.ForecastDay?> { d2 }, 9, 18);
+        shape2.MorningPrecipSum.Should().BeApproximately(1.0, 1e-9);
+        shape2.AfternoonPrecipSum.Should().BeApproximately(1.0, 1e-9);
     }
 
     [Fact]
     public void ShapeFeatures_threshold_uses_inclusive_zero_point_one_mm()
     {
         var atThreshold = DayOf(h => h == 10 ? 0.1 : 0.0);
-        var shapeAt = DryWindowFeatureBuilder.ShapeFeatures(new List<DryWindowFeatureBuilder.ForecastDay?> { atThreshold });
+        var shapeAt = DryWindowFeatureBuilder.ShapeFeatures(new List<DryWindowFeatureBuilder.ForecastDay?> { atThreshold }, 0, 24);
         shapeAt.NRainEvents.Should().Be(1.0);
         shapeAt.FirstWetHour.Should().Be(10.0);
 
         var below = DayOf(h => h == 10 ? 0.099 : 0.0);
-        var shapeBelow = DryWindowFeatureBuilder.ShapeFeatures(new List<DryWindowFeatureBuilder.ForecastDay?> { below });
+        var shapeBelow = DryWindowFeatureBuilder.ShapeFeatures(new List<DryWindowFeatureBuilder.ForecastDay?> { below }, 0, 24);
         shapeBelow.NRainEvents.Should().Be(0.0);
         shapeBelow.FirstWetHour.Should().Be(24.0);
     }
@@ -113,7 +120,7 @@ public class DryWindowFeatureBuilderTests
     public void ShapeFeatures_no_models_present_returns_all_nan()
     {
         var modelDays = new List<DryWindowFeatureBuilder.ForecastDay?> { null, null, null, null, null, null };
-        var shape = DryWindowFeatureBuilder.ShapeFeatures(modelDays);
+        var shape = DryWindowFeatureBuilder.ShapeFeatures(modelDays, 0, 24);
 
         double.IsNaN(shape.FirstWetHour).Should().BeTrue();
         double.IsNaN(shape.LastWetHour).Should().BeTrue();
@@ -141,7 +148,7 @@ public class DryWindowFeatureBuilderTests
                 CloudLow: 50, CloudMid: 30, CloudHigh: 20,
                 Cape: 100, Wind: 5));
         }
-        var shape = DryWindowFeatureBuilder.ShapeFeatures(new List<DryWindowFeatureBuilder.ForecastDay?> { dayA, dayB });
+        var shape = DryWindowFeatureBuilder.ShapeFeatures(new List<DryWindowFeatureBuilder.ForecastDay?> { dayA, dayB }, 0, 24);
         shape.LongestWetRun.Should().Be(24.0);
         shape.NRainEvents.Should().Be(1.0);
     }
