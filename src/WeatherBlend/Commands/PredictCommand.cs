@@ -29,7 +29,7 @@ public sealed class PredictCommand
     private readonly ILogger<PredictCommand> _log;
     private readonly AppConfig _cfg;
 
-    private static readonly int[] DefaultLeads = { 24, 48, 72, 96, 120 };
+    private static readonly int[] DefaultLeads = Leads.Full;
 
     public PredictCommand(ILogger<PredictCommand> log, AppConfig cfg)
     {

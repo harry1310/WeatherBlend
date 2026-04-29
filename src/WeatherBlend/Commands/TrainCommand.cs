@@ -30,11 +30,10 @@ public sealed class TrainCommand
 
     // Default leads for temperature + precipitation. Dry-window and Element
     // train commands keep their own narrower {24,48,72} arrays internally.
-    // 96h added 2026-04-29 — Open-Meteo Previous Runs API exposes day-offset-4
-    // (= lead 96h) in the same parquet rows as 24/48/72/120, so no new collect
-    // shape is needed. Dry-window + Element blenders stay capped at {24,48,72}
-    // pending separate scoping (their leads list is set per-command).
-    private static readonly int[] DefaultLeads = { 24, 48, 72, 96, 120 };
+    // Sourced from Train.Common.Leads.Full so temp + precip + predict all share
+    // a single definition. Dry-window + Element blenders use Leads.Short (their
+    // own train commands set DefaultLeads = Leads.Short).
+    private static readonly int[] DefaultLeads = Leads.Full;
 
     public TrainCommand(
         ILogger<TrainCommand> log,

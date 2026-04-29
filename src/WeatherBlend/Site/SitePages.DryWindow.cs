@@ -1,4 +1,5 @@
 using System.Text;
+using WeatherBlend.Train.Common;
 
 namespace WeatherBlend.Site;
 
@@ -38,7 +39,7 @@ public static partial class SitePages
             content.Append(RenderStationSubNav("dry-window", stations, currentStation));
 
         var windows = input.DryWindowPredictions.Select(d => d.WindowHours).Distinct().OrderBy(w => w).ToList();
-        var leadOrder = new[] { 24, 48, 72 };
+        var leadOrder = Leads.Short;
         // Forward of "yesterday" so stale rows can't dominate the view.
         var cutoff = input.GeneratedAtUtc.Date.AddDays(-1);
 

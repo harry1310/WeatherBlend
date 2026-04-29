@@ -3,6 +3,7 @@ using WeatherBlend.Config;
 using WeatherBlend.Models;
 using WeatherBlend.Predict;
 using WeatherBlend.Train;
+using WeatherBlend.Train.Common;
 using WeatherBlend.Train.Element;
 using WeatherBlend.Train.Element.Cloud;
 using WeatherBlend.Train.Element.Common;
@@ -30,7 +31,7 @@ public sealed class ElementPredictCommand
     private readonly ILogger<ElementPredictCommand> _log;
     private readonly AppConfig _cfg;
 
-    private static readonly int[] DefaultLeads = { 24, 48, 72 };
+    private static readonly int[] DefaultLeads = Leads.Short;
 
     public ElementPredictCommand(ILogger<ElementPredictCommand> log, AppConfig cfg)
     {

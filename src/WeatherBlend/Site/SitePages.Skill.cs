@@ -1,5 +1,6 @@
 using System.Text;
 using WeatherBlend.Models;
+using WeatherBlend.Train.Common;
 
 namespace WeatherBlend.Site;
 
@@ -394,7 +395,7 @@ public static partial class SitePages
         // Same station sub-nav as precip selects which station we render for here.
         var observed = ComputeObservedDryWindows(input);
         var windows = input.DryWindowPredictions.Select(d => d.WindowHours).Distinct().OrderBy(w => w).ToList();
-        var leadOrder = new[] { 24, 48, 72 };
+        var leadOrder = Leads.Short;
 
         var content = new StringBuilder();
 

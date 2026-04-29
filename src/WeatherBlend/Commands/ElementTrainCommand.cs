@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using WeatherBlend.Train.Common;
 using WeatherBlend.Train.Element;
 
 namespace WeatherBlend.Commands;
@@ -15,7 +16,7 @@ public sealed class ElementTrainCommand
     private readonly ILogger<ElementTrainCommand> _log;
     private readonly IReadOnlyList<IElementBlender> _blenders;
 
-    private static readonly int[] DefaultLeads = { 24, 48, 72 };
+    private static readonly int[] DefaultLeads = Leads.Short;
 
     public ElementTrainCommand(ILogger<ElementTrainCommand> log, IEnumerable<IElementBlender> blenders)
     {

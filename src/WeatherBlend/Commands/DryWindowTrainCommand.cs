@@ -22,7 +22,7 @@ public sealed class DryWindowTrainCommand
     private readonly ILogger<DryWindowTrainCommand> _log;
     private readonly AppConfig _cfg;
 
-    private static readonly int[] DefaultLeads = { 24, 48, 72 };
+    private static readonly int[] DefaultLeads = Leads.Short;
     private static readonly int[] DefaultWindows = { 3, 4, 6 };
     private static readonly string[] Phase3bStations = { "Bellever Dartmoor", "Princetown" };
 

@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
 using WeatherBlend.Train;
+using WeatherBlend.Train.Common;
 using WeatherBlend.Train.DryWindow;
 
 namespace WeatherBlend.Commands;
@@ -29,7 +30,6 @@ public sealed class DryWindowAblateCommand
     private readonly ILogger<DryWindowAblateCommand> _log;
     private readonly AppConfig _cfg;
 
-    private static readonly int[] Leads = { 24, 48, 72 };
     private static readonly IReadOnlyList<string> ShapeFeatureNames = DryWindowFeatureBuilder.ShapeFeatureNames;
 
     public DryWindowAblateCommand(ILogger<DryWindowAblateCommand> log, AppConfig cfg)
@@ -187,7 +187,7 @@ public sealed class DryWindowAblateCommand
             sb.AppendLine();
             sb.AppendLine("| Lead | 3b Brier | 3d-shape Brier | Δ shape − 3b | Climatology Brier |");
             sb.AppendLine("|---|---:|---:|---:|---:|");
-            foreach (var lead in Leads)
+            foreach (var lead in Leads.Short)
             {
                 var bBaseline = Lead(c.Phase3b, lead);
                 var bShape    = Lead(c.Phase3dShape, lead);
@@ -208,7 +208,7 @@ public sealed class DryWindowAblateCommand
             sb.AppendLine();
             sb.AppendLine("| Lead | 3b BSS | 3d-shape BSS |");
             sb.AppendLine("|---|---:|---:|");
-            foreach (var lead in Leads)
+            foreach (var lead in Leads.Short)
             {
                 var bBaseline = Lead(c.Phase3b, lead);
                 var bShape    = Lead(c.Phase3dShape, lead);
@@ -223,7 +223,7 @@ public sealed class DryWindowAblateCommand
             sb.AppendLine();
             sb.AppendLine("| Lead | 3b | 3d-shape |");
             sb.AppendLine("|---|---:|---:|");
-            foreach (var lead in Leads)
+            foreach (var lead in Leads.Short)
             {
                 sb.Append("| ").Append(lead).Append("h | ");
                 sb.Append(Fmt(Lead(c.Phase3b, lead)?.BlendTestBias,      "0.00")).Append(" | ");
@@ -242,7 +242,7 @@ public sealed class DryWindowAblateCommand
                 sb.AppendLine();
                 sb.AppendLine("| Lead | Shape feature | Rank | Gain | Top-N share |");
                 sb.AppendLine("|---|---|---:|---:|---:|");
-                foreach (var lead in Leads)
+                foreach (var lead in Leads.Short)
                 {
                     if (!c.ShapeImportance.TryGetValue(lead, out var imp) || imp.Count == 0) continue;
                     var totalGain = imp.Sum(t => t.Gain);
