@@ -28,15 +28,15 @@ public static class CloudFeatureBuilder
         var requiredSet = blender.RequiredForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var optionalSet = blender.OptionalForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        var orderedRequired = FeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
-        var orderedOptional = FeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
-        var orderedModels = FeatureBuilder.CanonicalModelOrder
+        var orderedRequired = TempFeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
+        var orderedOptional = TempFeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
+        var orderedModels = TempFeatureBuilder.CanonicalModelOrder
             .Where(m => requiredSet.Contains(m) || optionalSet.Contains(m)).ToList();
         if (orderedModels.Count == 0)
             throw new InvalidOperationException($"No models active for {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h.");
 
         var names = new List<string>();
-        foreach (var m in orderedModels) names.Add($"cc_{FeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"cc_{TempFeatureBuilder.ShortName(m)}");
         names.AddRange(new[] { "cc_mean", "cc_std", "cc_range" });
         names.AddRange(new[] { "hour_sin", "hour_cos", "doy_sin", "doy_cos" });
 
@@ -65,12 +65,12 @@ public static class CloudFeatureBuilder
         var minTs = $"TIMESTAMP '{TrainingWindow.UkmoCleanWindowStart}'";
 
         var pivotCc = string.Join(",\n        ",
-            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN CloudCover END) AS cc_{FeatureBuilder.ShortName(m)}"));
-        var selectCc = string.Join(", ", spec.Models.Select(m => $"p.cc_{FeatureBuilder.ShortName(m)}"));
+            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN CloudCover END) AS cc_{TempFeatureBuilder.ShortName(m)}"));
+        var selectCc = string.Join(", ", spec.Models.Select(m => $"p.cc_{TempFeatureBuilder.ShortName(m)}"));
         var requiredNotNull = spec.RequiredModels.Count > 0
-            ? string.Join("\n  AND ", spec.RequiredModels.Select(m => $"p.cc_{FeatureBuilder.ShortName(m)} IS NOT NULL"))
+            ? string.Join("\n  AND ", spec.RequiredModels.Select(m => $"p.cc_{TempFeatureBuilder.ShortName(m)} IS NOT NULL"))
             : "TRUE";
-        var anyNotNull = "(" + string.Join(" OR ", spec.Models.Select(m => $"p.cc_{FeatureBuilder.ShortName(m)} IS NOT NULL")) + ")";
+        var anyNotNull = "(" + string.Join(" OR ", spec.Models.Select(m => $"p.cc_{TempFeatureBuilder.ShortName(m)} IS NOT NULL")) + ")";
 
         var sql = $@"
 WITH latest AS (

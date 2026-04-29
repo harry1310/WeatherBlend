@@ -1,11 +1,11 @@
-namespace WeatherBlend.Evaluate;
+namespace WeatherBlend.Evaluate.Temp;
 
 /// <summary>
 /// Error metrics for temperature forecasts. All operate on paired
 /// (predicted, actual) sequences and silently ignore NaN pairs (rows
 /// where persistence lookups failed etc.).
 /// </summary>
-public static class Metrics
+public static class TempMetrics
 {
     public readonly record struct ErrorStats(double Mae, double Rmse, double Bias, int N);
 

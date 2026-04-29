@@ -6,7 +6,7 @@ namespace WeatherBlend.Train.Element.Common;
 
 /// <summary>
 /// Shared parquet writer for element predictions. Mirrors
-/// <c>PredictCommand.WritePredictionsAsync</c>: per-element subtree, dedupe on
+/// <c>TempPredictCommand.WritePredictionsAsync</c>: per-element subtree, dedupe on
 /// (PredictionMadeAtUtc, LeadHours), latest write wins.
 /// </summary>
 public static class ElementPredictWriter

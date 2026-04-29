@@ -6,7 +6,7 @@ namespace WeatherBlend.Evaluate.Precip;
 /// <summary>
 /// Renders <see cref="PrecipVerifier.VerifyRow"/> output as a markdown report for
 /// the weekly precipitation verify run. Structure parallels the temperature
-/// <see cref="Evaluate.VerifyReporter"/>: drift flags up front, then a detail
+/// <see cref="Evaluate.TempVerifyReporter"/>: drift flags up front, then a detail
 /// table, then reliability bins per (station, version, lead) for on-call eyeballing.
 /// </summary>
 public static class PrecipVerifyReporter

@@ -16,7 +16,7 @@ public sealed class PrecipPredictionRow
 {
     /// <summary>
     /// Number of named per-model precip slots (PrecipGfs..PrecipJma).
-    /// See <see cref="PredictionRow.PerModelFieldCount"/> for the rationale.
+    /// See <see cref="TempPredictionRow.PerModelFieldCount"/> for the rationale.
     /// </summary>
     public const int PerModelFieldCount = 8;
 

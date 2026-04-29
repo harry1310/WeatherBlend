@@ -35,7 +35,7 @@ public static class WindPredictPipeline
         CancellationToken ct)
     {
         var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
-        var canonOrder = FeatureBuilder.CanonicalModelOrder.ToList();
+        var canonOrder = TempFeatureBuilder.CanonicalModelOrder.ToList();
         var targets = leads.Select(L => (Lead: L, Valid: anchor.AddHours(L))).ToArray();
         var pivot = QueryPivot(forecastsPath, locationName, anchor,
             targets.Min(t => t.Valid), targets.Max(t => t.Valid), ct);
@@ -79,7 +79,7 @@ public static class WindPredictPipeline
 
             var row = WindFeatureBuilder.ComposeRow(spec, valid, spd, dir, era5WindSpeed: float.NaN);
             var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
-            var yhat = TemperatureTrainer.PredictVector(ml, loadedModel, spec, new[] { row })[0];
+            var yhat = TempTrainer.PredictVector(ml, loadedModel, spec, new[] { row })[0];
 
             // Per-model output fields: populate only spec.Models, null elsewhere.
             // ElementPredictionRow has 7 named slots (Gfs..Gem + Aifs). Wind blender
@@ -150,9 +150,9 @@ ORDER BY ValidTimeUtc, Model;";
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
 
-        // Slot ordering matches FeatureBuilder.CanonicalModelOrder so the predict
+        // Slot ordering matches TempFeatureBuilder.CanonicalModelOrder so the predict
         // command can map spec.Models[i] → canonical-slot index.
-        var slotByModel = FeatureBuilder.CanonicalModelOrder
+        var slotByModel = TempFeatureBuilder.CanonicalModelOrder
             .Select((id, i) => (id, i)).ToDictionary(x => x.id, x => x.i);
 
         var working = new Dictionary<DateTime, (float[] Speeds, float[] Directions, DateTime?[] RunTimes)>();

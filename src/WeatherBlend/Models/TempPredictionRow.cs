@@ -11,14 +11,14 @@ namespace WeatherBlend.Models;
 /// only investigable if we can point at exactly which cycle of which model fed the
 /// blender and what feature vector it saw.
 /// </summary>
-public sealed class PredictionRow
+public sealed class TempPredictionRow
 {
     /// <summary>
     /// Number of named per-model output slots on this row type
     /// (TempGfs, TempEcmwf, TempIcon, TempMf, TempUkmo, TempGem, TempAifs).
     /// Predict pipelines size their per-model output arrays from this and
     /// use the same constant for the "skip ci ≥ N" guard so future model
-    /// additions to <see cref="WeatherBlend.Train.FeatureBuilder.CanonicalModelOrder"/>
+    /// additions to <see cref="WeatherBlend.Train.TempFeatureBuilder.CanonicalModelOrder"/>
     /// don't silently drop data — failing the build via missing-field is a
     /// clearer signal than an out-of-range silent skip.
     /// </summary>
@@ -28,7 +28,7 @@ public sealed class PredictionRow
     // Seeding required strings matches the Era5Row/ObservationRow pattern and keeps
     // the nullable analyzer quiet.
     [SetsRequiredMembers]
-    public PredictionRow()
+    public TempPredictionRow()
     {
         LocationName = "";
         ModelVersion = "";

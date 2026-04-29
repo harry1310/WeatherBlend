@@ -7,7 +7,7 @@ namespace WeatherBlend.Train;
 /// <summary>
 /// Builds one precipitation-blender dataset per lead.
 ///
-/// Structure mirrors <see cref="FeatureBuilder"/>:
+/// Structure mirrors <see cref="TempFeatureBuilder"/>:
 ///   1. Aggregate EA 15-min rainfall readings up to hourly totals for the
 ///      primary rainfall station. Hours with fewer than 4 readings are
 ///      dropped — a partial-hour total would be a label bug.
@@ -53,9 +53,9 @@ public static class PrecipFeatureBuilder
                 $"BlenderConfig {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h has model(s) " +
                 $"listed as both required and optional: [{string.Join(",", overlap)}].");
 
-        var orderedRequired = FeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
-        var orderedOptional = FeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
-        var orderedModels = FeatureBuilder.CanonicalModelOrder
+        var orderedRequired = TempFeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
+        var orderedOptional = TempFeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
+        var orderedModels = TempFeatureBuilder.CanonicalModelOrder
             .Where(m => requiredSet.Contains(m) || optionalSet.Contains(m)).ToList();
         if (orderedModels.Count == 0)
             throw new InvalidOperationException($"No models active for {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h.");
@@ -66,7 +66,7 @@ public static class PrecipFeatureBuilder
         // in their feature_schema can't predict under this code — retrain required.
         var n = orderedModels.Count;
         var featureNames = new List<string>(n + 4 + 7 + 4);
-        foreach (var m in orderedModels) featureNames.Add($"precip_{FeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) featureNames.Add($"precip_{TempFeatureBuilder.ShortName(m)}");
         featureNames.AddRange(new[] { "precip_mean", "precip_std", "precip_max", "precip_agreement_wet_01" });
         featureNames.AddRange(new[]
         {
@@ -112,13 +112,13 @@ public static class PrecipFeatureBuilder
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
 
         var precipPivot = string.Join(",\n        ",
-            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN Precipitation END) AS precip_{FeatureBuilder.ShortName(m)}"));
-        var precipSelect = string.Join(", ", spec.Models.Select(m => $"p.precip_{FeatureBuilder.ShortName(m)}"));
+            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN Precipitation END) AS precip_{TempFeatureBuilder.ShortName(m)}"));
+        var precipSelect = string.Join(", ", spec.Models.Select(m => $"p.precip_{TempFeatureBuilder.ShortName(m)}"));
 
         var requiredNotNull = spec.RequiredModels.Count > 0
-            ? string.Join("\n  AND ", spec.RequiredModels.Select(m => $"p.precip_{FeatureBuilder.ShortName(m)} IS NOT NULL"))
+            ? string.Join("\n  AND ", spec.RequiredModels.Select(m => $"p.precip_{TempFeatureBuilder.ShortName(m)} IS NOT NULL"))
             : "TRUE";
-        var anyNotNull = "(" + string.Join(" OR ", spec.Models.Select(m => $"p.precip_{FeatureBuilder.ShortName(m)} IS NOT NULL")) + ")";
+        var anyNotNull = "(" + string.Join(" OR ", spec.Models.Select(m => $"p.precip_{TempFeatureBuilder.ShortName(m)} IS NOT NULL")) + ")";
 
         var sql = $@"
 WITH hourly_truth AS (

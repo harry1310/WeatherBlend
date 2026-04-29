@@ -151,7 +151,7 @@ public sealed class DryWindowPredictCommand
 
         // Per-lead BlenderSpec lives in feature_schema.json; covers both 3b and 3d-shape.
         var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
-        var canonOrder = WeatherBlend.Train.FeatureBuilder.CanonicalModelOrder.ToList();
+        var canonOrder = WeatherBlend.Train.TempFeatureBuilder.CanonicalModelOrder.ToList();
 
         var ml = new MLContext(seed: 42);
         var predictions = new List<DryWindowPredictionRow>();
@@ -207,8 +207,8 @@ public sealed class DryWindowPredictCommand
             {
                 var ci = canonOrder.IndexOf(spec.Models[i]);
                 if (ci >= DryWindowPredictionRow.PerModelFieldCount) continue;
-                var hasDry = row.Features[spec.IndexOf($"has_dry_window_{WeatherBlend.Train.FeatureBuilder.ShortName(spec.Models[i])}")];
-                var sum    = row.Features[spec.IndexOf($"precip_sum_{WeatherBlend.Train.FeatureBuilder.ShortName(spec.Models[i])}")];
+                var hasDry = row.Features[spec.IndexOf($"has_dry_window_{WeatherBlend.Train.TempFeatureBuilder.ShortName(spec.Models[i])}")];
+                var sum    = row.Features[spec.IndexOf($"precip_sum_{WeatherBlend.Train.TempFeatureBuilder.ShortName(spec.Models[i])}")];
                 perModelHasDry[ci] = NanToNullDouble(hasDry);
                 perModelSum[ci]    = NanToNullDouble(sum);
             }
@@ -333,10 +333,10 @@ ORDER BY ValidTimeUtc, Model;";
         cmd.CommandText = sql;
 
         // Slot index by canonical model order so the indices line up with
-        // FeatureBuilder.CanonicalModelOrder used at predict time below — when AIFS
+        // TempFeatureBuilder.CanonicalModelOrder used at predict time below — when AIFS
         // (slot 6) is in the trained spec, modelDayList[6] needs to exist. The legacy
         // DryWindowFeatureBuilder.ModelIds is only 6 wide; using it here was the bug.
-        var canonOrder = WeatherBlend.Train.FeatureBuilder.CanonicalModelOrder;
+        var canonOrder = WeatherBlend.Train.TempFeatureBuilder.CanonicalModelOrder;
         var slotByModel = canonOrder
             .Select((id, i) => (id, i))
             .ToDictionary(x => x.id, x => x.i);

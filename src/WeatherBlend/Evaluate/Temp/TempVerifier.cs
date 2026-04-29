@@ -1,7 +1,7 @@
 using WeatherBlend.Models;
 using WeatherBlend.Train;
 
-namespace WeatherBlend.Evaluate;
+namespace WeatherBlend.Evaluate.Temp;
 
 /// <summary>
 /// Pure verification domain logic. Joins production predictions against ERA5 truth,
@@ -14,16 +14,16 @@ namespace WeatherBlend.Evaluate;
 /// this class pure means every branch (window exclusion, ERA5 latency cutoff, drift
 /// threshold, persistence lookup, best-single picking) is testable without DuckDB.
 /// </summary>
-public static class Verifier
+public static class TempVerifier
 {
-    // Same ordering as FeatureBuilder.ModelColumns — kept local to avoid a circular dep
+    // Same ordering as TempFeatureBuilder.ModelColumns — kept local to avoid a circular dep
     // and because verify's per-model ordering is verification-specific anyway.
     internal static readonly string[] ModelNames =
         { "temp_gfs", "temp_ecmwf", "temp_icon", "temp_mf", "temp_ukmo", "temp_gem", "temp_aifs" };
 
     public sealed class Inputs
     {
-        public required IReadOnlyList<PredictionRow> Predictions { get; init; }
+        public required IReadOnlyList<TempPredictionRow> Predictions { get; init; }
 
         /// <summary>ERA5 temperature by ValidTimeUtc. Must cover both the window and
         /// the persistence-lookback range (ValidTime − LeadHours for each prediction).</summary>
@@ -91,18 +91,18 @@ public static class Verifier
     private static VerifyRow BuildRow(
         string version,
         int leadHours,
-        IReadOnlyList<PredictionRow> preds,
+        IReadOnlyList<TempPredictionRow> preds,
         Inputs inputs)
     {
         var actual = preds.Select(p => inputs.TruthByTime[p.ValidTimeUtc]).ToArray();
         var blend  = preds.Select(p => p.BlendTemperature).ToArray();
-        var blendStats = Metrics.Compute(blend, actual);
+        var blendStats = TempMetrics.Compute(blend, actual);
 
         // Mean-of-models: if TempMean is populated (predict writes it), trust it;
         // otherwise recompute from non-null per-model temps on the row. A row where
-        // every model is null becomes NaN and Metrics.Compute drops it.
+        // every model is null becomes NaN and TempMetrics.Compute drops it.
         var meanPred = preds.Select(RowMean).ToArray();
-        var meanStats = Metrics.Compute(meanPred, actual);
+        var meanStats = TempMetrics.Compute(meanPred, actual);
 
         // Best single: pick the per-model column with the lowest MAE in this window.
         // Window-local, not val-set-local — the brief calls for baselines "recomputed
@@ -112,7 +112,7 @@ public static class Verifier
         foreach (var name in ModelNames)
         {
             var p = preds.Select(row => TempFor(row, name) ?? double.NaN).ToArray();
-            var s = Metrics.Compute(p, actual);
+            var s = TempMetrics.Compute(p, actual);
             if (s.N > 0 && s.Mae < bestMae)
             {
                 bestMae = s.Mae;
@@ -135,7 +135,7 @@ public static class Verifier
                 persDropped++;
             }
         }
-        var persStats = Metrics.Compute(persPred, actual);
+        var persStats = TempMetrics.Compute(persPred, actual);
 
         // Reference test MAE from training metadata + drift flag. Missing metadata is
         // not an error — older versions may have been pruned or the prediction may
@@ -167,7 +167,7 @@ public static class Verifier
             DriftFlag:          drift);
     }
 
-    private static double RowMean(PredictionRow p)
+    private static double RowMean(TempPredictionRow p)
     {
         if (p.TempMean.HasValue) return p.TempMean.Value;
         double sum = 0; int n = 0;
@@ -179,7 +179,7 @@ public static class Verifier
         return n == 0 ? double.NaN : sum / n;
     }
 
-    private static double? TempFor(PredictionRow p, string name) => name switch
+    private static double? TempFor(TempPredictionRow p, string name) => name switch
     {
         "temp_gfs"   => p.TempGfs,
         "temp_ecmwf" => p.TempEcmwf,

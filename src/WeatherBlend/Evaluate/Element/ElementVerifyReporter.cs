@@ -7,7 +7,7 @@ namespace WeatherBlend.Evaluate.Element;
 
 /// <summary>
 /// Markdown rendering for element verify rows. Mirrors the temperature
-/// <c>VerifyReporter</c> shape (drift section first, per-version × lead headline
+/// <c>TempVerifyReporter</c> shape (drift section first, per-version × lead headline
 /// table) plus per-element stratification (month / truth quintile).
 /// </summary>
 public static class ElementVerifyReporter

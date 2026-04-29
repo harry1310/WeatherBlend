@@ -30,7 +30,7 @@ public sealed class WindBlender : IElementBlender
             // marginally HURTS wind at every lead (-0.16/-0.55/-0.42% vs no-bag), unlike
             // every other target where bagging helps by +0.5-2%. UKMO is restored for
             // wind (only target where the 6-model wins on the same fixed test set).
-            Hyperparameters: new TemperatureTrainer.Hyperparameters(
+            Hyperparameters: new TempTrainer.Hyperparameters(
                 SubsampleFraction: 1.0, SubsampleFrequency: 0, FeatureFraction: 1.0),
             BuildSpec: lead => WindFeatureBuilder.BuildSpec(_cfg.Blenders, lead),
             LoadRowsForSpec: (spec, c) => WindFeatureBuilder.BuildForLead(

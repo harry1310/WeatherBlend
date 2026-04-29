@@ -366,20 +366,20 @@ ORDER BY 1";
                 $"BlenderConfig {SpecTarget}/{featureSet} at lead {leadHours}h has model(s) " +
                 $"listed as both required and optional: [{string.Join(",", overlap)}].");
 
-        var orderedRequired = FeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
-        var orderedOptional = FeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
-        var orderedModels = FeatureBuilder.CanonicalModelOrder
+        var orderedRequired = TempFeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
+        var orderedOptional = TempFeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
+        var orderedModels = TempFeatureBuilder.CanonicalModelOrder
             .Where(m => requiredSet.Contains(m) || optionalSet.Contains(m)).ToList();
         if (orderedModels.Count == 0)
             throw new InvalidOperationException($"No models active for {SpecTarget}/{featureSet} at lead {leadHours}h.");
 
         var names = new List<string>();
-        foreach (var m in orderedModels) names.Add($"precip_sum_{FeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"precip_max_hour_{FeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"wet_hour_count_{FeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"longest_dry_run_{FeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"has_dry_window_{FeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"prob_max_{FeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"precip_sum_{TempFeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"precip_max_hour_{TempFeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"wet_hour_count_{TempFeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"longest_dry_run_{TempFeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"has_dry_window_{TempFeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"prob_max_{TempFeatureBuilder.ShortName(m)}");
         names.AddRange(new[]
         {
             "precip_sum_mean", "precip_sum_std", "precip_sum_max",

@@ -143,7 +143,7 @@ public static class FeelsLikePredictPipeline
             log.LogWarning("  temperature: predictions parquet not found at {Path}", path);
             return new InputStream(version, new Dictionary<(int, DateTime), Sample>());
         }
-        var raw = (await ParquetSerializer.DeserializeAsync<PredictionRow>(path, cancellationToken: ct)).ToList();
+        var raw = (await ParquetSerializer.DeserializeAsync<TempPredictionRow>(path, cancellationToken: ct)).ToList();
         var grouped = raw
             .GroupBy(r => (Lead: r.LeadHours, Valid: r.ValidTimeUtc))
             .Select(g => g.MaxBy(r => r.PredictionMadeAtUtc)!)

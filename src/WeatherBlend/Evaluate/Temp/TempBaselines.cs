@@ -1,7 +1,7 @@
 using WeatherBlend.Train;
 using WeatherBlend.Train.Common;
 
-namespace WeatherBlend.Evaluate;
+namespace WeatherBlend.Evaluate.Temp;
 
 /// <summary>
 /// Non-learned baselines the blender must beat to earn its keep.
@@ -10,7 +10,7 @@ namespace WeatherBlend.Evaluate;
 /// being evaluated (24/48/72). Per-lead evaluation passes the lead directly;
 /// the default lag of 24h is the "same hour yesterday" fallback.
 /// </summary>
-public static class Baselines
+public static class TempBaselines
 {
     /// <summary>
     /// Persistence baseline. Truth lookup is at <c>row.ValidTimeUtc - lagHours</c>;
@@ -81,7 +81,7 @@ public static class Baselines
         for (int i = 0; i < spec.Models.Count; i++)
         {
             var name = spec.FeatureNames[i];
-            var mae = Metrics.Compute(FromFeature(spec, rows, name), actual).Mae;
+            var mae = TempMetrics.Compute(FromFeature(spec, rows, name), actual).Mae;
             if (mae < bestMae) { bestMae = mae; best = name; }
         }
         return best;

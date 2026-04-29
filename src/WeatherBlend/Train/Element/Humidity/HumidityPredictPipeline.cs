@@ -27,7 +27,7 @@ public static class HumidityPredictPipeline
         CancellationToken ct)
     {
         var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
-        var canonOrder = FeatureBuilder.CanonicalModelOrder.ToList();
+        var canonOrder = TempFeatureBuilder.CanonicalModelOrder.ToList();
         var targets = leads.Select(L => (Lead: L, Valid: anchor.AddHours(L))).ToArray();
         var pivot = QueryPivot(forecastsPath, locationName, anchor,
             targets.Min(t => t.Valid), targets.Max(t => t.Valid), ct);
@@ -71,7 +71,7 @@ public static class HumidityPredictPipeline
 
             var row = HumidityFeatureBuilder.ComposeRow(spec, valid, rh, dp, era5Rh: float.NaN);
             var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
-            var yhat = TemperatureTrainer.PredictVector(ml, loadedModel, spec, new[] { row })[0];
+            var yhat = TempTrainer.PredictVector(ml, loadedModel, spec, new[] { row })[0];
 
             // ElementPredictionRow has 7 named slots (Gfs..Gem + Aifs).
             var modelRh  = new double?[ElementPredictionRow.PerModelFieldCount];
@@ -136,7 +136,7 @@ ORDER BY ValidTimeUtc, Model;";
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
 
-        var slotByModel = FeatureBuilder.CanonicalModelOrder
+        var slotByModel = TempFeatureBuilder.CanonicalModelOrder
             .Select((id, i) => (id, i)).ToDictionary(x => x.id, x => x.i);
 
         var working = new Dictionary<DateTime, (float[] Rh, float[] Dp, DateTime?[] Rt)>();

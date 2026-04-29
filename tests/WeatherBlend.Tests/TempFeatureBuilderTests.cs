@@ -2,6 +2,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using NetEscapades.Configuration.Yaml;
 using WeatherBlend.Config;
+using WeatherBlend.Evaluate.Temp;
 using WeatherBlend.Train;
 using WeatherBlend.Train.Common;
 using Xunit;
@@ -26,7 +27,7 @@ public class FeatureBuilderTests
     [Fact]
     public void BuildSpec_lean_temperature_lead_24_uses_5_required_plus_aifs_optional()
     {
-        var spec = FeatureBuilder.BuildSpec(LoadShippedConfig(), 24);
+        var spec = TempFeatureBuilder.BuildSpec(LoadShippedConfig(), 24);
         spec.Target.Should().Be("temperature");
         spec.FeatureSet.Should().Be("lean");
         spec.RequiredModels.Should().Equal(
@@ -45,7 +46,7 @@ public class FeatureBuilderTests
     [Fact]
     public void BuildSpec_lean_temperature_lead_120_drops_MF_keeps_aifs_optional()
     {
-        var spec = FeatureBuilder.BuildSpec(LoadShippedConfig(), 120);
+        var spec = TempFeatureBuilder.BuildSpec(LoadShippedConfig(), 120);
         spec.RequiredModels.Should().Equal("gfs_seamless", "ecmwf_ifs025", "icon_seamless", "gem_seamless");
         spec.OptionalModels.Should().Equal("ecmwf_aifs025_single");
         spec.Models.Should().HaveCount(5);
@@ -62,7 +63,7 @@ public class FeatureBuilderTests
         // Lead 96h was added 2026-04-29. Open-Meteo Previous Runs caps
         // meteofrance_seamless at ~72h, so MF must be excluded from required
         // at any lead ≥96h or training would yield zero rows.
-        var spec = FeatureBuilder.BuildSpec(LoadShippedConfig(), 96);
+        var spec = TempFeatureBuilder.BuildSpec(LoadShippedConfig(), 96);
         spec.RequiredModels.Should().Equal("gfs_seamless", "ecmwf_ifs025", "icon_seamless", "gem_seamless");
         spec.OptionalModels.Should().Equal("ecmwf_aifs025_single");
         spec.FeatureNames.Should().HaveCount(12);
@@ -72,7 +73,7 @@ public class FeatureBuilderTests
     [Fact]
     public void BuildSpec_rich_temperature_lead_96_drops_MF_keeps_UKMO_and_aifs()
     {
-        var spec = WeatherBlend.Train.RichFeatureBuilder.BuildSpec(LoadShippedConfig(), 96);
+        var spec = WeatherBlend.Train.TempRichFeatureBuilder.BuildSpec(LoadShippedConfig(), 96);
         spec.RequiredModels.Should().Equal(
             "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "ukmo_seamless", "gem_seamless");
         spec.OptionalModels.Should().Equal("ecmwf_aifs025_single");
@@ -85,10 +86,10 @@ public class FeatureBuilderTests
     [Fact]
     public void ComposeRow_with_spec_packs_features_in_declared_order()
     {
-        var spec = FeatureBuilder.BuildSpec(LoadShippedConfig(), 24);
+        var spec = TempFeatureBuilder.BuildSpec(LoadShippedConfig(), 24);
         // Per-model temps in spec order: gfs/ecmwf/icon/mf/gem/aifs.
         var temps = new[] { 10.0, 12.0, 14.0, 16.0, 18.0, 20.0 };
-        var row = FeatureBuilder.ComposeRow(
+        var row = TempFeatureBuilder.ComposeRow(
             spec,
             new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc),
             temps,
@@ -108,8 +109,8 @@ public class FeatureBuilderTests
     [Fact]
     public void ComposeRow_throws_when_temps_count_does_not_match_spec_models()
     {
-        var spec = FeatureBuilder.BuildSpec(LoadShippedConfig(), 24);  // 6 models incl. AIFS
-        var act = () => FeatureBuilder.ComposeRow(
+        var spec = TempFeatureBuilder.BuildSpec(LoadShippedConfig(), 24);  // 6 models incl. AIFS
+        var act = () => TempFeatureBuilder.ComposeRow(
             spec, DateTime.UtcNow, new[] { 1.0, 2.0 }, double.NaN, 0.0);
         act.Should().Throw<ArgumentException>();
     }
@@ -117,10 +118,10 @@ public class FeatureBuilderTests
     [Fact]
     public void ComposeRow_lead_120_packs_5_per_model_values_no_mf_no_ukmo_with_aifs()
     {
-        var spec = FeatureBuilder.BuildSpec(LoadShippedConfig(), 120);
+        var spec = TempFeatureBuilder.BuildSpec(LoadShippedConfig(), 120);
         // Spec order at 120h: gfs, ecmwf, icon, gem, aifs.
         var temps = new[] { 5.0, 6.0, 7.0, 8.0, 9.0 };
-        var row = FeatureBuilder.ComposeRow(
+        var row = TempFeatureBuilder.ComposeRow(
             spec, new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc),
             temps, windDirMeanDeg: 90, era5Temp: 7.0);
         row.Features.Length.Should().Be(12);
@@ -136,10 +137,10 @@ public class FeatureBuilderTests
     [InlineData(18, -1.0,   0.0)]
     public void Cyclical_hour_encoding_matches_unit_circle(int hour, double expectedSin, double expectedCos)
     {
-        var spec = FeatureBuilder.BuildSpec(LoadShippedConfig(), 24);
+        var spec = TempFeatureBuilder.BuildSpec(LoadShippedConfig(), 24);
         var temps = new double[spec.Models.Count];
         for (int i = 0; i < temps.Length; i++) temps[i] = 1.0 + i;
-        var row = FeatureBuilder.ComposeRow(
+        var row = TempFeatureBuilder.ComposeRow(
             spec,
             new DateTime(2025, 1, 1, hour, 0, 0, DateTimeKind.Utc),
             temps,
@@ -153,9 +154,9 @@ public class FeatureBuilderTests
     [Fact]
     public void Cyclical_doy_encoding_wraps_to_near_zero_at_year_boundary()
     {
-        var spec = FeatureBuilder.BuildSpec(LoadShippedConfig(), 24);
+        var spec = TempFeatureBuilder.BuildSpec(LoadShippedConfig(), 24);
         var temps = Enumerable.Repeat(1.0, spec.Models.Count).ToArray();
-        var row = FeatureBuilder.ComposeRow(
+        var row = TempFeatureBuilder.ComposeRow(
             spec,
             new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc),
             temps,
@@ -170,10 +171,10 @@ public class FeatureBuilderTests
     public void ComposeRow_spread_is_NaN_safe_when_one_model_is_missing()
     {
         // Population std of present values must stay finite when one slot is NaN.
-        var spec = FeatureBuilder.BuildSpec(LoadShippedConfig(), 24);  // 6 models
+        var spec = TempFeatureBuilder.BuildSpec(LoadShippedConfig(), 24);  // 6 models
         // Five present values {10,12,14,16,18} → mean 14, range 8, std sqrt(8)≈2.8284.
         var temps = new[] { 10.0, 12.0, 14.0, 16.0, 18.0, double.NaN };
-        var row = FeatureBuilder.ComposeRow(
+        var row = TempFeatureBuilder.ComposeRow(
             spec,
             new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc),
             temps,
@@ -190,9 +191,9 @@ public class FeatureBuilderTests
     [Fact]
     public void RegressionDataset_split_is_chronological_and_non_overlapping()
     {
-        var spec = FeatureBuilder.BuildSpec(LoadShippedConfig(), 24);
+        var spec = TempFeatureBuilder.BuildSpec(LoadShippedConfig(), 24);
         var temps = Enumerable.Repeat(1.0, spec.Models.Count).ToArray();
-        var rows = Enumerable.Range(0, 20).Select(i => FeatureBuilder.ComposeRow(
+        var rows = Enumerable.Range(0, 20).Select(i => TempFeatureBuilder.ComposeRow(
             spec,
             new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddHours(i),
             temps,
@@ -220,7 +221,7 @@ public class FeatureBuilderTests
     {
         // Tiny synthetic set: ERA5 truth = mean of per-model temps + small noise so the
         // trainer has something to fit. Enough rows to survive 70/15/15.
-        var spec = FeatureBuilder.BuildSpec(LoadShippedConfig(), 24);
+        var spec = TempFeatureBuilder.BuildSpec(LoadShippedConfig(), 24);
         var rng = new Random(42);
         var rows = new List<RegressionTrainingRow>();
         var start = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc);
@@ -230,19 +231,19 @@ public class FeatureBuilderTests
             for (int m = 0; m < temps.Length; m++) temps[m] = 10.0 + rng.NextDouble() * 5.0;
             var mean = temps.Average();
             var era5 = mean + (rng.NextDouble() - 0.5) * 0.2;
-            rows.Add(FeatureBuilder.ComposeRow(spec, start.AddHours(i), temps, 180.0, era5));
+            rows.Add(TempFeatureBuilder.ComposeRow(spec, start.AddHours(i), temps, 180.0, era5));
         }
 
         var ds = RegressionDataset.Split(rows);
-        var hp = new TemperatureTrainer.Hyperparameters(NumberOfIterations: 50, EarlyStoppingRound: 10);
-        var trained = TemperatureTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
-        var predicted = TemperatureTrainer.PredictVector(trained.Ml, trained.Model, spec, ds.Test);
+        var hp = new TempTrainer.Hyperparameters(NumberOfIterations: 50, EarlyStoppingRound: 10);
+        var trained = TempTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
+        var predicted = TempTrainer.PredictVector(trained.Ml, trained.Model, spec, ds.Test);
 
         predicted.Should().HaveCount(ds.Test.Count);
         predicted.All(x => !double.IsNaN(x) && !double.IsInfinity(x)).Should().BeTrue();
 
         var actual = ds.Test.Select(x => (double)x.Label).ToArray();
-        var stats = WeatherBlend.Evaluate.Metrics.Compute(predicted, actual);
+        var stats = WeatherBlend.Evaluate.Temp.TempMetrics.Compute(predicted, actual);
         double.IsNaN(stats.Mae).Should().BeFalse();
         stats.Mae.Should().BeLessThan(5.0);
     }

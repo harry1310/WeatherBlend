@@ -19,7 +19,7 @@ namespace WeatherBlend.Train;
 ///     model's forecast. We'll see this in feature importance / residuals if it bites.
 /// Both deviations are recorded in TrainingMetadata.DeviationsFromBrief.
 /// </summary>
-public sealed class TemperatureTrainer
+public sealed class TempTrainer
 {
     public sealed record Hyperparameters(
         int NumberOfIterations = 500,
@@ -37,7 +37,7 @@ public sealed class TemperatureTrainer
         // improvement over the deterministic 1.0/1.0 default at every lead;
         // also gives the ensemble the noise it needs to be a real ensemble.
         // Element trainers inherit these via ElementTrainerHarness which calls
-        // TemperatureTrainer.Train<T>.
+        // TempTrainer.Train<T>.
         double SubsampleFraction = 0.8,
         int SubsampleFrequency = 1,
         double FeatureFraction = 0.8);

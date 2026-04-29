@@ -18,20 +18,20 @@ namespace WeatherBlend.Commands;
 /// Phase 2b and Phase 2c models predict side-by-side every cycle.
 ///
 /// Per-version dispatch: <c>training_metadata.json::Phase</c> selects the feature builder.
-///   "2b" → 13-feature lean (FeatureBuilder + TrainingRow)
-///   "2c" → 88-feature rich (RichFeatureBuilder + RichTrainingRow)
+///   "2b" → 13-feature lean (TempFeatureBuilder + TrainingRow)
+///   "2c" → 88-feature rich (TempRichFeatureBuilder + RichTrainingRow)
 ///
 /// Previous Runs API rows (<c>RunTimeSource = 'offset_day'</c>) are excluded — those
 /// are historical training data, not a live forecast.
 /// </summary>
-public sealed class PredictCommand
+public sealed class TempPredictCommand
 {
-    private readonly ILogger<PredictCommand> _log;
+    private readonly ILogger<TempPredictCommand> _log;
     private readonly AppConfig _cfg;
 
     private static readonly int[] DefaultLeads = Leads.Full;
 
-    public PredictCommand(ILogger<PredictCommand> log, AppConfig cfg)
+    public TempPredictCommand(ILogger<TempPredictCommand> log, AppConfig cfg)
     {
         _log = log;
         _cfg = cfg;
@@ -136,7 +136,7 @@ public sealed class PredictCommand
             version, metadata.Phase, isRich ? "rich" : "lean");
 
         var ml = new MLContext(seed: 42);
-        var predictions = new List<PredictionRow>();
+        var predictions = new List<TempPredictionRow>();
 
         // Both lean (2b) and rich (2c) artefacts now use the per-lead BlenderSpec
         // layout — the rich variant just has a longer feature vector. Schema is
@@ -160,7 +160,7 @@ public sealed class PredictCommand
             }
 
             // Pull spec.Models values from the canonical 6-slot pivot, in spec order.
-            var canonOrder = FeatureBuilder.CanonicalModelOrder.ToList();
+            var canonOrder = TempFeatureBuilder.CanonicalModelOrder.ToList();
             var specTemps = new double[spec.Models.Count];
             var missingRequired = new List<string>();
             var requiredSet = spec.RequiredModels.ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -226,7 +226,7 @@ public sealed class PredictCommand
                     wg[i]     = pivot.WindGusts[ci];
                     pres[i]   = pivot.Pressures[ci];
                 }
-                row = RichFeatureBuilder.ComposeRow(spec, valid, specTemps,
+                row = TempRichFeatureBuilder.ComposeRow(spec, valid, specTemps,
                     dewPoints: dew, rhs: rh, clouds: cloud,
                     cloudLows: cloudL, cloudMids: cloudM, cloudHighs: cloudH,
                     windSpeeds: ws, windDirsDeg: wd, windGusts: wg, pressures: pres,
@@ -234,23 +234,23 @@ public sealed class PredictCommand
             }
             else
             {
-                row = FeatureBuilder.ComposeRow(spec, valid, specTemps, pivot.WindDirMean, era5Temp: double.NaN);
+                row = TempFeatureBuilder.ComposeRow(spec, valid, specTemps, pivot.WindDirMean, era5Temp: double.NaN);
             }
 
             var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
-            var yhat = TemperatureTrainer.PredictVector(ml, loadedModel, spec, new[] { row })[0];
+            var yhat = TempTrainer.PredictVector(ml, loadedModel, spec, new[] { row })[0];
             var featureHash = FeatureHashing.HashFloats(row.Features);
 
-            // Build PredictionRow per-model fields: populate only spec.Models, null elsewhere.
-            // Sized + skip-guarded from PredictionRow.PerModelFieldCount so adding a
+            // Build TempPredictionRow per-model fields: populate only spec.Models, null elsewhere.
+            // Sized + skip-guarded from TempPredictionRow.PerModelFieldCount so adding a
             // new TempXxx field on the row type is the single change needed; this
             // pipeline picks it up automatically.
-            var perModelTemp = new double?[PredictionRow.PerModelFieldCount];
-            var perModelRun  = new DateTime?[PredictionRow.PerModelFieldCount];
+            var perModelTemp = new double?[TempPredictionRow.PerModelFieldCount];
+            var perModelRun  = new DateTime?[TempPredictionRow.PerModelFieldCount];
             for (int i = 0; i < spec.Models.Count; i++)
             {
                 var ci = canonOrder.IndexOf(spec.Models[i]);
-                if (ci >= PredictionRow.PerModelFieldCount) continue;
+                if (ci >= TempPredictionRow.PerModelFieldCount) continue;
                 perModelTemp[ci] = specTemps[i];
                 perModelRun[ci]  = pivot.RunTime[ci];
             }
@@ -258,7 +258,7 @@ public sealed class PredictCommand
             // Spread features live at offset spec.Models.Count in the Features vector
             // (lean: N temps then mean/std/range; rich starts with the same N+3 lean block).
             var spreadStart = spec.Models.Count;
-            predictions.Add(new PredictionRow
+            predictions.Add(new TempPredictionRow
             {
                 LocationName = _cfg.Location.Name,
                 ModelVersion = metadata.Version,
@@ -294,7 +294,7 @@ public sealed class PredictCommand
     }
 
     private async Task WritePredictionsAsync(
-        IReadOnlyList<PredictionRow> predictions,
+        IReadOnlyList<TempPredictionRow> predictions,
         DateTime anchor,
         string modelVersion,
         CancellationToken ct)
@@ -311,9 +311,9 @@ public sealed class PredictCommand
         Directory.CreateDirectory(outDir);
         var outPath = Path.Combine(outDir, "predictions.parquet");
 
-        List<PredictionRow> existing = File.Exists(outPath)
-            ? (await ParquetSerializer.DeserializeAsync<PredictionRow>(outPath, cancellationToken: ct)).ToList()
-            : new List<PredictionRow>();
+        List<TempPredictionRow> existing = File.Exists(outPath)
+            ? (await ParquetSerializer.DeserializeAsync<TempPredictionRow>(outPath, cancellationToken: ct)).ToList()
+            : new List<TempPredictionRow>();
 
         // Dedupe on (PredictionMadeAtUtc, LeadHours) — newest row for the key wins.
         // MaxBy(PredictionMadeAtUtc) is explicit about "latest"; don't rely on concat
@@ -393,8 +393,8 @@ ORDER BY ValidTimeUtc, Model;";
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
 
-        // Model-id → slot index (canonical model order from FeatureBuilder).
-        var modelSlot = FeatureBuilder.CanonicalModelOrder
+        // Model-id → slot index (canonical model order from TempFeatureBuilder).
+        var modelSlot = TempFeatureBuilder.CanonicalModelOrder
             .Select((id, i) => (id, i))
             .ToDictionary(x => x.id, x => x.i);
 
@@ -458,11 +458,11 @@ ORDER BY ValidTimeUtc, Model;";
     // once we've finished slotting every model in.
     private sealed class WorkingPivot
     {
-        // Sized to FeatureBuilder.CanonicalModelOrder.Count so a new NWP added
+        // Sized to TempFeatureBuilder.CanonicalModelOrder.Count so a new NWP added
         // to the canonical order auto-grows these arrays. Indexed by canon-order
-        // position; distinct from PredictionRow.PerModelFieldCount (output slots,
+        // position; distinct from TempPredictionRow.PerModelFieldCount (output slots,
         // currently 7 — temp blender skips JMA).
-        private static int N => FeatureBuilder.CanonicalModelOrder.Count;
+        private static int N => TempFeatureBuilder.CanonicalModelOrder.Count;
         public double?[] Temp = new double?[N];
         public DateTime?[] RunTime = new DateTime?[N];
         public double[] Dew = NanArray();

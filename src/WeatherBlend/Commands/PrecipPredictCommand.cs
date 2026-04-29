@@ -17,7 +17,7 @@ namespace WeatherBlend.Commands;
 /// tree mirrors the model tree: one parquet folder per
 /// <c>data/predictions/precipitation/{truth_station}/</c>.
 ///
-/// "Latest available" forecast semantics match <see cref="PredictCommand"/> —
+/// "Latest available" forecast semantics match <see cref="TempPredictCommand"/> —
 /// for each (valid_time, model) pick the most recent run that covers it,
 /// excluding the historical-forecast (<c>RunTimeSource='offset_day'</c>) rows.
 /// The six per-model covariates (RH, dew depression, clouds, CAPE, wind) are
@@ -91,7 +91,7 @@ public sealed class PrecipPredictCommand
 
     private IReadOnlyList<string> ResolveRequestedVersions(string modelsRoot, string station, string modelVersion)
     {
-        // Mirrors PredictCommand.ResolveRequestedVersions for the per-station layout:
+        // Mirrors TempPredictCommand.ResolveRequestedVersions for the per-station layout:
         // "current"/"all" → iterate every active version for this station (Phase 3c
         // champion/challenger). Anything else is an explicit version dir name.
         var v = modelVersion?.ToLowerInvariant() ?? "current";
@@ -163,7 +163,7 @@ public sealed class PrecipPredictCommand
         // Both lean (3a) and rich (3c) artefacts use the per-lead BlenderSpec layout.
         // Rich's spec just has a longer feature vector. Schema is read from feature_schema.json.
         var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
-        var canonOrder = FeatureBuilder.CanonicalModelOrder.ToList();
+        var canonOrder = TempFeatureBuilder.CanonicalModelOrder.ToList();
 
         foreach (var (lead, valid) in targets)
         {
@@ -368,7 +368,7 @@ public sealed class PrecipPredictCommand
             predictions.Count, station, merged.Count, outPath);
     }
 
-    // Per-valid-time pivot mirrors PredictCommand.PivotedRow but carries the wider
+    // Per-valid-time pivot mirrors TempPredictCommand.PivotedRow but carries the wider
     // precip feature set required by the occurrence blender. Per-model arrays
     // (Dew/Rh/Temp/Pressure) feed the Phase 3c rich composer; the *Mean fields stay
     // for Phase 3a's lean composer and keep the prediction-row covariate summary.
@@ -432,7 +432,7 @@ ORDER BY ValidTimeUtc, Model;";
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
 
-        var modelSlot = FeatureBuilder.CanonicalModelOrder
+        var modelSlot = TempFeatureBuilder.CanonicalModelOrder
             .Select((id, i) => (id, Index: i))
             .ToDictionary(x => x.id, x => x.Index);
 
@@ -499,12 +499,12 @@ ORDER BY ValidTimeUtc, Model;";
 
     private sealed class Scratch
     {
-        // Indexed by canon-order position (FeatureBuilder.CanonicalModelOrder.IndexOf(model)).
+        // Indexed by canon-order position (TempFeatureBuilder.CanonicalModelOrder.IndexOf(model)).
         // Sourcing the size from CanonicalModelOrder.Count means a new NWP added to
         // the canonical order auto-grows these arrays — without it, we'd get the
         // same IndexOutOfRange that bit DryWindowPredictCommand at AIFS-add time.
         // Note: distinct from PrecipPredictionRow.PerModelFieldCount (output slots).
-        private static int N => FeatureBuilder.CanonicalModelOrder.Count;
+        private static int N => TempFeatureBuilder.CanonicalModelOrder.Count;
         public double?[] Precip { get; } = new double?[N];
         public DateTime?[] RunTime { get; } = new DateTime?[N];
         public double?[] Dew { get; } = new double?[N];

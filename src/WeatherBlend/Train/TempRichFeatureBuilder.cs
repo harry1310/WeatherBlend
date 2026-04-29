@@ -7,7 +7,7 @@ namespace WeatherBlend.Train;
 
 /// <summary>
 /// Builds the rich (Phase 2c) temperature blender's training dataset, one lead at a
-/// time. Same chronological pipeline as <see cref="FeatureBuilder"/> but pulls 10
+/// time. Same chronological pipeline as <see cref="TempFeatureBuilder"/> but pulls 10
 /// secondary variables per active model (dew, rh, cloud {total/low/mid/high}, wind
 /// speed/dir/gusts, pressure) and computes a small bank of cross-model aggregates
 /// on top of the lean block.
@@ -17,7 +17,7 @@ namespace WeatherBlend.Train;
 /// active models: N temps + 3 spread + 4 calendar + N×11 per-model secondaries
 /// (wind_dir as sin+cos) + 9 aggregates = 12N + 16. For N=6 → 88 features.
 /// </summary>
-public static class RichFeatureBuilder
+public static class TempRichFeatureBuilder
 {
     public const string SpecTarget = "temperature";
     public const string SpecFeatureSet = "rich";
@@ -54,9 +54,9 @@ public static class RichFeatureBuilder
                 $"BlenderConfig {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h has model(s) " +
                 $"listed as both required and optional: [{string.Join(",", overlap)}].");
 
-        var orderedRequired = FeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
-        var orderedOptional = FeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
-        var orderedModels = FeatureBuilder.CanonicalModelOrder
+        var orderedRequired = TempFeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
+        var orderedOptional = TempFeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
+        var orderedModels = TempFeatureBuilder.CanonicalModelOrder
             .Where(m => requiredSet.Contains(m) || optionalSet.Contains(m)).ToList();
         if (orderedModels.Count == 0)
             throw new InvalidOperationException($"No models active for {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h.");
@@ -67,7 +67,7 @@ public static class RichFeatureBuilder
         //     wind_dir = 2N cols (sin+cos)
         //   9 aggregates
         var names = new List<string>();
-        foreach (var m in orderedModels) names.Add($"temp_{FeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"temp_{TempFeatureBuilder.ShortName(m)}");
         names.AddRange(new[] { "temp_mean", "temp_std", "temp_range" });
         names.AddRange(new[] { "hour_sin", "hour_cos", "doy_sin", "doy_cos" });
 
@@ -75,12 +75,12 @@ public static class RichFeatureBuilder
         {
             if (prefix == "wind_dir")
             {
-                foreach (var m in orderedModels) names.Add($"wind_dir_sin_{FeatureBuilder.ShortName(m)}");
-                foreach (var m in orderedModels) names.Add($"wind_dir_cos_{FeatureBuilder.ShortName(m)}");
+                foreach (var m in orderedModels) names.Add($"wind_dir_sin_{TempFeatureBuilder.ShortName(m)}");
+                foreach (var m in orderedModels) names.Add($"wind_dir_cos_{TempFeatureBuilder.ShortName(m)}");
             }
             else
             {
-                foreach (var m in orderedModels) names.Add($"{prefix}_{FeatureBuilder.ShortName(m)}");
+                foreach (var m in orderedModels) names.Add($"{prefix}_{TempFeatureBuilder.ShortName(m)}");
             }
         }
         names.AddRange(new[]
@@ -144,7 +144,7 @@ public static class RichFeatureBuilder
         sb.AppendLine("    SELECT ValidTimeUtc,");
         // N temps
         for (int i = 0; i < n; i++)
-            sb.AppendLine($"        MAX(CASE WHEN Model = '{spec.Models[i]}' THEN Temperature2m END) AS temp_{FeatureBuilder.ShortName(spec.Models[i])},");
+            sb.AppendLine($"        MAX(CASE WHEN Model = '{spec.Models[i]}' THEN Temperature2m END) AS temp_{TempFeatureBuilder.ShortName(spec.Models[i])},");
         // 10 secondary vars × N models
         for (int s = 0; s < SecondaryVars.Count; s++)
         {
@@ -160,7 +160,7 @@ public static class RichFeatureBuilder
         sb.AppendLine($"    WHERE LocationName = '{locationName}' AND Temperature2m IS NOT NULL");
         sb.AppendLine(")");
         sb.AppendLine("SELECT p.ValidTimeUtc,");
-        for (int i = 0; i < n; i++) sb.Append($"    p.temp_{FeatureBuilder.ShortName(spec.Models[i])},");
+        for (int i = 0; i < n; i++) sb.Append($"    p.temp_{TempFeatureBuilder.ShortName(spec.Models[i])},");
         sb.AppendLine();
         for (int s = 0; s < SecondaryVars.Count; s++)
             for (int i = 0; i < n; i++)
@@ -170,9 +170,9 @@ public static class RichFeatureBuilder
         sb.AppendLine("FROM pivoted p JOIN era5 e USING (ValidTimeUtc)");
         // Post-pivot WHERE: every required NOT NULL AND at least one of all NOT NULL.
         var requiredNotNull = spec.RequiredModels.Count > 0
-            ? string.Join("\n  AND ", spec.RequiredModels.Select(m => $"p.temp_{FeatureBuilder.ShortName(m)} IS NOT NULL"))
+            ? string.Join("\n  AND ", spec.RequiredModels.Select(m => $"p.temp_{TempFeatureBuilder.ShortName(m)} IS NOT NULL"))
             : "TRUE";
-        var anyNotNull = "(" + string.Join(" OR ", spec.Models.Select(m => $"p.temp_{FeatureBuilder.ShortName(m)} IS NOT NULL")) + ")";
+        var anyNotNull = "(" + string.Join(" OR ", spec.Models.Select(m => $"p.temp_{TempFeatureBuilder.ShortName(m)} IS NOT NULL")) + ")";
         sb.AppendLine($"WHERE ({requiredNotNull})");
         sb.AppendLine($"  AND {anyNotNull}");
         sb.AppendLine("ORDER BY p.ValidTimeUtc;");

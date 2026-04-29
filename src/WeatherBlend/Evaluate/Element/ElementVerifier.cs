@@ -1,3 +1,4 @@
+using WeatherBlend.Evaluate.Temp;
 using WeatherBlend.Models;
 using WeatherBlend.Train;
 
@@ -5,7 +6,7 @@ namespace WeatherBlend.Evaluate.Element;
 
 /// <summary>
 /// Pure verification logic for the per-variable element blenders. Mirrors the temperature
-/// <c>Verifier</c>: joins predictions to ERA5 truth, stratifies metrics by (version, lead),
+/// <c>TempVerifier</c>: joins predictions to ERA5 truth, stratifies metrics by (version, lead),
 /// flags drift when rolling blend MAE exceeds threshold × training test MAE.
 ///
 /// One generic verifier serves all four elements (wind / humidity / radiation / cloud)
@@ -88,17 +89,17 @@ public static class ElementVerifier
     {
         var actual = preds.Select(p => inputs.TruthByTime[p.ValidTimeUtc]).ToArray();
         var blend  = preds.Select(p => p.BlendValue).ToArray();
-        var blendStats = Metrics.Compute(blend, actual);
+        var blendStats = TempMetrics.Compute(blend, actual);
 
         var meanPred = preds.Select(RowMean).ToArray();
-        var meanStats = Metrics.Compute(meanPred, actual);
+        var meanStats = TempMetrics.Compute(meanPred, actual);
 
         var bestName = "";
         var bestMae  = double.PositiveInfinity;
         foreach (var (name, get) in ModelAccessors)
         {
             var p = preds.Select(row => get(row) ?? double.NaN).ToArray();
-            var s = Metrics.Compute(p, actual);
+            var s = TempMetrics.Compute(p, actual);
             if (s.N > 0 && s.Mae < bestMae)
             {
                 bestMae = s.Mae;
@@ -108,11 +109,11 @@ public static class ElementVerifier
 
         // Stratifications — month (calendar bucket) and truth-value quintile.
         var months = preds.Select(p => p.ValidTimeUtc.Month).ToArray();
-        var maeByMonth = Metrics.StratifiedMae(blend, actual, months)
+        var maeByMonth = TempMetrics.StratifiedMae(blend, actual, months)
             .ToDictionary(kv => kv.Key, kv => kv.Value);
 
-        var quintiles = Metrics.Quintiles(actual.Select(v => (double)v).ToArray());
-        var maeByQuintile = Metrics.StratifiedMae(blend, actual, quintiles)
+        var quintiles = TempMetrics.Quintiles(actual.Select(v => (double)v).ToArray());
+        var maeByQuintile = TempMetrics.StratifiedMae(blend, actual, quintiles)
             .Where(kv => kv.Key >= 0)
             .ToDictionary(kv => kv.Key, kv => kv.Value);
 

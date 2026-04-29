@@ -72,7 +72,7 @@ jobs:
           rclone copy "r2:${R2_BUCKET}/data/forecasts" ./data/forecasts --fast-list --transfers 16 --checkers 32 --progress
 
           # Existing predictions for today's partition (read-modify-write dedupe
-          # on PredictCommand side needs the current file if it exists). Pulling
+          # on TempPredictCommand side needs the current file if it exists). Pulling
           # only the predictions subtree keeps the copy small.
           mkdir -p data/predictions
           rclone copy "r2:${R2_BUCKET}/data/predictions" ./data/predictions --fast-list --transfers 16 --checkers 32 --progress

@@ -6,7 +6,7 @@ namespace WeatherBlend.Models;
 /// One blended-element prediction (wind / humidity / shortwave-radiation /
 /// cloud-cover) with full provenance. Stored under
 /// <c>data/predictions/{element}/model_version={v}/date={yyyy-MM-dd}/predictions.parquet</c>
-/// — same per-element subtree pattern as <see cref="PredictionRow"/> uses for
+/// — same per-element subtree pattern as <see cref="TempPredictionRow"/> uses for
 /// temperature.
 ///
 /// Per-model fields are nullable: wind sets <see cref="ModelMf"/> to null because
@@ -18,7 +18,7 @@ public sealed class ElementPredictionRow
 {
     /// <summary>
     /// Number of named per-model slots (ModelGfs..ModelAifs).
-    /// See <see cref="PredictionRow.PerModelFieldCount"/> for the rationale.
+    /// See <see cref="TempPredictionRow.PerModelFieldCount"/> for the rationale.
     /// </summary>
     public const int PerModelFieldCount = 7;
 

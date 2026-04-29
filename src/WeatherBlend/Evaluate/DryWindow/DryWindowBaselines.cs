@@ -66,11 +66,11 @@ public static class DryWindowBaselines
     public static string BestSingle(BlenderSpec spec, IReadOnlyList<CommonRow> rows)
     {
         var truth = rows.Select(r => r.Label ? 1.0 : 0.0).ToArray();
-        string best = $"has_dry_window_{Train.FeatureBuilder.ShortName(spec.Models[0])}";
+        string best = $"has_dry_window_{Train.TempFeatureBuilder.ShortName(spec.Models[0])}";
         double bestBrier = double.PositiveInfinity;
         foreach (var m in spec.Models)
         {
-            var name = $"has_dry_window_{Train.FeatureBuilder.ShortName(m)}";
+            var name = $"has_dry_window_{Train.TempFeatureBuilder.ShortName(m)}";
             var b = WeatherBlend.Evaluate.Precip.PrecipMetrics.Brier(FromFeature(spec, rows, name), truth);
             if (!double.IsNaN(b) && b < bestBrier) { bestBrier = b; best = name; }
         }

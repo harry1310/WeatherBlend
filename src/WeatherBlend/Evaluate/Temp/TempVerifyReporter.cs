@@ -2,21 +2,21 @@ using System.Globalization;
 using System.Text;
 using WeatherBlend.Train;
 
-namespace WeatherBlend.Evaluate;
+namespace WeatherBlend.Evaluate.Temp;
 
 /// <summary>
-/// Renders <see cref="Verifier.VerifyRow"/> output as a markdown report. Separate from
+/// Renders <see cref="TempVerifier.VerifyRow"/> output as a markdown report. Separate from
 /// the phase-2b <see cref="Reporter"/> because the verify report is what an on-call
 /// human reads weekly — its structure prioritises drift flags over training diagnostics.
 /// </summary>
-public static class VerifyReporter
+public static class TempVerifyReporter
 {
     public static string BuildMarkdown(
         DateTime asOfUtc,
         int windowDays,
         int era5LatencyDays,
         double driftThreshold,
-        IReadOnlyList<Verifier.VerifyRow> rows,
+        IReadOnlyList<TempVerifier.VerifyRow> rows,
         IReadOnlyDictionary<string, ModelArtifact.TrainingMetadata>? metadataByVersion = null)
     {
         var sb = new StringBuilder();

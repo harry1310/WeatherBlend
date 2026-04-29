@@ -1,5 +1,5 @@
 using FluentAssertions;
-using WeatherBlend.Evaluate;
+using WeatherBlend.Evaluate.Temp;
 using WeatherBlend.Models;
 using WeatherBlend.Train;
 using Xunit;
@@ -28,7 +28,7 @@ public class VerifierTests
             [tooNew.ValidTimeUtc] = 10.0,
         };
 
-        var rows = Verifier.Compute(BaseInputs(new[] { inside, tooOld, tooNew }, truth));
+        var rows = TempVerifier.Compute(BaseInputs(new[] { inside, tooOld, tooNew }, truth));
 
         rows.Should().ContainSingle();
         rows[0].N.Should().Be(1, "only the in-window row should be scored");
@@ -46,7 +46,7 @@ public class VerifierTests
             // withoutTruth intentionally absent
         };
 
-        var rows = Verifier.Compute(BaseInputs(new[] { withTruth, withoutTruth }, truth));
+        var rows = TempVerifier.Compute(BaseInputs(new[] { withTruth, withoutTruth }, truth));
 
         rows.Should().ContainSingle();
         rows[0].N.Should().Be(1);
@@ -64,7 +64,7 @@ public class VerifierTests
         };
         var truth = preds.ToDictionary(p => p.ValidTimeUtc, _ => 10.0);
 
-        var rows = Verifier.Compute(BaseInputs(preds, truth));
+        var rows = TempVerifier.Compute(BaseInputs(preds, truth));
 
         rows.Should().HaveCount(3);
         // Sort order is ordinal on ModelVersion, then numeric on LeadHours.
@@ -91,7 +91,7 @@ public class VerifierTests
             [V1] = MetadataWithLead(24, blendTestMae: 1.0),
         };
 
-        var rows = Verifier.Compute(new Verifier.Inputs
+        var rows = TempVerifier.Compute(new TempVerifier.Inputs
         {
             Predictions = preds,
             TruthByTime = truth,
@@ -122,7 +122,7 @@ public class VerifierTests
             [V1] = MetadataWithLead(24, blendTestMae: 1.0),
         };
 
-        var rows = Verifier.Compute(new Verifier.Inputs
+        var rows = TempVerifier.Compute(new TempVerifier.Inputs
         {
             Predictions = preds,
             TruthByTime = truth,
@@ -143,7 +143,7 @@ public class VerifierTests
         var preds = new[] { MakePrediction(V1, 24, AsOf.AddDays(-7), blend: 10.0) };
         var truth = preds.ToDictionary(p => p.ValidTimeUtc, _ => 10.0);
 
-        var rows = Verifier.Compute(new Verifier.Inputs
+        var rows = TempVerifier.Compute(new TempVerifier.Inputs
         {
             Predictions = preds,
             TruthByTime = truth,
@@ -165,7 +165,7 @@ public class VerifierTests
     {
         // Truth = 10.0. Make ECMWF perfect (10.0), GFS off by 2, others off by 1.
         // Best-single should be temp_ecmwf with MAE 0.
-        var preds = Enumerable.Range(0, 3).Select(i => new PredictionRow
+        var preds = Enumerable.Range(0, 3).Select(i => new TempPredictionRow
         {
             LocationName = "Bonehill Rocks",
             ModelVersion = V1,
@@ -184,7 +184,7 @@ public class VerifierTests
         }).ToArray();
         var truth = preds.ToDictionary(p => p.ValidTimeUtc, _ => 10.0);
 
-        var rows = Verifier.Compute(BaseInputs(preds, truth));
+        var rows = TempVerifier.Compute(BaseInputs(preds, truth));
 
         rows.Should().ContainSingle();
         rows[0].BestSingleName.Should().Be("temp_ecmwf");
@@ -211,7 +211,7 @@ public class VerifierTests
             // valid2 - 24h intentionally missing → dropped
         };
 
-        var rows = Verifier.Compute(BaseInputs(preds, truth));
+        var rows = TempVerifier.Compute(BaseInputs(preds, truth));
 
         rows.Should().ContainSingle();
         rows[0].PersistenceDropped.Should().Be(1);
@@ -224,7 +224,7 @@ public class VerifierTests
         var valid = AsOf.AddDays(-7);
         var preds = new[]
         {
-            new PredictionRow
+            new TempPredictionRow
             {
                 LocationName = "Bonehill Rocks",
                 ModelVersion = V1,
@@ -240,7 +240,7 @@ public class VerifierTests
         };
         var truth = new Dictionary<DateTime, double> { [valid] = 10.0 };
 
-        var rows = Verifier.Compute(BaseInputs(preds, truth));
+        var rows = TempVerifier.Compute(BaseInputs(preds, truth));
 
         rows.Should().ContainSingle();
         rows[0].MeanMae.Should().BeApproximately(0.5, 1e-9, "|9.5 - 10.0|, using the precomputed TempMean");
@@ -249,9 +249,9 @@ public class VerifierTests
     [Fact]
     public void Compute_returns_empty_when_no_predictions_survive_filters()
     {
-        var rows = Verifier.Compute(new Verifier.Inputs
+        var rows = TempVerifier.Compute(new TempVerifier.Inputs
         {
-            Predictions = Array.Empty<PredictionRow>(),
+            Predictions = Array.Empty<TempPredictionRow>(),
             TruthByTime = new Dictionary<DateTime, double>(),
             MetadataByVersion = new Dictionary<string, ModelArtifact.TrainingMetadata>(),
             AsOfUtc = AsOf,
@@ -267,8 +267,8 @@ public class VerifierTests
     // Helpers
     // ------------------------------------------------------------------------
 
-    private static Verifier.Inputs BaseInputs(
-        IEnumerable<PredictionRow> preds,
+    private static TempVerifier.Inputs BaseInputs(
+        IEnumerable<TempPredictionRow> preds,
         IReadOnlyDictionary<DateTime, double> truth)
         => new()
         {
@@ -281,7 +281,7 @@ public class VerifierTests
             DriftThreshold = 1.5,
         };
 
-    private static PredictionRow MakePrediction(
+    private static TempPredictionRow MakePrediction(
         string version, int leadHours, DateTime valid, double blend)
         => new()
         {

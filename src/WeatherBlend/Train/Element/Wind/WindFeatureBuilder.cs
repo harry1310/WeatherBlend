@@ -32,17 +32,17 @@ public static class WindFeatureBuilder
         var requiredSet = blender.RequiredForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var optionalSet = blender.OptionalForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        var orderedRequired = FeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
-        var orderedOptional = FeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
-        var orderedModels = FeatureBuilder.CanonicalModelOrder
+        var orderedRequired = TempFeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
+        var orderedOptional = TempFeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
+        var orderedModels = TempFeatureBuilder.CanonicalModelOrder
             .Where(m => requiredSet.Contains(m) || optionalSet.Contains(m)).ToList();
         if (orderedModels.Count == 0)
             throw new InvalidOperationException($"No models active for {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h.");
 
         var names = new List<string>();
-        foreach (var m in orderedModels) names.Add($"wind_spd_{FeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"wind_dir_sin_{FeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"wind_dir_cos_{FeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"wind_spd_{TempFeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"wind_dir_sin_{TempFeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"wind_dir_cos_{TempFeatureBuilder.ShortName(m)}");
         names.AddRange(new[] { "wind_spd_mean", "wind_spd_std", "wind_spd_range" });
         names.AddRange(new[] { "hour_sin", "hour_cos", "doy_sin", "doy_cos" });
 
@@ -80,17 +80,17 @@ public static class WindFeatureBuilder
         var minTs = $"TIMESTAMP '{TrainingWindow.UkmoCleanWindowStart}'";
 
         var pivotSpd = string.Join(",\n        ",
-            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN WindSpeed10m END) AS spd_{FeatureBuilder.ShortName(m)}"));
+            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN WindSpeed10m END) AS spd_{TempFeatureBuilder.ShortName(m)}"));
         var pivotDir = string.Join(",\n        ",
-            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN WindDirection10m END) AS dir_{FeatureBuilder.ShortName(m)}"));
-        var selectSpd = string.Join(", ", spec.Models.Select(m => $"p.spd_{FeatureBuilder.ShortName(m)}"));
-        var selectDir = string.Join(", ", spec.Models.Select(m => $"p.dir_{FeatureBuilder.ShortName(m)}"));
+            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN WindDirection10m END) AS dir_{TempFeatureBuilder.ShortName(m)}"));
+        var selectSpd = string.Join(", ", spec.Models.Select(m => $"p.spd_{TempFeatureBuilder.ShortName(m)}"));
+        var selectDir = string.Join(", ", spec.Models.Select(m => $"p.dir_{TempFeatureBuilder.ShortName(m)}"));
 
         var requiredNotNull = spec.RequiredModels.Count > 0
             ? string.Join("\n  AND ", spec.RequiredModels.Select(m =>
-                $"p.spd_{FeatureBuilder.ShortName(m)} IS NOT NULL AND p.dir_{FeatureBuilder.ShortName(m)} IS NOT NULL"))
+                $"p.spd_{TempFeatureBuilder.ShortName(m)} IS NOT NULL AND p.dir_{TempFeatureBuilder.ShortName(m)} IS NOT NULL"))
             : "TRUE";
-        var anyNotNull = "(" + string.Join(" OR ", spec.Models.Select(m => $"p.spd_{FeatureBuilder.ShortName(m)} IS NOT NULL")) + ")";
+        var anyNotNull = "(" + string.Join(" OR ", spec.Models.Select(m => $"p.spd_{TempFeatureBuilder.ShortName(m)} IS NOT NULL")) + ")";
 
         var sql = $@"
 WITH latest AS (

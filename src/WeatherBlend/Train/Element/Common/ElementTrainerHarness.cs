@@ -1,6 +1,6 @@
 using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
-using WeatherBlend.Evaluate;
+using WeatherBlend.Evaluate.Temp;
 using WeatherBlend.Train.Common;
 
 namespace WeatherBlend.Train.Element.Common;
@@ -9,7 +9,7 @@ namespace WeatherBlend.Train.Element.Common;
 /// Generic per-target training pipeline used by every Element blender. Owns:
 ///   - per-lead loop (resolving each lead's <see cref="BlenderSpec"/>)
 ///   - chronological 70/15/15 split via <see cref="RegressionDataset"/>
-///   - vector-native LightGBM fit via <see cref="TemperatureTrainer.TrainVector"/>
+///   - vector-native LightGBM fit via <see cref="TempTrainer.TrainVector"/>
 ///   - best-single-per-lead computation (val-MAE pick over spec.Models)
 ///   - artefact save (model.zip per lead, BlenderSpec per lead in feature_schema.json,
 ///     importance, metadata)
@@ -23,7 +23,7 @@ public static class ElementTrainerHarness
 {
     public sealed record ElementTrainerInputs(
         ElementTarget Target,
-        TemperatureTrainer.Hyperparameters Hyperparameters,
+        TempTrainer.Hyperparameters Hyperparameters,
         Func<int, BlenderSpec> BuildSpec,
         Func<BlenderSpec, CancellationToken, IReadOnlyList<RegressionTrainingRow>> LoadRowsForSpec,
         IReadOnlyList<string> DeviationsFromBrief);
@@ -83,11 +83,11 @@ public static class ElementTrainerHarness
                 ds.Val.Count,   ds.ValStart,   ds.ValEnd,
                 ds.Test.Count,  ds.TestStart,  ds.TestEnd);
 
-            var trained = TemperatureTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
+            var trained = TempTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
 
             var testActual = ds.Test.Select(x => (double)x.Label).ToArray();
-            var testPred   = TemperatureTrainer.PredictVector(trained.Ml, trained.Model, spec, ds.Test);
-            var blendStats = Metrics.Compute(testPred, testActual);
+            var testPred   = TempTrainer.PredictVector(trained.Ml, trained.Model, spec, ds.Test);
+            var blendStats = TempMetrics.Compute(testPred, testActual);
 
             // Best per-model on val MAE — picks the per-model feature with the lowest
             // MAE against truth. Spec.FeatureNames[0..Models.Count-1] are per-model
@@ -95,7 +95,7 @@ public static class ElementTrainerHarness
             var (bestModelId, bestValMae) = BestSingle(spec, ds.Val);
             // Score the SAME model on test for an apples-to-apples blend-vs-best comparison.
             var bestTestMae = NaNAwareMae(
-                Baselines.FromFeature(spec, ds.Test, BestSingleFeatureName(spec, bestModelId)),
+                TempBaselines.FromFeature(spec, ds.Test, BestSingleFeatureName(spec, bestModelId)),
                 ds.Test.Select(r => (double)r.Label).ToArray());
 
             ModelArtifact.SaveLeadModel(trained.Ml, trained.Model, trained.InputSchema, versionDir, lead);
@@ -179,8 +179,8 @@ public static class ElementTrainerHarness
         for (int i = 0; i < spec.Models.Count; i++)
         {
             // The first N feature names are the per-model primary-variable slots
-            // (the FeatureBuilder for each Element places them at positions 0..N-1).
-            var pred = Baselines.FromFeature(spec, val, spec.FeatureNames[i]);
+            // (the TempFeatureBuilder for each Element places them at positions 0..N-1).
+            var pred = TempBaselines.FromFeature(spec, val, spec.FeatureNames[i]);
             var mae = NaNAwareMae(pred, actual);
             if (!double.IsNaN(mae) && mae < bestMae) { bestMae = mae; bestId = spec.Models[i]; }
         }
@@ -219,7 +219,7 @@ public static class ElementTrainerHarness
         return n == 0 ? double.NaN : sum / n;
     }
 
-    private static Dictionary<string, object> BuildHpDict(TemperatureTrainer.Hyperparameters hp)
+    private static Dictionary<string, object> BuildHpDict(TempTrainer.Hyperparameters hp)
         => new()
         {
             ["NumberOfIterations"] = hp.NumberOfIterations,

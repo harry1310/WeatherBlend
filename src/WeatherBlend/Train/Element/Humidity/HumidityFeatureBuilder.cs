@@ -27,16 +27,16 @@ public static class HumidityFeatureBuilder
         var requiredSet = blender.RequiredForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var optionalSet = blender.OptionalForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        var orderedRequired = FeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
-        var orderedOptional = FeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
-        var orderedModels = FeatureBuilder.CanonicalModelOrder
+        var orderedRequired = TempFeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
+        var orderedOptional = TempFeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
+        var orderedModels = TempFeatureBuilder.CanonicalModelOrder
             .Where(m => requiredSet.Contains(m) || optionalSet.Contains(m)).ToList();
         if (orderedModels.Count == 0)
             throw new InvalidOperationException($"No models active for {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h.");
 
         var names = new List<string>();
-        foreach (var m in orderedModels) names.Add($"rh_{FeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"dp_{FeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"rh_{TempFeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"dp_{TempFeatureBuilder.ShortName(m)}");
         names.AddRange(new[] { "rh_mean", "rh_std", "rh_range" });
         names.AddRange(new[] { "hour_sin", "hour_cos", "doy_sin", "doy_cos" });
 
@@ -64,16 +64,16 @@ public static class HumidityFeatureBuilder
         var n = spec.Models.Count;
 
         var pivotRh = string.Join(",\n        ",
-            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN RelativeHumidity2m END) AS rh_{FeatureBuilder.ShortName(m)}"));
+            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN RelativeHumidity2m END) AS rh_{TempFeatureBuilder.ShortName(m)}"));
         var pivotDp = string.Join(",\n        ",
-            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN DewPoint2m END) AS dp_{FeatureBuilder.ShortName(m)}"));
-        var selectRh = string.Join(", ", spec.Models.Select(m => $"p.rh_{FeatureBuilder.ShortName(m)}"));
-        var selectDp = string.Join(", ", spec.Models.Select(m => $"p.dp_{FeatureBuilder.ShortName(m)}"));
+            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN DewPoint2m END) AS dp_{TempFeatureBuilder.ShortName(m)}"));
+        var selectRh = string.Join(", ", spec.Models.Select(m => $"p.rh_{TempFeatureBuilder.ShortName(m)}"));
+        var selectDp = string.Join(", ", spec.Models.Select(m => $"p.dp_{TempFeatureBuilder.ShortName(m)}"));
         var requiredNotNull = spec.RequiredModels.Count > 0
             ? string.Join("\n  AND ", spec.RequiredModels.Select(m =>
-                $"p.rh_{FeatureBuilder.ShortName(m)} IS NOT NULL AND p.dp_{FeatureBuilder.ShortName(m)} IS NOT NULL"))
+                $"p.rh_{TempFeatureBuilder.ShortName(m)} IS NOT NULL AND p.dp_{TempFeatureBuilder.ShortName(m)} IS NOT NULL"))
             : "TRUE";
-        var anyNotNull = "(" + string.Join(" OR ", spec.Models.Select(m => $"p.rh_{FeatureBuilder.ShortName(m)} IS NOT NULL")) + ")";
+        var anyNotNull = "(" + string.Join(" OR ", spec.Models.Select(m => $"p.rh_{TempFeatureBuilder.ShortName(m)} IS NOT NULL")) + ")";
 
         var sql = $@"
 WITH latest AS (

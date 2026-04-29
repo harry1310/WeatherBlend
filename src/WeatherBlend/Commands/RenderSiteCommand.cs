@@ -13,7 +13,7 @@ namespace WeatherBlend.Commands;
 /// <summary>
 /// Renders a self-contained static site to <c>data/site/</c>: home, predictions table,
 /// verification charts, and an about page. Reads prediction and ERA5 parquet via DuckDB
-/// using the same glob pattern as <see cref="VerifyCommand"/> and the same
+/// using the same glob pattern as <see cref="TempVerifyCommand"/> and the same
 /// <c>hive_partitioning=false</c> rule (hive keys collide with in-file column names).
 ///
 /// Runs entirely offline — output is a directory of plain HTML, CSS, and inline SVG.
@@ -167,7 +167,7 @@ public sealed class RenderSiteCommand
     }
 
     private IReadOnlyList<SitePages.ModelSummary> LoadModelSummaries(
-        IReadOnlyList<PredictionRow> predictions,
+        IReadOnlyList<TempPredictionRow> predictions,
         IReadOnlyList<SitePages.PrecipForecastPoint> precip,
         IReadOnlyList<SitePages.DryWindowForecastPoint> dryWindow)
     {
@@ -287,7 +287,7 @@ public sealed class RenderSiteCommand
     }
 
     private Dictionary<string, string> LoadPhaseByVersion(
-        IReadOnlyList<PredictionRow> predictions,
+        IReadOnlyList<TempPredictionRow> predictions,
         IReadOnlyList<SitePages.PrecipForecastPoint> precip,
         IReadOnlyList<SitePages.DryWindowForecastPoint> dryWindow)
     {
@@ -454,7 +454,7 @@ ORDER BY 1";
     /// day-end uses the prior <paramref name="windowDays"/>.
     /// </summary>
     internal static IReadOnlyList<SitePages.RollingMaePoint> ComputeRollingMae(
-        IReadOnlyList<PredictionRow> predictions,
+        IReadOnlyList<TempPredictionRow> predictions,
         IReadOnlyDictionary<DateTime, double> truthByTime,
         int windowDays)
     {
@@ -493,7 +493,7 @@ ORDER BY 1";
         return points;
     }
 
-    private IReadOnlyList<PredictionRow> QueryPredictions(DateTime start, DateTime end, CancellationToken ct)
+    private IReadOnlyList<TempPredictionRow> QueryPredictions(DateTime start, DateTime end, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
@@ -516,7 +516,7 @@ WHERE LocationName = '{_cfg.Location.Name}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 ORDER BY PredictionMadeAtUtc DESC, LeadHours";
 
-        return ParquetReader.Query(sql, r => new PredictionRow
+        return ParquetReader.Query(sql, r => new TempPredictionRow
         {
             LocationName        = r.GetString(0),
             ModelVersion        = r.GetString(1),

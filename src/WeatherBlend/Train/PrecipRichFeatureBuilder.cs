@@ -165,9 +165,9 @@ ORDER BY 1;
                 $"BlenderConfig {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h has model(s) " +
                 $"listed as both required and optional: [{string.Join(",", overlap)}].");
 
-        var orderedRequired = FeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
-        var orderedOptional = FeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
-        var orderedModels = FeatureBuilder.CanonicalModelOrder
+        var orderedRequired = TempFeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
+        var orderedOptional = TempFeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
+        var orderedModels = TempFeatureBuilder.CanonicalModelOrder
             .Where(m => requiredSet.Contains(m) || optionalSet.Contains(m)).ToList();
         if (orderedModels.Count == 0)
             throw new InvalidOperationException($"No models active for {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h.");
@@ -179,7 +179,7 @@ ORDER BY 1;
         //   4 EA persistence
         // Total = 5N + 19. N=8 (with JMA) → 59 features; N=7 → 54.
         var names = new List<string>();
-        foreach (var m in orderedModels) names.Add($"precip_{FeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"precip_{TempFeatureBuilder.ShortName(m)}");
         names.AddRange(new[] { "precip_mean", "precip_std", "precip_max", "precip_agreement_wet_01" });
         names.AddRange(new[]
         {
@@ -188,10 +188,10 @@ ORDER BY 1;
             "cape_mean", "wind_speed_mean",
         });
         names.AddRange(new[] { "hour_sin", "hour_cos", "doy_sin", "doy_cos" });
-        foreach (var m in orderedModels) names.Add($"dew_{FeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"rh_{FeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"dew_depression_{FeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"pressure_{FeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"dew_{TempFeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"rh_{TempFeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"dew_depression_{TempFeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"pressure_{TempFeatureBuilder.ShortName(m)}");
         names.AddRange(new[]
         {
             "ea_rain_prev_24h_mm",
@@ -254,15 +254,15 @@ ORDER BY 1;
         sb.AppendLine("pivoted AS (");
         sb.AppendLine("    SELECT ValidTimeUtc,");
         for (int i = 0; i < n; i++)
-            sb.AppendLine($"        MAX(CASE WHEN Model = '{spec.Models[i]}' THEN Precipitation END) AS precip_{FeatureBuilder.ShortName(spec.Models[i])},");
+            sb.AppendLine($"        MAX(CASE WHEN Model = '{spec.Models[i]}' THEN Precipitation END) AS precip_{TempFeatureBuilder.ShortName(spec.Models[i])},");
         for (int i = 0; i < n; i++)
-            sb.AppendLine($"        MAX(CASE WHEN Model = '{spec.Models[i]}' THEN DewPoint2m END) AS dew_{FeatureBuilder.ShortName(spec.Models[i])},");
+            sb.AppendLine($"        MAX(CASE WHEN Model = '{spec.Models[i]}' THEN DewPoint2m END) AS dew_{TempFeatureBuilder.ShortName(spec.Models[i])},");
         for (int i = 0; i < n; i++)
-            sb.AppendLine($"        MAX(CASE WHEN Model = '{spec.Models[i]}' THEN RelativeHumidity2m END) AS rh_{FeatureBuilder.ShortName(spec.Models[i])},");
+            sb.AppendLine($"        MAX(CASE WHEN Model = '{spec.Models[i]}' THEN RelativeHumidity2m END) AS rh_{TempFeatureBuilder.ShortName(spec.Models[i])},");
         for (int i = 0; i < n; i++)
-            sb.AppendLine($"        MAX(CASE WHEN Model = '{spec.Models[i]}' THEN Temperature2m - DewPoint2m END) AS dewdep_{FeatureBuilder.ShortName(spec.Models[i])},");
+            sb.AppendLine($"        MAX(CASE WHEN Model = '{spec.Models[i]}' THEN Temperature2m - DewPoint2m END) AS dewdep_{TempFeatureBuilder.ShortName(spec.Models[i])},");
         for (int i = 0; i < n; i++)
-            sb.AppendLine($"        MAX(CASE WHEN Model = '{spec.Models[i]}' THEN SurfacePressure END) AS pressure_{FeatureBuilder.ShortName(spec.Models[i])},");
+            sb.AppendLine($"        MAX(CASE WHEN Model = '{spec.Models[i]}' THEN SurfacePressure END) AS pressure_{TempFeatureBuilder.ShortName(spec.Models[i])},");
         sb.AppendLine("        AVG(RelativeHumidity2m)         AS rh_mean,");
         sb.AppendLine("        AVG(Temperature2m - DewPoint2m) AS dew_depression_mean,");
         sb.AppendLine("        AVG(CloudCoverLow)  AS cloud_low_mean,");
@@ -273,24 +273,24 @@ ORDER BY 1;
         sb.AppendLine("    FROM latest WHERE rn = 1 GROUP BY ValidTimeUtc");
         sb.AppendLine(")");
         sb.AppendLine("SELECT ValidTimeUtc,");
-        for (int i = 0; i < n; i++) sb.Append($"    precip_{FeatureBuilder.ShortName(spec.Models[i])},");
+        for (int i = 0; i < n; i++) sb.Append($"    precip_{TempFeatureBuilder.ShortName(spec.Models[i])},");
         sb.AppendLine();
-        for (int i = 0; i < n; i++) sb.Append($"    dew_{FeatureBuilder.ShortName(spec.Models[i])},");
+        for (int i = 0; i < n; i++) sb.Append($"    dew_{TempFeatureBuilder.ShortName(spec.Models[i])},");
         sb.AppendLine();
-        for (int i = 0; i < n; i++) sb.Append($"    rh_{FeatureBuilder.ShortName(spec.Models[i])},");
+        for (int i = 0; i < n; i++) sb.Append($"    rh_{TempFeatureBuilder.ShortName(spec.Models[i])},");
         sb.AppendLine();
-        for (int i = 0; i < n; i++) sb.Append($"    dewdep_{FeatureBuilder.ShortName(spec.Models[i])},");
+        for (int i = 0; i < n; i++) sb.Append($"    dewdep_{TempFeatureBuilder.ShortName(spec.Models[i])},");
         sb.AppendLine();
-        for (int i = 0; i < n; i++) sb.Append($"    pressure_{FeatureBuilder.ShortName(spec.Models[i])},");
+        for (int i = 0; i < n; i++) sb.Append($"    pressure_{TempFeatureBuilder.ShortName(spec.Models[i])},");
         sb.AppendLine();
         sb.AppendLine("    rh_mean, dew_depression_mean,");
         sb.AppendLine("    cloud_low_mean, cloud_mid_mean, cloud_high_mean,");
         sb.AppendLine("    cape_mean, wind_speed_mean");
         sb.AppendLine("FROM pivoted");
         var requiredNotNull = spec.RequiredModels.Count > 0
-            ? string.Join("\n  AND ", spec.RequiredModels.Select(m => $"precip_{FeatureBuilder.ShortName(m)} IS NOT NULL"))
+            ? string.Join("\n  AND ", spec.RequiredModels.Select(m => $"precip_{TempFeatureBuilder.ShortName(m)} IS NOT NULL"))
             : "TRUE";
-        var anyNotNull = "(" + string.Join(" OR ", spec.Models.Select(m => $"precip_{FeatureBuilder.ShortName(m)} IS NOT NULL")) + ")";
+        var anyNotNull = "(" + string.Join(" OR ", spec.Models.Select(m => $"precip_{TempFeatureBuilder.ShortName(m)} IS NOT NULL")) + ")";
         sb.AppendLine($"WHERE ({requiredNotNull})");
         sb.AppendLine($"  AND {anyNotNull}");
         sb.AppendLine("ORDER BY ValidTimeUtc;");

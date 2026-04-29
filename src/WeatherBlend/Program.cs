@@ -122,10 +122,10 @@ public static class Program
                 services.AddTransient<BackfillCommand>();
                 services.AddTransient<GfsBackfillCommand>();
                 services.AddTransient<StatusCommand>();
-                services.AddTransient<TrainCommand>();
+                services.AddTransient<TempTrainCommand>();
                 services.AddTransient<InspectCommand>();
                 services.AddTransient<CompareCommand>();
-                services.AddTransient<PredictCommand>();
+                services.AddTransient<TempPredictCommand>();
                 services.AddTransient<PrecipPredictCommand>();
                 // PrecipCalibrateCommand (Phase 3a_isotonic PAV calibration) +
                 // DryWindowCalibrateCommand (Phase 3d-calibrated) removed
@@ -133,7 +133,7 @@ public static class Program
                 // either target. Deletion includes IsotonicCalibrator.cs and
                 // its tests. Old artefacts on R2 are inert.
                 // PrecipAblateCommand removed in Phase 6 of unify-model-membership refactor.
-                services.AddTransient<VerifyCommand>();
+                services.AddTransient<TempVerifyCommand>();
                 services.AddTransient<PrecipVerifyCommand>();
                 services.AddTransient<RenderSiteCommand>();
                 services.AddTransient<DryWindowDiagnosticCommand>();
@@ -269,7 +269,7 @@ public static class Program
             var station = ctx.ParseResult.GetValueForOption(stationOpt);
             var window = ctx.ParseResult.GetValueForOption(windowOpt);
             var featureSet = ctx.ParseResult.GetValueForOption(featureSetOpt)!;
-            var cmd = host.Services.GetRequiredService<TrainCommand>();
+            var cmd = host.Services.GetRequiredService<TempTrainCommand>();
             ctx.ExitCode = await cmd.RunAsync(target, lead, station, window, featureSet, ctx.GetCancellationToken());
         });
         root.AddCommand(train);
@@ -333,7 +333,7 @@ public static class Program
             }
             else
             {
-                var cmd = host.Services.GetRequiredService<PredictCommand>();
+                var cmd = host.Services.GetRequiredService<TempPredictCommand>();
                 await cmd.RunAsync(target, version, forDate, CancellationToken.None);
             }
         }, predictTargetOpt, predictVersionOpt, predictForDateOpt, predictTruthStationOpt, predictWindowOpt);
@@ -402,7 +402,7 @@ public static class Program
             }
             else
             {
-                var cmd = host.Services.GetRequiredService<VerifyCommand>();
+                var cmd = host.Services.GetRequiredService<TempVerifyCommand>();
                 ctx.ExitCode = await cmd.RunAsync(
                     target, asOf, windowDays ?? 14, latencyDays, drift, ctx.GetCancellationToken());
             }

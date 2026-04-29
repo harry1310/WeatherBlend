@@ -14,7 +14,7 @@ namespace WeatherBlend.Train;
 /// <see cref="RegressionTrainingRow.Features"/> vector in the order
 /// <see cref="BlenderSpec.FeatureNames"/> declares.
 /// </summary>
-public static class FeatureBuilder
+public static class TempFeatureBuilder
 {
     public const string Target = "temperature";
     public const string FeatureSet = "lean";
@@ -26,7 +26,7 @@ public static class FeatureBuilder
     /// bake-offs 2026-04-28 found their net effect on the blender ranges from zero
     /// (raw MO, HARMONIE) to mixed (JMA: precip-only win pending Phase 3 rollout).
     /// Adding to this list is only valid once a model is wired into a blender spec
-    /// AND has a per-model output field on the relevant PredictionRow type.
+    /// AND has a per-model output field on the relevant TempPredictionRow type.
     /// See memory/project_met_office_raw_negative_result.md +
     /// project_jma_harmonie_bakeoff_2026-04-28.md.</summary>
     public static readonly IReadOnlyList<string> CanonicalModelOrder = new[]

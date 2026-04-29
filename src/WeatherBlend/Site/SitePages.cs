@@ -30,14 +30,14 @@ public static partial class SitePages
     // ECMWF=#42a5f5, ... and they drifted the moment a new model landed
     // (AIFS in #ec407a needed three edits, JMA #ffc107 needed four).
     //
-    // Per-NWP getter is row-type-specific (PredictionRow.TempGfs vs
+    // Per-NWP getter is row-type-specific (TempPredictionRow.TempGfs vs
     // PrecipForecastPoint.PrecipGfs), so each call site composes its own
     // <see cref="NwpDisplaySpec{TRow}"/> list from the shared label+colour
     // pair plus a row-shaped accessor lambda.
     // -------------------------------------------------------------------------
 
     /// <summary>One NWP's display metadata + the row accessor that pulls its
-    /// value out of a target-specific row type (a <c>PredictionRow</c>'s
+    /// value out of a target-specific row type (a <c>TempPredictionRow</c>'s
     /// <c>TempGfs</c>, a <c>PrecipForecastPoint</c>'s <c>PrecipGfs</c>, etc.).</summary>
     public sealed record NwpDisplaySpec<TRow>(string Label, string Color, Func<TRow, double?> Get);
 
@@ -64,8 +64,8 @@ public static partial class SitePages
     /// <summary>NWPs that feed the temperature blender — the seven that
     /// emit <c>Temperature2m</c> at hourly resolution. JMA is precip-only,
     /// not in this list.</summary>
-    internal static IReadOnlyList<NwpDisplaySpec<Models.PredictionRow>> NwpsForTemperature() =>
-        new NwpDisplaySpec<Models.PredictionRow>[]
+    internal static IReadOnlyList<NwpDisplaySpec<Models.TempPredictionRow>> NwpsForTemperature() =>
+        new NwpDisplaySpec<Models.TempPredictionRow>[]
         {
             new("GFS",   NwpPalette.Gfs,   p => p.TempGfs),
             new("ECMWF", NwpPalette.Ecmwf, p => p.TempEcmwf),
@@ -109,7 +109,7 @@ public static partial class SitePages
         public required DateTime WindowStartUtc { get; init; }
 
         /// <summary>All prediction rows in the reporting window (typically last 30d).</summary>
-        public required IReadOnlyList<PredictionRow> Predictions { get; init; }
+        public required IReadOnlyList<TempPredictionRow> Predictions { get; init; }
 
         /// <summary>ERA5 truth by ValidTime for the same window.</summary>
         public required IReadOnlyDictionary<DateTime, double> TruthByTime { get; init; }

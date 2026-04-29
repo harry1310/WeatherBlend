@@ -188,7 +188,7 @@ public static partial class SitePages
 
     private static string RenderTempVsTruthChart(
         SiteInputs input,
-        IReadOnlyList<PredictionRow> filtered,
+        IReadOnlyList<TempPredictionRow> filtered,
         string phaseKey,
         double? xMin,
         double? xMax)

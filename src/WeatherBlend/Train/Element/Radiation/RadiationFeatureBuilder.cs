@@ -25,17 +25,17 @@ public static class RadiationFeatureBuilder
         var requiredSet = blender.RequiredForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var optionalSet = blender.OptionalForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        var orderedRequired = FeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
-        var orderedOptional = FeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
-        var orderedModels = FeatureBuilder.CanonicalModelOrder
+        var orderedRequired = TempFeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
+        var orderedOptional = TempFeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
+        var orderedModels = TempFeatureBuilder.CanonicalModelOrder
             .Where(m => requiredSet.Contains(m) || optionalSet.Contains(m)).ToList();
         if (orderedModels.Count == 0)
             throw new InvalidOperationException($"No models active for {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h.");
 
         var names = new List<string>();
-        foreach (var m in orderedModels) names.Add($"sw_{FeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"direct_{FeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"diffuse_{FeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"sw_{TempFeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"direct_{TempFeatureBuilder.ShortName(m)}");
+        foreach (var m in orderedModels) names.Add($"diffuse_{TempFeatureBuilder.ShortName(m)}");
         names.AddRange(new[] { "sw_mean", "sw_std", "sw_range" });
         names.AddRange(new[] { "hour_sin", "hour_cos", "doy_sin", "doy_cos" });
 
@@ -63,18 +63,18 @@ public static class RadiationFeatureBuilder
         var n = spec.Models.Count;
 
         var pivotSw = string.Join(",\n        ",
-            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN ShortwaveRadiation END) AS sw_{FeatureBuilder.ShortName(m)}"));
+            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN ShortwaveRadiation END) AS sw_{TempFeatureBuilder.ShortName(m)}"));
         var pivotDr = string.Join(",\n        ",
-            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN DirectRadiation END) AS dr_{FeatureBuilder.ShortName(m)}"));
+            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN DirectRadiation END) AS dr_{TempFeatureBuilder.ShortName(m)}"));
         var pivotDf = string.Join(",\n        ",
-            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN DiffuseRadiation END) AS df_{FeatureBuilder.ShortName(m)}"));
-        var selectSw = string.Join(", ", spec.Models.Select(m => $"p.sw_{FeatureBuilder.ShortName(m)}"));
-        var selectDr = string.Join(", ", spec.Models.Select(m => $"p.dr_{FeatureBuilder.ShortName(m)}"));
-        var selectDf = string.Join(", ", spec.Models.Select(m => $"p.df_{FeatureBuilder.ShortName(m)}"));
+            spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN DiffuseRadiation END) AS df_{TempFeatureBuilder.ShortName(m)}"));
+        var selectSw = string.Join(", ", spec.Models.Select(m => $"p.sw_{TempFeatureBuilder.ShortName(m)}"));
+        var selectDr = string.Join(", ", spec.Models.Select(m => $"p.dr_{TempFeatureBuilder.ShortName(m)}"));
+        var selectDf = string.Join(", ", spec.Models.Select(m => $"p.df_{TempFeatureBuilder.ShortName(m)}"));
         var requiredNotNull = spec.RequiredModels.Count > 0
-            ? string.Join("\n  AND ", spec.RequiredModels.Select(m => $"p.sw_{FeatureBuilder.ShortName(m)} IS NOT NULL"))
+            ? string.Join("\n  AND ", spec.RequiredModels.Select(m => $"p.sw_{TempFeatureBuilder.ShortName(m)} IS NOT NULL"))
             : "TRUE";
-        var anyNotNull = "(" + string.Join(" OR ", spec.Models.Select(m => $"p.sw_{FeatureBuilder.ShortName(m)} IS NOT NULL")) + ")";
+        var anyNotNull = "(" + string.Join(" OR ", spec.Models.Select(m => $"p.sw_{TempFeatureBuilder.ShortName(m)} IS NOT NULL")) + ")";
 
         var sql = $@"
 WITH latest AS (

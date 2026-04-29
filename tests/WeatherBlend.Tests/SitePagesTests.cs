@@ -70,7 +70,7 @@ public class SitePagesTests
             MetarStation = "",
             GeneratedAtUtc = Day.AddDays(1),
             WindowStartUtc = Day,
-            Predictions = Array.Empty<PredictionRow>(),
+            Predictions = Array.Empty<TempPredictionRow>(),
             TruthByTime = new Dictionary<DateTime, double>(),
             MetarByTime = Array.Empty<(DateTime, double)>(),
             RollingMae = Array.Empty<SitePages.RollingMaePoint>(),
@@ -124,7 +124,7 @@ public class SitePagesTests
             MetarStation = "",
             GeneratedAtUtc = generatedAt,
             WindowStartUtc = generatedAt.AddDays(-30),
-            Predictions = Array.Empty<PredictionRow>(),
+            Predictions = Array.Empty<TempPredictionRow>(),
             TruthByTime = new Dictionary<DateTime, double>(),
             MetarByTime = Array.Empty<(DateTime, double)>(),
             RollingMae = Array.Empty<SitePages.RollingMaePoint>(),
@@ -150,7 +150,7 @@ public class SitePagesTests
         // prediction without doing mental arithmetic on the UTC timestamp.
         var generatedAt = new DateTime(2026, 4, 24, 0, 0, 0, DateTimeKind.Utc); // Fri
         var preds = new[] { 24, 48, 72 }.Select(lead =>
-            new PredictionRow
+            new TempPredictionRow
             {
                 LocationName = "Test",
                 ModelVersion = "v",
@@ -572,7 +572,7 @@ public class SitePagesTests
         var phaseByVersion = new Dictionary<string, string> { ["v2b"] = "2b" };
         var preds = new[]
         {
-            new PredictionRow
+            new TempPredictionRow
             {
                 LocationName = "Test",
                 ModelVersion = "v2b",
@@ -717,7 +717,7 @@ public class SitePagesTests
         var validTime = generatedAt.AddHours(24);
         var preds = new[]
         {
-            new PredictionRow
+            new TempPredictionRow
             {
                 LocationName = "Test",
                 ModelVersion = "v",
@@ -763,7 +763,7 @@ public class SitePagesTests
         var generatedAt = new DateTime(2026, 4, 24, 0, 0, 0, DateTimeKind.Utc);
         var preds = new[]
         {
-            new PredictionRow
+            new TempPredictionRow
             {
                 LocationName = "Test", ModelVersion = "v",
                 PredictionMadeAtUtc = generatedAt,
@@ -917,7 +917,7 @@ public class SitePagesTests
             MetarStation = "",
             GeneratedAtUtc = generatedAt,
             WindowStartUtc = generatedAt.AddDays(-30),
-            Predictions = Array.Empty<PredictionRow>(),
+            Predictions = Array.Empty<TempPredictionRow>(),
             TruthByTime = new Dictionary<DateTime, double>(),
             MetarByTime = Array.Empty<(DateTime, double)>(),
             RollingMae = Array.Empty<SitePages.RollingMaePoint>(),
@@ -950,7 +950,7 @@ public class SitePagesTests
             MetarStation = "",
             GeneratedAtUtc = generatedAt,
             WindowStartUtc = generatedAt.AddDays(-30),
-            Predictions = Array.Empty<PredictionRow>(),
+            Predictions = Array.Empty<TempPredictionRow>(),
             TruthByTime = new Dictionary<DateTime, double>(),
             MetarByTime = Array.Empty<(DateTime, double)>(),
             RollingMae = Array.Empty<SitePages.RollingMaePoint>(),
@@ -981,7 +981,7 @@ public class SitePagesTests
             MetarStation = "",
             GeneratedAtUtc = Day.AddDays(1),
             WindowStartUtc = Day,
-            Predictions = Array.Empty<PredictionRow>(),
+            Predictions = Array.Empty<TempPredictionRow>(),
             TruthByTime = new Dictionary<DateTime, double>(),
             MetarByTime = Array.Empty<(DateTime, double)>(),
             RollingMae = Array.Empty<SitePages.RollingMaePoint>(),

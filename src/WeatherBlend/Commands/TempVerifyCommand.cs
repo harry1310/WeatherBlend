@@ -1,7 +1,7 @@
 using System.Data;
 using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
-using WeatherBlend.Evaluate;
+using WeatherBlend.Evaluate.Temp;
 using WeatherBlend.Models;
 using WeatherBlend.Storage;
 using WeatherBlend.Train;
@@ -11,20 +11,20 @@ namespace WeatherBlend.Commands;
 /// <summary>
 /// Weekly rolling verification. Reads prediction parquet + ERA5 parquet via DuckDB,
 /// loads training metadata for every ModelVersion that appears, then hands the
-/// pre-joined data to <see cref="Verifier"/> for the actual stratification + drift
-/// logic. Renders markdown via <see cref="VerifyReporter"/>.
+/// pre-joined data to <see cref="TempVerifier"/> for the actual stratification + drift
+/// logic. Renders markdown via <see cref="TempVerifyReporter"/>.
 ///
 /// Defaults come straight from the verify brief:
 ///   --window-days   14   (rolling window size)
 ///   --latency-days  5    (ERA5 release lag; nothing newer than AsOf − 5d is scored)
 ///   --drift         1.5  (flag when rolling blend MAE &gt; 1.5× training test MAE)
 /// </summary>
-public sealed class VerifyCommand
+public sealed class TempVerifyCommand
 {
-    private readonly ILogger<VerifyCommand> _log;
+    private readonly ILogger<TempVerifyCommand> _log;
     private readonly AppConfig _cfg;
 
-    public VerifyCommand(ILogger<VerifyCommand> log, AppConfig cfg)
+    public TempVerifyCommand(ILogger<TempVerifyCommand> log, AppConfig cfg)
     {
         _log = log;
         _cfg = cfg;
@@ -72,7 +72,7 @@ public sealed class VerifyCommand
         _log.LogInformation("Loaded metadata for {N} versions: {Versions}",
             metadata.Count, string.Join(", ", metadata.Keys));
 
-        var rows = Verifier.Compute(new Verifier.Inputs
+        var rows = TempVerifier.Compute(new TempVerifier.Inputs
         {
             Predictions = predictions,
             TruthByTime = truth,
@@ -83,7 +83,7 @@ public sealed class VerifyCommand
             DriftThreshold = driftThreshold,
         });
 
-        var md = VerifyReporter.BuildMarkdown(asOfUtc, windowDays, era5LatencyDays, driftThreshold, rows, metadata);
+        var md = TempVerifyReporter.BuildMarkdown(asOfUtc, windowDays, era5LatencyDays, driftThreshold, rows, metadata);
 
         Directory.CreateDirectory(_cfg.Storage.ReportsPath);
         var outPath = Path.Combine(_cfg.Storage.ReportsPath,
@@ -106,7 +106,7 @@ public sealed class VerifyCommand
         return drifting > 0 ? 4 : 0;
     }
 
-    private IReadOnlyList<PredictionRow> QueryPredictions(
+    private IReadOnlyList<TempPredictionRow> QueryPredictions(
         DateTime start, DateTime end, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
@@ -132,7 +132,7 @@ WHERE LocationName = '{_cfg.Location.Name}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 ORDER BY ModelVersion, LeadHours, ValidTimeUtc";
 
-        return ParquetReader.Query(sql, r => new PredictionRow
+        return ParquetReader.Query(sql, r => new TempPredictionRow
         {
             LocationName        = r.GetString(0),
             ModelVersion        = r.GetString(1),

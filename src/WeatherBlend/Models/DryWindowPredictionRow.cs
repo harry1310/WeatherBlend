@@ -16,7 +16,7 @@ public sealed class DryWindowPredictionRow
 {
     /// <summary>
     /// Number of named per-model slots (HasDryWindowGfs..HasDryWindowJma).
-    /// See <see cref="PredictionRow.PerModelFieldCount"/> for the rationale.
+    /// See <see cref="TempPredictionRow.PerModelFieldCount"/> for the rationale.
     /// </summary>
     public const int PerModelFieldCount = 8;
 

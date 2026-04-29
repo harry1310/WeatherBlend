@@ -1,6 +1,6 @@
 using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
-using WeatherBlend.Evaluate;
+using WeatherBlend.Evaluate.Temp;
 using WeatherBlend.Evaluate.Precip;
 using WeatherBlend.Train;
 using WeatherBlend.Train.Common;
@@ -21,9 +21,9 @@ namespace WeatherBlend.Commands;
 /// Lead 120h applies to temperature + precipitation only — dry-window and Element
 /// blenders stay capped at 72h pending a separate scoping decision.
 /// </summary>
-public sealed class TrainCommand
+public sealed class TempTrainCommand
 {
-    private readonly ILogger<TrainCommand> _log;
+    private readonly ILogger<TempTrainCommand> _log;
     private readonly AppConfig _cfg;
     private readonly DryWindowTrainCommand _dryWindow;
     private readonly ElementTrainCommand _element;
@@ -35,8 +35,8 @@ public sealed class TrainCommand
     // own train commands set DefaultLeads = Leads.Short).
     private static readonly int[] DefaultLeads = Leads.Full;
 
-    public TrainCommand(
-        ILogger<TrainCommand> log,
+    public TempTrainCommand(
+        ILogger<TempTrainCommand> log,
         AppConfig cfg,
         DryWindowTrainCommand dryWindow,
         ElementTrainCommand element)
@@ -141,7 +141,7 @@ public sealed class TrainCommand
         var versionDir = ModelArtifact.BuildVersionDir(modelsRoot, "temperature", now);
         var versionName = Path.GetFileName(versionDir);
 
-        var hp = new TemperatureTrainer.Hyperparameters();
+        var hp = new TempTrainer.Hyperparameters();
         _log.LogInformation("Phase 2b — training per-lead blenders for leads [{Leads}]",
             string.Join(",", leads));
         _log.LogInformation("Hyperparameters: iter={Iter} lr={Lr} leaves={Leaves} esr={Esr} seed={Seed}",
@@ -156,11 +156,11 @@ public sealed class TrainCommand
             ct.ThrowIfCancellationRequested();
             _log.LogInformation("--- Lead {Lead}h ---", lead);
 
-            var spec = FeatureBuilder.BuildSpec(_cfg.Blenders, lead);
+            var spec = TempFeatureBuilder.BuildSpec(_cfg.Blenders, lead);
             specsPerLead[lead] = spec;
             _log.LogInformation("Spec: {Spec}", spec);
 
-            var rows = FeatureBuilder.BuildForLead(
+            var rows = TempFeatureBuilder.BuildForLead(
                 _cfg.Storage.ForecastsPath,
                 _cfg.Storage.Era5Path,
                 _cfg.Location.Name,
@@ -185,20 +185,20 @@ public sealed class TrainCommand
                 ds.Val.Count,   ds.ValStart,   ds.ValEnd,
                 ds.Test.Count,  ds.TestStart,  ds.TestEnd);
 
-            var trained = TemperatureTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
+            var trained = TempTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
 
             var testActual = ds.Test.Select(x => (double)x.Label).ToArray();
-            var testPred   = TemperatureTrainer.PredictVector(trained.Ml, trained.Model, spec, ds.Test);
-            var blendStats = Metrics.Compute(testPred, testActual);
+            var testPred   = TempTrainer.PredictVector(trained.Ml, trained.Model, spec, ds.Test);
+            var blendStats = TempMetrics.Compute(testPred, testActual);
 
             // Best-single: pick on val (no leakage), then re-score on TEST so the
             // Models page can compare blend-vs-best on the same chronological split.
-            var best = Baselines.BestSingle(spec, ds.Val);
-            var bestValMae = Metrics.Compute(
-                Baselines.FromFeature(spec, ds.Val, best),
+            var best = TempBaselines.BestSingle(spec, ds.Val);
+            var bestValMae = TempMetrics.Compute(
+                TempBaselines.FromFeature(spec, ds.Val, best),
                 ds.Val.Select(x => (double)x.Label).ToArray()).Mae;
-            var bestTestMae = Metrics.Compute(
-                Baselines.FromFeature(spec, ds.Test, best),
+            var bestTestMae = TempMetrics.Compute(
+                TempBaselines.FromFeature(spec, ds.Test, best),
                 testActual).Mae;
 
             ModelArtifact.SaveLeadModel(trained.Ml, trained.Model, trained.InputSchema, versionDir, lead);
@@ -273,7 +273,7 @@ public sealed class TrainCommand
         var versionDir = ModelArtifact.BuildVersionDir(modelsRoot, "temperature", now, suffix: "phase2c");
         var versionName = Path.GetFileName(versionDir);
 
-        var hp = new TemperatureTrainer.Hyperparameters();
+        var hp = new TempTrainer.Hyperparameters();
         _log.LogInformation("Phase 2c — rich-feature blender (88 features), leads [{Leads}]",
             string.Join(",", leads));
         _log.LogInformation("Hyperparameters: iter={Iter} lr={Lr} leaves={Leaves} esr={Esr} seed={Seed} (identical to Phase 2b — feature richness is the only variable)",
@@ -288,11 +288,11 @@ public sealed class TrainCommand
             ct.ThrowIfCancellationRequested();
             _log.LogInformation("--- Lead {Lead}h ---", lead);
 
-            var spec = RichFeatureBuilder.BuildSpec(_cfg.Blenders, lead);
+            var spec = TempRichFeatureBuilder.BuildSpec(_cfg.Blenders, lead);
             specsPerLead[lead] = spec;
             _log.LogInformation("Spec: {Spec}", spec);
 
-            var rows = RichFeatureBuilder.BuildForLead(
+            var rows = TempRichFeatureBuilder.BuildForLead(
                 _cfg.Storage.ForecastsPath,
                 _cfg.Storage.Era5Path,
                 _cfg.Location.Name,
@@ -317,18 +317,18 @@ public sealed class TrainCommand
                 ds.Val.Count,   ds.ValStart,   ds.ValEnd,
                 ds.Test.Count,  ds.TestStart,  ds.TestEnd);
 
-            var trained = TemperatureTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
+            var trained = TempTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
 
             var testActual = ds.Test.Select(x => (double)x.Label).ToArray();
-            var testPred   = TemperatureTrainer.PredictVector(trained.Ml, trained.Model, spec, ds.Test);
-            var blendStats = Metrics.Compute(testPred, testActual);
+            var testPred   = TempTrainer.PredictVector(trained.Ml, trained.Model, spec, ds.Test);
+            var blendStats = TempMetrics.Compute(testPred, testActual);
 
-            var best = Baselines.BestSingle(spec, ds.Val);
-            var bestValMae = Metrics.Compute(
-                Baselines.FromFeature(spec, ds.Val, best),
+            var best = TempBaselines.BestSingle(spec, ds.Val);
+            var bestValMae = TempMetrics.Compute(
+                TempBaselines.FromFeature(spec, ds.Val, best),
                 ds.Val.Select(x => (double)x.Label).ToArray()).Mae;
-            var bestTestMaeRich = Metrics.Compute(
-                Baselines.FromFeature(spec, ds.Test, best),
+            var bestTestMaeRich = TempMetrics.Compute(
+                TempBaselines.FromFeature(spec, ds.Test, best),
                 testActual).Mae;
 
             ModelArtifact.SaveLeadModel(trained.Ml, trained.Model, trained.InputSchema, versionDir, lead);
@@ -401,7 +401,7 @@ public sealed class TrainCommand
         return 0;
     }
 
-    private static Dictionary<string, object> BuildHpDict(TemperatureTrainer.Hyperparameters hp) => new()
+    private static Dictionary<string, object> BuildHpDict(TempTrainer.Hyperparameters hp) => new()
     {
         ["numberOfIterations"]           = hp.NumberOfIterations,
         ["learningRate"]                 = hp.LearningRate,

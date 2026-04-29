@@ -32,7 +32,7 @@ public static class PredictForecastFilters
         // Restricting to the canonical model list means stray experimental partitions
         // can sit on disk without breaking predict.
         var modelList = string.Join(", ",
-            FeatureBuilder.CanonicalModelOrder.Select(m => $"'{m.Replace("'", "''")}'"));
+            TempFeatureBuilder.CanonicalModelOrder.Select(m => $"'{m.Replace("'", "''")}'"));
         return $@"LocationName = '{loc}'
       AND Model IN ({modelList})
       AND (RunTimeSource IS NULL OR RunTimeSource <> 'offset_day')
