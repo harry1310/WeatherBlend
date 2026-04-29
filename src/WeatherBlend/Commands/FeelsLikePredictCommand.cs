@@ -73,14 +73,32 @@ public sealed class FeelsLikePredictCommand
             ? (await ParquetSerializer.DeserializeAsync<FeelsLikePredictionRow>(outPath, cancellationToken: ct)).ToList()
             : new List<FeelsLikePredictionRow>();
 
-        var merged = existing.Concat(rows)
-            .GroupBy(r => (r.PredictionMadeAtUtc, r.LeadHours))
-            .Select(g => g.MaxBy(r => r.PredictionMadeAtUtc)!)
-            .OrderBy(r => r.ValidTimeUtc).ThenBy(r => r.LeadHours)
-            .ToList();
+        var merged = MergeRows(existing, rows);
 
         await ParquetSerializer.SerializeAsync(merged, outPath, cancellationToken: ct);
         _log.LogInformation("Wrote {New} new feels-like rows (file now holds {Total}) → {Path}",
             rows.Count, merged.Count, outPath);
     }
+
+    /// <summary>
+    /// Concat existing + new feels-like rows, dedup, and return in
+    /// (ValidTime, Lead) order. The dedup key is
+    /// <c>(PredictionMadeAtUtc, LeadHours, ValidTimeUtc)</c>, deliberately
+    /// including <c>ValidTimeUtc</c> because a single feels-like run produces
+    /// one row per (Lead, ValidTime) pair found in the joined inputs —
+    /// typically multiple ValidTimes per Lead now that the 2h predict cadence
+    /// puts several anchors on disk per UTC day. Keying on Lead alone (as the
+    /// other predict writers do) collapses those siblings under the shared
+    /// PredictionMadeAtUtc and silently drops every ValidTime but one — which
+    /// stripped the home-card chip from every card whose anchor wasn't the
+    /// surviving one.
+    /// </summary>
+    internal static List<FeelsLikePredictionRow> MergeRows(
+        IEnumerable<FeelsLikePredictionRow> existing,
+        IEnumerable<FeelsLikePredictionRow> incoming)
+        => existing.Concat(incoming)
+            .GroupBy(r => (r.PredictionMadeAtUtc, r.LeadHours, r.ValidTimeUtc))
+            .Select(g => g.MaxBy(r => r.PredictionMadeAtUtc)!)
+            .OrderBy(r => r.ValidTimeUtc).ThenBy(r => r.LeadHours)
+            .ToList();
 }
