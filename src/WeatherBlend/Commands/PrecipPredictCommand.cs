@@ -134,22 +134,10 @@ public sealed class PrecipPredictCommand
             station, metadata.Version, metadata.Phase);
 
         var isRich = PrecipPhases.IsRich(metadata.Phase);
-        var isIsotonic = PrecipPhases.IsIsotonic(metadata.Phase);
-
-        PrecipIsotonicCalibration? calibration = null;
-        if (isIsotonic)
-        {
-            var calPath = Path.Combine(versionDir, PrecipIsotonicCalibration.FileName);
-            if (!File.Exists(calPath))
-            {
-                _log.LogError("Station {Station} version {V} declares Phase='3a_isotonic' but {File} is missing.",
-                    station, metadata.Version, PrecipIsotonicCalibration.FileName);
-                return false;
-            }
-            calibration = PrecipIsotonicCalibration.LoadFrom(calPath);
-            _log.LogInformation("Station {Station}: loaded isotonic calibration — source={Src}, leads=[{Leads}]",
-                station, calibration.SourceVersion, string.Join(", ", calibration.ByLead.Keys));
-        }
+        // Isotonic-calibration handling (Phase 3a_isotonic) removed 2026-04-29 —
+        // the bake-off found PAV calibration didn't move test Brier vs raw 3a.
+        // Old 3a_isotonic artefacts on R2 will fail to load against a current
+        // active list; if any persist, drop them via a manifest edit + R2 purge.
 
         // Phase 3c needs EA observation persistence anchored at run_time = valid - lead;
         // load the whole hourly series once (small) and reuse across the three leads.
@@ -264,9 +252,6 @@ public sealed class PrecipPredictCommand
 
             var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
             var pWet = PrecipOccurrenceTrainer.PredictVectorProbability(ml, loadedModel, spec, new[] { row });
-
-            if (calibration is not null && calibration.ByLead.TryGetValue(lead.ToString(), out var leadCal))
-                pWet[0] = leadCal.Apply(pWet[0]);
 
             var climPWet = climatology.Predict(valid);
 
@@ -527,14 +512,14 @@ ORDER BY ValidTimeUtc, Model;";
         public double?[] Pressure { get; } = new double?[8];
     }
 
-    private static double MeanOfSlots(double?[] slots)
+    internal static double MeanOfSlots(double?[] slots)
     {
         double sum = 0; int n = 0;
         foreach (var v in slots) if (v.HasValue) { sum += v.Value; n++; }
         return n == 0 ? double.NaN : sum / n;
     }
 
-    private static double MeanOfDepressions(double?[] temps, double?[] dews)
+    internal static double MeanOfDepressions(double?[] temps, double?[] dews)
     {
         double sum = 0; int n = 0;
         for (int i = 0; i < temps.Length; i++)

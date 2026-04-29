@@ -359,10 +359,10 @@ public static partial class SitePages
         var cvc = BuildChampionVsChallengerSeries(stationPredictions, input.PhaseByVersion, input.WindowStartUtc, leadHours: 24);
         if (cvc.Count >= 2)
         {
-            content.Append("<h5>Three-way comparison — +24h lead</h5>");
+            content.Append("<h5>Phase comparison — +24h lead</h5>");
             content.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
             {
-                Title = $"3a vs 3a_isotonic vs 3c vs observed — {PrettyStation(station)} — +24h",
+                Title = $"3a vs 3c vs observed — {PrettyStation(station)} — +24h",
                 XLabel = "Time (UTC)",
                 YLabel = "P(wet)",
                 Series = cvc,

@@ -9,15 +9,15 @@ using WeatherBlend.Train.DryWindow;
 namespace WeatherBlend.Commands;
 
 /// <summary>
-/// Phase 3d diagnostic driver. Reads the latest 3b / 3d-shape / 3d-calibrated
+/// Phase 3d diagnostic driver. Reads the latest 3b / 3d-shape
 /// training_metadata.json for every composite (station, window) entry in the
 /// dry_window manifest and emits a side-by-side comparison report under
 /// data/reports/phase3d_vs_3b_{ts}.md.
 ///
 /// Read-only: no models are retrained, no manifests are touched. When a phase
-/// is missing for a given (station, window) — most commonly because 3d-shape
-/// or 3d-calibrated have not been trained yet — the corresponding column is
+/// is missing for a given (station, window) the corresponding column is
 /// rendered as "—" so the table stays interpretable in partial-rollout states.
+/// 3d-calibrated was removed 2026-04-29 — see DryWindowFeatureBuilder.cs.
 ///
 /// Shape-feature gain importance is read from the 3d-shape version dir's
 /// feature_importance.json (already saved at training time). The seven 3d
@@ -64,11 +64,10 @@ public sealed class DryWindowAblateCommand
             var (slug, windowHours) = ParseCompositeKey(key);
             if (slug is null) { _log.LogWarning("Could not parse composite key '{Key}'; skipping.", key); continue; }
 
-            var phase3b           = TryLoadLatestMetadataForPhase(modelsRoot, key, DryWindowFeatureBuilder.Phase3b);
-            var phase3dShape      = TryLoadLatestMetadataForPhase(modelsRoot, key, DryWindowFeatureBuilder.Phase3dShape);
-            var phase3dCalibrated = TryLoadLatestMetadataForPhase(modelsRoot, key, DryWindowFeatureBuilder.Phase3dCalibrated);
+            var phase3b      = TryLoadLatestMetadataForPhase(modelsRoot, key, DryWindowFeatureBuilder.Phase3b);
+            var phase3dShape = TryLoadLatestMetadataForPhase(modelsRoot, key, DryWindowFeatureBuilder.Phase3dShape);
 
-            if (phase3b is null && phase3dShape is null && phase3dCalibrated is null)
+            if (phase3b is null && phase3dShape is null)
             {
                 _log.LogWarning("No metadata for any phase under {Key}; skipping.", key);
                 continue;
@@ -84,7 +83,6 @@ public sealed class DryWindowAblateCommand
                 WindowHours: windowHours,
                 Phase3b: phase3b,
                 Phase3dShape: phase3dShape,
-                Phase3dCalibrated: phase3dCalibrated,
                 ShapeImportance: shapeImportance));
         }
 
@@ -111,7 +109,6 @@ public sealed class DryWindowAblateCommand
         int WindowHours,
         ModelArtifact.TrainingMetadata? Phase3b,
         ModelArtifact.TrainingMetadata? Phase3dShape,
-        ModelArtifact.TrainingMetadata? Phase3dCalibrated,
         IReadOnlyDictionary<int, IReadOnlyList<(string Name, double Gain)>> ShapeImportance);
 
     private (string? Slug, int WindowHours) ParseCompositeKey(string key)
@@ -170,11 +167,10 @@ public sealed class DryWindowAblateCommand
         sb.AppendLine($"Generated {ts}");
         sb.AppendLine();
         sb.AppendLine("Same hyperparameters, same chronological train/val/test split, same EA rainfall truth and 4-of-4 hourly gate. ");
-        sb.AppendLine("Two changes are isolated against the 3b baseline:");
+        sb.AppendLine("One change is isolated against the 3b baseline:");
         sb.AppendLine();
         sb.AppendLine("- **3b** (baseline) — 53 features: per-model precip/dry-window aggregates, spread stats, ensemble-mean covariates, calendar encodings.");
         sb.AppendLine("- **3d-shape** — 3b's 53 features + 7 within-day shape features computed from ensemble-mean hourly forecasts (`first_wet_hour`, `last_wet_hour`, longest dry/wet run, `n_rain_events`, morning + afternoon precip sums).");
-        sb.AppendLine("- **3d-calibrated** — 3b's saved model with post-hoc isotonic (PAV) regression fitted on the validation partition. Identical features and pre-calibration probabilities, only the mapping changes.");
         sb.AppendLine();
         sb.AppendLine("Numbers are read directly from each artefact's `training_metadata.json` (`PerLead.BlendTestMae` → Brier, `BlendTestRmse` → climatology Brier, `BlendTestBias` → frequency bias). Empty cells mean a phase has not been trained yet for that (station, window).");
         sb.AppendLine();
@@ -185,29 +181,24 @@ public sealed class DryWindowAblateCommand
             sb.AppendLine();
             sb.AppendLine($"- 3b artefact: {ArtefactCell(c.Phase3b)}");
             sb.AppendLine($"- 3d-shape artefact: {ArtefactCell(c.Phase3dShape)}");
-            sb.AppendLine($"- 3d-calibrated artefact: {ArtefactCell(c.Phase3dCalibrated)}");
             sb.AppendLine();
 
             sb.AppendLine("### Test-set Brier by lead");
             sb.AppendLine();
-            sb.AppendLine("| Lead | 3b Brier | 3d-shape Brier | Δ shape − 3b | 3d-cal Brier | Δ cal − 3b | Climatology Brier |");
-            sb.AppendLine("|---|---:|---:|---:|---:|---:|---:|");
+            sb.AppendLine("| Lead | 3b Brier | 3d-shape Brier | Δ shape − 3b | Climatology Brier |");
+            sb.AppendLine("|---|---:|---:|---:|---:|");
             foreach (var lead in Leads)
             {
                 var bBaseline = Lead(c.Phase3b, lead);
                 var bShape    = Lead(c.Phase3dShape, lead);
-                var bCal      = Lead(c.Phase3dCalibrated, lead);
-                var clim      = bBaseline?.BlendTestRmse ?? bShape?.BlendTestRmse ?? bCal?.BlendTestRmse;
+                var clim      = bBaseline?.BlendTestRmse ?? bShape?.BlendTestRmse;
 
                 var deltaShape = (bShape?.BlendTestMae is double s && bBaseline?.BlendTestMae is double b1) ? s - b1 : (double?)null;
-                var deltaCal   = (bCal?.BlendTestMae   is double k && bBaseline?.BlendTestMae is double b2) ? k - b2 : (double?)null;
 
                 sb.Append("| ").Append(lead).Append("h | ");
                 sb.Append(Fmt(bBaseline?.BlendTestMae, "0.0000")).Append(" | ");
                 sb.Append(Fmt(bShape?.BlendTestMae,    "0.0000")).Append(" | ");
                 sb.Append(Fmt(deltaShape,              "+0.0000;-0.0000;0.0000")).Append(" | ");
-                sb.Append(Fmt(bCal?.BlendTestMae,      "0.0000")).Append(" | ");
-                sb.Append(Fmt(deltaCal,                "+0.0000;-0.0000;0.0000")).Append(" | ");
                 sb.Append(Fmt(clim,                    "0.0000"));
                 sb.AppendLine(" |");
             }
@@ -215,31 +206,28 @@ public sealed class DryWindowAblateCommand
 
             sb.AppendLine("### BSS by lead (vs month-keyed climatology)");
             sb.AppendLine();
-            sb.AppendLine("| Lead | 3b BSS | 3d-shape BSS | 3d-cal BSS |");
-            sb.AppendLine("|---|---:|---:|---:|");
+            sb.AppendLine("| Lead | 3b BSS | 3d-shape BSS |");
+            sb.AppendLine("|---|---:|---:|");
             foreach (var lead in Leads)
             {
                 var bBaseline = Lead(c.Phase3b, lead);
                 var bShape    = Lead(c.Phase3dShape, lead);
-                var bCal      = Lead(c.Phase3dCalibrated, lead);
                 sb.Append("| ").Append(lead).Append("h | ");
                 sb.Append(Fmt(Bss(bBaseline), "+0.0000;-0.0000;0.0000")).Append(" | ");
-                sb.Append(Fmt(Bss(bShape),    "+0.0000;-0.0000;0.0000")).Append(" | ");
-                sb.Append(Fmt(Bss(bCal),      "+0.0000;-0.0000;0.0000"));
+                sb.Append(Fmt(Bss(bShape),    "+0.0000;-0.0000;0.0000"));
                 sb.AppendLine(" |");
             }
             sb.AppendLine();
 
             sb.AppendLine("### Frequency bias at p≥0.5");
             sb.AppendLine();
-            sb.AppendLine("| Lead | 3b | 3d-shape | 3d-cal |");
-            sb.AppendLine("|---|---:|---:|---:|");
+            sb.AppendLine("| Lead | 3b | 3d-shape |");
+            sb.AppendLine("|---|---:|---:|");
             foreach (var lead in Leads)
             {
                 sb.Append("| ").Append(lead).Append("h | ");
-                sb.Append(Fmt(Lead(c.Phase3b, lead)?.BlendTestBias,            "0.00")).Append(" | ");
-                sb.Append(Fmt(Lead(c.Phase3dShape, lead)?.BlendTestBias,       "0.00")).Append(" | ");
-                sb.Append(Fmt(Lead(c.Phase3dCalibrated, lead)?.BlendTestBias,  "0.00"));
+                sb.Append(Fmt(Lead(c.Phase3b, lead)?.BlendTestBias,      "0.00")).Append(" | ");
+                sb.Append(Fmt(Lead(c.Phase3dShape, lead)?.BlendTestBias, "0.00"));
                 sb.AppendLine(" |");
             }
             sb.AppendLine();
@@ -284,9 +272,7 @@ public sealed class DryWindowAblateCommand
 
         sb.AppendLine("## Honest interpretation");
         sb.AppendLine();
-        sb.AppendLine("The Phase 3a → 3a_isotonic experiment showed that PAV calibration alone moved Brier by ≈0 — the 3a probabilities were already well-calibrated on EA truth. The same headline applies to 3d-calibrated by construction: it is a strict reweighting of the 3b output, so any Brier delta has to come from miscalibration the validation partition was able to expose. Treat 3d-calibrated as risk insurance, not a skill increase.");
-        sb.AppendLine();
-        sb.AppendLine("3d-shape adds new information (within-day rain structure isn't recoverable from 3b's daily aggregates). If the 7 shape features land in the upper third of the gain-importance list and Δ Brier is meaningfully negative at 24h, the tier earns its keep. If shape features rank near the bottom and Δ ≈ 0, it's evidence that the 4-of-4 daily aggregation already captures the within-day signal — same lesson as 3a/3c/isotonic where extra signals didn't survive contact with the held-out test partition.");
+        sb.AppendLine("3d-shape adds new information (within-day rain structure isn't recoverable from 3b's daily aggregates). If the 7 shape features land in the upper third of the gain-importance list and Δ Brier is meaningfully negative at 24h, the tier earns its keep. If shape features rank near the bottom and Δ ≈ 0, it's evidence that the 4-of-4 daily aggregation already captures the within-day signal.");
         sb.AppendLine();
         sb.AppendLine("All rows share the same hyperparameters (`{iter:600, lr:0.04, leaves:31, minLeaf:40, L1:0.1, L2:0.1, esr:40, seed:42}`) and the same 70/15/15 chronological split.");
         return sb.ToString();

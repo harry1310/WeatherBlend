@@ -151,16 +151,12 @@ public static partial class SitePages
                 => "Rich blender — adds per-NWP dew point, RH, cloud {total/low/mid/high}, wind speed/direction/gusts, surface pressure, plus cross-model aggregates (~88 features).",
             ("precipitation", "3a")
                 => "Lean P(wet ≥ 0.1 mm/h) classifier — six per-NWP precipitation rates and ensemble agreement.",
-            ("precipitation", "3a_isotonic")
-                => "Phase 3a output passed through PAV isotonic calibration — same features, post-hoc score-to-probability remap.",
             ("precipitation", "3c")
                 => "Rich P(wet) classifier — adds per-NWP cloud, humidity, CAPE, dew-point depression with feature-importance pruning (~55 features).",
             ("dry_window", "3b")
                 => "Per-(station, window) classifier for whether at least one N-hour dry block occurs in the target UTC day.",
             ("dry_window", "3d-shape")
                 => "Phase 3b features plus seven within-day shape descriptors (precip distribution moments).",
-            ("dry_window", "3d-calibrated")
-                => "Phase 3b output wrapped with per-lead PAV isotonic calibration.",
             _ => $"Phase {phase} blender.",
         };
     }

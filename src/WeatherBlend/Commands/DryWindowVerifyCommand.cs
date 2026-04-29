@@ -129,8 +129,7 @@ public sealed class DryWindowVerifyCommand
 
             // Drift baseline: blend Brier on the training test partition, stored
             // in PerLeadStats.BlendTestMae (reused field — see training metadata).
-            // Phase tag from the same metadata so the headline can group 3b vs
-            // 3d-shape vs 3d-calibrated.
+            // Phase tag from the same metadata so the headline can group 3b vs 3d-shape.
             double? trainingBrier = null;
             string phase = "";
             try
@@ -446,11 +445,10 @@ ORDER BY 1";
     }
 
     /// <summary>
-    /// Side-by-side Brier comparison across phases (3b vs 3d-shape vs
-    /// 3d-calibrated) for every (station, window, lead) slice that has more
-    /// than one phase represented in the verification window. Channels the
-    /// champion/challenger pattern: only the phases present at the slice are
-    /// shown so the table stays readable when one phase hasn't trained yet.
+    /// Side-by-side Brier comparison across phases (3b vs 3d-shape) for every
+    /// (station, window, lead) slice that has more than one phase represented
+    /// in the verification window. Champion/challenger pattern: only phases
+    /// present at the slice are shown.
     /// </summary>
     private static void AppendPhaseComparison(StringBuilder sb, IReadOnlyList<VerifyRow> rows)
     {

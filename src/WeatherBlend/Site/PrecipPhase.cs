@@ -1,11 +1,13 @@
 namespace WeatherBlend.Site;
 
 /// <summary>
-/// One precipitation training phase ("3a", "3a_isotonic", or "3c").
-/// Holds the labels and chart palette colour shared by every page that buckets
-/// precipitation predictions by phase, so the same string literal can't drift
-/// out of sync between the three SitePages render methods and the
-/// PrecipPredictCommand metadata check.
+/// One precipitation training phase ("3a" or "3c"). Holds the labels and chart
+/// palette colour shared by every page that buckets precipitation predictions
+/// by phase, so the same string literal can't drift out of sync between the
+/// SitePages render methods and the PrecipPredictCommand metadata check.
+///
+/// Phase 3a_isotonic was removed 2026-04-29 — PAV calibration didn't move
+/// test Brier vs raw 3a, so the bucket no longer renders.
 /// </summary>
 /// <param name="Key">Stable identifier matching <c>training_metadata.Phase</c>.</param>
 /// <param name="LongTitle">Heading used on the precipitation page where space allows the full feature-count gloss.</param>
@@ -37,14 +39,6 @@ public static class PrecipPhases
         ChampionVsChallengerLabel: "Phase 3a (champion)",
         Color: "#90a4ae");
 
-    public static readonly PrecipPhase Phase3aIsotonic = new(
-        Key: "3a_isotonic",
-        LongTitle: "Phase 3a_isotonic — lean + post-hoc calibration",
-        ShortTitle: "Phase 3a_isotonic (lean + PAV calibration)",
-        Description: "Phase 3a's model unchanged; its output is remapped through a per-lead pool-adjacent-violators isotonic regression fit on the validation slice. Tests whether calibration post-processing alone delivers what Phase 3c's extra features deliver.",
-        ChampionVsChallengerLabel: "Phase 3a_isotonic (calibrated)",
-        Color: "#26a69a");
-
     public static readonly PrecipPhase Phase3c = new(
         Key: "3c",
         LongTitle: "Phase 3c — rich (55 features)",
@@ -53,19 +47,19 @@ public static class PrecipPhases
         ChampionVsChallengerLabel: "Phase 3c (challenger)",
         Color: "#7c4dff");
 
-    /// <summary>Canonical render order: 3a → 3a_isotonic → 3c.</summary>
+    /// <summary>Canonical render order: 3a → 3c.</summary>
     public static readonly IReadOnlyList<PrecipPhase> All = new[]
     {
-        Phase3a, Phase3aIsotonic, Phase3c,
+        Phase3a, Phase3c,
     };
 
-    /// <summary>Phases that participate in the +24h three-way overlay — currently all of them.</summary>
+    /// <summary>Phases that participate in the +24h overlay — currently both.</summary>
     public static readonly IReadOnlyList<PrecipPhase> Comparable = All;
 
     /// <summary>
     /// Bucket a precipitation version into its phase. Returns <c>null</c> when
     /// the version is missing from the lookup, has an empty/whitespace tag, or
-    /// its tag isn't one of the three known phase keys — callers should skip.
+    /// its tag isn't a known phase key — callers should skip.
     /// </summary>
     public static PrecipPhase? Bucket(IReadOnlyDictionary<string, string> phaseByVersion, string version)
     {
@@ -77,10 +71,6 @@ public static class PrecipPhases
         }
         return null;
     }
-
-    /// <summary>True iff <paramref name="metadataPhase"/> matches the 3a_isotonic key. Used by predict to enable PAV remapping.</summary>
-    public static bool IsIsotonic(string? metadataPhase)
-        => string.Equals(metadataPhase, Phase3aIsotonic.Key, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>True iff <paramref name="metadataPhase"/> matches the 3c key. Used by predict to enable rich-feature loading.</summary>
     public static bool IsRich(string? metadataPhase)

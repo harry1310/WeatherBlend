@@ -1,10 +1,12 @@
 namespace WeatherBlend.Site;
 
 /// <summary>
-/// One dry-window training phase ("3b", "3d-shape", or "3d-calibrated").
-/// Mirrors <see cref="PrecipPhase"/> for the dry-window champion/challenger group:
-/// 3b is the production champion, 3d-shape adds 7 within-day shape features, and
-/// 3d-calibrated wraps 3b's output in a per-lead PAV isotonic remapping.
+/// One dry-window training phase ("3b" or "3d-shape"). Mirrors
+/// <see cref="PrecipPhase"/> for the dry-window champion/challenger group:
+/// 3b is the production champion, 3d-shape adds 7 within-day shape features.
+///
+/// Phase 3d-calibrated was removed 2026-04-29 — PAV calibration didn't move
+/// test Brier vs raw 3b, so the bucket no longer renders.
 /// </summary>
 /// <param name="Key">Stable identifier matching <c>training_metadata.Phase</c> exactly.</param>
 /// <param name="LongTitle">Heading used on the dry-window page where space allows the full feature-count gloss.</param>
@@ -44,21 +46,13 @@ public static class DryWindowPhases
         ChampionVsChallengerLabel: "Phase 3d-shape (challenger)",
         Color: "#7c4dff");
 
-    public static readonly DryWindowPhase Phase3dCalibrated = new(
-        Key: "3d-calibrated",
-        LongTitle: "Phase 3d-calibrated — 3b + post-hoc PAV calibration",
-        ShortTitle: "Phase 3d-calibrated (PAV)",
-        Description: "Phase 3b's model unchanged; its probabilities are re-mapped through a per-lead pool-adjacent-violators isotonic regression fit on the validation slice. Same model file, same features, same feature hash — only the mapping changes. Tests whether calibration alone moves the needle once 3b is already well-calibrated.",
-        ChampionVsChallengerLabel: "Phase 3d-calibrated (challenger)",
-        Color: "#26a69a");
-
-    /// <summary>Canonical render order: 3b → 3d-shape → 3d-calibrated.</summary>
+    /// <summary>Canonical render order: 3b → 3d-shape.</summary>
     public static readonly IReadOnlyList<DryWindowPhase> All = new[]
     {
-        Phase3b, Phase3dShape, Phase3dCalibrated,
+        Phase3b, Phase3dShape,
     };
 
-    /// <summary>Phases that participate in the three-way overlay — currently all of them.</summary>
+    /// <summary>Phases that participate in the side-by-side overlay — both.</summary>
     public static readonly IReadOnlyList<DryWindowPhase> Comparable = All;
 
     /// <summary>

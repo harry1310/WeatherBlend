@@ -44,7 +44,7 @@ public static class DryWindowFeatureBuilder
     /// <summary>Phase identifier strings persisted in <c>training_metadata.Phase</c>.</summary>
     public const string Phase3b = "3b";
     public const string Phase3dShape = "3d-shape";
-    public const string Phase3dCalibrated = "3d-calibrated";
+    // Phase3dCalibrated removed 2026-04-29 along with the calibration command.
 
     public const double WetThresholdMm = PrecipFeatureBuilder.WetThresholdMm;
 
@@ -342,9 +342,9 @@ ORDER BY 1";
     /// <summary>
     /// Resolve the runtime <see cref="BlenderSpec"/> for dry-window at a given lead.
     /// <paramref name="phase"/> selects between the 53-feature base layout
-    /// (<see cref="Phase3b"/> / <see cref="Phase3dCalibrated"/>, mapped to
-    /// <c>featureSet="base"</c>) and the 60-feature shape layout
-    /// (<see cref="Phase3dShape"/>, mapped to <c>featureSet="shape"</c>).
+    /// (<see cref="Phase3b"/>, mapped to <c>featureSet="base"</c>) and the
+    /// 60-feature shape layout (<see cref="Phase3dShape"/>, mapped to
+    /// <c>featureSet="shape"</c>).
     ///
     /// Layout per active model count N:
     ///   6 per-model variables × N (sum, max_hour, wet_count, longest_dry, has_dry, prob_max)

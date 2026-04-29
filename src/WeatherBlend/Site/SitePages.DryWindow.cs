@@ -7,8 +7,8 @@ public static partial class SitePages
     /// <summary>
     /// Dry-window page. <paramref name="stationSlug"/> picks which station to render;
     /// <c>null</c> means the first station, which ships as <c>dry-window.html</c>. The
-    /// other stations ship as <c>dry-window-{slug}.html</c>. Each variant shows all
-    /// three phases (3b, 3d-shape, 3d-calibrated) × all windows for the one station.
+    /// other stations ship as <c>dry-window-{slug}.html</c>. Each variant shows
+    /// the active phases (3b, 3d-shape) × all windows for the one station.
     /// </summary>
     public static string RenderDryWindow(SiteInputs input, string? stationSlug = null)
     {
@@ -18,10 +18,9 @@ public static partial class SitePages
               <hgroup>
                 <h2>Dry window — P(∃ N-hour dry block in target UTC day)</h2>
                 <p>Per-station, per-window blender. Bellever + Princetown × {3, 4, 6}h × leads 24/48/72h. Truth from EA Hydrology gauges with a 4-of-4 hourly gate.
-                   Three phases run side-by-side via the per-composite <code>Active</code> manifest list — <strong>Phase 3b (lean, 53 features)</strong> as the production champion,
-                   <strong>Phase 3d-shape (60 features)</strong> adding 7 within-day shape features derived from the ensemble-mean hourly precip vector,
-                   and <strong>Phase 3d-calibrated</strong> wrapping 3b's saved model in a per-lead pool-adjacent-violators isotonic remapping.
-                   Tables below are grouped by phase so feature-richness vs post-hoc calibration deltas are visible at a glance.</p>
+                   Two phases run side-by-side via the per-composite <code>Active</code> manifest list — <strong>Phase 3b (lean, 53 features)</strong> as the production champion
+                   and <strong>Phase 3d-shape (60 features)</strong> adding 7 within-day shape features derived from the ensemble-mean hourly precip vector.
+                   Tables below are grouped by phase so feature-richness deltas are visible at a glance.</p>
               </hgroup>
             """);
 

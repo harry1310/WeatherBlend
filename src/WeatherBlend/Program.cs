@@ -127,14 +127,17 @@ public static class Program
                 services.AddTransient<CompareCommand>();
                 services.AddTransient<PredictCommand>();
                 services.AddTransient<PrecipPredictCommand>();
-                services.AddTransient<PrecipCalibrateCommand>();
+                // PrecipCalibrateCommand (Phase 3a_isotonic PAV calibration) +
+                // DryWindowCalibrateCommand (Phase 3d-calibrated) removed
+                // 2026-04-29 — bake-off found PAV didn't move test Brier on
+                // either target. Deletion includes IsotonicCalibrator.cs and
+                // its tests. Old artefacts on R2 are inert.
                 // PrecipAblateCommand removed in Phase 6 of unify-model-membership refactor.
                 services.AddTransient<VerifyCommand>();
                 services.AddTransient<PrecipVerifyCommand>();
                 services.AddTransient<RenderSiteCommand>();
                 services.AddTransient<DryWindowDiagnosticCommand>();
                 services.AddTransient<DryWindowTrainCommand>();
-                services.AddTransient<DryWindowCalibrateCommand>();
                 services.AddTransient<DryWindowAblateCommand>();
                 services.AddTransient<DryWindowPredictCommand>();
                 services.AddTransient<DryWindowVerifyCommand>();
@@ -431,40 +434,10 @@ public static class Program
         }, siteOutputOpt, siteWindowOpt, siteRollingOpt);
         root.AddCommand(renderSite);
 
-        var calibrateStationOpt = new Option<string>(
-            name: "--truth-station",
-            description: "Station slug, config name, or 'all' — fit isotonic calibration for each matching 3a model",
-            getDefaultValue: () => "all");
-        var precipCalibrate = new Command(
-            "precip-calibrate",
-            "Phase 3a_isotonic: post-hoc isotonic (PAV) calibration of the 3a occurrence classifier; registers as a challenger alongside 3a and 3c")
-        {
-            calibrateStationOpt,
-        };
-        precipCalibrate.SetHandler(async (truthStation) =>
-        {
-            var cmd = host.Services.GetRequiredService<PrecipCalibrateCommand>();
-            Environment.ExitCode = await cmd.RunAsync(truthStation, CancellationToken.None);
-        }, calibrateStationOpt);
-        root.AddCommand(precipCalibrate);
-
-        var dwCalibrateStationOpt = new Option<string>(
-            name: "--truth-station",
-            description: "Station slug, config name, or 'all' — fit isotonic calibration for each matching 3b (station, window) pair",
-            getDefaultValue: () => "all");
-        var dryWindowCalibrate = new Command(
-            "dry-window-calibrate",
-            "Phase 3d-calibrated: post-hoc isotonic (PAV) calibration of the 3b dry-window classifier; registers as a challenger alongside 3b and 3d-shape")
-        {
-            dwCalibrateStationOpt,
-        };
-        dryWindowCalibrate.SetHandler(async (truthStation) =>
-        {
-            var cmd = host.Services.GetRequiredService<DryWindowCalibrateCommand>();
-            Environment.ExitCode = await cmd.RunAsync(truthStation, CancellationToken.None);
-        }, dwCalibrateStationOpt);
-        root.AddCommand(dryWindowCalibrate);
-
+        // The `precip-calibrate` (Phase 3a_isotonic) and `dry-window-calibrate`
+        // (Phase 3d-calibrated) CLI commands were removed 2026-04-29 alongside
+        // their backing classes — the bake-off concluded PAV calibration didn't
+        // move test Brier on either target.
         // The `precip-ablate` command was removed in Phase 6 of the unify-model-membership refactor.
         // Its conclusions are baked into the production rich precip blender.
 
@@ -484,7 +457,7 @@ public static class Program
 
         var dryWindowAblate = new Command(
             "dry-window-ablate",
-            "Phase 3d diagnostic: tabulate 3b vs 3d-shape vs 3d-calibrated test-set Brier/BSS/freq-bias + shape-feature gain importance");
+            "Phase 3d diagnostic: tabulate 3b vs 3d-shape test-set Brier/BSS/freq-bias + shape-feature gain importance");
         dryWindowAblate.SetHandler(async ctx =>
         {
             var cmd = host.Services.GetRequiredService<DryWindowAblateCommand>();

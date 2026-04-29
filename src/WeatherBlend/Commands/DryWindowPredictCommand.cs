@@ -141,21 +141,10 @@ public sealed class DryWindowPredictCommand
         }
         var climatology = DryWindowClimatology.LoadFrom(climPath);
 
-        // 3d-calibrated wraps a 3b model with a per-lead PAV calibrator. Load
-        // the calibration container once per version; null means "no remap".
-        PrecipIsotonicCalibration? calibration = null;
-        var isCalibrated = string.Equals(metadata.Phase, DryWindowFeatureBuilder.Phase3dCalibrated, StringComparison.OrdinalIgnoreCase);
-        if (isCalibrated)
-        {
-            var calPath = Path.Combine(versionDir, PrecipIsotonicCalibration.FileName);
-            if (!File.Exists(calPath))
-            {
-                _log.LogWarning("{Key} {V}: phase=3d-calibrated but {File} missing; skipping.",
-                    compositeKey, versionName, PrecipIsotonicCalibration.FileName);
-                return false;
-            }
-            calibration = PrecipIsotonicCalibration.LoadFrom(calPath);
-        }
+        // Phase 3d-calibrated handling removed 2026-04-29 — PAV calibration on
+        // dry-window didn't move test Brier vs raw 3b. Old 3d-calibrated
+        // artefacts on R2 are inert; if any persist in a manifest's Active
+        // list they should be dropped.
 
         _log.LogInformation("{Key}: version {V} (phase {P}), window {W}h",
             compositeKey, metadata.Version, metadata.Phase, windowHours);
@@ -207,12 +196,7 @@ public sealed class DryWindowPredictCommand
 
             var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
             var probs = DryWindowTrainer.PredictVectorProbability(ml, loadedModel, spec, new[] { row });
-            var rawProb = probs[0];
-            var prob = rawProb;
-            if (calibration is not null && calibration.ByLead.TryGetValue(lead.ToString(), out var leadCal))
-            {
-                prob = leadCal.Apply(rawProb);
-            }
+            var prob = probs[0];
             var climProb = climatology.Predict(targetDate);
 
             // Build per-model output fields: populate only spec.Models, null elsewhere.
@@ -255,20 +239,10 @@ public sealed class DryWindowPredictCommand
                 FeatureVectorHash = FeatureHashing.HashFloats(row.Features),
             });
 
-            if (isCalibrated)
-            {
-                _log.LogInformation(
-                    "  lead {Lead}h ({Date:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (raw {R:0.000}, clim {C:0.000}, agreement {A:0.00})",
-                    lead, targetDate, windowHours, prob, rawProb, climProb,
-                    row.Features[spec.IndexOf("agreement_has_dry_window")]);
-            }
-            else
-            {
-                _log.LogInformation(
-                    "  lead {Lead}h ({Date:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (clim {C:0.000}, agreement {A:0.00})",
-                    lead, targetDate, windowHours, prob, climProb,
-                    row.Features[spec.IndexOf("agreement_has_dry_window")]);
-            }
+            _log.LogInformation(
+                "  lead {Lead}h ({Date:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (clim {C:0.000}, agreement {A:0.00})",
+                lead, targetDate, windowHours, prob, climProb,
+                row.Features[spec.IndexOf("agreement_has_dry_window")]);
         }
 
         if (predictions.Count == 0)
@@ -305,7 +279,7 @@ public sealed class DryWindowPredictCommand
         return result;
     }
 
-    private static bool SlugMatches(string slug, string arg)
+    internal static bool SlugMatches(string slug, string arg)
     {
         if (slug.Equals(arg, StringComparison.OrdinalIgnoreCase)) return true;
         var slugWithoutPrefix = slug.StartsWith("ea_") ? slug[3..] : slug;
@@ -315,7 +289,7 @@ public sealed class DryWindowPredictCommand
             || slugWithoutPrefix.Equals(derived, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static (string StationSlug, int WindowHours)? ParseCompositeKey(string key)
+    internal static (string StationSlug, int WindowHours)? ParseCompositeKey(string key)
     {
         var m = Regex.Match(key, @"^(?<slug>[^/]+)/window_(?<w>\d+)h$");
         if (!m.Success) return null;
