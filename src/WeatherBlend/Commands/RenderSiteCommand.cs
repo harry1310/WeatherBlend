@@ -6,6 +6,7 @@ using WeatherBlend.Models;
 using WeatherBlend.Site;
 using WeatherBlend.Storage;
 using WeatherBlend.Train;
+using WeatherBlend.Train.Common;
 
 namespace WeatherBlend.Commands;
 
@@ -119,7 +120,7 @@ public sealed class RenderSiteCommand
 
         Directory.CreateDirectory(outputDir);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "index.html"),         SitePages.RenderIndex(input),          ct);
-        foreach (var lead in SitePages.PocLeads)
+        foreach (var lead in Leads.Full)
             await File.WriteAllTextAsync(Path.Combine(outputDir, $"forecasts-{lead}h.html"),
                 SitePages.RenderForecasts(input, lead), ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "models.html"),        SitePages.RenderModels(input),         ct);
@@ -159,7 +160,7 @@ public sealed class RenderSiteCommand
 
         // index + per-lead forecasts + models + about + styles + chart.js
         // + skill-temperature + skill-rainfall × stations + dry-window × stations.
-        var totalFiles = 6 + SitePages.PocLeads.Length
+        var totalFiles = 6 + Leads.Full.Length
             + Math.Max(1, rainStations.Count) + Math.Max(1, dryStations.Count);
         _log.LogInformation("Site rendered → {Dir} ({Files} files)", outputDir, totalFiles);
         return 0;

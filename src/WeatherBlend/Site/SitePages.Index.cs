@@ -1,4 +1,5 @@
 using System.Text;
+using WeatherBlend.Train.Common;
 
 namespace WeatherBlend.Site;
 
@@ -49,7 +50,7 @@ public static partial class SitePages
             .ToDictionary(g => g.Key, g => g.ToList());
 
         var cards = new StringBuilder();
-        foreach (var lead in PocLeads)
+        foreach (var lead in Leads.Full)
         {
             if (latestByLead.TryGetValue(lead, out var p))
             {

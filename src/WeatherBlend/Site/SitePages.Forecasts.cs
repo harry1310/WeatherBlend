@@ -1,12 +1,13 @@
 using System.Text;
 using WeatherBlend.Models;
+using WeatherBlend.Train.Common;
 
 namespace WeatherBlend.Site;
 
 public static partial class SitePages
 {
     /// <summary>
-    /// Renders <c>forecasts-{lead}h.html</c> — one page per POC lead (24/48/72) showing
+    /// Renders <c>forecasts-{lead}h.html</c> — one page per POC lead (24/48/72/96/120) showing
     /// what every active blender is saying for that single horizon. A sub-nav at the top
     /// lets the reader switch between leads without hopping back to the main nav.
     /// Composition per page:
@@ -43,7 +44,7 @@ public static partial class SitePages
     private static string RenderLeadSubNav(int current)
     {
         var items = new StringBuilder();
-        foreach (var lead in PocLeads)
+        foreach (var lead in Leads.Full)
         {
             var cls = lead == current ? " class=\"active\"" : "";
             items.Append(Ci, $"""<li><a href="forecasts-{lead}h.html"{cls}>+{lead}h</a></li>""");

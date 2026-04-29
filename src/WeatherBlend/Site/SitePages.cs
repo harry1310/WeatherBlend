@@ -17,13 +17,11 @@ public static partial class SitePages
 {
     private static readonly CultureInfo Ci = CultureInfo.InvariantCulture;
 
-    /// <summary>
-    /// Lead-time horizons for the lean temp/precip pages: home cards, per-lead
-    /// forecast tables, temperature rolling-MAE chart, Models per-lead rows.
-    /// Dry-window stays on its own narrower {24,48,72} list — Phase 3b/3d models
-    /// were never trained at 120h.
-    /// </summary>
-    internal static readonly int[] PocLeads = { 24, 48, 72, 120 };
+    // Site lead horizons come from <see cref="WeatherBlend.Train.Common.Leads"/>:
+    //   - Temp + precip pages (home cards, per-lead forecasts, rolling-MAE,
+    //     Models): <c>Leads.Full</c> = {24, 48, 72, 96, 120}.
+    //   - Dry-window page: <c>Leads.Short</c> = {24, 48, 72} — Phase 3b/3d
+    //     blenders were never trained at 96/120h.
 
     // -------------------------------------------------------------------------
     // NWP display table — single source of truth for per-NWP labels + colours

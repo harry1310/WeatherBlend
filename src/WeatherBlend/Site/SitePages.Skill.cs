@@ -221,7 +221,7 @@ public static partial class SitePages
             return "<p><em>No rolling MAE points computed — the window is too short or there's no matching ERA5 truth yet.</em></p>";
 
         var content = new StringBuilder();
-        foreach (var lead in PocLeads)
+        foreach (var lead in Leads.Full)
         {
             var versions = input.RollingMae.Where(r => r.LeadHours == lead)
                 .Select(r => r.ModelVersion).Distinct().OrderBy(v => v, StringComparer.Ordinal).ToList();
