@@ -46,10 +46,15 @@ public static partial class SitePages
             _ => 3,
         };
 
-        // Latest-only per (composite, phase). One card per family — temp lean, temp
-        // rich, precip-by-station-by-phase, etc. Older versions stay on disk for the
-        // verify rolling-window comparison; this page is "what's currently shipping".
+        // Latest-only per (composite, phase), filtered to phases that are
+        // currently shipping. Demoted phases (3a_isotonic + 3d-calibrated were
+        // retired 2026-04-29 after PAV calibration didn't move test Brier; the
+        // one-off temperature 2b_redo retrain is also reference-only) still
+        // have prediction rows in the rolling window so they leak into
+        // ModelSummaries — explicit allowlist keeps the Models page focused on
+        // "what's actually being used right now".
         var latestPerFamily = input.ModelSummaries
+            .Where(m => IsActivePhase(m.Composite, m.Phase))
             .GroupBy(m => (m.Composite, m.Phase), comparer: null!)
             .Select(g => g.OrderByDescending(m => m.TrainedAtUtc).First())
             .GroupBy(m => m.Composite, StringComparer.Ordinal)
@@ -135,6 +140,34 @@ public static partial class SitePages
     }
 
     /// <summary>
+    /// Phase allowlist per target — what we actually want surfaced on the
+    /// Models page. The full <c>training_metadata.Phase</c> universe includes
+    /// retired bookkeeping artefacts (3a_isotonic + 3d-calibrated were dropped
+    /// 2026-04-29; the one-off 2b_redo retrain stays on disk for verify history).
+    /// Keeps the page focused on the live champion + its current challenger.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> ActivePhasesByTarget =
+        new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+        {
+            ["temperature"]   = new HashSet<string>(StringComparer.Ordinal) { "2b", "2c" },
+            ["precipitation"] = new HashSet<string>(StringComparer.Ordinal) { "3a", "3c" },
+            ["dry_window"]    = new HashSet<string>(StringComparer.Ordinal) { "3b", "3d-shape" },
+        };
+
+    /// <summary>
+    /// True iff the (target, phase) pair should render on the Models page. The
+    /// renderer reads every prediction in the rolling window via DuckDB; any
+    /// version whose phase has been retired but still has window-resident
+    /// prediction rows would otherwise leak through.
+    /// </summary>
+    private static bool IsActivePhase(string composite, string phase)
+    {
+        var target = composite.Split('/')[0];
+        return ActivePhasesByTarget.TryGetValue(target, out var allowed)
+            && allowed.Contains(phase);
+    }
+
+    /// <summary>
     /// One-sentence prose summary of what each phase actually does — composed for
     /// the Models page so the reader doesn't need to know the codebase to read the
     /// table. Keeps the per-blender card honest without trying to recompute feature
@@ -145,7 +178,7 @@ public static partial class SitePages
         var target = composite.Split('/')[0];
         return (target, phase) switch
         {
-            ("temperature", "2b") or ("temperature", "2b_redo")
+            ("temperature", "2b")
                 => "Lean blender — six per-NWP temperatures, their mean/std/range, and cyclical hour/day-of-year encodings (~13 features).",
             ("temperature", "2c")
                 => "Rich blender — adds per-NWP dew point, RH, cloud {total/low/mid/high}, wind speed/direction/gusts, surface pressure, plus cross-model aggregates (~88 features).",
