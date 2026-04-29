@@ -65,9 +65,14 @@ public static partial class SitePages
         foreach (var group in latestPerFamily)
         {
             content.Append(Ci, $"""<h3>{Escape(PrettyComposite(group.Key))}</h3>""");
-            // Within a composite (e.g. one temperature block), order phase-cards by
-            // most recently trained first.
-            var ordered = group.OrderByDescending(m => m.TrainedAtUtc).ToList();
+            // Within a composite (e.g. one temperature block), order phase-cards
+            // by champion → challenger so a glance at the page reads "lean first,
+            // rich underneath". TrainedAt-descending was deterministic but ordered
+            // by training-cycle accident; readers expect the lean champion on top.
+            var ordered = group
+                .OrderBy(m => PhasePriority(group.Key, m.Phase))
+                .ThenByDescending(m => m.TrainedAtUtc)
+                .ToList();
             foreach (var m in ordered)
                 content.Append(RenderBlenderCard(group.Key, m));
         }
@@ -141,18 +146,17 @@ public static partial class SitePages
     }
 
     /// <summary>
-    /// Phase allowlist per target — what we actually want surfaced on the
-    /// Models page. The full <c>training_metadata.Phase</c> universe includes
-    /// retired bookkeeping artefacts (3a_isotonic + 3d-calibrated were dropped
-    /// 2026-04-29; the one-off 2b_redo retrain stays on disk for verify history).
-    /// Keeps the page focused on the live champion + its current challenger.
+    /// Active phases per target, ordered champion → challenger. Drives both
+    /// the allowlist (only listed phases render) and the per-card sort order
+    /// (lean on top, rich underneath). Retired phases (3a_isotonic, 3d-calibrated,
+    /// 2b_redo) live on disk but aren't in this list, so their rows are skipped.
     /// </summary>
-    private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> ActivePhasesByTarget =
-        new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+    private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> ActivePhasesByTarget =
+        new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
         {
-            ["temperature"]   = new HashSet<string>(StringComparer.Ordinal) { "2b", "2c" },
-            ["precipitation"] = new HashSet<string>(StringComparer.Ordinal) { "3a", "3c" },
-            ["dry_window"]    = new HashSet<string>(StringComparer.Ordinal) { "3b", "3d-shape" },
+            ["temperature"]   = new[] { "2b", "2c" },
+            ["precipitation"] = new[] { "3a", "3c" },
+            ["dry_window"]    = new[] { "3b", "3d-shape" },
         };
 
     /// <summary>
@@ -165,7 +169,21 @@ public static partial class SitePages
     {
         var target = composite.Split('/')[0];
         return ActivePhasesByTarget.TryGetValue(target, out var allowed)
-            && allowed.Contains(phase);
+            && allowed.Contains(phase, StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// Sort key for a phase within a composite — its index in the
+    /// champion-first list, so lean ranks above rich. Unknown phases sort
+    /// last so anything that bypasses the allowlist still renders predictably.
+    /// </summary>
+    private static int PhasePriority(string composite, string phase)
+    {
+        var target = composite.Split('/')[0];
+        if (!ActivePhasesByTarget.TryGetValue(target, out var ordered)) return int.MaxValue;
+        for (int i = 0; i < ordered.Count; i++)
+            if (string.Equals(ordered[i], phase, StringComparison.Ordinal)) return i;
+        return int.MaxValue;
     }
 
     /// <summary>

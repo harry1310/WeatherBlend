@@ -822,6 +822,43 @@ public class SitePagesTests
     }
 
     [Fact]
+    public void RenderModels_orders_champion_above_challenger_per_target()
+    {
+        // Card order within a composite (e.g. one temperature block) should be
+        // champion → challenger so the lean blender always sits on top, even
+        // when the challenger was trained later in the cycle. Earlier behaviour
+        // sorted by TrainedAtUtc descending, which let an accident of training
+        // order put the rich card first and made readers misread "all green at
+        // top" as the lean blender's deltas.
+        var trainedLean = new DateTime(2026, 4, 20, 12, 0, 0, DateTimeKind.Utc);
+        var trainedRich = trainedLean.AddSeconds(30);  // rich trained later
+        var perLead = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            [24] = new(24, "gfs", BestSingleValMae: 1.20, BestSingleTestMae: 1.20, BlendTestScore: 0.95,
+                      BlendTestRmse: 1.40, BlendTestBias: 0.05, TestRows: 420, TestCalendarMonths: 6),
+        };
+        var summaries = new[]
+        {
+            // Order in the input list intentionally puts rich first to prove
+            // the ordering comes from PhasePriority, not list iteration order.
+            new SitePages.ModelSummary("temperature", "v_rich", "2c", "era5", trainedRich,  "Test MAE (°C)", perLead),
+            new SitePages.ModelSummary("temperature", "v_lean", "2b", "era5", trainedLean,  "Test MAE (°C)", perLead),
+            new SitePages.ModelSummary("precipitation/ea_bellever_dartmoor", "v_rich_p", "3c", "ea", trainedRich, "Brier", perLead),
+            new SitePages.ModelSummary("precipitation/ea_bellever_dartmoor", "v_lean_p", "3a", "ea", trainedLean, "Brier", perLead),
+            new SitePages.ModelSummary("dry_window/ea_bellever_dartmoor/3h", "v_shape", "3d-shape", "ea", trainedRich, "Brier", perLead),
+            new SitePages.ModelSummary("dry_window/ea_bellever_dartmoor/3h", "v_lean_dw", "3b", "ea", trainedLean, "Brier", perLead),
+        };
+        var input = MakeEmptyForecastInput() with { ModelSummaries = summaries };
+
+        var html = SitePages.RenderModels(input);
+
+        // Lean version code appears before rich version code for each target.
+        html.IndexOf("v_lean").Should().BeLessThan(html.IndexOf("v_rich"));
+        html.IndexOf("v_lean_p").Should().BeLessThan(html.IndexOf("v_rich_p"));
+        html.IndexOf("v_lean_dw").Should().BeLessThan(html.IndexOf("v_shape"));
+    }
+
+    [Fact]
     public void RenderModels_marks_blend_win_with_delta_good_class()
     {
         // Blend MAE 0.95 vs best-single 1.20 → blend wins by ~21%. The Δ cell
