@@ -2,12 +2,14 @@ name: render-site
 
 # Renders the static site from R2-backed parquet and deploys it to Cloudflare Pages.
 #
-# Fires automatically after `predict` (daily) and `verify` (weekly) complete, so the
-# public site always reflects the most recent forecast/verification state. Also
-# supports manual dispatch for one-off re-renders.
+# Auto-trigger: fires after `verify` (weekly) so the latest MAE/Brier/drift
+# numbers surface on the site as soon as they're computed. The predict→render
+# auto-trigger was removed when scheduled prediction moved into the combined
+# `predict-and-render.yml` workflow (which renders inline every 2 hours).
+# Manual dispatch supported for one-off re-renders.
 on:
   workflow_run:
-    workflows: ["predict", "verify"]
+    workflows: ["verify"]
     types: [completed]
   workflow_dispatch:
     inputs:

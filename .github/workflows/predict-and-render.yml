@@ -1,0 +1,198 @@
+name: predict-and-render
+
+# Combined predict + site render, running every 2 hours so we don't pay the
+# checkout/setup/R2-pull/build cost twice per cycle. The original `predict.yml`
+# and `render-site.yml` workflows are kept for manual dispatch only and no
+# longer auto-trigger anything — see those files for per-step semantics. The
+# bodies below are merged with no behaviour changes other than:
+#   - one shared build + R2 sync
+#   - predictions pushed to R2 once between predict and render so the deployed
+#     site reads its own freshly-written outputs
+#
+# Schedule: :45 past every even hour (12 runs/day). 30 min after the :15
+# collect cron — same delay the original predict workflow used and proven
+# to leave time for collect's R2 push to settle. The `weatherblend-data`
+# concurrency group serialises against any in-flight collect / verify /
+# manual predict, so the pull always sees the latest pushed forecast tree.
+# cancel-in-progress=false because we never want to interrupt a job that's
+# mid-write to predictions.
+on:
+  schedule:
+    - cron: "45 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      for_date:
+        description: "Retroactive predict fill (yyyy-MM-dd). Leave blank for live run."
+        required: false
+        type: string
+      window_days:
+        description: "Render: how many days of predictions to include (table + charts)."
+        required: false
+        default: "30"
+        type: string
+      rolling_window_days:
+        description: "Render: rolling-MAE window size for verification charts."
+        required: false
+        default: "14"
+        type: string
+
+concurrency:
+  group: weatherblend-data
+  cancel-in-progress: false
+
+jobs:
+  predict-and-render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+          dotnet-quality: preview
+
+      - name: Install rclone
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          rclone version
+
+      - name: Configure rclone for R2
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf <<EOF
+          [r2]
+          type = s3
+          provider = Cloudflare
+          access_key_id = ${R2_ACCESS_KEY_ID}
+          secret_access_key = ${R2_SECRET_ACCESS_KEY}
+          endpoint = ${R2_ENDPOINT}
+          acl = private
+          EOF
+
+      - name: Pull models + forecasts + predictions + truth trees from R2
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        # Union of predict's needs (models, forecasts, predictions, rainfall)
+        # and render's needs (predictions, era5, metar, rainfall, models). One
+        # sync = one pull cost. ERA5 + METAR are render-only — predict never
+        # reads them — but pulling them here is cheaper than two workflows.
+        run: |
+          mkdir -p data/models data/forecasts data/predictions \
+                   data/truth/era5 data/truth/metar data/truth/rainfall
+
+          rclone copy "r2:${R2_BUCKET}/data/models"          ./data/models          --fast-list --transfers 16 --checkers 32 --progress
+          rclone copy "r2:${R2_BUCKET}/data/forecasts"       ./data/forecasts       --fast-list --transfers 16 --checkers 32 --progress
+          rclone copy "r2:${R2_BUCKET}/data/predictions"     ./data/predictions     --fast-list --transfers 16 --checkers 32 --progress
+          rclone copy "r2:${R2_BUCKET}/data/truth/era5"      ./data/truth/era5      --fast-list --transfers 16 --checkers 32 --progress
+          rclone copy "r2:${R2_BUCKET}/data/truth/metar"     ./data/truth/metar     --fast-list --transfers 16 --checkers 32 --progress
+          rclone copy "r2:${R2_BUCKET}/data/truth/rainfall"  ./data/truth/rainfall  --fast-list --transfers 16 --checkers 32 --progress
+
+      - name: Build
+        run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
+
+      - name: Predict temperature
+        run: |
+          FOR_DATE="${{ github.event.inputs.for_date }}"
+          if [ -n "$FOR_DATE" ]; then
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature --for-date "$FOR_DATE"
+          else
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature
+          fi
+
+      - name: Predict precipitation
+        # Per-station P(wet). Exit 2 = no precip blender yet (fresh deploy);
+        # exit 3 = no forecast rows for targets. Neither fatal for this job.
+        run: |
+          FOR_DATE="${{ github.event.inputs.for_date }}"
+          if [ -n "$FOR_DATE" ]; then
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target precipitation --truth-station all --for-date "$FOR_DATE" || code=$?
+          else
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target precipitation --truth-station all || code=$?
+          fi
+          if [ -n "${code:-}" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then exit "$code"; fi
+
+      - name: Predict dry-window
+        # P(∃ dry window ≥ N hours in target day) for every (station, window).
+        # Same exit-code semantics as precipitation.
+        run: |
+          FOR_DATE="${{ github.event.inputs.for_date }}"
+          if [ -n "$FOR_DATE" ]; then
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target dry-window --truth-station all --window all --for-date "$FOR_DATE" || code=$?
+          else
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target dry-window --truth-station all --window all || code=$?
+          fi
+          if [ -n "${code:-}" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then exit "$code"; fi
+
+      - name: Predict element blenders (wind / humidity / shortwave-radiation / cloud-cover)
+        # Per-element lean blenders. Radiation is currently expected to return 3
+        # because live forecasts don't include SW columns (known live-collector
+        # gap). Humidity + cloud may return partial coverage at 48/72h when MF
+        # is missing. Exit 2/3/4 all non-fatal.
+        run: |
+          FOR_DATE="${{ github.event.inputs.for_date }}"
+          for tgt in wind humidity shortwave-radiation cloud-cover; do
+            code=0
+            if [ -n "$FOR_DATE" ]; then
+              dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target "$tgt" --for-date "$FOR_DATE" || code=$?
+            else
+              dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target "$tgt" || code=$?
+            fi
+            if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ] && [ "$code" != "4" ]; then
+              echo "predict $tgt failed with exit $code"; exit "$code"
+            fi
+          done
+
+      - name: Predict feels-like (joins temperature + element outputs for the same anchor)
+        # Must run AFTER the others — it's a join, not an independent predict.
+        # Exit 3 = at least one input is missing for the anchor; non-fatal.
+        run: |
+          FOR_DATE="${{ github.event.inputs.for_date }}"
+          code=0
+          if [ -n "$FOR_DATE" ]; then
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target feels-like --for-date "$FOR_DATE" || code=$?
+          else
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target feels-like || code=$?
+          fi
+          if [ "$code" != "0" ] && [ "$code" != "3" ]; then
+            echo "predict feels-like failed with exit $code"; exit "$code"
+          fi
+
+      - name: Push predictions to R2
+        # Pushed BEFORE render so the deployed site is reading the same state
+        # any external consumer would see in R2. copy (not sync) — additive only.
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          rclone copy ./data/predictions "r2:${R2_BUCKET}/data/predictions" --fast-list --transfers 16 --checkers 32 --progress
+
+      - name: Render site
+        run: |
+          WINDOW="${{ github.event.inputs.window_days }}"
+          ROLLING="${{ github.event.inputs.rolling_window_days }}"
+          ARGS="--output data/site"
+          if [ -n "$WINDOW" ]; then ARGS="$ARGS --window-days $WINDOW"; fi
+          if [ -n "$ROLLING" ]; then ARGS="$ARGS --rolling-window-days $ROLLING"; fi
+          dotnet run --project src/WeatherBlend --no-build -c Release -- render-site $ARGS
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # --branch main promotes to the production URL (weatherblend.pages.dev);
+          # without it the deploy would only get a preview URL.
+          command: pages deploy data/site --project-name weatherblend --branch main --commit-dirty=true
+
+      - name: Upload logs as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: predict-and-render-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 14
+          if-no-files-found: ignore

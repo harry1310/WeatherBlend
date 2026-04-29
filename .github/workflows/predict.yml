@@ -1,13 +1,16 @@
 name: predict
 
-# 4× daily: run the blender against the latest collected forecasts, push predictions to R2.
-# 02:45, 08:45, 14:45, 20:45 UTC — 30 min after each `collect` cron (:15) so predict picks
-# up the NWP run that collect just pushed. The `weatherblend-data` concurrency group
-# serialises against any in-flight collect, so predict never races a mid-flight push.
-# Each run produces 3 rows (lead 24/48/72) anchored to UtcNow truncated to top-of-hour.
+# Manual-dispatch only. The scheduled predict cycle now runs as part of the
+# combined `predict-and-render.yml` workflow every 2 hours — running predict
+# on its own cron would double the work. This file is preserved for one-off
+# manual reruns (e.g. retroactive --for-date fills, or re-running predict
+# after a model artefact bump without immediately re-rendering the site).
+#
+# Note: this workflow no longer triggers `render-site` on completion (the
+# auto-trigger was scoped to predict's old scheduled cadence and is now
+# owned by predict-and-render). If you want the manual run to also refresh
+# the site, dispatch render-site manually after this finishes.
 on:
-  schedule:
-    - cron: "45 2,8,14,20 * * *"
   workflow_dispatch:
     inputs:
       for_date:
