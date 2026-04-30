@@ -78,10 +78,10 @@ public static partial class SitePages
             string pwetCell = "";
             if (TryNearest(pwetByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var pw))
             {
-                // ☔ when the displayed P(wet) rounds to ≥ 1% — anything below that
+                // ☔ when the displayed P(wet) rounds to ≥ 25% — anything below that
                 // would print "0% ☔" which reads as a contradiction. Threshold
-                // of 0.005 picks up genuine signal without flagging noise.
-                var rain = pw!.ProbWet >= 0.005 ? " <span class=\"rain\">&#x2614;</span>" : "";
+                // of 0.245 picks up genuine signal without flagging noise.
+                var rain = pw!.ProbWet >= 0.245 ? " <span class=\"rain\">&#x2614;</span>" : "";
                 pwetCell = $"<div class=\"pwet\">P(wet) <strong>{(pw.ProbWet * 100).ToString("0", Ci)}%</strong>{rain}</div>";
             }
 
