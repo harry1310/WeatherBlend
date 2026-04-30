@@ -82,7 +82,8 @@ public static partial class SitePages
                 // would print "0% ☔" which reads as a contradiction. Threshold
                 // of 0.245 picks up genuine signal without flagging noise.
                 var rain = pw!.ProbWet >= 0.245 ? " <span class=\"rain\">&#x2614;</span>" : "";
-                pwetCell = $"<div class=\"pwet\">P(wet) <strong>{(pw.ProbWet * 100).ToString("0", Ci)}%</strong>{rain}</div>";
+                var pwColor = PrecipProbColor(pw.ProbWet);
+                pwetCell = $"<div class=\"pwet\">P(wet) <strong style=\"color: {pwColor}\">{(pw.ProbWet * 100).ToString("0", Ci)}%</strong>{rain}</div>";
             }
 
             var tempColor = TemperatureColor(p.BlendTemperature);

@@ -689,25 +689,28 @@ public static partial class SitePages
         s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;");
 
     /// <summary>
-    /// CSS colour for a displayed temperature. RGB-interpolated between explicit
-    /// anchors so the gradient walks directly from indigo (cold) through the brand
-    /// purple (mild) to orange and red (warm/hot), without the HSL shortest-arc
-    /// trap of passing through magenta at 14°C. Anchors chosen by eye for the
-    /// Dartmoor climate: sub-zero is rare but plausible, 12°C is a typical spring
-    /// afternoon (the brand colour), and values above 25°C are heatwave territory.
+    /// CSS colour for a displayed temperature on a standard coolwarm
+    /// (blue → white → red) ramp — the convention in scientific viz so a
+    /// reader doesn't have to learn a custom palette. Anchors chosen for
+    /// the Dartmoor climate: sub-zero is rare but plausible, 12°C is a
+    /// typical-mild centre, and values above 25°C are heatwave territory.
+    /// RGB-interpolated rather than HSL so the gradient walks the
+    /// matplotlib coolwarm path directly without rotating through purple.
     /// </summary>
     internal static string TemperatureColor(double celsius)
     {
-        // (t, r, g, b) anchors — values chosen so cold feels cold without going
-        // washed-out and warm feels warm without going crimson.
+        // (t, r, g, b) anchors. The cold/white/hot triplet matches matplotlib
+        // coolwarm (#3b4cc0, #f7f7f7, #b40426); the intermediate stops are
+        // sampled along the same ramp so a 14°C cell reads as "lukewarm
+        // pink", not "saturated halfway".
         (double t, int r, int g, int b)[] anchors =
         {
-            (-5,  57,  73, 171),  // indigo #3949ab
-            ( 5,  98,  85, 255),  // blue-purple #6255ff
-            (12, 124,  77, 255),  // brand purple #7c4dff
-            (18, 255, 143,   0),  // orange #ff8f00
-            (25, 229,  57,  53),  // red #e53935
-            (32, 183,  28,  28),  // deep red #b71c1c
+            (-5,  59,  76, 192),  // deep cobalt #3b4cc0
+            ( 5, 146, 177, 244),  // light blue   #92b1f4
+            (12, 247, 247, 247),  // near-white   #f7f7f7
+            (18, 244, 154, 123),  // salmon       #f49a7b
+            (25, 214,  82,  68),  // brick red    #d65244
+            (32, 180,   4,  38),  // deep red     #b40426
         };
         if (double.IsNaN(celsius)) return "var(--pico-muted-color)";
         if (celsius <= anchors[0].t) return FormatRgb(anchors[0].r, anchors[0].g, anchors[0].b);
@@ -747,6 +750,44 @@ public static partial class SitePages
             (0.00, 229,  57,  53),  // red    #e53935
             (0.50, 255, 167,  38),  // amber  #ffa726
             (1.00,  67, 160,  71),  // green  #43a047
+        };
+        if (prob <= anchors[0].t) return FormatRgb(anchors[0].r, anchors[0].g, anchors[0].b);
+        if (prob >= anchors[^1].t) return FormatRgb(anchors[^1].r, anchors[^1].g, anchors[^1].b);
+        for (int i = 0; i < anchors.Length - 1; i++)
+        {
+            var a = anchors[i];
+            var b = anchors[i + 1];
+            if (prob >= a.t && prob <= b.t)
+            {
+                var k = (prob - a.t) / (b.t - a.t);
+                int r = (int)Math.Round(a.r + (b.r - a.r) * k);
+                int g = (int)Math.Round(a.g + (b.g - a.g) * k);
+                int bl = (int)Math.Round(a.b + (b.b - a.b) * k);
+                return FormatRgb(r, g, bl);
+            }
+        }
+        var last = anchors[^1];
+        return FormatRgb(last.r, last.g, last.b);
+    }
+
+    /// <summary>
+    /// CSS colour for a P(wet) value in <c>[0, 1]</c>. Distinct from
+    /// <see cref="ProbabilityColor"/> on purpose — that one's traffic-light
+    /// (green = good) is keyed to the dry-window page where higher value
+    /// is better. P(wet) is the inverse direction: high = bad. So the ramp
+    /// runs <c>teal → yellow → brown</c>: cool / dry-friendly at 0%, mud /
+    /// sodden at 100%, with a vibrant midday-yellow at the 50% transition.
+    /// Same RGB-interpolation rule as the temperature ramp; NaN falls back
+    /// to the muted text colour so missing chips don't shout.
+    /// </summary>
+    internal static string PrecipProbColor(double prob)
+    {
+        if (double.IsNaN(prob)) return "var(--pico-muted-color)";
+        (double t, int r, int g, int b)[] anchors =
+        {
+            (0.00,  38, 166, 154),  // teal    #26a69a
+            (0.50, 251, 192,  45),  // yellow  #fbc02d
+            (1.00,  93,  64,  55),  // brown   #5d4037
         };
         if (prob <= anchors[0].t) return FormatRgb(anchors[0].r, anchors[0].g, anchors[0].b);
         if (prob >= anchors[^1].t) return FormatRgb(anchors[^1].r, anchors[^1].g, anchors[^1].b);

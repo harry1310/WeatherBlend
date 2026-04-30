@@ -268,31 +268,38 @@ public class SitePagesTests
     }
 
     [Theory]
-    [InlineData(-10.0, 57,  73, 171)]  // below the coldest anchor — clamps to indigo
-    [InlineData( -5.0, 57,  73, 171)]  // cold anchor
-    [InlineData( 12.0, 124, 77, 255)]  // brand purple anchor
-    [InlineData( 25.0, 229, 57,  53)]  // red anchor
-    [InlineData( 40.0, 183, 28,  28)]  // above hottest anchor — clamps to deep red
+    [InlineData(-10.0,  59,  76, 192)]  // below cold anchor → clamps to deep cobalt
+    [InlineData( -5.0,  59,  76, 192)]  // cold anchor (matplotlib coolwarm 0.0)
+    [InlineData(  5.0, 146, 177, 244)]  // light-blue anchor
+    [InlineData( 12.0, 247, 247, 247)]  // white centre (matplotlib coolwarm 0.5)
+    [InlineData( 18.0, 244, 154, 123)]  // salmon anchor
+    [InlineData( 25.0, 214,  82,  68)]  // brick-red anchor
+    [InlineData( 40.0, 180,   4,  38)]  // above hottest anchor → clamps to deep red
     public void TemperatureColor_returns_expected_rgb_at_anchors_and_clamps(double celsius, int r, int g, int b)
     {
         SitePages.TemperatureColor(celsius).Should().Be($"rgb({r} {g} {b})");
     }
 
     [Fact]
-    public void TemperatureColor_interpolates_linearly_between_anchors_for_warming_feel()
+    public void TemperatureColor_interpolates_linearly_between_white_and_salmon_on_the_warm_side()
     {
-        // 14°C sits between the 12°C brand-purple anchor and the 18°C orange anchor.
-        // RGB interpolation (not HSL shortest-arc) must not pass through magenta: the
-        // green channel rises as we move off the purple anchor towards orange.
+        // 14°C sits between the 12°C white centre (247,247,247) and the 18°C
+        // salmon anchor (244,154,123). RGB interpolation: red falls slightly,
+        // green falls more, blue falls most — moving off white towards warm.
         var result = SitePages.TemperatureColor(14.0);
 
         result.Should().StartWith("rgb(");
         var parts = result["rgb(".Length..^1].Split(' ');
         int r = int.Parse(parts[0]), g = int.Parse(parts[1]), b = int.Parse(parts[2]);
 
-        r.Should().BeGreaterThan(124, "red channel should rise towards orange");
-        g.Should().BeGreaterThan(77, "green channel should rise — otherwise we'd be passing through magenta");
-        b.Should().BeLessThan(255, "blue channel should fall towards orange");
+        // All three channels < 247 (the white anchor) since salmon is darker
+        // overall, AND blue should be the lowest of the three (salmon trends
+        // pinkish-orange so b is the most reduced channel).
+        r.Should().BeLessThan(247);
+        g.Should().BeLessThan(247);
+        b.Should().BeLessThan(247);
+        b.Should().BeLessThan(g, "blue should fall faster than green moving towards salmon");
+        b.Should().BeLessThan(r, "blue should fall faster than red moving towards salmon");
     }
 
     [Fact]
@@ -301,6 +308,45 @@ public class SitePagesTests
         // NaN comes from predictions with no temperature value — the stylesheet's muted
         // colour is the sensible fallback.
         SitePages.TemperatureColor(double.NaN).Should().Be("var(--pico-muted-color)");
+    }
+
+    // ---- PrecipProbColor (home P(wet) chip ramp) ---------------------------
+
+    [Theory]
+    [InlineData(-0.5,  38, 166, 154)]  // below 0 → clamps to teal
+    [InlineData( 0.0,  38, 166, 154)]  // teal anchor   #26a69a
+    [InlineData( 0.5, 251, 192,  45)]  // yellow anchor #fbc02d
+    [InlineData( 1.0,  93,  64,  55)]  // brown anchor  #5d4037
+    [InlineData( 1.5,  93,  64,  55)]  // above 1 → clamps to brown
+    public void PrecipProbColor_returns_expected_rgb_at_anchors_and_clamps(double prob, int r, int g, int b)
+    {
+        SitePages.PrecipProbColor(prob).Should().Be($"rgb({r} {g} {b})");
+    }
+
+    [Fact]
+    public void PrecipProbColor_interpolates_smoothly_from_teal_through_yellow_to_brown()
+    {
+        // At 0.25 the colour should sit between teal (38,166,154) and yellow
+        // (251,192,45): red rises, blue falls. At 0.75 it should sit between
+        // yellow and brown: red falls, blue ticks up slightly.
+        var quarter = SitePages.PrecipProbColor(0.25);
+        var threeq  = SitePages.PrecipProbColor(0.75);
+
+        var qParts = quarter["rgb(".Length..^1].Split(' ');
+        var qR = int.Parse(qParts[0]); var qG = int.Parse(qParts[1]); var qB = int.Parse(qParts[2]);
+        qR.Should().BeInRange(39, 250, "red rising teal → yellow");
+        qB.Should().BeInRange(46, 153, "blue falling teal → yellow");
+
+        var tParts = threeq["rgb(".Length..^1].Split(' ');
+        var tR = int.Parse(tParts[0]); var tG = int.Parse(tParts[1]); var tB = int.Parse(tParts[2]);
+        tR.Should().BeInRange(94, 250, "red falling yellow → brown");
+        tG.Should().BeInRange(65, 191, "green falling yellow → brown");
+    }
+
+    [Fact]
+    public void PrecipProbColor_returns_muted_css_var_for_NaN()
+    {
+        SitePages.PrecipProbColor(double.NaN).Should().Be("var(--pico-muted-color)");
     }
 
     [Theory]
