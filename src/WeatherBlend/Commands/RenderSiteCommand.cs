@@ -454,8 +454,14 @@ ORDER BY 1";
 
     /// <summary>
     /// Rolling MAE per (ModelVersion, LeadHours, daily window end) across the last
-    /// <paramref name="windowDays"/>. One point per day; the window ending at that
-    /// day-end uses the prior <paramref name="windowDays"/>.
+    /// <paramref name="windowDays"/>. One point per day from the earliest paired
+    /// date through the latest. Days with fewer than <paramref name="windowDays"/>
+    /// of data behind them emit a point computed over whatever's available in
+    /// <c>[d − windowDays + 1, d]</c> — partial-window points show up at the
+    /// start of the data, which is what users expect when the prediction tree
+    /// is younger than the rolling window. Without that, a 14-day window over
+    /// 3 days of data renders an empty chart even though the underlying pairs
+    /// are right there in the per-lead chart above.
     /// </summary>
     internal static IReadOnlyList<SitePages.RollingMaePoint> ComputeRollingMae(
         IReadOnlyList<TempPredictionRow> predictions,
@@ -480,8 +486,12 @@ ORDER BY 1";
             var subset = paired.Where(p => p.ModelVersion == version && p.LeadHours == lead).ToList();
             if (subset.Count == 0) continue;
 
-            // Emit one rolling-MAE point per calendar day end.
-            for (var d = minDate.AddDays(windowDays - 1); d <= maxDate; d = d.AddDays(1))
+            // Emit one rolling-MAE point per calendar day end across the
+            // available paired range. Window slides backwards by windowDays
+            // from each emitted day; partial windows at the start are fine —
+            // the N field on each point tells the reader how many pairs went
+            // in so they can judge stability.
+            for (var d = minDate; d <= maxDate; d = d.AddDays(1))
             {
                 var windowEnd = d.AddDays(1).AddTicks(-1);
                 var windowStart = windowEnd.AddDays(-windowDays);

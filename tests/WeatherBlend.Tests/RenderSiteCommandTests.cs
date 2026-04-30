@@ -105,6 +105,112 @@ public class RenderSiteCommandTests : IDisposable
             .Should().BeFalse();
     }
 
+    // ---------- ComputeRollingMae ----------
+
+    private static WeatherBlend.Models.TempPredictionRow Pred(
+        string version, int leadHours, DateTime validTime, double blendTemperature)
+        => new()
+        {
+            LocationName = "bonehill_rocks",
+            ModelVersion = version,
+            PredictionMadeAtUtc = validTime.AddHours(-leadHours),
+            ValidTimeUtc = validTime,
+            LeadHours = leadHours,
+            BlendTemperature = blendTemperature,
+            FeatureVectorHash = "",
+        };
+
+    [Fact]
+    public void ComputeRollingMae_returns_empty_when_no_pairs()
+    {
+        // No predictions at all → empty. Same with predictions whose valid
+        // times are missing from the truth dict — pairing drops them.
+        var truth = new Dictionary<DateTime, double>();
+        RenderSiteCommand.ComputeRollingMae(
+                Array.Empty<WeatherBlend.Models.TempPredictionRow>(),
+                truth, windowDays: 14)
+            .Should().BeEmpty();
+
+        var pred = new[] { Pred("v1", 24,
+            new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc), 10.0) };
+        RenderSiteCommand.ComputeRollingMae(pred, truth, 14).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ComputeRollingMae_emits_partial_window_points_when_data_shorter_than_window()
+    {
+        // Bug fix 2026-04-30: with 3 days of paired data and a 14-day rolling
+        // window, the loop used to start at minDate + windowDays - 1 (= 14
+        // days into the future) and never enter the body, leaving the chart
+        // empty even though pairs existed. Now we emit a point per paired
+        // day from minDate, with a partial window where needed.
+        var t1 = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
+        var t2 = new DateTime(2026, 4, 23, 12, 0, 0, DateTimeKind.Utc);
+        var t3 = new DateTime(2026, 4, 24, 12, 0, 0, DateTimeKind.Utc);
+        var preds = new[]
+        {
+            Pred("v1", 24, t1, 10.0),
+            Pred("v1", 24, t2, 11.0),
+            Pred("v1", 24, t3, 12.0),
+        };
+        var truth = new Dictionary<DateTime, double>
+        {
+            [t1] = 9.0, [t2] = 10.0, [t3] = 13.0,
+        };
+
+        var points = RenderSiteCommand.ComputeRollingMae(preds, truth, windowDays: 14);
+
+        // One point per paired day. Cumulative MAE because the window covers
+        // all of the paired data behind each day.
+        points.Should().HaveCount(3);
+        points.Select(p => p.WindowEndUtc.Date).Should().Equal(t1.Date, t2.Date, t3.Date);
+        points.Select(p => p.N).Should().Equal(1, 2, 3);
+        points[0].BlendMae.Should().BeApproximately(1.0, 1e-9);   // |10-9|
+        points[1].BlendMae.Should().BeApproximately(1.0, 1e-9);   // (1 + 1) / 2
+        points[2].BlendMae.Should().BeApproximately(1.0, 1e-9);   // (1 + 1 + 1) / 3
+    }
+
+    [Fact]
+    public void ComputeRollingMae_window_slides_so_old_pairs_drop_off_after_windowDays()
+    {
+        // Five paired days, 3-day rolling window: the oldest pair leaves the
+        // window once we get to day 4, so day-4's MAE is computed over days
+        // 2..4 (not days 1..4).
+        var t1 = new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc);
+        var preds = Enumerable.Range(0, 5)
+            .Select(i => Pred("v1", 24, t1.AddDays(i), 10.0 + i))
+            .ToArray();
+        var truth = preds.ToDictionary(p => p.ValidTimeUtc, p => p.BlendTemperature - 1.0);
+
+        var points = RenderSiteCommand.ComputeRollingMae(preds, truth, windowDays: 3);
+
+        // 5 points, one per day. N caps at 3 from day 3 onwards.
+        points.Should().HaveCount(5);
+        points.Select(p => p.N).Should().Equal(1, 2, 3, 3, 3);
+        // Each pair has |pred - truth| = 1, so MAE = 1 across every window.
+        points.Select(p => p.BlendMae).Should().AllBeEquivalentTo(1.0);
+    }
+
+    [Fact]
+    public void ComputeRollingMae_separates_per_version_and_per_lead()
+    {
+        // Two versions × two leads → four series of points, no cross-talk.
+        var t = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
+        var preds = new[]
+        {
+            Pred("v1", 24, t, 10.0),
+            Pred("v1", 48, t, 11.0),
+            Pred("v2", 24, t, 12.0),
+            Pred("v2", 48, t, 13.0),
+        };
+        var truth = new Dictionary<DateTime, double> { [t] = 10.0 };
+
+        var points = RenderSiteCommand.ComputeRollingMae(preds, truth, 14);
+        points.Should().HaveCount(4);
+        points.Select(p => (p.ModelVersion, p.LeadHours)).Should().BeEquivalentTo(
+            new (string, int)[] { ("v1", 24), ("v1", 48), ("v2", 24), ("v2", 48) });
+    }
+
     // ---------- helpers ----------
 
     private static DuckDBConnection OpenConn()
