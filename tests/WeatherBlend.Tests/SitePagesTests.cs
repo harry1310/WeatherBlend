@@ -514,6 +514,49 @@ public class SitePagesTests
     }
 
     [Fact]
+    public void RenderDryWindow_uses_simple_title_and_renders_probs_as_percent()
+    {
+        // UX rules pinned 2026-04-30:
+        //   1. Tab + page title is just "Dry window" (the daytime-window caveat
+        //      is described in body copy, not the heading).
+        //   2. Probability cells render as integer percentages with a trailing
+        //      "%" — same scale as the Home P(wet) chip — instead of 0..1
+        //      fractions, which were harder to scan at a glance.
+        //   3. Each table row's date column carries a 3-letter day-of-week
+        //      prefix (Mon/Tue/...) so the eye can find a weekday without
+        //      counting from the calendar.
+        var generatedAt = new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc);
+        // 2026-05-04 is a Monday — pick a date whose DoW is unambiguous in the
+        // assertion (avoid e.g. "Sat" overlapping with other strings).
+        var targetDate = new DateTime(2026, 5, 4, 0, 0, 0, DateTimeKind.Utc);
+        var preds = new[]
+        {
+            new SitePages.DryWindowForecastPoint(
+                "ea_bellever_dartmoor", 6, "v3b", generatedAt, targetDate, 24, 0.62, 0.5, 0.71),
+        };
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            DryWindowPredictions = preds,
+            PhaseByVersion = new Dictionary<string, string> { ["v3b"] = "3b" },
+        };
+
+        var html = SitePages.RenderDryWindow(input, null);
+
+        // Title: simple "Dry window", no "daytime" qualifier in headings.
+        html.Should().Contain("<h2>Dry window</h2>")
+            .And.NotContain("Dry daytime window");
+
+        // Probability cell: 0.62 → "62%", agreement 0.71 → "71%". No "0.62".
+        html.Should().Contain("62%").And.Contain("71%")
+            .And.NotContain(">0.62<")
+            .And.NotContain(">0.71<");
+
+        // Day-of-week prefix: Mon 2026-05-04. CultureInvariant ddd is en-US 3-letter.
+        html.Should().Contain("Mon 2026-05-04");
+    }
+
+    [Fact]
     public void RenderDryWindow_unknown_slug_falls_back_to_first_station()
     {
         // An unknown slug shouldn't crash the page; it should render the canonical

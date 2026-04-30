@@ -6,7 +6,7 @@ namespace WeatherBlend.Site;
 public static partial class SitePages
 {
     /// <summary>
-    /// Dry daytime window page. <paramref name="stationSlug"/> picks which station
+    /// Dry window page. <paramref name="stationSlug"/> picks which station
     /// to render; <c>null</c> means the first station, which ships as
     /// <c>dry-window.html</c> (filename preserved so existing links don't break).
     /// The other stations ship as <c>dry-window-{slug}.html</c>. Each variant
@@ -18,7 +18,7 @@ public static partial class SitePages
         content.Append("""
             <section>
               <hgroup>
-                <h2>Dry daytime window — P(∃ N-hour dry block in 09–18 local)</h2>
+                <h2>Dry window</h2>
                 <p>Per-station, per-window blender. Truth from EA Hydrology gauges with a 4-of-4 hourly gate.
                    The label asks "is there a contiguous N-hour dry block somewhere within 09:00–18:00 local time?" — the realistic
                    outdoor-walking window at Bonehill year-round, in BST or GMT (DST handled per target day).
@@ -33,7 +33,7 @@ public static partial class SitePages
         {
             content.Append("<p><em>No dry-window predictions in window. Run <code>predict --target dry-window --truth-station all --window all</code>.</em></p>");
             content.Append("</section>");
-            return WrapPage(input, "Dry daytime window", "dry-window", content.ToString());
+            return WrapPage(input, "Dry window", "dry-window", content.ToString());
         }
 
         var stations = input.DryWindowPredictions.Select(d => d.Station).Distinct().OrderBy(s => s, StringComparer.Ordinal).ToList();
@@ -51,7 +51,7 @@ public static partial class SitePages
         {
             content.Append("<p><em>No dry-window predictions for the selected station.</em></p>");
             content.Append("</section>");
-            return WrapPage(input, "Dry daytime window", "dry-window", content.ToString());
+            return WrapPage(input, "Dry window", "dry-window", content.ToString());
         }
 
         content.Append(Ci, $"<h3>{Escape(PrettyStation(currentStation))}</h3>");
@@ -98,9 +98,11 @@ public static partial class SitePages
                         if (byLead.TryGetValue(lead, out var d))
                         {
                             // Cell text colour walks the green→red gradient so the eye
-                            // can scan the column without reading every digit.
+                            // can scan the column without reading every digit. Values
+                            // render as integer percentages — same scale as the Home
+                            // P(wet) chip, less cognitive load than a 0..1 fraction.
                             var color = ProbabilityColor(d.ProbHasDryWindow);
-                            leadCells.Append(Ci, $"<td class=\"num\" style=\"color: {color}; font-weight: 600\">{d.ProbHasDryWindow.ToString("0.00", Ci)}</td>");
+                            leadCells.Append(Ci, $"<td class=\"num\" style=\"color: {color}; font-weight: 600\">{(d.ProbHasDryWindow * 100).ToString("0", Ci)}%</td>");
                         }
                         else
                         {
@@ -111,11 +113,13 @@ public static partial class SitePages
                     var agreementCell = byLead.Values
                         .Select(d => d.AgreementHasDryWindow)
                         .FirstOrDefault(a => a.HasValue);
-                    var agreement = agreementCell.HasValue ? agreementCell.Value.ToString("0.00", Ci) : "—";
+                    var agreement = agreementCell.HasValue
+                        ? (agreementCell.Value * 100).ToString("0", Ci) + "%"
+                        : "—";
 
                     tbody.Append(Ci, $"""
                         <tr>
-                          <td><time>{date:yyyy-MM-dd}</time></td>
+                          <td><time datetime="{date:yyyy-MM-dd}">{date:ddd} {date:yyyy-MM-dd}</time></td>
                           {leadCells}
                           <td class="num">{agreement}</td>
                         </tr>
@@ -162,6 +166,6 @@ public static partial class SitePages
             <p class="skill-line">A dry "hour" requires all four 15-min EA gauge readings to be ≤ 0.1 mm. Search is bounded to 09:00–18:00 local time (Europe/London, DST-aware) — overnight dry stretches don't count, and a dry block that bridges 18:00 into the evening isn't credited. Cross-midnight dry stretches are not credited (UTC-day boundary).</p>
             </section>
             """);
-        return WrapPage(input, "Dry daytime window", "dry-window", content.ToString());
+        return WrapPage(input, "Dry window", "dry-window", content.ToString());
     }
 }

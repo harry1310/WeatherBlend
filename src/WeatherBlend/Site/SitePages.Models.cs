@@ -217,7 +217,7 @@ public static partial class SitePages
     /// Pretty-print a composite key. Examples:
     ///   "temperature"                              → "Temperature"
     ///   "precipitation/ea_bellever_dartmoor"       → "Precipitation — Bellever Dartmoor"
-    ///   "dry_window/ea_bellever_dartmoor/6h"       → "Dry daytime window — Bellever Dartmoor — 6-hour"
+    ///   "dry_window/ea_bellever_dartmoor/6h"       → "Dry window — Bellever Dartmoor — 6-hour"
     /// </summary>
     private static string PrettyComposite(string key)
     {
@@ -228,7 +228,7 @@ public static partial class SitePages
         {
             "temperature" => "Temperature",
             "precipitation" => "Precipitation",
-            "dry_window" => "Dry daytime window",
+            "dry_window" => "Dry window",
             _ => parts[0],
         };
         if (parts.Length == 1) return target;
