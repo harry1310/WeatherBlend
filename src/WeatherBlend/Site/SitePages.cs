@@ -181,6 +181,16 @@ public static partial class SitePages
         /// </summary>
         public IReadOnlyList<FeelsLikeForecastPoint> FeelsLikePredictions { get; init; }
             = Array.Empty<FeelsLikeForecastPoint>();
+
+        /// <summary>
+        /// Per-(station, window, lead, target_date) start-hour curve points —
+        /// one row per candidate start hour. Latest <c>PredictedAtUtc</c> per
+        /// (Station, WindowHours, LeadHours, TargetDateUtc, StartHourUtc) wins
+        /// at render time. Empty when the start-hour predict tree hasn't been
+        /// synced yet — the dry-window page degrades silently to "no curve".
+        /// </summary>
+        public IReadOnlyList<StartHourForecastPoint> StartHourPredictions { get; init; }
+            = Array.Empty<StartHourForecastPoint>();
     }
 
     /// <summary>
@@ -254,6 +264,21 @@ public static partial class SitePages
         double ProbHasDryWindow,
         double ClimatologyProbHasDryWindow,
         double? AgreementHasDryWindow);
+
+    /// <summary>One row of the dry-window start-hour curve. Multiple rows
+    /// share a (Station, WindowHours, LeadHours, TargetDateUtc) and differ
+    /// only in <see cref="StartHourUtc"/> + the per-start probabilities.</summary>
+    public sealed record StartHourForecastPoint(
+        string Station,
+        int WindowHours,
+        string Version,
+        DateTime PredictedAtUtc,
+        DateTime TargetDateUtc,
+        int LeadHours,
+        int StartHourUtc,
+        double ConditionalProb,
+        double CalibratedProb,
+        double DailyProbAnyBlock);
 
     public static string Stylesheet() => """
         :root { --brand: #7c4dff; --pwet: #0288d1; }

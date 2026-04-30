@@ -556,6 +556,135 @@ public class SitePagesTests
         html.Should().Contain("Mon 2026-05-04");
     }
 
+    // ---- start-hour curve: PickBestStart + dry-window column rendering ----
+
+    private static SitePages.StartHourForecastPoint StartHour(
+        string station, int window, int lead, DateTime target,
+        int startHour, double pi, double dailyP, double cal)
+        => new(station, window, "v1", new DateTime(2026, 4, 30, 10, 0, 0, DateTimeKind.Utc),
+               target, lead, startHour, pi, cal, dailyP);
+
+    [Fact]
+    public void PickBestStart_returns_argmax_when_curve_has_meaningful_shape()
+    {
+        // Peak − trough = 0.45 − 0.05 = 0.40, well above the 0.10 suppression
+        // threshold. Daily P = 0.7 > 0.10. The 11Z start should win on
+        // ConditionalProb (0.45) and its CalibratedProb is what the renderer
+        // surfaces.
+        var t = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+        var curve = new[]
+        {
+            StartHour("ea_bellever_dartmoor", 6, 24, t, 8,  0.20, 0.7, 0.14),
+            StartHour("ea_bellever_dartmoor", 6, 24, t, 9,  0.30, 0.7, 0.21),
+            StartHour("ea_bellever_dartmoor", 6, 24, t, 10, 0.05, 0.7, 0.035),
+            StartHour("ea_bellever_dartmoor", 6, 24, t, 11, 0.45, 0.7, 0.315),
+        };
+
+        var best = SitePages.PickBestStart(curve);
+        best.Should().NotBeNull();
+        best!.StartHourUtc.Should().Be(11);
+    }
+
+    [Fact]
+    public void PickBestStart_returns_null_when_daily_prob_is_too_low()
+    {
+        // Daily P = 0.05 < 0.10 threshold: a "best start" would mislead the
+        // reader into chasing a block that's almost certainly not happening.
+        // Renderer should suppress the column entry for this row.
+        var t = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+        var curve = new[]
+        {
+            StartHour("ea_bellever_dartmoor", 6, 24, t, 8,  0.10, 0.05, 0.005),
+            StartHour("ea_bellever_dartmoor", 6, 24, t, 9,  0.40, 0.05, 0.020),
+            StartHour("ea_bellever_dartmoor", 6, 24, t, 10, 0.30, 0.05, 0.015),
+            StartHour("ea_bellever_dartmoor", 6, 24, t, 11, 0.20, 0.05, 0.010),
+        };
+
+        SitePages.PickBestStart(curve).Should().BeNull();
+    }
+
+    [Fact]
+    public void PickBestStart_returns_null_when_curve_is_too_uniform()
+    {
+        // peak − trough = 0.27 − 0.23 = 0.04 < 0.10 threshold: the model has
+        // no real preference, the argmax is just whichever bucket sorted
+        // first by float noise. Showing it would be a false signal.
+        var t = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+        var curve = new[]
+        {
+            StartHour("ea_bellever_dartmoor", 6, 24, t, 8,  0.25, 0.95, 0.2375),
+            StartHour("ea_bellever_dartmoor", 6, 24, t, 9,  0.27, 0.95, 0.2565),
+            StartHour("ea_bellever_dartmoor", 6, 24, t, 10, 0.25, 0.95, 0.2375),
+            StartHour("ea_bellever_dartmoor", 6, 24, t, 11, 0.23, 0.95, 0.2185),
+        };
+
+        SitePages.PickBestStart(curve).Should().BeNull();
+    }
+
+    [Fact]
+    public void PickBestStart_returns_null_for_empty_curve()
+    {
+        SitePages.PickBestStart(Array.Empty<SitePages.StartHourForecastPoint>())
+            .Should().BeNull();
+    }
+
+    [Fact]
+    public void RenderDryWindow_renders_best_start_column_when_curves_present()
+    {
+        // Couple a sharp curve (peak at 11Z, suppression rules pass) with a
+        // dry-window prediction at the same (station, window, lead, date).
+        // Renderer should add a "Best start" column with "11:00Z (32%)".
+        var generatedAt = new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc);
+        var target = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+        var dryRow = new SitePages.DryWindowForecastPoint(
+            "ea_bellever_dartmoor", 6, "v3b", generatedAt, target, 24, 0.7, 0.5, null);
+        var curve = new[]
+        {
+            StartHour("ea_bellever_dartmoor", 6, 24, target, 8,  0.20, 0.7, 0.14),
+            StartHour("ea_bellever_dartmoor", 6, 24, target, 9,  0.30, 0.7, 0.21),
+            StartHour("ea_bellever_dartmoor", 6, 24, target, 10, 0.05, 0.7, 0.035),
+            StartHour("ea_bellever_dartmoor", 6, 24, target, 11, 0.45, 0.7, 0.315),
+        };
+
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            DryWindowPredictions = new[] { dryRow },
+            StartHourPredictions = curve,
+            PhaseByVersion = new Dictionary<string, string> { ["v3b"] = "3b" },
+        };
+
+        var html = SitePages.RenderDryWindow(input, null);
+
+        html.Should().Contain("Best start")
+            .And.Contain("11:00Z")
+            .And.Contain("(32%)"); // 0.315 → 32% rounded
+    }
+
+    [Fact]
+    public void RenderDryWindow_omits_best_start_column_entirely_when_no_curves()
+    {
+        // Pre-step-3 rendering path: empty StartHourPredictions → header
+        // doesn't appear, table layout matches the legacy four-column shape.
+        var generatedAt = new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc);
+        var target = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            DryWindowPredictions = new[]
+            {
+                new SitePages.DryWindowForecastPoint(
+                    "ea_bellever_dartmoor", 6, "v3b", generatedAt, target, 24, 0.7, 0.5, null),
+            },
+            StartHourPredictions = Array.Empty<SitePages.StartHourForecastPoint>(),
+            PhaseByVersion = new Dictionary<string, string> { ["v3b"] = "3b" },
+        };
+
+        var html = SitePages.RenderDryWindow(input, null);
+
+        html.Should().NotContain("Best start");
+    }
+
     [Fact]
     public void RenderDryWindow_unknown_slug_falls_back_to_first_station()
     {

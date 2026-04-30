@@ -6,6 +6,36 @@ namespace WeatherBlend.Site;
 public static partial class SitePages
 {
     /// <summary>
+    /// Pick the highest-calibrated-probability start hour from a curve, or
+    /// return <c>null</c> when the curve carries no useful shape. The shape
+    /// rule mirrors the home-card chip suppression: tiny daily marginals
+    /// (<c>≤ 0.10</c>) make any "best start" a contradiction ("there's
+    /// almost certainly no block"), and uniform-ish curves (peak − trough
+    /// &lt; 0.10) mean the model has no meaningful preference and the user
+    /// shouldn't be misled into reading the argmax as a real signal.
+    /// Threshold values pinned by tests so they can't drift silently.
+    /// </summary>
+    internal const double StartHourMinDailyProb = 0.10;
+    internal const double StartHourMinPeakRange = 0.10;
+
+    internal static StartHourForecastPoint? PickBestStart(
+        IEnumerable<StartHourForecastPoint> curveForOneCell)
+    {
+        StartHourForecastPoint? best = null;
+        double maxProb = double.NegativeInfinity;
+        double minProb = double.PositiveInfinity;
+        foreach (var r in curveForOneCell)
+        {
+            if (r.ConditionalProb > maxProb) { maxProb = r.ConditionalProb; best = r; }
+            if (r.ConditionalProb < minProb) { minProb = r.ConditionalProb; }
+        }
+        if (best is null) return null;
+        if (best.DailyProbAnyBlock < StartHourMinDailyProb) return null;
+        if (maxProb - minProb < StartHourMinPeakRange) return null;
+        return best;
+    }
+
+    /// <summary>
     /// Dry window page. <paramref name="stationSlug"/> picks which station
     /// to render; <c>null</c> means the first station, which ships as
     /// <c>dry-window.html</c> (filename preserved so existing links don't break).
@@ -55,6 +85,16 @@ public static partial class SitePages
         }
 
         content.Append(Ci, $"<h3>{Escape(PrettyStation(currentStation))}</h3>");
+
+        // Index the start-hour curves once per (station, window, lead,
+        // target_date) so the inner loop is O(1) per row. Empty dictionary
+        // when no curves on disk — renderer falls back gracefully to the
+        // pre-curve table layout.
+        var curvesByCell = input.StartHourPredictions
+            .Where(s => s.Station == currentStation)
+            .GroupBy(s => (s.Station, s.WindowHours, s.LeadHours, s.TargetDateUtc))
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<StartHourForecastPoint>)g.ToList());
+        var hasCurves = curvesByCell.Count > 0;
 
         foreach (var window in windows)
         {
@@ -117,11 +157,37 @@ public static partial class SitePages
                         ? (agreementCell.Value * 100).ToString("0", Ci) + "%"
                         : "—";
 
+                    // Best-start cell: argmax of the curve at the smallest
+                    // available lead bucket for this (station, window, date).
+                    // Falls back to "—" when no curve, when the daily P(any) is
+                    // too low for a "best start" to mean anything, or when the
+                    // curve is too uniform to peak. See PickBestStart for the
+                    // suppression rules.
+                    string bestStartCell = "—";
+                    if (hasCurves)
+                    {
+                        foreach (var lead in leadOrder)
+                        {
+                            if (!byLead.ContainsKey(lead)) continue;
+                            if (!curvesByCell.TryGetValue((currentStation, window, lead, date), out var curve)) continue;
+                            var best = PickBestStart(curve);
+                            if (best is null) continue;
+                            // "10:00Z (32%)" — UTC start hour + the
+                            // calibrated marginal so the reader sees both
+                            // location and confidence.
+                            bestStartCell = $"{best.StartHourUtc:00}:00Z <small>({(best.CalibratedProb * 100).ToString("0", Ci)}%)</small>";
+                            break;
+                        }
+                    }
+
+                    var bestStartTd = hasCurves ? $"<td>{bestStartCell}</td>" : "";
+
                     tbody.Append(Ci, $"""
                         <tr>
                           <td><time datetime="{date:yyyy-MM-dd}">{date:ddd} {date:yyyy-MM-dd}</time></td>
                           {leadCells}
                           <td class="num">{agreement}</td>
+                          {bestStartTd}
                         </tr>
                         """);
                 }
@@ -137,6 +203,9 @@ public static partial class SitePages
                         <p class="skill-line">{Escape(phase.Description)}</p>
                         """);
                 }
+                var bestStartHeader = hasCurves
+                    ? "<th>Best start <small>(UTC, calibrated %)</small></th>"
+                    : "";
                 content.Append(Ci, $"""
                     <figure>
                       <table>
@@ -147,6 +216,7 @@ public static partial class SitePages
                             <th class="num">+48h</th>
                             <th class="num">+72h</th>
                             <th class="num">Model agreement</th>
+                            {bestStartHeader}
                           </tr>
                         </thead>
                         <tbody>

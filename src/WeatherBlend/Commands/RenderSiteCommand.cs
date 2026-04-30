@@ -63,6 +63,9 @@ public sealed class RenderSiteCommand
         var dryWindow = QueryDryWindowPredictions(windowStart, predictionEnd, ct);
         _log.LogInformation("Loaded {N} dry-window prediction rows.", dryWindow.Count);
 
+        var startHour = QueryStartHourPredictions(windowStart, predictionEnd, ct);
+        _log.LogInformation("Loaded {N} start-hour curve rows.", startHour.Count);
+
         // ERA5 is gapless-for-past, but only past — query up to the clock time.
         // Persistence-lookback headroom (up to 72h before the earliest prediction)
         // keeps rolling-MAE truth pairs matchable at the start of the window.
@@ -116,6 +119,7 @@ public sealed class RenderSiteCommand
             PrecipCurrentByStation = precipCurrentByStation,
             ModelSummaries = modelSummaries,
             FeelsLikePredictions = feelsLike,
+            StartHourPredictions = startHour,
         };
 
         Directory.CreateDirectory(outputDir);
@@ -624,6 +628,52 @@ ORDER BY LeadHours, ValidTimeUtc";
             Band:           r.IsDBNull(5) ? "" : r.GetString(5),
             ApparentC:      r.GetDouble(6)),
             _log, "Feels-like predictions tree empty — chip will be absent on home cards.", ct);
+    }
+
+    private IReadOnlyList<SitePages.StartHourForecastPoint> QueryStartHourPredictions(
+        DateTime start, DateTime end, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath,
+            WeatherBlend.Commands.StartHourPredictCommand.PredictionsSubdir, "**", "*.parquet"));
+
+        // Probe in case no curves have been written yet (fresh deploy, first
+        // run before the predict-and-render cycle has produced anything).
+        // Without this the read_parquet would throw on a missing tree.
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        if (!ParquetReader.HasColumn(conn, glob, "ConditionalProb"))
+        {
+            _log.LogWarning("Start-hour curves tree empty — best-start column will be absent until predict runs once.");
+            return Array.Empty<SitePages.StartHourForecastPoint>();
+        }
+
+        // Bounded by TargetDateUtc so we read the same forward window the
+        // dry-window page draws, no further. ProbHasDryWindow / Daily prob is
+        // mirrored on every row so renderer / verify can read it without
+        // re-joining to the dry-window tree.
+        var sql = $@"
+SELECT TruthStation, WindowHours, ModelVersion, PredictionMadeAtUtc, TargetDateUtc, LeadHours,
+       StartHourUtc, ConditionalProb, CalibratedProb, DailyProbAnyBlock
+FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+WHERE LocationName = '{_cfg.Location.Name}'
+  AND TargetDateUtc >= TIMESTAMP '{start.Date:yyyy-MM-dd HH:mm:ss}'
+  AND TargetDateUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+ORDER BY TruthStation, WindowHours, LeadHours, TargetDateUtc, StartHourUtc";
+
+        return ParquetReader.Query(conn, sql, r => new SitePages.StartHourForecastPoint(
+            Station:           r.GetString(0),
+            WindowHours:       r.GetInt32(1),
+            Version:           r.GetString(2),
+            PredictedAtUtc:    r.GetDateTime(3),
+            TargetDateUtc:     r.GetDateTime(4),
+            LeadHours:         r.GetInt32(5),
+            StartHourUtc:      r.GetInt32(6),
+            ConditionalProb:   r.GetDouble(7),
+            CalibratedProb:    r.GetDouble(8),
+            DailyProbAnyBlock: r.GetDouble(9)),
+            _log, "Start-hour curves tree empty — best-start column will be absent.", ct);
     }
 
     private IReadOnlyList<SitePages.DryWindowForecastPoint> QueryDryWindowPredictions(
