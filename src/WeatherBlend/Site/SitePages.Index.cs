@@ -80,7 +80,7 @@ public static partial class SitePages
             {
                 // ☔ when the displayed P(wet) rounds to ≥ 25%
                 var rain = pw!.ProbWet >= 0.245 ? " <span class=\"rain\">&#x2614;</span>" : "";
-                var pwColor = ProbabilityColor(pw.ProbWet);
+                var pwColor = PrecipProbColor(pw.ProbWet);
                 pwetCell = $"<div class=\"pwet\">P(wet) <strong style=\"color: {pwColor}\">{(pw.ProbWet * 100).ToString("0", Ci)}%</strong>{rain}</div>";
             }
 

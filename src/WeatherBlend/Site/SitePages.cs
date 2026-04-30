@@ -797,26 +797,17 @@ public static partial class SitePages
     }
 
     /// <summary>
-    /// CSS colour for a P(wet) value in <c>[0, 1]</c>. Walks an
-    /// "earth → water" landscape ramp: warm tan (sun-baked dirt) at 0%,
-    /// neutral stone grey (overcast) at 50%, deep teal (saturated water)
-    /// at 100%. Direction matches the home-card semantic: low value = dry-
-    /// friendly, high value = wet. Deep teal at 100% is dark enough to
-    /// stay clear of the temperature ramp's cool-blue end so a glance
-    /// reads the two chips as different scales rather than the same one.
-    /// Distinct from <see cref="ProbabilityColor"/> on purpose — that's
-    /// the dry-window page's traffic-light (green = good); P(wet)'s
-    /// "high = bad" inverts that direction and uses a different palette
-    /// so the two surfaces don't visually merge.
+    /// CSS colour for a P(wet) value in <c>[0, 1]</c>. 
+    /// Just the revers of ProbabilityColor for now
     /// </summary>
     internal static string PrecipProbColor(double prob)
     {
         if (double.IsNaN(prob)) return "var(--pico-muted-color)";
         (double t, int r, int g, int b)[] anchors =
         {
-            (0.00, 193, 154, 107),  // tan        #c19a6b — sun-baked earth
-            (0.50, 168, 168, 156),  // stone grey #a8a89c — overcast
-            (1.00,   0, 105,  92),  // deep teal  #00695c — saturated
+            (0.00,  67, 160,  71),  // green  #43a047
+            (0.50, 255, 167,  38),  // amber  #ffa726
+            (1.00, 229,  57,  53),  // red    #e53935
         };
         if (prob <= anchors[0].t) return FormatRgb(anchors[0].r, anchors[0].g, anchors[0].b);
         if (prob >= anchors[^1].t) return FormatRgb(anchors[^1].r, anchors[^1].g, anchors[^1].b);
