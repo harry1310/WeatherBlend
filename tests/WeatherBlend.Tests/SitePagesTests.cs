@@ -313,34 +313,36 @@ public class SitePagesTests
     // ---- PrecipProbColor (home P(wet) chip ramp) ---------------------------
 
     [Theory]
-    [InlineData(-0.5,  38, 166, 154)]  // below 0 → clamps to teal
-    [InlineData( 0.0,  38, 166, 154)]  // teal anchor   #26a69a
-    [InlineData( 0.5, 251, 192,  45)]  // yellow anchor #fbc02d
-    [InlineData( 1.0,  93,  64,  55)]  // brown anchor  #5d4037
-    [InlineData( 1.5,  93,  64,  55)]  // above 1 → clamps to brown
+    [InlineData(-0.5, 193, 154, 107)]  // below 0 → clamps to tan
+    [InlineData( 0.0, 193, 154, 107)]  // tan        anchor #c19a6b — dry / earth
+    [InlineData( 0.5, 168, 168, 156)]  // stone grey anchor #a8a89c — overcast
+    [InlineData( 1.0,   0, 105,  92)]  // deep teal  anchor #00695c — wet / water
+    [InlineData( 1.5,   0, 105,  92)]  // above 1 → clamps to deep teal
     public void PrecipProbColor_returns_expected_rgb_at_anchors_and_clamps(double prob, int r, int g, int b)
     {
         SitePages.PrecipProbColor(prob).Should().Be($"rgb({r} {g} {b})");
     }
 
     [Fact]
-    public void PrecipProbColor_interpolates_smoothly_from_teal_through_yellow_to_brown()
+    public void PrecipProbColor_interpolates_smoothly_from_tan_through_grey_to_deep_teal()
     {
-        // At 0.25 the colour should sit between teal (38,166,154) and yellow
-        // (251,192,45): red rises, blue falls. At 0.75 it should sit between
-        // yellow and brown: red falls, blue ticks up slightly.
+        // At 0.25 the colour should sit between tan (193,154,107) and stone
+        // grey (168,168,156): red falls slightly, green and blue rise. At
+        // 0.75 between grey and deep teal (0,105,92): red and green fall,
+        // blue dips toward saturated water.
         var quarter = SitePages.PrecipProbColor(0.25);
         var threeq  = SitePages.PrecipProbColor(0.75);
 
         var qParts = quarter["rgb(".Length..^1].Split(' ');
         var qR = int.Parse(qParts[0]); var qG = int.Parse(qParts[1]); var qB = int.Parse(qParts[2]);
-        qR.Should().BeInRange(39, 250, "red rising teal → yellow");
-        qB.Should().BeInRange(46, 153, "blue falling teal → yellow");
+        qR.Should().BeInRange(169, 192, "red falling tan → grey");
+        qG.Should().BeInRange(155, 167, "green rising tan → grey");
+        qB.Should().BeInRange(108, 155, "blue rising tan → grey");
 
         var tParts = threeq["rgb(".Length..^1].Split(' ');
         var tR = int.Parse(tParts[0]); var tG = int.Parse(tParts[1]); var tB = int.Parse(tParts[2]);
-        tR.Should().BeInRange(94, 250, "red falling yellow → brown");
-        tG.Should().BeInRange(65, 191, "green falling yellow → brown");
+        tR.Should().BeInRange(1, 167, "red falling grey → teal");
+        tG.Should().BeInRange(106, 167, "green falling grey → teal");
     }
 
     [Fact]
