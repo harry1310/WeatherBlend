@@ -234,6 +234,18 @@ public static partial class SitePages
                 series.Add(new LineSeries($"Blend +{lead}h", color, pts));
         }
 
+        // Met Office Spot forecast as a third reference line — same shape as
+        // ERA5/METAR truth, but it's a *forecast* so we label it explicitly
+        // and use the Met Office brand navy so the eye reads it as another
+        // forecaster's view, not a truth source.
+        var moSpotPts = input.MetOfficeSpotForecasts
+            .Where(m => m.ValidTimeUtc >= input.WindowStartUtc && m.Temperature2m.HasValue)
+            .OrderBy(m => m.ValidTimeUtc)
+            .Select(m => (X: m.ValidTimeUtc.ToOADate(), Y: m.Temperature2m!.Value))
+            .ToList();
+        if (moSpotPts.Count > 0)
+            series.Add(new LineSeries("Met Office Spot", "#262261", moSpotPts));
+
         if (series.Count == 0)
             return RenderEmptyChart($"Temperature — phase {phaseKey}", "No overlap between predictions and truth in window.");
 
@@ -330,7 +342,9 @@ public static partial class SitePages
                behind the lines mark hours where the gauge actually recorded ≥ 0.1 mm — so reading the chart is "during the
                blue stripe, did our P(wet) lines climb?". A dashed vertical line marks today; everything to the right is
                forecast-only. Hours with fewer than 4 of 4 15-min readings are dropped to avoid flipping wet↔dry at the
-               boundary.</p>
+               boundary. The dark-navy "Met Office Spot PoP" line, when present, is the Met Office DataHub Spot product's
+               own probability for the Bonehill point — its threshold is "any measurable precip", a slightly looser bound
+               than our 0.1 mm/h, so read it as direction-of-effect alongside our blender rather than a like-for-like overlay.</p>
             """);
 
         if (currentStation is null)
@@ -396,6 +410,21 @@ public static partial class SitePages
                 if (pts.Count > 0)
                     series.Add(new LineSeries($"P(wet) +{lead}h", color, pts));
             }
+
+            // Met Office Spot precipitation probability as a comparison line.
+            // The DataHub Spot product emits PoP in percent on a 0–100 scale —
+            // divide by 100 here so it shares the chart's [0, 1] Y-axis with
+            // P(wet). NB the Met Office threshold is "any measurable precip",
+            // a slightly looser bound than our 0.1 mm/h training label, so the
+            // comparison is direction-of-effect rather than apples-to-apples.
+            // The skill-line block above the chart calls this out.
+            var moSpotPts = input.MetOfficeSpotForecasts
+                .Where(m => m.ValidTimeUtc >= input.WindowStartUtc && m.PrecipitationProbabilityPercent.HasValue)
+                .OrderBy(m => m.ValidTimeUtc)
+                .Select(m => (X: m.ValidTimeUtc.ToOADate(), Y: m.PrecipitationProbabilityPercent!.Value / 100.0))
+                .ToList();
+            if (moSpotPts.Count > 0)
+                series.Add(new LineSeries("Met Office Spot PoP", "#262261", moSpotPts));
 
             if (series.Count == 0)
             {

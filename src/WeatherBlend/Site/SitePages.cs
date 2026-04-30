@@ -191,6 +191,15 @@ public static partial class SitePages
         /// </summary>
         public IReadOnlyList<StartHourForecastPoint> StartHourPredictions { get; init; }
             = Array.Empty<StartHourForecastPoint>();
+
+        /// <summary>
+        /// Met Office DataHub Spot forecasts for the configured location. Pre-
+        /// filtered to "latest RunTime per ValidTime" by the renderer query so
+        /// the chart code just plots them; future-target rows past the
+        /// rendering window are also dropped on read.
+        /// </summary>
+        public IReadOnlyList<MetOfficeSpotForecastPoint> MetOfficeSpotForecasts { get; init; }
+            = Array.Empty<MetOfficeSpotForecastPoint>();
     }
 
     /// <summary>
@@ -264,6 +273,23 @@ public static partial class SitePages
         double ProbHasDryWindow,
         double ClimatologyProbHasDryWindow,
         double? AgreementHasDryWindow);
+
+    /// <summary>One Met Office DataHub Spot forecast row at a single
+    /// (RunTime, ValidTime). Fields nullable because the Spot product
+    /// doesn't always emit every variable on every hour. Used as a
+    /// comparison line on the temp + rain skill pages alongside the
+    /// blend's prediction; never feeds the blender (it's a separate
+    /// product to <c>ukmo_seamless</c>).</summary>
+    public sealed record MetOfficeSpotForecastPoint(
+        DateTime RunTimeUtc,
+        DateTime ValidTimeUtc,
+        double? Temperature2m,
+        /// <summary>Precipitation probability in percent [0, 100], or null
+        /// when the row didn't carry it. NB Met Office's spot PoP definition
+        /// is "P(any measurable precip)", which is a slightly looser
+        /// threshold than our blender's 0.1 mm/h training label — note that
+        /// in any chart legend that overlays the two.</summary>
+        double? PrecipitationProbabilityPercent);
 
     /// <summary>One row of the dry-window start-hour curve. Multiple rows
     /// share a (Station, WindowHours, LeadHours, TargetDateUtc) and differ

@@ -66,6 +66,9 @@ public sealed class RenderSiteCommand
         var startHour = QueryStartHourPredictions(windowStart, predictionEnd, ct);
         _log.LogInformation("Loaded {N} start-hour curve rows.", startHour.Count);
 
+        var metOfficeSpot = QueryMetOfficeSpotForecasts(windowStart, predictionEnd, ct);
+        _log.LogInformation("Loaded {N} Met Office Spot forecast rows.", metOfficeSpot.Count);
+
         // ERA5 is gapless-for-past, but only past — query up to the clock time.
         // Persistence-lookback headroom (up to 72h before the earliest prediction)
         // keeps rolling-MAE truth pairs matchable at the start of the window.
@@ -120,6 +123,7 @@ public sealed class RenderSiteCommand
             ModelSummaries = modelSummaries,
             FeelsLikePredictions = feelsLike,
             StartHourPredictions = startHour,
+            MetOfficeSpotForecasts = metOfficeSpot,
         };
 
         Directory.CreateDirectory(outputDir);
@@ -638,6 +642,39 @@ ORDER BY LeadHours, ValidTimeUtc";
             Band:           r.IsDBNull(5) ? "" : r.GetString(5),
             ApparentC:      r.GetDouble(6)),
             _log, "Feels-like predictions tree empty — chip will be absent on home cards.", ct);
+    }
+
+    /// <summary>
+    /// Met Office DataHub Spot forecasts for the configured location. Pre-
+    /// filtered to "latest RunTime per ValidTime" so the renderer doesn't have
+    /// to dedupe; bounded by the rendering window. Returns empty when the
+    /// model partition isn't on disk yet (fresh deploy or capture not started).
+    /// </summary>
+    private IReadOnlyList<SitePages.MetOfficeSpotForecastPoint> QueryMetOfficeSpotForecasts(
+        DateTime start, DateTime end, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.ForecastsPath, "**", "*.parquet"));
+
+        var sql = $@"
+WITH ranked AS (
+  SELECT RunTimeUtc, ValidTimeUtc, Temperature2m, PrecipitationProbability,
+         row_number() OVER (PARTITION BY ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn
+  FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+  WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
+    AND Model = 'met_office_spot'
+    AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
+    AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+)
+SELECT RunTimeUtc, ValidTimeUtc, Temperature2m, PrecipitationProbability
+FROM ranked WHERE rn = 1 ORDER BY ValidTimeUtc";
+
+        return ParquetReader.Query(sql, r => new SitePages.MetOfficeSpotForecastPoint(
+            RunTimeUtc:                      r.GetDateTime(0),
+            ValidTimeUtc:                    r.GetDateTime(1),
+            Temperature2m:                   r.IsDBNull(2) ? null : r.GetDouble(2),
+            PrecipitationProbabilityPercent: r.IsDBNull(3) ? null : r.GetDouble(3)),
+            _log, "Met Office Spot tree empty — comparison line will be absent.", ct);
     }
 
     private IReadOnlyList<SitePages.StartHourForecastPoint> QueryStartHourPredictions(

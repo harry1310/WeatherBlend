@@ -351,8 +351,133 @@ public class SitePagesTests
         SitePages.PrecipProbColor(double.NaN).Should().Be("var(--pico-muted-color)");
     }
 
-    [Theory]
-    [InlineData("ea_bellever_dartmoor", "bellever")]
+    // ---- Met Office Spot comparison line (temp + rain skill pages) ----
+
+    [Fact]
+    public void RenderTempSkill_includes_met_office_spot_dataset_when_forecasts_present()
+    {
+        // Met Office Spot needs to land as a *labelled* dataset on the temp
+        // skill chart so a reader can compare it eyeball-to-eyeball with the
+        // blend. Color #262261 (Met Office brand navy) is what the legend
+        // entry should use.
+        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
+        var windowStart = generatedAt.AddDays(-7);
+        var validTime = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
+
+        var moSpot = new[]
+        {
+            new SitePages.MetOfficeSpotForecastPoint(
+                RunTimeUtc: validTime.AddHours(-12),
+                ValidTimeUtc: validTime,
+                Temperature2m: 14.5,
+                PrecipitationProbabilityPercent: 30.0),
+        };
+
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            WindowStartUtc = windowStart,
+            MetOfficeSpotForecasts = moSpot,
+            // A blender prediction at the same valid time so the chart has
+            // something to plot alongside; otherwise the renderer might
+            // short-circuit before reaching the Met Office line.
+            Predictions = new[]
+            {
+                new WeatherBlend.Models.TempPredictionRow
+                {
+                    LocationName = "bonehill_rocks",
+                    ModelVersion = "v2b",
+                    PredictionMadeAtUtc = validTime.AddHours(-24),
+                    ValidTimeUtc = validTime,
+                    LeadHours = 24,
+                    BlendTemperature = 14.0,
+                    FeatureVectorHash = "",
+                },
+            },
+            PhaseByVersion = new Dictionary<string, string> { ["v2b"] = "2b" },
+        };
+
+        var html = SitePages.RenderTempSkill(input);
+
+        html.Should().Contain("Met Office Spot");
+        html.Should().Contain("#262261");
+    }
+
+    [Fact]
+    public void RenderTempSkill_omits_met_office_dataset_when_no_temperature_values()
+    {
+        // PoP-only rows (no Temperature2m) shouldn't manufacture a dataset on
+        // the temp chart — they're for the rain chart. Filtering happens in
+        // the renderer's "where Temperature2m has value" clause.
+        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
+        var validTime = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
+        var moSpot = new[]
+        {
+            new SitePages.MetOfficeSpotForecastPoint(
+                RunTimeUtc: validTime.AddHours(-12),
+                ValidTimeUtc: validTime,
+                Temperature2m: null,
+                PrecipitationProbabilityPercent: 30.0),
+        };
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            MetOfficeSpotForecasts = moSpot,
+        };
+
+        SitePages.RenderTempSkill(input).Should().NotContain("Met Office Spot");
+    }
+
+    [Fact]
+    public void RenderRainSkill_includes_met_office_pop_dataset_with_threshold_caveat()
+    {
+        // Met Office DataHub Spot publishes PoP as 0–100 percent. The
+        // renderer needs to divide by 100 so it sits on the same Y axis as
+        // P(wet) (which is in [0, 1]). Caveat about "any measurable precip"
+        // vs our 0.1mm/h training label belongs in the skill-line above the
+        // chart so a reader doesn't misinterpret the overlay.
+        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
+        var windowStart = generatedAt.AddDays(-7);
+        var validTime = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
+
+        var moSpot = new[]
+        {
+            new SitePages.MetOfficeSpotForecastPoint(
+                RunTimeUtc: validTime.AddHours(-12),
+                ValidTimeUtc: validTime,
+                Temperature2m: 14.5,
+                PrecipitationProbabilityPercent: 70.0),
+        };
+
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            WindowStartUtc = windowStart,
+            MetOfficeSpotForecasts = moSpot,
+            PrecipPredictions = new[]
+            {
+                new SitePages.PrecipForecastPoint(
+                    Station: "ea_bellever_dartmoor",
+                    Version: "v3a",
+                    PredictedAtUtc: validTime.AddHours(-24),
+                    ValidTimeUtc: validTime,
+                    LeadHours: 24,
+                    ProbWet: 0.6,
+                    ClimatologyPWet: 0.4,
+                    PrecipGfs: null, PrecipEcmwf: null, PrecipIcon: null,
+                    PrecipMf: null, PrecipUkmo: null, PrecipGem: null,
+                    PrecipAifs: null, PrecipJma: null),
+            },
+            PhaseByVersion = new Dictionary<string, string> { ["v3a"] = "3a" },
+        };
+
+        var html = SitePages.RenderRainSkill(input, null);
+
+        html.Should().Contain("Met Office Spot PoP");
+        html.Should().Contain("#262261");
+        // Threshold caveat copy in the surrounding skill-line.
+        html.Should().Contain("any measurable precip");
+    }
     [InlineData("ea_princetown", "princetown")]
     [InlineData("ea_dartmoor_nr_hexworthy", "hexworthy")]
     public void StationSlug_maps_known_stations_to_short_urls(string station, string expected)
