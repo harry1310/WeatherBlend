@@ -127,6 +127,7 @@ public static class Program
                 services.AddTransient<CompareCommand>();
                 services.AddTransient<TempPredictCommand>();
                 services.AddTransient<PrecipPredictCommand>();
+                services.AddTransient<PrecipReplayCommand>();
                 // PrecipCalibrateCommand (Phase 3a_isotonic PAV calibration) +
                 // DryWindowCalibrateCommand (Phase 3d-calibrated) removed
                 // 2026-04-29 — bake-off found PAV didn't move test Brier on
@@ -338,6 +339,34 @@ public static class Program
             }
         }, predictTargetOpt, predictVersionOpt, predictForDateOpt, predictTruthStationOpt, predictWindowOpt);
         root.AddCommand(predict);
+
+        // ---- precip-replay (one-off research command — see PrecipReplayCommand docs) ----
+        var replayStationOpt = new Option<string>(
+            name: "--truth-station",
+            description: "Truth station slug, e.g. ea_bellever_dartmoor",
+            getDefaultValue: () => "ea_bellever_dartmoor");
+        var replayVersionOpt = new Option<string>(
+            name: "--model-version",
+            description: "Version dir or 'current'",
+            getDefaultValue: () => "current");
+        var replayLeadsOpt = new Option<string>(
+            name: "--leads",
+            description: "Comma-separated lead hours (default: 24)",
+            getDefaultValue: () => "24");
+        var precipReplay = new Command(
+            "precip-replay",
+            "Replay a Phase 3a blender against every historical row, dump per-row P(wet)")
+        {
+            replayStationOpt, replayVersionOpt, replayLeadsOpt,
+        };
+        precipReplay.SetHandler(async (slug, version, leadsStr) =>
+        {
+            var leads = leadsStr.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(s => int.Parse(s.Trim())).ToArray();
+            var cmd = host.Services.GetRequiredService<PrecipReplayCommand>();
+            Environment.ExitCode = await cmd.RunAsync(slug, version, leads, CancellationToken.None);
+        }, replayStationOpt, replayVersionOpt, replayLeadsOpt);
+        root.AddCommand(precipReplay);
 
         var verifyTargetOpt = new Option<string>(
             name: "--target",
