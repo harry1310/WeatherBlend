@@ -147,6 +147,7 @@ public static class Program
                 services.AddTransient<ElementVerifyCommand>();
                 // ElementBakeoffCommand removed in Phase 5 of unify-model-membership refactor.
                 services.AddTransient<FeelsLikePredictCommand>();
+                services.AddTransient<StartHourPredictCommand>();
                 // Met Office Global / UKV (raw AWS S3 backfill via Python) removed
                 // 2026-04-29 — bake-off rejected as blender inputs (negative result)
                 // and their parquet writer was the sole source of TIMESTAMPTZ schema
@@ -286,7 +287,7 @@ public static class Program
 
         var predictTargetOpt = new Option<string>(
             name: "--target",
-            description: "Target variable: temperature | precipitation | dry-window | wind | humidity | shortwave-radiation | cloud-cover | feels-like",
+            description: "Target variable: temperature | precipitation | dry-window | wind | humidity | shortwave-radiation | cloud-cover | feels-like | start-hour",
             getDefaultValue: () => "temperature");
         var predictVersionOpt = new Option<string>(
             name: "--model-version",
@@ -325,6 +326,11 @@ public static class Program
             else if (string.Equals(target, "feels-like", StringComparison.OrdinalIgnoreCase))
             {
                 var cmd = host.Services.GetRequiredService<FeelsLikePredictCommand>();
+                Environment.ExitCode = await cmd.RunAsync(forDate, CancellationToken.None);
+            }
+            else if (string.Equals(target, "start-hour", StringComparison.OrdinalIgnoreCase))
+            {
+                var cmd = host.Services.GetRequiredService<StartHourPredictCommand>();
                 Environment.ExitCode = await cmd.RunAsync(forDate, CancellationToken.None);
             }
             else if (elementTarget is not null)

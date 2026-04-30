@@ -162,6 +162,23 @@ jobs:
             echo "predict feels-like failed with exit $code"; exit "$code"
           fi
 
+      - name: Predict dry-window start-hour curves (joins precip hourly + dry-window daily)
+        # Must run AFTER the precip and dry-window predicts — it joins their outputs
+        # to derive a per-start-hour conditional + calibrated curve. Exit 3 = no
+        # composites produced (typically every input incomplete on this anchor);
+        # non-fatal, mirrors feels-like's "soft skip" semantics.
+        run: |
+          FOR_DATE="${{ github.event.inputs.for_date }}"
+          code=0
+          if [ -n "$FOR_DATE" ]; then
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target start-hour --for-date "$FOR_DATE" || code=$?
+          else
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target start-hour || code=$?
+          fi
+          if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then
+            echo "predict start-hour failed with exit $code"; exit "$code"
+          fi
+
       - name: Push predictions to R2
         # Pushed BEFORE render so the deployed site is reading the same state
         # any external consumer would see in R2. copy (not sync) — additive only.
