@@ -142,6 +142,7 @@ public static class Program
                 services.AddTransient<DryWindowAblateCommand>();
                 services.AddTransient<DryWindowPredictCommand>();
                 services.AddTransient<DryWindowVerifyCommand>();
+                services.AddTransient<StartHourVerifyCommand>();
                 services.AddTransient<ElementTrainCommand>();
                 services.AddTransient<ElementPredictCommand>();
                 services.AddTransient<ElementVerifyCommand>();
@@ -376,7 +377,7 @@ public static class Program
 
         var verifyTargetOpt = new Option<string>(
             name: "--target",
-            description: "Target variable: temperature | precipitation | dry-window | wind | humidity | shortwave-radiation | cloud-cover",
+            description: "Target variable: temperature | precipitation | dry-window | wind | humidity | shortwave-radiation | cloud-cover | start-hour",
             getDefaultValue: () => "temperature");
         var verifyAsOfOpt = new Option<DateOnly?>(
             name: "--as-of",
@@ -428,6 +429,12 @@ public static class Program
                 var cmd = host.Services.GetRequiredService<DryWindowVerifyCommand>();
                 ctx.ExitCode = await cmd.RunAsync(
                     truthStation, dryWindow, asOf, windowDays ?? 30, latencyDays, drift, ctx.GetCancellationToken());
+            }
+            else if (string.Equals(target, "start-hour", StringComparison.OrdinalIgnoreCase))
+            {
+                var cmd = host.Services.GetRequiredService<StartHourVerifyCommand>();
+                ctx.ExitCode = await cmd.RunAsync(
+                    asOf, windowDays ?? 30, latencyDays, ctx.GetCancellationToken());
             }
             else if (elementTarget is not null)
             {
