@@ -478,6 +478,7 @@ public class SitePagesTests
         // Threshold caveat copy in the surrounding skill-line.
         html.Should().Contain("any measurable precip");
     }
+    
     [InlineData("ea_princetown", "princetown")]
     [InlineData("ea_dartmoor_nr_hexworthy", "hexworthy")]
     public void StationSlug_maps_known_stations_to_short_urls(string station, string expected)
