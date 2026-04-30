@@ -38,6 +38,35 @@ public sealed class PrecipPredictCommand
     }
 
     /// <summary>
+    /// For each lead bucket L in <paramref name="leads"/>, emit one (Lead, ValidTime)
+    /// pair per UTC hour of the target day <c>(anchor.Date + L/24)</c>. So one cycle
+    /// at the standard {24, 48, 72, 96, 120}h leads produces 5 × 24 = 120 (Lead,
+    /// ValidTime) targets. Each target's row will be picked from the forecast tree
+    /// using the lead-bucket-aware filter (<c>RunTime ≤ Valid − L</c>) so the actual
+    /// lead lands in the [L, L+24h) band the model was trained on.
+    /// </summary>
+    /// <remarks>
+    /// Emitting all 24 hours of each target day (rather than just the wall-clock
+    /// daytime window) keeps this method scope-neutral: the dry-window start-hour
+    /// curve consumes the daytime subset, but anything else that wants nighttime
+    /// hourly P(wet) (e.g. a future "is it raining at midnight" widget) gets it for
+    /// free at zero extra storage cost relative to the same-cycle load.
+    /// </remarks>
+    internal static (int Lead, DateTime Valid)[] BuildHourlyTargets(
+        DateTime anchor, IReadOnlyList<int> leads)
+    {
+        var anchorDate = new DateTime(anchor.Year, anchor.Month, anchor.Day, 0, 0, 0, DateTimeKind.Utc);
+        var result = new List<(int Lead, DateTime Valid)>(leads.Count * 24);
+        foreach (var lead in leads)
+        {
+            var dayStart = anchorDate.AddDays(lead / 24);
+            for (int h = 0; h < 24; h++)
+                result.Add((lead, dayStart.AddHours(h)));
+        }
+        return result.ToArray();
+    }
+
+    /// <summary>
     /// <paramref name="truthStation"/> is a slug (<c>ea_bellever_dartmoor</c>), or
     /// <c>all</c> to run every station in the manifest, or a config rainfall
     /// station name (<c>Bellever Dartmoor</c>) for ergonomic CLI use.
@@ -56,23 +85,36 @@ public sealed class PrecipPredictCommand
 
         var predictionMadeAt = DateTime.UtcNow;
         var anchor = PredictAnchor.Compute(predictionMadeAt, forDate);
-        var targets = DefaultLeads.Select(L => (Lead: L, Valid: anchor.AddHours(L))).ToArray();
+        var targets = BuildHourlyTargets(anchor, DefaultLeads);
 
-        _log.LogInformation("Anchor {Anchor:yyyy-MM-dd HH:mm}Z (for-date={ForDate}) — stations=[{Stations}] — targets: {Targets}",
+        _log.LogInformation("Anchor {Anchor:yyyy-MM-dd HH:mm}Z (for-date={ForDate}) — stations=[{Stations}] — {Count} targets across leads {Leads}",
             anchor,
             forDate?.ToString("yyyy-MM-dd") ?? "live",
             string.Join(", ", stationsToRun),
-            string.Join(", ", targets.Select(t => $"{t.Lead}h→{t.Valid:yyyy-MM-dd HH:mm}Z")));
+            targets.Length,
+            string.Join(",", DefaultLeads));
 
-        // Pivot once across all stations — feature inputs don't depend on which
-        // station we're predicting for, only the blender weights do.
-        var perValid = QueryLatestForecastRows(
-            _cfg.Storage.ForecastsPath,
-            _cfg.Location.Name,
-            targets.Min(t => t.Valid),
-            targets.Max(t => t.Valid),
-            asOfRunTime: anchor,
-            ct);
+        // One forecast pivot per lead bucket — each call enforces the lead-bucket
+        // training constraint (RunTime ≤ Valid - L) so every row passed to the
+        // lead-L model sits in the [L, L+24h) actual-lead band the model was
+        // trained on (Open-Meteo's previous_day_(L/24) aggregation). Without this
+        // filter, "latest cycle wins" would feed the lead-24 model rows at
+        // actual lead < 24h once we predict for valid times within 24h of anchor.
+        var perLeadValid = new Dictionary<int, IReadOnlyDictionary<DateTime, PivotedRow>>();
+        foreach (var lead in DefaultLeads)
+        {
+            var leadTargets = targets.Where(t => t.Lead == lead).ToArray();
+            if (leadTargets.Length == 0) continue;
+            var pivot = QueryLatestForecastRows(
+                _cfg.Storage.ForecastsPath,
+                _cfg.Location.Name,
+                leadTargets.Min(t => t.Valid),
+                leadTargets.Max(t => t.Valid),
+                asOfRunTime: anchor,
+                leadHoursLowerBound: lead,
+                ct);
+            perLeadValid[lead] = pivot;
+        }
 
         var anyWritten = false;
         foreach (var station in stationsToRun)
@@ -81,7 +123,7 @@ public sealed class PrecipPredictCommand
             foreach (var version in ResolveRequestedVersions(modelsRoot, station, modelVersion))
             {
                 var wrote = await RunStationAsync(
-                    modelsRoot, station, version, predictionMadeAt, anchor, targets, perValid, ct);
+                    modelsRoot, station, version, predictionMadeAt, anchor, targets, perLeadValid, ct);
                 anyWritten |= wrote;
             }
         }
@@ -110,7 +152,7 @@ public sealed class PrecipPredictCommand
         DateTime predictionMadeAt,
         DateTime anchor,
         (int Lead, DateTime Valid)[] targets,
-        IReadOnlyDictionary<DateTime, PivotedRow> perValid,
+        IReadOnlyDictionary<int, IReadOnlyDictionary<DateTime, PivotedRow>> perLeadValid,
         CancellationToken ct)
     {
         var versionDir = ModelArtifact.ResolveStationVersionDir(modelsRoot, "precipitation", station, modelVersion);
@@ -167,7 +209,8 @@ public sealed class PrecipPredictCommand
 
         foreach (var (lead, valid) in targets)
         {
-            if (!perValid.TryGetValue(valid, out var pivot))
+            if (!perLeadValid.TryGetValue(lead, out var perValid)
+                || !perValid.TryGetValue(valid, out var pivot))
             {
                 _log.LogWarning("Station {Station} lead {Lead}h: no forecast rows for valid={Valid:yyyy-MM-dd HH:mm}Z; skipping.",
                     station, lead, valid);
@@ -355,18 +398,33 @@ public sealed class PrecipPredictCommand
             ? (await ParquetSerializer.DeserializeAsync<PrecipPredictionRow>(outPath, cancellationToken: ct)).ToList()
             : new List<PrecipPredictionRow>();
 
-        // Dedupe on (PredictionMadeAtUtc, LeadHours) — matches the temperature path.
-        var merged = existing.Concat(predictions)
-            .GroupBy(r => (r.PredictionMadeAtUtc, r.LeadHours))
-            .Select(g => g.MaxBy(r => r.PredictionMadeAtUtc)!)
-            .OrderBy(r => r.ValidTimeUtc)
-            .ThenBy(r => r.LeadHours)
-            .ToList();
+        var merged = MergeRows(existing, predictions);
 
         await ParquetSerializer.SerializeAsync(merged, outPath, cancellationToken: ct);
         _log.LogInformation("Wrote {New} new {Station} predictions (file now holds {Total}) → {Path}",
             predictions.Count, station, merged.Count, outPath);
     }
+
+    /// <summary>
+    /// Concat existing + new precip prediction rows, dedup, return in
+    /// (ValidTime, Lead) order. Dedup key is
+    /// <c>(PredictionMadeAtUtc, LeadHours, ValidTimeUtc)</c>: today every cycle
+    /// emits one row per (PMT, lead) — so the ValidTime in the key is a no-op
+    /// and the function behaves identically to the prior 2-tuple key. The
+    /// 3-tuple is load-bearing the moment the predict pipeline starts emitting
+    /// multiple ValidTimes per (PMT, lead) (the upcoming hourly extension);
+    /// keying on (PMT, lead) alone would silently collapse those siblings —
+    /// the same shape of bug the feels-like writer had this morning.
+    /// </summary>
+    internal static List<PrecipPredictionRow> MergeRows(
+        IEnumerable<PrecipPredictionRow> existing,
+        IEnumerable<PrecipPredictionRow> incoming)
+        => existing.Concat(incoming)
+            .GroupBy(r => (r.PredictionMadeAtUtc, r.LeadHours, r.ValidTimeUtc))
+            .Select(g => g.MaxBy(r => r.PredictionMadeAtUtc)!)
+            .OrderBy(r => r.ValidTimeUtc)
+            .ThenBy(r => r.LeadHours)
+            .ToList();
 
     // Per-valid-time pivot mirrors TempPredictCommand.PivotedRow but carries the wider
     // precip feature set required by the occurrence blender. Per-model arrays
@@ -393,13 +451,14 @@ public sealed class PrecipPredictCommand
         DateTime earliestValid,
         DateTime latestValid,
         DateTime asOfRunTime,
+        int? leadHoursLowerBound,
         CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
         var fcGlob = Path.Combine(forecastsPath, "**", "*.parquet").Replace('\\', '/').Replace("'", "''");
         var liveCycleFilter = PredictForecastFilters.LiveCycleAsOf(
-            locationName, asOfRunTime, earliestValid, latestValid);
+            locationName, asOfRunTime, earliestValid, latestValid, leadHoursLowerBound);
 
         // Mirrors PrecipFeatureBuilder's SQL skeleton but with the live-cycle filter
         // in place of RunTimeSource='offset_day' + LeadHours=. Pivot in .NET so we

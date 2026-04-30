@@ -23,6 +23,36 @@ public class PredictForecastFiltersTests
     }
 
     [Fact]
+    public void LiveCycleAsOf_omits_lead_clause_when_lower_bound_unset()
+    {
+        var frag = PredictForecastFilters.LiveCycleAsOf(
+            locationName: "Bonehill Rocks",
+            asOfRunTime: new DateTime(2026, 4, 23, 14, 0, 0, DateTimeKind.Utc),
+            earliestValid: new DateTime(2026, 4, 24, 14, 0, 0, DateTimeKind.Utc),
+            latestValid:   new DateTime(2026, 4, 26, 14, 0, 0, DateTimeKind.Utc));
+
+        frag.Should().NotContain("INTERVAL");
+        frag.Should().NotContain("ValidTimeUtc - INTERVAL");
+    }
+
+    [Fact]
+    public void LiveCycleAsOf_adds_lead_lower_bound_clause_when_set()
+    {
+        // The whole point of the lower bound is to keep predict-time inputs on
+        // the lead-N model's training distribution: only rows with
+        // RunTime <= ValidTime - N hours pass, which is the
+        // "previous_day_(N/24)" semantics the trainer was fed.
+        var frag = PredictForecastFilters.LiveCycleAsOf(
+            locationName: "Bonehill Rocks",
+            asOfRunTime: new DateTime(2026, 4, 23, 14, 0, 0, DateTimeKind.Utc),
+            earliestValid: new DateTime(2026, 4, 24, 14, 0, 0, DateTimeKind.Utc),
+            latestValid:   new DateTime(2026, 4, 26, 14, 0, 0, DateTimeKind.Utc),
+            leadHoursLowerBound: 24);
+
+        frag.Should().Contain("RunTimeUtc <= ValidTimeUtc - INTERVAL 24 HOUR");
+    }
+
+    [Fact]
     public void LiveCycleAsOf_escapes_single_quotes_in_location_name()
     {
         // SQL-injection guard for the only interpolated string literal.
