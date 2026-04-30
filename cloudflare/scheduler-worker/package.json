@@ -1,0 +1,17 @@
+{
+  "name": "weatherblend-scheduler",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker that fires GitHub Actions workflows on a cron schedule. Replaces unreliable GitHub-side schedule triggers.",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "tail": "wrangler tail",
+    "test-scheduled": "wrangler dev --test-scheduled"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250401.0",
+    "typescript": "^5.4.0",
+    "wrangler": "^3.50.0"
+  }
+}

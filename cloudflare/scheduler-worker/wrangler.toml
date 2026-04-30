@@ -1,0 +1,35 @@
+# Cloudflare Worker that fires GitHub Actions workflows on a cron schedule.
+# Replaces the unreliable GitHub-side `schedule:` trigger on collect.yml — see
+# the README in this directory for the full rationale.
+#
+# `name` MUST match the Worker created in the Cloudflare dashboard so
+# `wrangler deploy` updates the existing Worker instead of trying to create a
+# new one and fighting over the secrets that already exist on it.
+
+name = "weatherblend-scheduler"
+main = "src/index.ts"
+compatibility_date = "2025-04-01"
+
+# Cron schedule mirrors collect.yml's `15 2,8,14,20 * * *` exactly so the two
+# crons fire in lockstep during the PoC overlap window. Once the Cloudflare
+# cron has demonstrated it lands consistently for a few days, the GitHub-side
+# schedule can be removed and this becomes the sole trigger. Cloudflare cron
+# is in UTC, same as GitHub Actions.
+[triggers]
+crons = ["15 2,8,14,20 * * *"]
+
+# Variables (non-secret). GH_REPO is intentionally a plain var rather than a
+# secret because it's not sensitive — repo owner/name is public on every
+# Actions run. Keeping it here means the deploy pipeline can change which
+# repo to dispatch into without touching the secret store.
+[vars]
+GH_REPO = "harry1310/WeatherBlend"
+GH_WORKFLOW_FILE = "collect.yml"
+GH_REF = "main"
+
+# Secrets are NOT defined here — they're injected via `wrangler secret put`
+# (or the dashboard) and live encrypted in Cloudflare's secret store. See
+# README for the three required secrets:
+#   GH_APP_ID                 (App ID, plain integer string)
+#   GH_APP_INSTALLATION_ID    (Installation ID, plain integer string)
+#   GH_APP_PRIVATE_KEY        (PEM contents — PKCS#1 or PKCS#8, both handled)
