@@ -28,6 +28,18 @@ namespace WeatherBlend.Predict.FeelsLike;
 /// of fallback). Flip the flag back once the cloud blender beats ECMWF.
 /// Provenance row carries the suffix <c>+ecmwf_raw</c> so the source is
 /// auditable per-row.
+///
+/// **Radiation sourcing**: <see cref="UseEcmwfRawForRadiation"/> also defaults
+/// to true. Less about accuracy (the radiation blender is roughly tied with
+/// raw ECMWF: ~−1 / +4 / +1% MAE across the three leads) and more about
+/// physical consistency with the ECMWF-raw cloud above. The element blenders
+/// are independent LightGBMs trained on uncorrelated targets, so cloud and
+/// radiation coming from different sources can disagree (e.g. 97% cloud
+/// + 312 W/m² SW for Bonehill 2026-05-02 15Z, which is implausible — solar
+/// transmittance through 97% cloud is ~5–15%). Pulling SW from raw ECMWF
+/// alongside ECMWF cloud gives a self-consistent NWP view of the sky for
+/// Tmrt to integrate. Trades 1–4% radiation MAE for cross-input coherence;
+/// for UTCI specifically this is the right trade.
 /// </summary>
 public static class FeelsLikePredictPipeline
 {
@@ -37,6 +49,10 @@ public static class FeelsLikePredictPipeline
     /// instead of the blended value. Temporary workaround until the cloud blender
     /// beats best-single ECMWF — see class docstring.</summary>
     public static bool UseEcmwfRawForCloud { get; set; } = true;
+
+    /// <summary>Same trick for shortwave radiation. Trades 1–4% radiation MAE
+    /// for physical consistency with the cloud input — see class docstring.</summary>
+    public static bool UseEcmwfRawForRadiation { get; set; } = true;
 
     public static async Task<List<FeelsLikePredictionRow>> ComposeForAnchorAsync(
         ILogger log,
@@ -50,7 +66,8 @@ public static class FeelsLikePredictPipeline
         var temp = await LoadTemperatureLeanAsync(log, predictionsRoot, modelsRoot, anchor, ct);
         var hum  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.Humidity,         anchor, ct);
         var wnd  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.Wind,             anchor, ct);
-        var rad  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.ShortwaveRadiation, anchor, ct);
+        var rad  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.ShortwaveRadiation, anchor, ct,
+            useEcmwfRaw: UseEcmwfRawForRadiation);
         var cld  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.CloudCover,       anchor, ct,
             useEcmwfRaw: UseEcmwfRawForCloud);
 
