@@ -15,17 +15,29 @@ compatibility_date = "2025-04-01"
 # match a key in WORKFLOW_FOR_CRON in src/index.ts exactly; the worker uses
 # event.cron to look up which workflow to dispatch.
 #
-#   "15 2,8,14,20 * * *"  → collect.yml         every 6h, offset :15
-#   "0 12 * * *"          → era5-refresh.yml    daily at 12:00 UTC
-#   "30 9 * * 1"          → verify.yml          weekly Monday 09:30 UTC
+#   "15 2,8,14,20 * * *"  → collect.yml             every 6h, offset :15
+#   "45 */2 * * *"        → predict-and-render.yml  every 2h, offset :45
+#   "0 12 * * *"          → era5-refresh.yml        daily at 12:00 UTC
+#   "30 9 * * 1"          → verify.yml              weekly Monday 09:30 UTC
 #
 # era5-refresh moved from 06:00 → 12:00 because ECMWF ERA5T publishes around
 # 09–10 UTC and Open-Meteo's archive ingests within a few hours; 12:00 UTC
 # is past both, so the daily refresh always lands on Open-Meteo's freshest
 # data instead of catching ECMWF mid-publish and writing null partitions.
+#
+# predict-and-render's `45 */2 * * *` is unchanged from when it lived on the
+# GitHub side. The 30-min offset past the collect (which runs at `:15` every
+# 6h) means each collect cycle's data has had time to settle in R2 before
+# predict reads from it. The intermediate fires at 04:45 / 06:45 / 10:45
+# etc. don't have a fresh collect behind them but still produce a fresh
+# prediction + render from whatever data IS on disk — useful because the
+# blender's NWP inputs update on each Open-Meteo cycle independently of our
+# collect cron, so re-predicting picks up forecast revisions even without
+# a new collect run.
 [triggers]
 crons = [
   "15 2,8,14,20 * * *",
+  "45 */2 * * *",
   "0 12 * * *",
   "30 9 * * 1",
 ]

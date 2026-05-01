@@ -9,11 +9,12 @@ silently slips. Cloudflare Workers cron triggers fire on time.
 ## What it does
 
 ```
-Cloudflare crons                          Workflow dispatched
-─────────────────────────                 ──────────────────────
-15 2,8,14,20 * * *  (every 6h, :15)  →   collect.yml
-0 12 * * *          (daily 12:00 UTC) →  era5-refresh.yml
-30 9 * * 1          (Mon 09:30 UTC)   →  verify.yml
+Cloudflare crons                              Workflow dispatched
+─────────────────────────                     ──────────────────────
+15 2,8,14,20 * * *  (every 6h, :15)      →   collect.yml
+45 */2 * * *        (every 2h, :45)      →   predict-and-render.yml
+0 12 * * *          (daily 12:00 UTC)    →   era5-refresh.yml
+30 9 * * 1          (Mon 09:30 UTC)      →   verify.yml
         │
         ▼
 weatherblend-scheduler (this Worker)
@@ -34,6 +35,7 @@ cron has been fired in production for at least a couple of cycles.
 | Cron | Workflow | Why this time |
 |------|----------|---------------|
 | `15 2,8,14,20 * * *` | `collect.yml` | Every 6h, offset `:15` past the hour to avoid the top-of-hour rush on Open-Meteo. |
+| `45 */2 * * *` | `predict-and-render.yml` | Every 2h, offset `:45`. The 30-min lag past `:15`-collect lets a collect cycle's R2 push settle before predict reads from it. The intermediate fires at 04:45 / 06:45 / 10:45 etc. (no fresh collect behind them) still produce a fresh prediction + render from whatever data IS on disk — useful because each NWP's Open-Meteo cycle updates independently of our collect cron, so re-predicting picks up forecast revisions even without a new collect run. The longer-term plan is to drop this to every 6h once predict emits hourly per-lead rows in a single cycle, but that's a separate piece of work. |
 | `0 12 * * *` | `era5-refresh.yml` | ECMWF publishes ERA5T daily around 09–10 UTC; Open-Meteo ingests within a few hours. 12:00 UTC is past both, so the daily refresh always lands on Open-Meteo's freshest data instead of catching ECMWF mid-publish (which writes null partitions). The refresh itself pulls a 14-day rolling window, so any null partitions left by older runs get backfilled as ECMWF catches up. |
 | `30 9 * * 1` | `verify.yml` | Weekly Monday 09:30 UTC. Historical timing — kept verbatim from the GitHub-side cron so weekly Brier reports continue to land on the same Monday-morning slot. |
 
@@ -147,9 +149,9 @@ and writes the GitHub error body to the log.
 | Workflow | GitHub `schedule:` removed | Notes |
 |----------|---------------------------|-------|
 | `collect.yml` | ✅ 2026-05-01 (`874653f`) | Cloudflare proven, GH cron deleted same day. |
-| `era5-refresh.yml` | ✅ 2026-05-01 | Moved 06:00 → 12:00 UTC at the same time. |
-| `verify.yml` | ✅ 2026-05-01 | Same Monday 09:30 UTC slot, just different scheduler. |
-| `predict-and-render.yml` | ⏳ pending | Still on GH `schedule:`. The blast radius if Cloudflare misfires here is "missed forecast cycle"; safer to wait until a few weeks of clean cron data show on the other three before flipping. |
+| `era5-refresh.yml` | ✅ 2026-05-01 (`bebca2c`) | Moved 06:00 → 12:00 UTC at the same time. |
+| `verify.yml` | ✅ 2026-05-01 (`bebca2c`) | Same Monday 09:30 UTC slot, just different scheduler. |
+| `predict-and-render.yml` | ✅ 2026-05-01 | Same `45 */2 * * *` cadence, just different scheduler. The longer-term plan is to drop to every 6h once predict emits hourly per-lead rows in a single cycle, but that's a separate piece of work. |
 
 ## Cost
 
