@@ -1,10 +1,17 @@
 name: collect
 
 on:
-  schedule:
-    # 02:15, 08:15, 14:15, 20:15 UTC — offset from top-of-hour so we're not
-    # hammering Open-Meteo at :00 with every other scheduled workflow on Earth.
-    - cron: "15 2,8,14,20 * * *"
+  # GitHub-side schedule removed 2026-05-01 — the cron now fires from the
+  # weatherblend-scheduler Cloudflare Worker (cloudflare/scheduler-worker/)
+  # which dispatches this workflow at 02:15, 08:15, 14:15, 20:15 UTC via a
+  # GitHub App's installation token. GitHub's own scheduler routinely
+  # delayed runs by 15+ minutes and occasionally skipped them entirely,
+  # which meant collect cycles missed the Open-Meteo previous_day_N refresh
+  # window. Cloudflare cron fires on time. The schedule expression
+  # `15 2,8,14,20 * * *` lives in cloudflare/scheduler-worker/wrangler.toml
+  # — change it there if the cadence ever needs adjusting. To roll back to
+  # GitHub-side scheduling, restore the `schedule:` block here; both
+  # triggers can coexist (collect is idempotent).
   workflow_dispatch: {}
 
 concurrency:
