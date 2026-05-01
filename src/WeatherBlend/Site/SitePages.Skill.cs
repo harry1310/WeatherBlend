@@ -474,8 +474,106 @@ public static partial class SitePages
         if (!anyRendered)
             content.Append(RenderEmptyChart($"P(wet) vs observed — {station}", "No forecast or truth in window."));
 
+        // Per-NWP precipitation probability overlay — what each underlying
+        // model thinks for the same window, before our blender combines them.
+        // Same wet-band underlay so accuracy still reads at a glance. Only
+        // ~4 NWPs (GFS / ECMWF / ICON / GEM) publish this field via Open-
+        // Meteo, so the legend is short by design — others appear silently
+        // absent rather than as flat-zero lines.
+        content.Append(RenderNwpPrecipProbChart(input, station, wetBands, xMin, xMax));
+
         return content.ToString();
     }
+
+    private static string RenderNwpPrecipProbChart(
+        SiteInputs input,
+        string station,
+        IReadOnlyList<(double XStart, double XEnd)> wetBands,
+        double? xMin,
+        double? xMax)
+    {
+        var content = new StringBuilder();
+        content.Append("<h5>Underlying NWPs — own precipitation probability</h5>");
+        content.Append(@"<p class=""skill-line"">Each line is one NWP's own
+            <code>precipitation_probability</code> for the next hour, divided
+            by 100 so it shares the chart's [0, 1] axis with the blend's
+            P(wet) above. Threshold each model uses for ""any precip"" varies
+            (typically &gt;0 mm/h with model-specific calibration), so this
+            is a directional overlay — useful for spotting which models the
+            blend is following or fighting, not a like-for-like comparison
+            against our 0.1 mm/h training label. Stations beyond Bonehill
+            don't have their own NWP grid points; the lines are the same
+            forecast point on every station's tab.</p>");
+
+        var pop = input.NwpPrecipProbabilities;
+        if (pop.Count == 0)
+            return content.Append(RenderEmptyChart(
+                $"Per-NWP P(any precip) — {PrettyStation(station)}",
+                "No per-NWP precipitation_probability rows on disk yet.")).ToString();
+
+        var palette = NwpsForPrecipitation()
+            .ToDictionary(s => MapModelIdToLabel(s.Label), s => s.Color, StringComparer.Ordinal);
+
+        var series = new List<LineSeries>();
+        foreach (var modelGroup in pop
+            .Where(p => p.ValidTimeUtc >= input.WindowStartUtc)
+            .GroupBy(p => p.Model)
+            .OrderBy(g => g.Key, StringComparer.Ordinal))
+        {
+            var label = LookupNwpLabel(modelGroup.Key);
+            if (!palette.TryGetValue(label, out var colour))
+                colour = "#999";   // unknown model — render in grey rather than crash
+            var pts = modelGroup
+                .OrderBy(p => p.ValidTimeUtc)
+                .Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.ProbabilityPercent / 100.0))
+                .ToList();
+            if (pts.Count > 0)
+                series.Add(new LineSeries(label, colour, pts));
+        }
+
+        if (series.Count == 0)
+            return content.Append(RenderEmptyChart(
+                $"Per-NWP P(any precip) — {PrettyStation(station)}",
+                "No per-NWP forecast points in window.")).ToString();
+
+        content.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
+        {
+            Title = $"Per-NWP P(any precip) — {PrettyStation(station)}",
+            XLabel = "Time (UTC)",
+            YLabel = "P(any precip)",
+            Series = series,
+            Height = 280,
+            FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
+            FormatY = v => v.ToString("0.00", Ci),
+            Bands = wetBands,
+            TodayLineX = input.GeneratedAtUtc.ToOADate(),
+            XMin = xMin,
+            XMax = xMax,
+        }));
+        return content.ToString();
+    }
+
+    /// <summary>Map an Open-Meteo model id to the short label used in
+    /// <see cref="NwpsForPrecipitation"/> ("gfs_seamless" → "GFS", etc.).
+    /// Falls back to the raw model id when unrecognised.</summary>
+    private static string LookupNwpLabel(string modelId) => modelId switch
+    {
+        "gfs_seamless"          => "GFS",
+        "ecmwf_ifs025"          => "ECMWF",
+        "icon_seamless"         => "ICON",
+        "meteofrance_seamless"  => "MF",
+        "ukmo_seamless"         => "UKMO",
+        "gem_seamless"          => "GEM",
+        "ecmwf_aifs025_single"  => "AIFS",
+        "jma_seamless"          => "JMA",
+        _ => modelId,
+    };
+
+    /// <summary>The display table is keyed by short label
+    /// ("GFS" / "ECMWF" / ...); helper exists so the dictionary built from
+    /// <see cref="NwpsForPrecipitation"/> stays human-readable at the call
+    /// site rather than holding raw row-accessor records.</summary>
+    private static string MapModelIdToLabel(string label) => label;
 
     // -------------------------------------------------------------------------------
     // Dry-window vs observed. One table per station × window length showing each

@@ -69,6 +69,10 @@ public sealed class RenderSiteCommand
         var metOfficeSpot = QueryMetOfficeSpotForecasts(windowStart, predictionEnd, ct);
         _log.LogInformation("Loaded {N} Met Office Spot forecast rows.", metOfficeSpot.Count);
 
+        var nwpPop = QueryNwpPrecipProbabilities(windowStart, predictionEnd, ct);
+        _log.LogInformation("Loaded {N} per-NWP precipitation-probability rows ({M} models).",
+            nwpPop.Count, nwpPop.Select(p => p.Model).Distinct().Count());
+
         // ERA5 is gapless-for-past, but only past — query up to the clock time.
         // Persistence-lookback headroom (up to 72h before the earliest prediction)
         // keeps rolling-MAE truth pairs matchable at the start of the window.
@@ -124,6 +128,7 @@ public sealed class RenderSiteCommand
             FeelsLikePredictions = feelsLike,
             StartHourPredictions = startHour,
             MetOfficeSpotForecasts = metOfficeSpot,
+            NwpPrecipProbabilities = nwpPop,
         };
 
         Directory.CreateDirectory(outputDir);
@@ -642,6 +647,44 @@ ORDER BY LeadHours, ValidTimeUtc";
             Band:           r.IsDBNull(5) ? "" : r.GetString(5),
             ApparentC:      r.GetDouble(6)),
             _log, "Feels-like predictions tree empty — chip will be absent on home cards.", ct);
+    }
+
+    /// <summary>
+    /// Per-NWP precipitation_probability rows for the configured location, one
+    /// per (Model, ValidTime) at the freshest RunTime that's not in the future
+    /// at render time. Filters to the canonical 8 blender NWPs to avoid stray
+    /// experimental partitions (mirrors LiveCycleAsOf's defensive Model IN list).
+    /// Only ~4 of those publish PoP via Open-Meteo (GFS / ECMWF / ICON / GEM);
+    /// the others return zero rows and silently drop out of the chart.
+    /// </summary>
+    private IReadOnlyList<SitePages.NwpPrecipProbForecastPoint> QueryNwpPrecipProbabilities(
+        DateTime start, DateTime end, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.ForecastsPath, "**", "*.parquet"));
+
+        var nwpFilter = "('gfs_seamless','ecmwf_ifs025','icon_seamless','meteofrance_seamless'," +
+                        "'ukmo_seamless','gem_seamless','ecmwf_aifs025_single','jma_seamless')";
+
+        var sql = $@"
+WITH ranked AS (
+  SELECT Model, RunTimeUtc, ValidTimeUtc, PrecipitationProbability,
+         row_number() OVER (PARTITION BY Model, ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn
+  FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+  WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
+    AND Model IN {nwpFilter}
+    AND PrecipitationProbability IS NOT NULL
+    AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
+    AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+)
+SELECT Model, ValidTimeUtc, PrecipitationProbability
+FROM ranked WHERE rn = 1 ORDER BY Model, ValidTimeUtc";
+
+        return ParquetReader.Query(sql, r => new SitePages.NwpPrecipProbForecastPoint(
+            Model:               r.GetString(0),
+            ValidTimeUtc:        r.GetDateTime(1),
+            ProbabilityPercent:  r.GetDouble(2)),
+            _log, "Per-NWP precipitation_probability tree empty — overlay panel will be absent.", ct);
     }
 
     /// <summary>

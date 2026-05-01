@@ -200,6 +200,16 @@ public static partial class SitePages
         /// </summary>
         public IReadOnlyList<MetOfficeSpotForecastPoint> MetOfficeSpotForecasts { get; init; }
             = Array.Empty<MetOfficeSpotForecastPoint>();
+
+        /// <summary>
+        /// Per-NWP precipitation probability points (Open-Meteo's
+        /// <c>precipitation_probability</c> field). Pre-deduped to freshest
+        /// RunTime per (Model, ValidTime). Empty when the forecasts tree
+        /// hasn't been synced yet — the rain-skill panel degrades silently
+        /// to "no per-NWP data" rather than rendering empty.
+        /// </summary>
+        public IReadOnlyList<NwpPrecipProbForecastPoint> NwpPrecipProbabilities { get; init; }
+            = Array.Empty<NwpPrecipProbForecastPoint>();
     }
 
     /// <summary>
@@ -273,6 +283,17 @@ public static partial class SitePages
         double ProbHasDryWindow,
         double ClimatologyProbHasDryWindow,
         double? AgreementHasDryWindow);
+
+    /// <summary>Per-NWP precipitation probability (Open-Meteo's
+    /// <c>precipitation_probability</c> field, percent 0..100) for one
+    /// model at one valid time. Caller has already deduped to the freshest
+    /// RunTime per (Model, ValidTime). Only ~4 of our 8 NWPs publish this
+    /// field (GFS / ECMWF / ICON / GEM); the rest emit nothing and are
+    /// silently absent from the chart's legend.</summary>
+    public sealed record NwpPrecipProbForecastPoint(
+        string Model,
+        DateTime ValidTimeUtc,
+        double ProbabilityPercent);
 
     /// <summary>One Met Office DataHub Spot forecast row at a single
     /// (RunTime, ValidTime). Fields nullable because the Spot product
