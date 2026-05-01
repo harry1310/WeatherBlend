@@ -162,7 +162,16 @@ public static partial class SitePages
                 continue;
             }
 
-            // Top: P(wet) + climatology, probability axis (0..1).
+            // Top: P(wet) + climatology + per-NWP PoP, all on the [0, 1]
+            // probability axis. Per-NWP PoP comes from Open-Meteo's
+            // precipitation_probability (0..100 percent, divided by 100
+            // here to share the axis). Only ~4 of 8 NWPs publish it
+            // (GFS / ECMWF / ICON / GEM via Open-Meteo); the others have
+            // no rows in NwpPrecipProbabilities and silently drop out of
+            // the legend. Threshold each NWP uses for "any precip" varies
+            // and isn't strictly our 0.1 mm/h training label, so the
+            // overlay is direction-of-effect, not like-for-like — the
+            // skill-line above the chart calls this out.
             var probSeries = new List<LineSeries>
             {
                 new($"P(wet)", "#7c4dff",
@@ -170,6 +179,28 @@ public static partial class SitePages
                 new("Climatology", "#9e9e9e",
                     latestPerValid.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ClimatologyPWet)).ToList()),
             };
+
+            // Filter per-NWP PoP to the same valid-time range the blend
+            // covers at this lead, so the chart's X axis stays aligned and
+            // we don't drag in points beyond the lead's forward window.
+            var minValid = latestPerValid[0].ValidTimeUtc;
+            var maxValid = latestPerValid[^1].ValidTimeUtc;
+            var nwpPalette = NwpsForPrecipitation()
+                .ToDictionary(np => np.Label, np => np.Color, StringComparer.Ordinal);
+            foreach (var nwpGroup in input.NwpPrecipProbabilities
+                .Where(p => p.ValidTimeUtc >= minValid && p.ValidTimeUtc <= maxValid)
+                .GroupBy(p => p.Model)
+                .OrderBy(g => g.Key, StringComparer.Ordinal))
+            {
+                var label = LookupNwpLabel(nwpGroup.Key);
+                if (!nwpPalette.TryGetValue(label, out var colour)) colour = "#999";
+                var pts = nwpGroup
+                    .OrderBy(p => p.ValidTimeUtc)
+                    .Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.ProbabilityPercent / 100.0))
+                    .ToList();
+                if (pts.Count > 0)
+                    probSeries.Add(new LineSeries($"{label} PoP", colour, pts));
+            }
 
             // Bottom: per-NWP precip rate, mm/h axis. Skip series where every
             // point is null so the legend stays clean.

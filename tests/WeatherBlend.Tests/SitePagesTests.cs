@@ -431,30 +431,79 @@ public class SitePagesTests
     }
 
     [Fact]
-    public void RenderRainSkill_inlines_per_nwp_lines_into_the_per_phase_blend_chart()
+    public void RenderForecasts_inlines_per_nwp_pop_into_the_top_pwet_chart_at_each_lead()
     {
-        // Per-NWP precipitation_probability lines render INSIDE each per-phase
-        // P(wet) chart, alongside the blend's lead lines + Met Office Spot —
-        // not on a separate panel. Each NWP that publishes PoP (~4 of 8 via
-        // Open-Meteo) gets one line, labelled "<NWP> PoP", colour-keyed off
-        // NwpsForPrecipitation so "ECMWF blue" reads consistently across
-        // every per-NWP overlay on the site. PoP comes in 0..100 percent
-        // and is divided by 100 to share the chart's [0, 1] Y-axis.
+        // Per-NWP precipitation_probability lines belong on the per-lead
+        // Forecasts page's TOP P(wet) chart — alongside the blend P(wet)
+        // and climatology lines, on the same [0, 1] probability axis. NOT
+        // on the bottom mm/h chart (units don't match) and NOT on the rain
+        // skill page (different surface, was the wrong place to put it).
+        // Each NWP that publishes PoP (~4 of 8 via Open-Meteo) gets one
+        // line, labelled "<NWP> PoP", colour-keyed off NwpsForPrecipitation.
         var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
-        var validTime = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
+        // Future valid time so it falls inside the +24h forecast window
+        // (RenderPrecipSection filters to ValidTime >= now − 1h).
+        var validTime = generatedAt.AddHours(24);
 
         var nwpPop = new[]
         {
-            new SitePages.NwpPrecipProbForecastPoint("gfs_seamless", validTime, 70.0),
-            new SitePages.NwpPrecipProbForecastPoint("ecmwf_ifs025", validTime, 60.0),
-            new SitePages.NwpPrecipProbForecastPoint("icon_seamless", validTime, 50.0),
+            new SitePages.NwpPrecipProbForecastPoint("gfs_seamless",   validTime, 70.0),
+            new SitePages.NwpPrecipProbForecastPoint("ecmwf_ifs025",   validTime, 60.0),
+            new SitePages.NwpPrecipProbForecastPoint("icon_seamless",  validTime, 50.0),
+            new SitePages.NwpPrecipProbForecastPoint("gem_seamless",   validTime, 40.0),
         };
 
         var input = MakeEmptyForecastInput() with
         {
             GeneratedAtUtc = generatedAt,
-            WindowStartUtc = generatedAt.AddDays(-7),
+            WindowStartUtc = generatedAt.AddDays(-30),
             NwpPrecipProbabilities = nwpPop,
+            PrecipPredictions = new[]
+            {
+                new SitePages.PrecipForecastPoint(
+                    Station: "ea_bellever_dartmoor", Version: "v3a",
+                    PredictedAtUtc: generatedAt, ValidTimeUtc: validTime,
+                    LeadHours: 24, ProbWet: 0.6, ClimatologyPWet: 0.4,
+                    PrecipGfs: null, PrecipEcmwf: null, PrecipIcon: null,
+                    PrecipMf: null, PrecipUkmo: null, PrecipGem: null,
+                    PrecipAifs: null, PrecipJma: null),
+            },
+            PrecipCurrentByStation = new Dictionary<string, string> { ["ea_bellever_dartmoor"] = "v3a" },
+            PhaseByVersion = new Dictionary<string, string> { ["v3a"] = "3a" },
+        };
+
+        var html = SitePages.RenderForecasts(input, lead: 24);
+
+        // Per-NWP line labels appear, suffixed " PoP" to distinguish from
+        // the blend's "P(wet)" line.
+        html.Should().Contain("GFS PoP");
+        html.Should().Contain("ECMWF PoP");
+        html.Should().Contain("ICON PoP");
+        html.Should().Contain("GEM PoP");
+        // Brand colours from NwpsForPrecipitation reach the chart payload.
+        html.Should().Contain("#ef5350");   // GFS red
+        html.Should().Contain("#42a5f5");   // ECMWF blue
+        html.Should().Contain("#66bb6a");   // ICON green
+        html.Should().Contain("#26a69a");   // GEM teal
+    }
+
+    [Fact]
+    public void RenderRainSkill_does_not_inline_per_nwp_pop_lines()
+    {
+        // Per-NWP PoP lines belong on the Forecasts pages, not the rain
+        // skill chart. Pin so a regression that re-adds them here would
+        // fail the test.
+        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
+        var validTime = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
+
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            WindowStartUtc = generatedAt.AddDays(-7),
+            NwpPrecipProbabilities = new[]
+            {
+                new SitePages.NwpPrecipProbForecastPoint("gfs_seamless", validTime, 70.0),
+            },
             PrecipPredictions = new[]
             {
                 new SitePages.PrecipForecastPoint(
@@ -470,18 +519,7 @@ public class SitePagesTests
 
         var html = SitePages.RenderRainSkill(input, null);
 
-        // Per-NWP line labels appear on the per-phase chart (suffixed " PoP"
-        // so they're distinct from the blend's "P(wet) +24h" lines).
-        html.Should().Contain("GFS PoP");
-        html.Should().Contain("ECMWF PoP");
-        html.Should().Contain("ICON PoP");
-        // Brand colours from NwpsForPrecipitation reach the chart payload.
-        html.Should().Contain("#ef5350");   // GFS red
-        html.Should().Contain("#42a5f5");   // ECMWF blue
-        html.Should().Contain("#66bb6a");   // ICON green
-        // Standalone "Underlying NWPs" panel from the earlier round was
-        // removed in favour of inlining; assert it's gone so a regression
-        // back to the separate-panel layout would fail this test.
+        html.Should().NotContain("GFS PoP");
         html.Should().NotContain("Underlying NWPs");
     }
 

@@ -426,33 +426,6 @@ public static partial class SitePages
             if (moSpotPts.Count > 0)
                 series.Add(new LineSeries("Met Office Spot PoP", NwpPalette.MetOfficeSpot, moSpotPts));
 
-            // Per-NWP precipitation_probability lines, alongside the blend
-            // leads + Met Office Spot. Only ~4 of 8 NWPs publish PoP via
-            // Open-Meteo (GFS / ECMWF / ICON / GEM); the others have no
-            // entries in NwpPrecipProbabilities and silently drop out of
-            // the legend. Each NWP gets one line (its freshest cycle's
-            // forecast for each valid hour) rather than a per-lead split,
-            // because Open-Meteo's PoP isn't lead-bucketed in our capture.
-            // Same colour-key off NwpsForPrecipitation as elsewhere on the
-            // site so "ECMWF blue" reads consistently across pages.
-            var nwpPalette = NwpsForPrecipitation()
-                .ToDictionary(s => s.Label, s => s.Color, StringComparer.Ordinal);
-            foreach (var nwpGroup in input.NwpPrecipProbabilities
-                .Where(p => p.ValidTimeUtc >= input.WindowStartUtc)
-                .GroupBy(p => p.Model)
-                .OrderBy(g => g.Key, StringComparer.Ordinal))
-            {
-                var label = LookupNwpLabel(nwpGroup.Key);
-                if (!nwpPalette.TryGetValue(label, out var colour))
-                    colour = "#999";
-                var pts = nwpGroup
-                    .OrderBy(p => p.ValidTimeUtc)
-                    .Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.ProbabilityPercent / 100.0))
-                    .ToList();
-                if (pts.Count > 0)
-                    series.Add(new LineSeries($"{label} PoP", colour, pts));
-            }
-
             if (series.Count == 0)
             {
                 content.Append(RenderEmptyChart(
