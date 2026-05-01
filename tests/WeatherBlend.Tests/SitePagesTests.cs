@@ -358,8 +358,10 @@ public class SitePagesTests
     {
         // Met Office Spot needs to land as a *labelled* dataset on the temp
         // skill chart so a reader can compare it eyeball-to-eyeball with the
-        // blend. Color #262261 (Met Office brand navy) is what the legend
-        // entry should use.
+        // blend. Material green 800 (#2e7d32) is what the legend entry
+        // should use — distinct from the truth red/orange and the blend
+        // purples; was originally Met Office brand navy (#262261) but that
+        // sat too close to the +72h blend purple on dark-mode monitors.
         var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
         var windowStart = generatedAt.AddDays(-7);
         var validTime = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
@@ -400,7 +402,7 @@ public class SitePagesTests
         var html = SitePages.RenderTempSkill(input);
 
         html.Should().Contain("Met Office Spot");
-        html.Should().Contain("#262261");
+        html.Should().Contain("#2e7d32");
     }
 
     [Fact]
@@ -557,7 +559,7 @@ public class SitePagesTests
         var html = SitePages.RenderRainSkill(input, null);
 
         html.Should().Contain("Met Office Spot PoP");
-        html.Should().Contain("#262261");
+        html.Should().Contain("#2e7d32");
         // Threshold caveat copy in the surrounding skill-line.
         html.Should().Contain("any measurable precip");
     }

@@ -244,7 +244,7 @@ public static partial class SitePages
             .Select(m => (X: m.ValidTimeUtc.ToOADate(), Y: m.Temperature2m!.Value))
             .ToList();
         if (moSpotPts.Count > 0)
-            series.Add(new LineSeries("Met Office Spot", "#262261", moSpotPts));
+            series.Add(new LineSeries("Met Office Spot", NwpPalette.MetOfficeSpot, moSpotPts));
 
         if (series.Count == 0)
             return RenderEmptyChart($"Temperature — phase {phaseKey}", "No overlap between predictions and truth in window.");
@@ -424,7 +424,7 @@ public static partial class SitePages
                 .Select(m => (X: m.ValidTimeUtc.ToOADate(), Y: m.PrecipitationProbabilityPercent!.Value / 100.0))
                 .ToList();
             if (moSpotPts.Count > 0)
-                series.Add(new LineSeries("Met Office Spot PoP", "#262261", moSpotPts));
+                series.Add(new LineSeries("Met Office Spot PoP", NwpPalette.MetOfficeSpot, moSpotPts));
 
             if (series.Count == 0)
             {

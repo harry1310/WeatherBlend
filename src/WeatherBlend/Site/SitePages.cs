@@ -59,6 +59,17 @@ public static partial class SitePages
         /// <summary>Brand colour reserved for the blend's own line on per-NWP
         /// overlay charts. Not for any NWP.</summary>
         public const string Blend = "#7c4dff";
+
+        /// <summary>Met Office DataHub Spot product line colour on the
+        /// skill charts. Was navy <c>#262261</c> originally — readable on
+        /// paper but too close to the blend's purple family on dark-mode
+        /// monitors, where the line merged into the +72h blend. Material
+        /// green 800 <c>#2e7d32</c> is meaningfully separated from ICON's
+        /// lighter <c>#66bb6a</c> green (rain-skill per-NWP panel), the
+        /// red ERA5 + orange METAR truth lines, and every blend purple,
+        /// so the eye reads MO Spot as a distinct comparison line on
+        /// every chart it appears on.</summary>
+        public const string MetOfficeSpot = "#2e7d32";
     }
 
     /// <summary>NWPs that feed the temperature blender — the seven that
