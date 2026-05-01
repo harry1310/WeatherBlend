@@ -431,14 +431,15 @@ public class SitePagesTests
     }
 
     [Fact]
-    public void RenderRainSkill_includes_per_nwp_precipitation_probability_panel()
+    public void RenderRainSkill_inlines_per_nwp_lines_into_the_per_phase_blend_chart()
     {
-        // Per-NWP precipitation_probability lines plot in a separate panel
-        // below the per-phase blend chart. Each NWP that DOES publish PoP
-        // (only ~4 of our 8) renders as one line, colour-keyed off
-        // NwpsForPrecipitation so a reader who learnt "ECMWF blue" upstairs
-        // reads it the same way here. Probability comes in 0..100 percent
-        // and gets divided by 100 to share the [0, 1] Y-axis with P(wet).
+        // Per-NWP precipitation_probability lines render INSIDE each per-phase
+        // P(wet) chart, alongside the blend's lead lines + Met Office Spot —
+        // not on a separate panel. Each NWP that publishes PoP (~4 of 8 via
+        // Open-Meteo) gets one line, labelled "<NWP> PoP", colour-keyed off
+        // NwpsForPrecipitation so "ECMWF blue" reads consistently across
+        // every per-NWP overlay on the site. PoP comes in 0..100 percent
+        // and is divided by 100 to share the chart's [0, 1] Y-axis.
         var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
         var validTime = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
 
@@ -469,48 +470,19 @@ public class SitePagesTests
 
         var html = SitePages.RenderRainSkill(input, null);
 
-        // Panel header + per-NWP line labels are present.
-        html.Should().Contain("Underlying NWPs");
-        html.Should().Contain("GFS");
-        html.Should().Contain("ECMWF");
-        html.Should().Contain("ICON");
+        // Per-NWP line labels appear on the per-phase chart (suffixed " PoP"
+        // so they're distinct from the blend's "P(wet) +24h" lines).
+        html.Should().Contain("GFS PoP");
+        html.Should().Contain("ECMWF PoP");
+        html.Should().Contain("ICON PoP");
         // Brand colours from NwpsForPrecipitation reach the chart payload.
         html.Should().Contain("#ef5350");   // GFS red
         html.Should().Contain("#42a5f5");   // ECMWF blue
         html.Should().Contain("#66bb6a");   // ICON green
-    }
-
-    [Fact]
-    public void RenderRainSkill_per_nwp_panel_shows_empty_state_when_no_pop_rows()
-    {
-        // Fresh deploy / no forecasts synced: panel renders an empty-state
-        // box instead of a confusing axis-only chart, and the page doesn't
-        // crash from a divide-by-zero or empty-series error.
-        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
-        var validTime = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
-
-        var input = MakeEmptyForecastInput() with
-        {
-            GeneratedAtUtc = generatedAt,
-            WindowStartUtc = generatedAt.AddDays(-7),
-            NwpPrecipProbabilities = Array.Empty<SitePages.NwpPrecipProbForecastPoint>(),
-            PrecipPredictions = new[]
-            {
-                new SitePages.PrecipForecastPoint(
-                    Station: "ea_bellever_dartmoor", Version: "v3a",
-                    PredictedAtUtc: validTime.AddHours(-24), ValidTimeUtc: validTime,
-                    LeadHours: 24, ProbWet: 0.6, ClimatologyPWet: 0.4,
-                    PrecipGfs: null, PrecipEcmwf: null, PrecipIcon: null,
-                    PrecipMf: null, PrecipUkmo: null, PrecipGem: null,
-                    PrecipAifs: null, PrecipJma: null),
-            },
-            PhaseByVersion = new Dictionary<string, string> { ["v3a"] = "3a" },
-        };
-
-        var html = SitePages.RenderRainSkill(input, null);
-
-        html.Should().Contain("Underlying NWPs");
-        html.Should().Contain("No per-NWP precipitation_probability rows on disk");
+        // Standalone "Underlying NWPs" panel from the earlier round was
+        // removed in favour of inlining; assert it's gone so a regression
+        // back to the separate-panel layout would fail this test.
+        html.Should().NotContain("Underlying NWPs");
     }
 
     [Fact]
