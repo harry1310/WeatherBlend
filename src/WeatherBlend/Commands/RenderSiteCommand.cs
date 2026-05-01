@@ -84,6 +84,10 @@ public sealed class RenderSiteCommand
             metar.Count, string.IsNullOrWhiteSpace(_cfg.Location.Metar.Primary) ? "none" : _cfg.Location.Metar.Primary);
 
         var rolling = ComputeRollingMae(predictions, truth, rollingWindowDays);
+        // Precip uses a longer 30-day rolling window than temp's because wet
+        // hours are sparser — the verify command's defaults pin this rule
+        // (PrecipVerifyCommand: 30d window vs TempVerifyCommand: 14d).
+        const int precipRollingWindowDays = 30;
 
         var phaseByVersion = LoadPhaseByVersion(predictions, precip, dryWindow);
         _log.LogInformation("Phase map: {Entries}",
@@ -118,6 +122,7 @@ public sealed class RenderSiteCommand
             TruthByTime = truth,
             MetarByTime = metar,
             RollingMae = rolling,
+            RollingBrier = ComputeRollingBrier(precip, rainfall, precipRollingWindowDays),
             PrecipPredictions = precip,
             DryWindowPredictions = dryWindow,
             PhaseByVersion = phaseByVersion,
@@ -513,6 +518,69 @@ ORDER BY 1";
             }
         }
 
+        return points;
+    }
+
+    /// <summary>
+    /// Rolling Brier per (Station, ModelVersion, LeadHours, day-end) across
+    /// the last <paramref name="windowDays"/>. Mirror of
+    /// <see cref="ComputeRollingMae"/> for binary classification: pairs each
+    /// prediction's <c>ProbWet</c> with the EA gauge's wet/dry indicator at
+    /// the same hour, then computes the squared-error mean over each rolling
+    /// window. Truth conversion uses the same 0.1 mm/h threshold the
+    /// blender was trained on. Partial-window points emit at the start of
+    /// the data — same rule the temp rolling-MAE uses (commit 4028ba5),
+    /// readers gauge stability from the per-point <c>N</c>.
+    /// </summary>
+    internal static IReadOnlyList<SitePages.RollingBrierPoint> ComputeRollingBrier(
+        IReadOnlyList<SitePages.PrecipForecastPoint> predictions,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<DateTime, double>> rainfallByStation,
+        int windowDays)
+    {
+        const double WetThresholdMm = 0.1;
+
+        // Pair each prediction with its station's truth (drop unpaired —
+        // either station has no truth dict yet, or that hour didn't pass
+        // the 4-of-4 quarter-hour gate upstream).
+        var paired = predictions
+            .Where(p => rainfallByStation.TryGetValue(p.Station, out var byTime)
+                        && byTime.ContainsKey(p.ValidTimeUtc))
+            .Select(p =>
+            {
+                var byTime = rainfallByStation[p.Station];
+                var truthMm = byTime[p.ValidTimeUtc];
+                return (p.Station, p.Version, p.LeadHours, p.ValidTimeUtc,
+                        Pred: p.ProbWet,
+                        Truth: truthMm >= WetThresholdMm ? 1.0 : 0.0);
+            })
+            .ToList();
+
+        if (paired.Count == 0) return Array.Empty<SitePages.RollingBrierPoint>();
+
+        var minDate = paired.Min(r => r.ValidTimeUtc).Date;
+        var maxDate = paired.Max(r => r.ValidTimeUtc).Date;
+
+        var points = new List<SitePages.RollingBrierPoint>();
+        foreach (var (station, version, lead) in paired
+            .Select(p => (p.Station, p.Version, p.LeadHours)).Distinct())
+        {
+            var subset = paired.Where(p => p.Station == station
+                                        && p.Version == version
+                                        && p.LeadHours == lead).ToList();
+            if (subset.Count == 0) continue;
+
+            for (var d = minDate; d <= maxDate; d = d.AddDays(1))
+            {
+                var windowEnd = d.AddDays(1).AddTicks(-1);
+                var windowStart = windowEnd.AddDays(-windowDays);
+                var inWindow = subset.Where(r => r.ValidTimeUtc >= windowStart
+                                              && r.ValidTimeUtc <= windowEnd).ToList();
+                if (inWindow.Count == 0) continue;
+                var brier = inWindow.Sum(r => (r.Pred - r.Truth) * (r.Pred - r.Truth)) / inWindow.Count;
+                points.Add(new SitePages.RollingBrierPoint(
+                    station, version, lead, windowEnd, brier, inWindow.Count));
+            }
+        }
         return points;
     }
 

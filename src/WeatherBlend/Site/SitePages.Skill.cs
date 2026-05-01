@@ -68,6 +68,9 @@ public static partial class SitePages
         content.Append("<h3>P(wet) vs observed wet-hour</h3>");
         content.Append(RenderPrecipVsTruthBlock(input, currentStation));
 
+        content.Append("<hr/><h3>Rolling Brier (P(wet))</h3>");
+        content.Append(RenderRollingBrierBlock(input, currentStation));
+
         content.Append("<hr/><h3>Dry window — predicted vs observed</h3>");
         content.Append(Ci, $"""
             <p class="skill-line">One row per target UTC day × window length. Both prediction and observed verdict are scoped
@@ -262,6 +265,77 @@ public static partial class SitePages
             XMin = xMin,
             XMax = xMax,
         });
+    }
+
+    // -------------------------------------------------------------------------------
+    // Rolling Brier per (version, lead) for the *current* rain station — same shape
+    // as the temp page's rolling-MAE panel but on a binary classification metric.
+    // Truth conversion uses the 0.1 mm/h threshold the blender was trained on.
+    // 30-day rolling window matches the precip verify command's default (wet hours
+    // are sparser than temp signal so a 14-day window over-shoots).
+    // -------------------------------------------------------------------------------
+    private static string RenderRollingBrierBlock(SiteInputs input, string? currentStation)
+    {
+        if (currentStation is null || input.RollingBrier.Count == 0)
+            return "<p class=\"skill-line\"><em>No rolling Brier points yet — predict tree hasn't aged into rainfall truth, or no points at the current station.</em></p>";
+
+        var stationRows = input.RollingBrier.Where(r => r.Station == currentStation).ToList();
+        if (stationRows.Count == 0)
+            return "<p class=\"skill-line\"><em>No rolling Brier points for the selected station.</em></p>";
+
+        // 30-day x-axis ending at the rightmost point so all per-lead panels
+        // share the same time window. Same convention as RenderRollingMaeBlock.
+        double? xMax = null;
+        foreach (var r in stationRows)
+        {
+            var x = r.WindowEndUtc.ToOADate();
+            if (xMax is null || x > xMax) xMax = x;
+        }
+        double? xMin = xMax is { } m ? m - 30.0 : null;
+
+        var content = new StringBuilder();
+        content.Append(Ci, $"<p class=\"skill-line\">{Escape(PrettyStation(currentStation))} — lower is better. Brier = mean squared error of P(wet) against the gauge's 0/1 wet-hour indicator over the prior 30 days. Per-(version, lead) line; partial-window points emit at the start of the data, the per-point pair count drives stability.</p>");
+
+        foreach (var lead in Leads.Short)
+        {
+            var versions = stationRows.Where(r => r.LeadHours == lead)
+                .Select(r => r.ModelVersion).Distinct().OrderBy(v => v, StringComparer.Ordinal).ToList();
+
+            var series = new List<LineSeries>();
+            var palette = new[] { "#7c4dff", "#26a69a", "#ef5350", "#ffa726", "#42a5f5" };
+            for (int i = 0; i < versions.Count; i++)
+            {
+                var v = versions[i];
+                var pts = stationRows
+                    .Where(r => r.LeadHours == lead && r.ModelVersion == v)
+                    .OrderBy(r => r.WindowEndUtc)
+                    .Select(r => (X: r.WindowEndUtc.ToOADate(), Y: r.BlendBrier))
+                    .ToList();
+                if (pts.Count > 0)
+                    series.Add(new LineSeries(v, palette[i % palette.Length], pts));
+            }
+
+            content.Append(Ci, $"<h4>Lead +{lead}h</h4>");
+            if (series.Count == 0)
+            {
+                content.Append(RenderEmptyChart($"Rolling Brier — lead {lead}h", "No scored predictions at this lead."));
+                continue;
+            }
+
+            content.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
+            {
+                Title = $"Rolling Brier — {PrettyStation(currentStation)} — lead +{lead}h",
+                XLabel = "Window end (UTC)",
+                YLabel = "Brier",
+                Series = series,
+                FormatX = v => DateTime.FromOADate(v).ToString("MM-dd", Ci),
+                FormatY = v => v.ToString("0.000", Ci),
+                TodayLineX = input.GeneratedAtUtc.ToOADate(),
+                XMin = xMin,
+                XMax = xMax,
+            }));
+        }
+        return content.ToString();
     }
 
     // -------------------------------------------------------------------------------

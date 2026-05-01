@@ -131,6 +131,13 @@ public static partial class SitePages
         /// <summary>Rolling MAE per (version, lead) for the verify chart.</summary>
         public required IReadOnlyList<RollingMaePoint> RollingMae { get; init; }
 
+        /// <summary>Per-(station, version, lead, day) rolling Brier for the
+        /// precipitation blender. Empty when the predict tree hasn't aged
+        /// into rainfall truth yet — the rain skill page silently shows an
+        /// "MAE points pending" empty state in that case, mirroring temp.</summary>
+        public IReadOnlyList<RollingBrierPoint> RollingBrier { get; init; }
+            = Array.Empty<RollingBrierPoint>();
+
         /// <summary>Phase 3a P(wet) predictions across all stations / versions in the window.</summary>
         public required IReadOnlyList<PrecipForecastPoint> PrecipPredictions { get; init; }
 
@@ -257,6 +264,14 @@ public static partial class SitePages
         int TestCalendarMonths);
 
     public sealed record RollingMaePoint(string ModelVersion, int LeadHours, DateTime WindowEndUtc, double BlendMae, int N);
+
+    /// <summary>Per-(Station, ModelVersion, LeadHours, WindowEndUtc) rolling
+    /// Brier score for the precip blender. <c>BlendBrier</c> is the mean of
+    /// <c>(ProbWet − truthBinary)²</c> over the window's pairs, where
+    /// truthBinary = 1 iff the EA gauge recorded ≥ 0.1 mm/h that hour. <c>N</c>
+    /// is the pair count in the window — readers use it to gauge stability
+    /// the same way they do on the temperature rolling MAE chart.</summary>
+    public sealed record RollingBrierPoint(string Station, string ModelVersion, int LeadHours, DateTime WindowEndUtc, double BlendBrier, int N);
 
     public sealed record PrecipForecastPoint(
         string Station,

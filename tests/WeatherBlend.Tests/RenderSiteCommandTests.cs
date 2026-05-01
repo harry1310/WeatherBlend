@@ -2,6 +2,7 @@ using DuckDB.NET.Data;
 using FluentAssertions;
 using Parquet.Serialization;
 using WeatherBlend.Commands;
+using WeatherBlend.Site;
 using Xunit;
 
 namespace WeatherBlend.Tests;
@@ -189,6 +190,136 @@ public class RenderSiteCommandTests : IDisposable
         points.Select(p => p.N).Should().Equal(1, 2, 3, 3, 3);
         // Each pair has |pred - truth| = 1, so MAE = 1 across every window.
         points.Select(p => p.BlendMae).Should().AllBeEquivalentTo(1.0);
+    }
+
+    // ---------- ComputeRollingBrier ----------
+
+    private static SitePages.PrecipForecastPoint Precip(
+        string station, string version, int leadHours, DateTime validTime, double probWet)
+        => new(
+            Station: station,
+            Version: version,
+            PredictedAtUtc: validTime.AddHours(-leadHours),
+            ValidTimeUtc: validTime,
+            LeadHours: leadHours,
+            ProbWet: probWet,
+            ClimatologyPWet: 0.5,
+            PrecipGfs: null, PrecipEcmwf: null, PrecipIcon: null,
+            PrecipMf: null, PrecipUkmo: null, PrecipGem: null,
+            PrecipAifs: null, PrecipJma: null);
+
+    private static IReadOnlyDictionary<string, IReadOnlyDictionary<DateTime, double>>
+        TruthFor(string station, IReadOnlyDictionary<DateTime, double> truthByTime)
+        => new Dictionary<string, IReadOnlyDictionary<DateTime, double>> { [station] = truthByTime };
+
+    [Fact]
+    public void ComputeRollingBrier_returns_empty_when_no_pairs()
+    {
+        // No predictions OR no station-truth-dict overlap → empty list. Same
+        // failure modes as ComputeRollingMae's "no pairs" early-return path.
+        RenderSiteCommand.ComputeRollingBrier(
+                Array.Empty<SitePages.PrecipForecastPoint>(),
+                new Dictionary<string, IReadOnlyDictionary<DateTime, double>>(),
+                windowDays: 30)
+            .Should().BeEmpty();
+
+        var preds = new[] { Precip("ea_bellever_dartmoor", "v3a", 24,
+            new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc), 0.5) };
+        RenderSiteCommand.ComputeRollingBrier(preds,
+                new Dictionary<string, IReadOnlyDictionary<DateTime, double>>(), 30)
+            .Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ComputeRollingBrier_thresholds_truth_at_0_1mm_and_computes_brier()
+    {
+        // Two predictions: P(wet)=0.8 with truth 0.5mm (wet, binary 1) →
+        // squared error = 0.04. P(wet)=0.2 with truth 0.05mm (dry, binary 0)
+        // → squared error = 0.04. Both windows include both, so daily Brier
+        // = 0.04 once the second pair is in the window. The 0.1mm threshold
+        // is the blender's training label boundary; pinning it here so a
+        // future code-side threshold change immediately surfaces.
+        var t1 = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
+        var t2 = new DateTime(2026, 4, 23, 12, 0, 0, DateTimeKind.Utc);
+        var preds = new[]
+        {
+            Precip("ea_bellever_dartmoor", "v3a", 24, t1, 0.8),
+            Precip("ea_bellever_dartmoor", "v3a", 24, t2, 0.2),
+        };
+        var truth = TruthFor("ea_bellever_dartmoor",
+            new Dictionary<DateTime, double> { [t1] = 0.5, [t2] = 0.05 });
+
+        var points = RenderSiteCommand.ComputeRollingBrier(preds, truth, windowDays: 30);
+
+        points.Should().HaveCount(2);
+        points[0].BlendBrier.Should().BeApproximately(0.04, 1e-9);
+        points[1].BlendBrier.Should().BeApproximately(0.04, 1e-9);
+        points.Select(p => p.N).Should().Equal(1, 2);
+        points.Select(p => p.Station).Should().AllBeEquivalentTo("ea_bellever_dartmoor");
+    }
+
+    [Fact]
+    public void ComputeRollingBrier_window_slides_and_old_pairs_drop_off()
+    {
+        // 5 daily pairs, 3-day rolling window. Each pair has P(wet) = 0.5
+        // against a dry hour (truth 0.0mm < 0.1mm threshold → binary 0).
+        // Squared error per pair = (0.5 − 0)² = 0.25. Window cap of 3
+        // means N goes 1, 2, 3, 3, 3 and Brier stays at 0.25 throughout
+        // (mean of identical 0.25 values).
+        var t1 = new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc);
+        var preds = Enumerable.Range(0, 5)
+            .Select(i => Precip("ea_bellever_dartmoor", "v3a", 24, t1.AddDays(i), 0.5))
+            .ToArray();
+        var truth = TruthFor("ea_bellever_dartmoor",
+            preds.ToDictionary(p => p.ValidTimeUtc, _ => 0.0));
+
+        var points = RenderSiteCommand.ComputeRollingBrier(preds, truth, windowDays: 3);
+
+        points.Should().HaveCount(5);
+        points.Select(p => p.N).Should().Equal(1, 2, 3, 3, 3);
+        points.Select(p => p.BlendBrier).Should().AllSatisfy(b =>
+            b.Should().BeApproximately(0.25, 1e-9));
+    }
+
+    [Fact]
+    public void ComputeRollingBrier_separates_per_station_per_version_per_lead()
+    {
+        // Two stations × two versions × two leads → eight series, no
+        // cross-talk. Mirrors the ComputeRollingMae per-(version, lead)
+        // separation but with a station axis on top.
+        var t = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
+        var preds = new[]
+        {
+            Precip("ea_bellever_dartmoor", "v3a", 24, t, 0.6),
+            Precip("ea_bellever_dartmoor", "v3a", 48, t, 0.55),
+            Precip("ea_bellever_dartmoor", "v3c", 24, t, 0.65),
+            Precip("ea_bellever_dartmoor", "v3c", 48, t, 0.50),
+            Precip("ea_princetown",        "v3a", 24, t, 0.40),
+            Precip("ea_princetown",        "v3a", 48, t, 0.45),
+            Precip("ea_princetown",        "v3c", 24, t, 0.42),
+            Precip("ea_princetown",        "v3c", 48, t, 0.48),
+        };
+        var truth = new Dictionary<string, IReadOnlyDictionary<DateTime, double>>
+        {
+            ["ea_bellever_dartmoor"] = new Dictionary<DateTime, double> { [t] = 0.5 },
+            ["ea_princetown"]        = new Dictionary<DateTime, double> { [t] = 0.0 },
+        };
+
+        var points = RenderSiteCommand.ComputeRollingBrier(preds, truth, windowDays: 30);
+
+        points.Should().HaveCount(8);
+        points.Select(p => (p.Station, p.ModelVersion, p.LeadHours)).Should().BeEquivalentTo(
+            new (string, string, int)[]
+            {
+                ("ea_bellever_dartmoor", "v3a", 24),
+                ("ea_bellever_dartmoor", "v3a", 48),
+                ("ea_bellever_dartmoor", "v3c", 24),
+                ("ea_bellever_dartmoor", "v3c", 48),
+                ("ea_princetown",        "v3a", 24),
+                ("ea_princetown",        "v3a", 48),
+                ("ea_princetown",        "v3c", 24),
+                ("ea_princetown",        "v3c", 48),
+            });
     }
 
     [Fact]

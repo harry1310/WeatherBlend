@@ -488,6 +488,76 @@ public class SitePagesTests
     }
 
     [Fact]
+    public void RenderRainSkill_renders_rolling_brier_block_when_points_present()
+    {
+        // Mirror of the temp page's rolling-MAE panel, station-filtered.
+        // Three points across (lead 24/48/72) at the current station should
+        // each surface a per-lead chart with the version label on it.
+        var generatedAt = new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc);
+        var rolling = new[]
+        {
+            new SitePages.RollingBrierPoint("ea_bellever_dartmoor", "v3a", 24,
+                generatedAt.AddDays(-1).AddTicks(-1), 0.18, 50),
+            new SitePages.RollingBrierPoint("ea_bellever_dartmoor", "v3a", 48,
+                generatedAt.AddDays(-1).AddTicks(-1), 0.22, 30),
+            new SitePages.RollingBrierPoint("ea_bellever_dartmoor", "v3a", 72,
+                generatedAt.AddDays(-1).AddTicks(-1), 0.25, 20),
+        };
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            PrecipPredictions = new[]
+            {
+                // Need at least one precip prediction so RenderRainSkill
+                // resolves a current station to filter on.
+                new SitePages.PrecipForecastPoint(
+                    Station: "ea_bellever_dartmoor", Version: "v3a",
+                    PredictedAtUtc: generatedAt, ValidTimeUtc: generatedAt.AddHours(24),
+                    LeadHours: 24, ProbWet: 0.6, ClimatologyPWet: 0.4,
+                    PrecipGfs: null, PrecipEcmwf: null, PrecipIcon: null,
+                    PrecipMf: null, PrecipUkmo: null, PrecipGem: null,
+                    PrecipAifs: null, PrecipJma: null),
+            },
+            PhaseByVersion = new Dictionary<string, string> { ["v3a"] = "3a" },
+            RollingBrier = rolling,
+        };
+
+        var html = SitePages.RenderRainSkill(input, null);
+
+        html.Should().Contain("Rolling Brier");
+        html.Should().Contain("Lead +24h").And.Contain("Lead +48h").And.Contain("Lead +72h");
+        // Version label reaches the chart payload.
+        html.Should().Contain("v3a");
+    }
+
+    [Fact]
+    public void RenderRainSkill_rolling_brier_block_shows_empty_state_when_no_points()
+    {
+        var generatedAt = new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc);
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            PrecipPredictions = new[]
+            {
+                new SitePages.PrecipForecastPoint(
+                    Station: "ea_bellever_dartmoor", Version: "v3a",
+                    PredictedAtUtc: generatedAt, ValidTimeUtc: generatedAt.AddHours(24),
+                    LeadHours: 24, ProbWet: 0.6, ClimatologyPWet: 0.4,
+                    PrecipGfs: null, PrecipEcmwf: null, PrecipIcon: null,
+                    PrecipMf: null, PrecipUkmo: null, PrecipGem: null,
+                    PrecipAifs: null, PrecipJma: null),
+            },
+            PhaseByVersion = new Dictionary<string, string> { ["v3a"] = "3a" },
+            RollingBrier = Array.Empty<SitePages.RollingBrierPoint>(),
+        };
+
+        var html = SitePages.RenderRainSkill(input, null);
+
+        html.Should().Contain("Rolling Brier");
+        html.Should().Contain("No rolling Brier points yet");
+    }
+
+    [Fact]
     public void RenderRainSkill_does_not_inline_per_nwp_pop_lines()
     {
         // Per-NWP PoP lines belong on the Forecasts pages, not the rain
