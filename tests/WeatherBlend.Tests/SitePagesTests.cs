@@ -313,36 +313,36 @@ public class SitePagesTests
     // ---- PrecipProbColor (home P(wet) chip ramp) ---------------------------
 
     [Theory]
-    [InlineData(-0.5, 193, 154, 107)]  // below 0 → clamps to tan
-    [InlineData( 0.0, 193, 154, 107)]  // tan        anchor #c19a6b — dry / earth
-    [InlineData( 0.5, 168, 168, 156)]  // stone grey anchor #a8a89c — overcast
-    [InlineData( 1.0,   0, 105,  92)]  // deep teal  anchor #00695c — wet / water
-    [InlineData( 1.5,   0, 105,  92)]  // above 1 → clamps to deep teal
+    [InlineData(-0.5,  67, 160,  71)]  // below 0  → clamps to green
+    [InlineData( 0.0,  67, 160,  71)]  // green anchor #43a047 — dry / good
+    [InlineData( 0.5, 255, 167,  38)]  // amber anchor #ffa726 — borderline
+    [InlineData( 1.0, 229,  57,  53)]  // red   anchor #e53935 — wet / bad
+    [InlineData( 1.5, 229,  57,  53)]  // above 1 → clamps to red
     public void PrecipProbColor_returns_expected_rgb_at_anchors_and_clamps(double prob, int r, int g, int b)
     {
         SitePages.PrecipProbColor(prob).Should().Be($"rgb({r} {g} {b})");
     }
 
     [Fact]
-    public void PrecipProbColor_interpolates_smoothly_from_tan_through_grey_to_deep_teal()
+    public void PrecipProbColor_interpolates_smoothly_from_green_through_amber_to_red()
     {
-        // At 0.25 the colour should sit between tan (193,154,107) and stone
-        // grey (168,168,156): red falls slightly, green and blue rise. At
-        // 0.75 between grey and deep teal (0,105,92): red and green fall,
-        // blue dips toward saturated water.
+        // Traffic-light ramp: at 0.25 we sit between green (67,160,71) and
+        // amber (255,167,38) — red rises sharply, blue falls to lower
+        // saturated. At 0.75 between amber and red (229,57,53) — green
+        // falls toward the red anchor, blue stays low.
         var quarter = SitePages.PrecipProbColor(0.25);
         var threeq  = SitePages.PrecipProbColor(0.75);
 
         var qParts = quarter["rgb(".Length..^1].Split(' ');
         var qR = int.Parse(qParts[0]); var qG = int.Parse(qParts[1]); var qB = int.Parse(qParts[2]);
-        qR.Should().BeInRange(169, 192, "red falling tan → grey");
-        qG.Should().BeInRange(155, 167, "green rising tan → grey");
-        qB.Should().BeInRange(108, 155, "blue rising tan → grey");
+        qR.Should().BeInRange(68, 254, "red rising green → amber");
+        qG.Should().BeGreaterThanOrEqualTo(160, "green channel rises slightly into amber");
+        qB.Should().BeInRange(39, 70, "blue falling green → amber");
 
         var tParts = threeq["rgb(".Length..^1].Split(' ');
         var tR = int.Parse(tParts[0]); var tG = int.Parse(tParts[1]); var tB = int.Parse(tParts[2]);
-        tR.Should().BeInRange(1, 167, "red falling grey → teal");
-        tG.Should().BeInRange(106, 167, "green falling grey → teal");
+        tR.Should().BeInRange(230, 254, "red stays high amber → red");
+        tG.Should().BeInRange(58, 166, "green falling amber → red");
     }
 
     [Fact]
@@ -778,11 +778,17 @@ public class SitePagesTests
     }
 
     [Fact]
-    public void PickBestStart_returns_null_when_curve_is_too_uniform()
+    public void PickBestStart_returns_argmax_even_for_near_uniform_curves()
     {
-        // peak − trough = 0.27 − 0.23 = 0.04 < 0.10 threshold: the model has
-        // no real preference, the argmax is just whichever bucket sorted
-        // first by float noise. Showing it would be a false signal.
+        // peak − trough = 0.27 − 0.23 = 0.04. We used to gate on a 10pp
+        // peak/trough range and suppress here, but that hid lead-48 / 72h
+        // rows where the model said "block almost certain (91% daily) but
+        // I have no strong opinion on when". The reader was left looking
+        // at "—" and couldn't tell missing-curve from uniform-shape, which
+        // was the wrong trade-off. Now we surface the argmax and let the
+        // calibrated (NN%) printed alongside it carry the sharpness
+        // signal: a flat curve renders as "09:00Z (~26%)", a peaked one
+        // as "09:00Z (45%)", and the reader judges from the number.
         var t = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
         var curve = new[]
         {
@@ -792,7 +798,9 @@ public class SitePagesTests
             StartHour("ea_bellever_dartmoor", 6, 24, t, 11, 0.23, 0.95, 0.2185),
         };
 
-        SitePages.PickBestStart(curve).Should().BeNull();
+        var best = SitePages.PickBestStart(curve);
+        best.Should().NotBeNull();
+        best!.StartHourUtc.Should().Be(9);
     }
 
     [Fact]

@@ -7,31 +7,34 @@ public static partial class SitePages
 {
     /// <summary>
     /// Pick the highest-calibrated-probability start hour from a curve, or
-    /// return <c>null</c> when the curve carries no useful shape. The shape
-    /// rule mirrors the home-card chip suppression: tiny daily marginals
-    /// (<c>≤ 0.10</c>) make any "best start" a contradiction ("there's
-    /// almost certainly no block"), and uniform-ish curves (peak − trough
-    /// &lt; 0.10) mean the model has no meaningful preference and the user
-    /// shouldn't be misled into reading the argmax as a real signal.
-    /// Threshold values pinned by tests so they can't drift silently.
+    /// return <c>null</c> when the row carries no useful signal at all
+    /// (daily P(any block) is so low that picking ANY start hour would
+    /// mislead the reader into chasing a near-certainly-not-happening
+    /// block). For curves where daily P is meaningful but the curve itself
+    /// is near-uniform — high daily P with little variation across start
+    /// hours — we still surface the argmax because the calibrated <c>(NN%)</c>
+    /// printed alongside it is itself the curve-sharpness signal: a flat
+    /// curve renders as "10:00Z (24%)", a peaked one as "10:00Z (45%)", and
+    /// the reader gets to judge from the number whether the model has a
+    /// real opinion. Earlier we also gated on a 10pp peak−trough range and
+    /// it suppressed lead-48 / lead-72 cells where the daily P was 90%+ but
+    /// the within-day shape was flat — the user couldn't tell the
+    /// difference between "model has weak opinion on when" and "no curve
+    /// available", which was the wrong trade-off.
     /// </summary>
     internal const double StartHourMinDailyProb = 0.10;
-    internal const double StartHourMinPeakRange = 0.10;
 
     internal static StartHourForecastPoint? PickBestStart(
         IEnumerable<StartHourForecastPoint> curveForOneCell)
     {
         StartHourForecastPoint? best = null;
         double maxProb = double.NegativeInfinity;
-        double minProb = double.PositiveInfinity;
         foreach (var r in curveForOneCell)
         {
             if (r.ConditionalProb > maxProb) { maxProb = r.ConditionalProb; best = r; }
-            if (r.ConditionalProb < minProb) { minProb = r.ConditionalProb; }
         }
         if (best is null) return null;
         if (best.DailyProbAnyBlock < StartHourMinDailyProb) return null;
-        if (maxProb - minProb < StartHourMinPeakRange) return null;
         return best;
     }
 
