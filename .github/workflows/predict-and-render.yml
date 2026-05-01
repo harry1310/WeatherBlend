@@ -101,6 +101,13 @@ jobs:
           rclone copy "r2:${R2_BUCKET}/data/truth/metar"     ./data/truth/metar     --fast-list --transfers 16 --checkers 32 --progress
           rclone copy "r2:${R2_BUCKET}/data/truth/rainfall"  ./data/truth/rainfall  --fast-list --transfers 16 --checkers 32 --progress
 
+          # Verify reports — the Models page reads the JSON sidecars to
+          # render a per-(target, station, version) "Verify history" table.
+          # Cheap to pull (a few hundred kB total); markdown reports come
+          # along too even though render-site only consumes the .json files.
+          mkdir -p data/reports
+          rclone copy "r2:${R2_BUCKET}/data/reports"         ./data/reports         --fast-list --transfers 16 --checkers 32 --progress
+
       - name: Build
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
 

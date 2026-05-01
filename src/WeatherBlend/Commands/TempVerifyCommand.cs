@@ -86,10 +86,41 @@ public sealed class TempVerifyCommand
         var md = TempVerifyReporter.BuildMarkdown(asOfUtc, windowDays, era5LatencyDays, driftThreshold, rows, metadata);
 
         Directory.CreateDirectory(_cfg.Storage.ReportsPath);
+        // Renamed 2026-05-02 from verify_<asof>.md to verify_temperature_<asof>.md
+        // so the filename pattern matches the precip / dry-window / element
+        // siblings. Pre-rename markdowns stay as historical artefacts on R2;
+        // only future writes get the new name.
         var outPath = Path.Combine(_cfg.Storage.ReportsPath,
-            $"verify_{asOfUtc:yyyy-MM-dd}.md");
+            $"verify_temperature_{asOfUtc:yyyy-MM-dd}.md");
         await File.WriteAllTextAsync(outPath, md, ct);
         _log.LogInformation("Report written → {Path}", outPath);
+
+        // Structured sidecar for the Models-page "Verify history" table —
+        // same data, machine-parseable. See VerifyHistoryFile docstring.
+        var history = new WeatherBlend.Models.VerifyHistoryFile
+        {
+            Target = "temperature",
+            AsOfUtc = asOfUtc,
+            WindowDays = windowDays,
+            LatencyDays = era5LatencyDays,
+            MetricLabel = "MAE (°C)",
+            Rows = rows.Select(r => new WeatherBlend.Models.VerifyHistoryRow
+            {
+                Station = null,
+                ModelVersion = r.ModelVersion,
+                LeadHours = r.LeadHours,
+                WindowHours = null,
+                N = r.N,
+                BlendMetric = r.BlendMae,
+                ClimMetric = null,
+                MeanOfModelsMetric = r.MeanMae,
+                BestSingleName = r.BestSingleName,
+                BestSingleMetric = r.BestSingleMae,
+                ReferenceTrainingMetric = r.ReferenceTestMae,
+                DriftFlag = r.DriftFlag,
+            }).ToList(),
+        };
+        await Evaluate.VerifyHistoryWriter.WriteAsync(_cfg.Storage.ReportsPath, history, ct);
 
         // One-line summary to stdout — easy to scrape from CI logs.
         foreach (var r in rows)

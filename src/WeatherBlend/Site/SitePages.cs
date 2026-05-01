@@ -228,6 +228,17 @@ public static partial class SitePages
         /// </summary>
         public IReadOnlyList<NwpPrecipProbForecastPoint> NwpPrecipProbabilities { get; init; }
             = Array.Empty<NwpPrecipProbForecastPoint>();
+
+        /// <summary>
+        /// Structured weekly verify history loaded from
+        /// <c>data/reports/verify_*.json</c>. One entry per (target, asOf)
+        /// run; the Models-page renderer filters per-card on (target,
+        /// station, version, windowHours) to populate a "Verify history"
+        /// table beneath each model card. Empty until the first weekly
+        /// verify run lands JSON sidecars on R2.
+        /// </summary>
+        public IReadOnlyList<VerifyHistoryFile> VerifyHistory { get; init; }
+            = Array.Empty<VerifyHistoryFile>();
     }
 
     /// <summary>

@@ -164,6 +164,36 @@ public sealed class DryWindowVerifyCommand
         await File.WriteAllTextAsync(outPath, md, ct);
         _log.LogInformation("Report written → {Path}", outPath);
 
+        // Structured sidecar for the Models-page "Verify history" table.
+        // Dry-window's per-row identity is (station, window-hours, version,
+        // lead) — populates the WindowHours field that other targets leave
+        // null. No per-NWP "best single" baseline for this target, so
+        // BestSingleName / BestSingleMetric stay null.
+        var history = new WeatherBlend.Models.VerifyHistoryFile
+        {
+            Target = "dry_window",
+            AsOfUtc = asOfUtc,
+            WindowDays = windowDays,
+            LatencyDays = latencyDays,
+            MetricLabel = "Brier",
+            Rows = resultRows.Select(r => new WeatherBlend.Models.VerifyHistoryRow
+            {
+                Station = r.Station,
+                ModelVersion = r.Version,
+                LeadHours = r.LeadHours,
+                WindowHours = r.WindowHours,
+                N = r.N,
+                BlendMetric = r.BlendBrier,
+                ClimMetric = r.ClimBrier,
+                MeanOfModelsMetric = r.MeanBrier,
+                BestSingleName = null,
+                BestSingleMetric = null,
+                ReferenceTrainingMetric = r.TrainingBrier,
+                DriftFlag = r.Drift,
+            }).ToList(),
+        };
+        await WeatherBlend.Evaluate.VerifyHistoryWriter.WriteAsync(_cfg.Storage.ReportsPath, history, ct);
+
         foreach (var r in resultRows)
         {
             _log.LogInformation(

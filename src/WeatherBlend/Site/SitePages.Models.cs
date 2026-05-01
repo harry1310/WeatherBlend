@@ -74,14 +74,36 @@ public static partial class SitePages
                 .ThenByDescending(m => m.TrainedAtUtc)
                 .ToList();
             foreach (var m in ordered)
-                content.Append(RenderBlenderCard(group.Key, m));
+                content.Append(RenderBlenderCard(group.Key, m, input.VerifyHistory));
         }
 
         content.Append("</section>");
         return WrapPage(input, "Models", "models", content.ToString());
     }
 
-    private static string RenderBlenderCard(string composite, ModelSummary m)
+    /// <summary>
+    /// Maps a Models-page composite key
+    /// (<c>"temperature"</c> / <c>"precipitation/{station}"</c> /
+    /// <c>"dry_window/{station}/{N}h"</c>) to the
+    /// <see cref="WeatherBlend.Models.VerifyHistoryFile.Target"/> +
+    /// <see cref="WeatherBlend.Models.VerifyHistoryRow.Station"/> +
+    /// <see cref="WeatherBlend.Models.VerifyHistoryRow.WindowHours"/> tuple a
+    /// verify-history file uses, so the per-card history filter can pick out
+    /// rows matching this exact card.
+    /// </summary>
+    private static (string Target, string? Station, int? WindowHours) ParseCompositeForHistory(string composite)
+    {
+        var parts = composite.Split('/');
+        if (parts.Length == 1) return (parts[0], null, null);
+        if (parts.Length == 2) return (parts[0], parts[1], null);
+        if (parts.Length == 3 && parts[2].EndsWith("h", StringComparison.Ordinal)
+            && int.TryParse(parts[2][..^1], out var w))
+            return (parts[0], parts[1], w);
+        return (composite, null, null);
+    }
+
+    private static string RenderBlenderCard(string composite, ModelSummary m,
+        IReadOnlyList<WeatherBlend.Models.VerifyHistoryFile> verifyHistory)
     {
         var description = PhaseDescription(composite, m.Phase);
         var phaseLabel = string.IsNullOrEmpty(m.Phase) ? "—" : m.Phase;
@@ -121,6 +143,8 @@ public static partial class SitePages
                 """);
         }
 
+        var historyHtml = RenderVerifyHistorySection(composite, m.Version, verifyHistory);
+
         return $"""
             <article class="blender-card">
               <header>
@@ -141,7 +165,111 @@ public static partial class SitePages
                 <tbody>
             {tbody}    </tbody>
               </table>
+              {historyHtml}
             </article>
+            """;
+    }
+
+    /// <summary>
+    /// Per-card "Verify history" sub-section: one row per past weekly verify
+    /// run for this exact (target, station, version, windowHours) cell, with
+    /// per-lead blend metric columns and a drift indicator. Filters
+    /// <paramref name="verifyHistory"/> to runs whose <c>Target</c>,
+    /// <c>Station</c>, <c>WindowHours</c>, and <c>ModelVersion</c> all match
+    /// the card; sorted newest-first so the most recent run sits at the top.
+    /// Renders nothing when there's no matching history yet — keeps the card
+    /// clean for fresh-deploy / pre-first-verify states.
+    /// </summary>
+    private static string RenderVerifyHistorySection(string composite, string version,
+        IReadOnlyList<WeatherBlend.Models.VerifyHistoryFile> verifyHistory)
+    {
+        if (verifyHistory.Count == 0) return "";
+        var (target, station, windowHours) = ParseCompositeForHistory(composite);
+
+        // Find every (file, row) pair that matches this card. Each matching
+        // file contributes one row to the history table; the per-lead values
+        // come from rows in that file.
+        var matchingFiles = verifyHistory
+            .Where(f => f.Target == target)
+            .Select(f =>
+            {
+                var rows = f.Rows.Where(r =>
+                        r.ModelVersion == version
+                        && r.Station == station
+                        && r.WindowHours == windowHours)
+                    .ToList();
+                return (File: f, Rows: rows);
+            })
+            .Where(x => x.Rows.Count > 0)
+            .OrderByDescending(x => x.File.AsOfUtc)
+            .ToList();
+
+        if (matchingFiles.Count == 0) return "";
+
+        // Lead set for the columns: union across every matching run, sorted
+        // ascending. Different runs may have different leads (a target's
+        // training set changed mid-history), so a fixed Leads.Full would
+        // either over- or under-count columns.
+        var allLeads = matchingFiles
+            .SelectMany(x => x.Rows.Select(r => r.LeadHours))
+            .Distinct()
+            .OrderBy(l => l)
+            .ToList();
+        var metricLabel = matchingFiles[0].File.MetricLabel;
+
+        var tbody = new StringBuilder();
+        foreach (var (file, rows) in matchingFiles)
+        {
+            var byLead = rows.ToDictionary(r => r.LeadHours);
+            var driftAny = rows.Any(r => r.DriftFlag);
+
+            var leadCells = new StringBuilder();
+            foreach (var lead in allLeads)
+            {
+                if (byLead.TryGetValue(lead, out var r))
+                {
+                    var driftCls = r.DriftFlag ? " delta-bad" : "";
+                    leadCells.Append(Ci, $"""<td class="num{driftCls}">{r.BlendMetric.ToString("0.000", Ci)}</td>""");
+                }
+                else
+                {
+                    leadCells.Append("""<td class="num">—</td>""");
+                }
+            }
+
+            var driftCell = driftAny
+                ? "<td class=\"num delta-bad\">⚠</td>"
+                : "<td class=\"num delta-good\">✓</td>";
+
+            tbody.Append(Ci, $"""
+                <tr>
+                  <td><time datetime="{file.AsOfUtc:yyyy-MM-dd}">{file.AsOfUtc:ddd yyyy-MM-dd}</time></td>
+                  {leadCells}
+                  {driftCell}
+                </tr>
+                """);
+        }
+
+        var leadHeaders = new StringBuilder();
+        foreach (var lead in allLeads)
+            leadHeaders.Append(Ci, $"""<th class="num">+{lead}h</th>""");
+
+        return $"""
+            <details>
+              <summary><strong>Verify history</strong> <small>({matchingFiles.Count} run{(matchingFiles.Count == 1 ? "" : "s")})</small></summary>
+              <p class="skill-line">Weekly Brier/MAE on the held-out rolling window — one row per verify run, drift flag in the last column. Metric: {Escape(metricLabel)}.</p>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Run (UTC)</th>
+                    {leadHeaders}
+                    <th class="num">Drift</th>
+                  </tr>
+                </thead>
+                <tbody>
+            {tbody}    </tbody>
+              </table>
+            </details>
             """;
     }
 

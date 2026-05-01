@@ -73,6 +73,9 @@ public sealed class RenderSiteCommand
         _log.LogInformation("Loaded {N} per-NWP precipitation-probability rows ({M} models).",
             nwpPop.Count, nwpPop.Select(p => p.Model).Distinct().Count());
 
+        var verifyHistory = LoadVerifyHistory(_cfg.Storage.ReportsPath);
+        _log.LogInformation("Loaded {N} verify-history JSON sidecars.", verifyHistory.Count);
+
         // ERA5 is gapless-for-past, but only past — query up to the clock time.
         // Persistence-lookback headroom (up to 72h before the earliest prediction)
         // keeps rolling-MAE truth pairs matchable at the start of the window.
@@ -134,6 +137,7 @@ public sealed class RenderSiteCommand
             StartHourPredictions = startHour,
             MetOfficeSpotForecasts = metOfficeSpot,
             NwpPrecipProbabilities = nwpPop,
+            VerifyHistory = verifyHistory,
         };
 
         Directory.CreateDirectory(outputDir);
@@ -715,6 +719,40 @@ ORDER BY LeadHours, ValidTimeUtc";
             Band:           r.IsDBNull(5) ? "" : r.GetString(5),
             ApparentC:      r.GetDouble(6)),
             _log, "Feels-like predictions tree empty — chip will be absent on home cards.", ct);
+    }
+
+    /// <summary>
+    /// Scans <paramref name="reportsDir"/> for <c>verify_*_*.json</c> sidecar
+    /// files written by the weekly verify commands. Each file is one verify
+    /// run for one target; Models page renderer filters per-card on (target,
+    /// station, version, windowHours) to surface a per-card history table.
+    /// Missing dir → empty list (fresh deploy / R2 pull skipped); malformed
+    /// files are logged and skipped rather than failing the whole render.
+    /// </summary>
+    private List<WeatherBlend.Models.VerifyHistoryFile> LoadVerifyHistory(string reportsDir)
+    {
+        var result = new List<WeatherBlend.Models.VerifyHistoryFile>();
+        if (!Directory.Exists(reportsDir)) return result;
+        var jsonOptions = new System.Text.Json.JsonSerializerOptions
+        {
+            PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+            PropertyNameCaseInsensitive = true,
+        };
+        foreach (var path in Directory.EnumerateFiles(reportsDir, "verify_*.json"))
+        {
+            try
+            {
+                var json = File.ReadAllText(path);
+                var file = System.Text.Json.JsonSerializer.Deserialize<WeatherBlend.Models.VerifyHistoryFile>(json, jsonOptions);
+                if (file is not null && !string.IsNullOrEmpty(file.Target))
+                    result.Add(file);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning("Skipping malformed verify-history JSON {Path}: {Msg}", path, ex.Message);
+            }
+        }
+        return result;
     }
 
     /// <summary>

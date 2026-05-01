@@ -103,6 +103,32 @@ public sealed class PrecipVerifyCommand
         await File.WriteAllTextAsync(outPath, md, ct);
         _log.LogInformation("Report written → {Path}", outPath);
 
+        // Structured sidecar for the Models-page "Verify history" table.
+        var history = new WeatherBlend.Models.VerifyHistoryFile
+        {
+            Target = "precipitation",
+            AsOfUtc = asOfUtc,
+            WindowDays = windowDays,
+            LatencyDays = latencyDays,
+            MetricLabel = "Brier",
+            Rows = rows.Select(r => new WeatherBlend.Models.VerifyHistoryRow
+            {
+                Station = r.TruthStation,
+                ModelVersion = r.ModelVersion,
+                LeadHours = r.LeadHours,
+                WindowHours = null,
+                N = r.N,
+                BlendMetric = r.BlendBrier,
+                ClimMetric = r.ClimBrier,
+                MeanOfModelsMetric = r.MeanOfModelsBrier,
+                BestSingleName = r.BestSingleName,
+                BestSingleMetric = r.BestSingleBrier,
+                ReferenceTrainingMetric = r.ReferenceTestBrier,
+                DriftFlag = r.DriftFlag,
+            }).ToList(),
+        };
+        await Evaluate.VerifyHistoryWriter.WriteAsync(_cfg.Storage.ReportsPath, history, ct);
+
         foreach (var r in rows)
         {
             _log.LogInformation(

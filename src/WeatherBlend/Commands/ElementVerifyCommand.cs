@@ -87,6 +87,35 @@ public sealed class ElementVerifyCommand
         await File.WriteAllTextAsync(outPath, md, ct);
         _log.LogInformation("Report written → {Path}", outPath);
 
+        // Structured sidecar for the Models-page "Verify history" table.
+        // Per-element targets share the schema with temp (single-station,
+        // MAE-style metric) plus an "element_<name>" target identifier so
+        // the four element families surface as separate Models-page rows.
+        var history = new WeatherBlend.Models.VerifyHistoryFile
+        {
+            Target = $"element_{target.ModelDirName}",
+            AsOfUtc = asOfUtc,
+            WindowDays = windowDays,
+            LatencyDays = era5LatencyDays,
+            MetricLabel = $"MAE ({target.Units})",
+            Rows = rows.Select(r => new WeatherBlend.Models.VerifyHistoryRow
+            {
+                Station = null,
+                ModelVersion = r.ModelVersion,
+                LeadHours = r.LeadHours,
+                WindowHours = null,
+                N = r.N,
+                BlendMetric = r.BlendMae,
+                ClimMetric = null,
+                MeanOfModelsMetric = r.MeanMae,
+                BestSingleName = r.BestSingleName,
+                BestSingleMetric = r.BestSingleMae,
+                ReferenceTrainingMetric = r.ReferenceTestMae,
+                DriftFlag = r.DriftFlag,
+            }).ToList(),
+        };
+        await WeatherBlend.Evaluate.VerifyHistoryWriter.WriteAsync(_cfg.Storage.ReportsPath, history, ct);
+
         foreach (var r in rows)
         {
             _log.LogInformation(
