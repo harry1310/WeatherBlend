@@ -1,30 +1,53 @@
 # weatherblend-scheduler
 
 Cloudflare Worker that fires GitHub Actions workflows on a cron schedule via a
-GitHub App. Built to replace the unreliable GitHub-side `schedule:` trigger on
-`collect.yml` — GitHub's scheduler routinely delays runs by 15+ minutes and
-occasionally skips them entirely when the runner pool is busy, which means
-collect cycles miss the Open-Meteo `previous_day_N` refresh window. Cloudflare
-Workers cron triggers fire on time.
+GitHub App. Built to replace the unreliable GitHub-side `schedule:` trigger —
+GitHub's scheduler routinely delays runs by 15+ minutes and occasionally skips
+them entirely when the runner pool is busy, which means scheduled work
+silently slips. Cloudflare Workers cron triggers fire on time.
 
 ## What it does
 
 ```
-Cloudflare cron (15 2,8,14,20 * * *)
+Cloudflare crons                          Workflow dispatched
+─────────────────────────                 ──────────────────────
+15 2,8,14,20 * * *  (every 6h, :15)  →   collect.yml
+0 12 * * *          (daily 12:00 UTC) →  era5-refresh.yml
+30 9 * * 1          (Mon 09:30 UTC)   →  verify.yml
         │
         ▼
 weatherblend-scheduler (this Worker)
-        │  1. Mint 10-min JWT signed with the GitHub App's private key
-        │  2. Exchange JWT for a 1h installation access token
-        │  3. POST /repos/.../actions/workflows/collect.yml/dispatches
+        │  1. Pick workflow from event.cron via WORKFLOW_FOR_CRON
+        │  2. Mint 10-min JWT signed with the GitHub App's private key
+        │  3. Exchange JWT for a 1h installation access token
+        │  4. POST /repos/.../actions/workflows/<file>/dispatches
         ▼
-GitHub Actions runs collect.yml as if a human had clicked "Run workflow"
+GitHub Actions runs the workflow as if a human had clicked "Run workflow"
 ```
 
-Same workflow, same code path; only the trigger source changes. Once
-Cloudflare has demonstrated it fires on time for a few days, the GitHub-side
-`schedule:` trigger gets removed from `collect.yml` and the Cloudflare cron
-becomes the sole driver.
+Same workflows, same code paths; only the trigger source changes. Each
+workflow's GitHub-side `schedule:` block gets removed once the Cloudflare
+cron has been fired in production for at least a couple of cycles.
+
+## Schedule rationale
+
+| Cron | Workflow | Why this time |
+|------|----------|---------------|
+| `15 2,8,14,20 * * *` | `collect.yml` | Every 6h, offset `:15` past the hour to avoid the top-of-hour rush on Open-Meteo. |
+| `0 12 * * *` | `era5-refresh.yml` | ECMWF publishes ERA5T daily around 09–10 UTC; Open-Meteo ingests within a few hours. 12:00 UTC is past both, so the daily refresh always lands on Open-Meteo's freshest data instead of catching ECMWF mid-publish (which writes null partitions). The refresh itself pulls a 14-day rolling window, so any null partitions left by older runs get backfilled as ECMWF catches up. |
+| `30 9 * * 1` | `verify.yml` | Weekly Monday 09:30 UTC. Historical timing — kept verbatim from the GitHub-side cron so weekly Brier reports continue to land on the same Monday-morning slot. |
+
+## Adding a new schedule
+
+Two coordinated edits:
+
+1. Add the cron expression to `wrangler.toml` `[triggers]` `crons = [ … ]`.
+2. Add the same string verbatim as a key in `WORKFLOW_FOR_CRON` in
+   `src/index.ts`, mapping to the workflow filename.
+
+The worker uses `event.cron` (the literal string from `wrangler.toml`) as the
+lookup key, so any drift between the two files surfaces as an "unknown cron
+expression" exception in the next scheduled fire.
 
 ## Layout
 
@@ -54,8 +77,10 @@ Plain (non-secret) configuration lives in `wrangler.toml` under `[vars]`:
 | Name | Default | Notes |
 |------|---------|-------|
 | `GH_REPO` | `harry1310/WeatherBlend` | `{owner}/{name}` form. |
-| `GH_WORKFLOW_FILE` | `collect.yml` | The workflow to dispatch on each cron fire. |
 | `GH_REF` | `main` | Branch the workflow runs against. |
+
+The workflow file isn't a plain var — it's selected per-cron in the worker
+via `WORKFLOW_FOR_CRON` in `src/index.ts` (see "Adding a new schedule" above).
 
 ## Required GitHub App permissions
 
@@ -78,17 +103,23 @@ Subsequent deploys are just `wrangler deploy`.
 
 Two easy paths:
 
-1. **Manual HTTP trigger** — the Worker exposes `POST /dispatch` so you can
-   force a workflow_dispatch from anywhere:
+1. **Manual HTTP trigger** — the Worker exposes `POST /dispatch?workflow=NAME`
+   so you can force any of the three workflows from anywhere:
 
    ```bash
+   # Defaults to collect.yml when no workflow query param is given:
    curl -X POST https://weatherblend-scheduler.rhcslater.workers.dev/dispatch
+
+   # Pick a specific workflow:
+   curl -X POST 'https://weatherblend-scheduler.rhcslater.workers.dev/dispatch?workflow=era5-refresh.yml'
+   curl -X POST 'https://weatherblend-scheduler.rhcslater.workers.dev/dispatch?workflow=verify.yml'
    ```
 
    200 means the dispatch went through — go check the GitHub Actions tab to
-   see `collect` running. 500 means an auth or config error; the response
-   body has the diagnostic message and `wrangler tail` shows the full log
-   line.
+   see the workflow running. 400 means the workflow name isn't in
+   `WORKFLOW_FOR_CRON`; the response lists known workflows. 500 means an
+   auth or config error; the body has the diagnostic message and
+   `wrangler tail` shows the full log line.
 
 2. **Local cron simulation** —
 
@@ -111,21 +142,14 @@ Each cron fire logs the cron expression + dispatch outcome. A failed dispatch
 also throws (so the cron run is recorded as failed in Cloudflare's metrics)
 and writes the GitHub error body to the log.
 
-## Cutover plan
+## Cutover history + remaining work
 
-1. Deploy this Worker. Verify `POST /dispatch` lands a `collect` run in
-   GitHub Actions.
-2. Let the Cloudflare cron run alongside the GitHub cron for 48–72h. Both
-   fire at `15 2,8,14,20 UTC`. `collect` is idempotent (writes by
-   ValidTime, dedups), so duplicate runs cost a few extra Open-Meteo calls
-   but don't pollute data.
-3. Compare timing: Cloudflare should land within a minute of `:15`, GitHub
-   often drifts. Check `wrangler tail` vs the GitHub Actions run start times.
-4. If Cloudflare is reliably on time, remove the `schedule:` block from
-   `.github/workflows/collect.yml` (keep `workflow_dispatch:`). Keep an eye
-   on it for a week.
-5. Repeat for `predict-and-render.yml` and `verify.yml` once you're confident
-   the pattern is solid.
+| Workflow | GitHub `schedule:` removed | Notes |
+|----------|---------------------------|-------|
+| `collect.yml` | ✅ 2026-05-01 (`874653f`) | Cloudflare proven, GH cron deleted same day. |
+| `era5-refresh.yml` | ✅ 2026-05-01 | Moved 06:00 → 12:00 UTC at the same time. |
+| `verify.yml` | ✅ 2026-05-01 | Same Monday 09:30 UTC slot, just different scheduler. |
+| `predict-and-render.yml` | ⏳ pending | Still on GH `schedule:`. The blast radius if Cloudflare misfires here is "missed forecast cycle"; safer to wait until a few weeks of clean cron data show on the other three before flipping. |
 
 ## Cost
 

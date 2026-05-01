@@ -4,11 +4,15 @@ name: verify
 # tree, stratifies by (model_version, lead), and flags drift when rolling MAE
 # exceeds 1.5× the training-time test MAE for that lead.
 #
-# Scheduled Mondays 09:30 UTC — comfortably after the last daily predict run of
-# the prior week, and Monday morning is when a human is most likely to read it.
+# Schedule moved to Cloudflare 2026-05-01 (cloudflare/scheduler-worker/);
+# GitHub's `schedule:` trigger removed at the same time. Same Monday 09:30
+# UTC slot — comfortably after the last predict run of the prior week, and
+# Monday morning is when a human is most likely to read it. The Cloudflare
+# scheduler's lookup table maps the `30 9 * * 1` cron to verify.yml.
+#
+# `workflow_dispatch:` retained so manual dashboard runs and the
+# Cloudflare scheduler's API-driven dispatches still work.
 on:
-  schedule:
-    - cron: "30 9 * * 1"
   workflow_dispatch:
     inputs:
       as_of:

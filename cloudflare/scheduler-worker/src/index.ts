@@ -6,44 +6,80 @@
  *      (RS256, RSASSA-PKCS1-v1_5 + SHA-256 via the Workers Web Crypto API).
  *   2. Exchange the JWT for an installation access token via
  *      `POST /app/installations/{id}/access_tokens`. Tokens last ~1h; we
- *      don't cache them — fire path is rare (4× daily), simpler is better.
+ *      don't cache them — fire path is rare, simpler is better.
  *   3. Use the installation token to POST a workflow_dispatch event:
  *      `POST /repos/{owner}/{repo}/actions/workflows/{file}/dispatches`.
  *
+ * Multiple cron schedules → multiple workflows: the worker looks up which
+ * workflow file to dispatch using the cron expression that fired
+ * (event.cron). WORKFLOW_FOR_CRON below is the single source of truth and
+ * MUST stay in sync with [triggers] crons in wrangler.toml — same strings
+ * verbatim. Adding a new schedule = add the cron to wrangler.toml AND the
+ * workflow filename to this map.
+ *
  * Two ways the Worker can run:
  *   - `scheduled()` for the cron trigger (production path).
- *   - `fetch()` exposes a manual trigger at `POST /dispatch` for testing.
- *     The route is unauthenticated; if you don't want randos firing
- *     workflows, gate it on a shared-secret header before flipping this on.
+ *   - `fetch()` exposes a manual trigger at `POST /dispatch?workflow=NAME`
+ *     for testing. The route is unauthenticated; if you don't want randos
+ *     firing workflows, gate it on a shared-secret header before flipping
+ *     this on.
  */
+
+const WORKFLOW_FOR_CRON: Record<string, string> = {
+  "15 2,8,14,20 * * *": "collect.yml",
+  "0 12 * * *":         "era5-refresh.yml",
+  "30 9 * * 1":         "verify.yml",
+};
+
 export interface Env {
   GH_APP_ID: string;
   GH_APP_INSTALLATION_ID: string;
   GH_APP_PRIVATE_KEY: string;
   GH_REPO: string;
-  GH_WORKFLOW_FILE: string;
   GH_REF: string;
 }
 
 export default {
   async scheduled(event: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
-    console.log(`scheduled: cron=${event.cron}, scheduledTime=${new Date(event.scheduledTime).toISOString()}`);
-    await dispatchWorkflow(env);
+    const workflow = WORKFLOW_FOR_CRON[event.cron];
+    if (!workflow) {
+      // Unknown cron string means wrangler.toml and this file have drifted
+      // out of sync. Throwing surfaces it as a failed Cloudflare scheduled
+      // run instead of a silent miss.
+      throw new Error(
+        `unknown cron expression: '${event.cron}'. Update WORKFLOW_FOR_CRON in src/index.ts.`,
+      );
+    }
+    console.log(
+      `scheduled: cron='${event.cron}' → ${workflow} ` +
+      `(scheduledTime=${new Date(event.scheduledTime).toISOString()})`,
+    );
+    await dispatchWorkflow(env, workflow);
   },
 
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    const knownWorkflows = new Set(Object.values(WORKFLOW_FOR_CRON));
+
     if (url.pathname === "/dispatch" && request.method === "POST") {
+      const requested = url.searchParams.get("workflow") ?? "collect.yml";
+      if (!knownWorkflows.has(requested)) {
+        return new Response(
+          `unknown workflow: '${requested}'. Known: ${[...knownWorkflows].join(", ")}\n`,
+          { status: 400 },
+        );
+      }
       try {
-        await dispatchWorkflow(env);
-        return new Response("dispatched\n", { status: 200 });
+        await dispatchWorkflow(env, requested);
+        return new Response(`dispatched ${requested}\n`, { status: 200 });
       } catch (e: unknown) {
         const message = e instanceof Error ? e.message : String(e);
         return new Response(`error: ${message}\n`, { status: 500 });
       }
     }
     return new Response(
-      "weatherblend-scheduler — POST /dispatch to fire manually.\n",
+      `weatherblend-scheduler — POST /dispatch?workflow=<filename> to fire manually.\n` +
+      `Known workflows: ${[...knownWorkflows].join(", ")}\n`,
       { status: 200 },
     );
   },
@@ -51,11 +87,11 @@ export default {
 
 // ---- workflow dispatch ----------------------------------------------------
 
-async function dispatchWorkflow(env: Env): Promise<void> {
+async function dispatchWorkflow(env: Env, workflowFile: string): Promise<void> {
   const jwt = await mintAppJwt(env.GH_APP_ID, env.GH_APP_PRIVATE_KEY);
   const installationToken = await exchangeForInstallationToken(jwt, env.GH_APP_INSTALLATION_ID);
 
-  const url = `https://api.github.com/repos/${env.GH_REPO}/actions/workflows/${env.GH_WORKFLOW_FILE}/dispatches`;
+  const url = `https://api.github.com/repos/${env.GH_REPO}/actions/workflows/${workflowFile}/dispatches`;
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -75,7 +111,7 @@ async function dispatchWorkflow(env: Env): Promise<void> {
     const body = await response.text();
     throw new Error(`workflow dispatch failed: ${response.status} ${response.statusText} — ${body}`);
   }
-  console.log(`dispatched ${env.GH_REPO}/${env.GH_WORKFLOW_FILE}@${env.GH_REF}`);
+  console.log(`dispatched ${env.GH_REPO}/${workflowFile}@${env.GH_REF}`);
 }
 
 async function exchangeForInstallationToken(jwt: string, installationId: string): Promise<string> {

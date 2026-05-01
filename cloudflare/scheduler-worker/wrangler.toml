@@ -10,21 +10,33 @@ name = "weatherblend-scheduler"
 main = "src/index.ts"
 compatibility_date = "2025-04-01"
 
-# Cron schedule mirrors collect.yml's `15 2,8,14,20 * * *` exactly so the two
-# crons fire in lockstep during the PoC overlap window. Once the Cloudflare
-# cron has demonstrated it lands consistently for a few days, the GitHub-side
-# schedule can be removed and this becomes the sole trigger. Cloudflare cron
-# is in UTC, same as GitHub Actions.
+# Cron triggers — one entry per workflow we want fired on a schedule.
+# Cloudflare cron is in UTC, same as GitHub Actions. Each cron string MUST
+# match a key in WORKFLOW_FOR_CRON in src/index.ts exactly; the worker uses
+# event.cron to look up which workflow to dispatch.
+#
+#   "15 2,8,14,20 * * *"  → collect.yml         every 6h, offset :15
+#   "0 12 * * *"          → era5-refresh.yml    daily at 12:00 UTC
+#   "30 9 * * 1"          → verify.yml          weekly Monday 09:30 UTC
+#
+# era5-refresh moved from 06:00 → 12:00 because ECMWF ERA5T publishes around
+# 09–10 UTC and Open-Meteo's archive ingests within a few hours; 12:00 UTC
+# is past both, so the daily refresh always lands on Open-Meteo's freshest
+# data instead of catching ECMWF mid-publish and writing null partitions.
 [triggers]
-crons = ["15 2,8,14,20 * * *"]
+crons = [
+  "15 2,8,14,20 * * *",
+  "0 12 * * *",
+  "30 9 * * 1",
+]
 
 # Variables (non-secret). GH_REPO is intentionally a plain var rather than a
 # secret because it's not sensitive — repo owner/name is public on every
 # Actions run. Keeping it here means the deploy pipeline can change which
-# repo to dispatch into without touching the secret store.
+# repo to dispatch into without touching the secret store. The workflow file
+# isn't here any more — it's selected per-cron in the worker, see src/index.ts.
 [vars]
 GH_REPO = "harry1310/WeatherBlend"
-GH_WORKFLOW_FILE = "collect.yml"
 GH_REF = "main"
 
 # Secrets are NOT defined here — they're injected via `wrangler secret put`

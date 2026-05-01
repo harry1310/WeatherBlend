@@ -2,14 +2,20 @@ name: era5-refresh
 
 # Daily ERA5 truth refresh. Open-Meteo's ERA5 feed mirrors ECMWF's release
 # cadence — roughly once a day with ~5-day lag — so polling more often is
-# wasted calls. We backfill a rolling 14-day window each morning to catch
+# wasted calls. We backfill a rolling 14-day window each refresh to catch
 # any late-arriving days without assuming a single release timing.
 #
-# 06:00 UTC is early enough that the render-site workflow (fired by predict
-# at ~08:05 UTC) sees the fresh truth when it runs.
+# Schedule moved to Cloudflare 2026-05-01 (cloudflare/scheduler-worker/);
+# GitHub's `schedule:` trigger removed at the same time. The Cloudflare
+# cron fires daily at 12:00 UTC — past ECMWF's CDS publication (typically
+# 09–10 UTC) and past Open-Meteo's ingestion window (a few hours later),
+# so the daily refresh always lands on Open-Meteo's freshest data instead
+# of catching ECMWF mid-publish (which writes null partitions). The old
+# 06:00 UTC slot was too early for that.
+#
+# `workflow_dispatch:` retained so manual dashboard runs and the
+# Cloudflare scheduler's API-driven dispatches still work.
 on:
-  schedule:
-    - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
       start:
