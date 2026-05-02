@@ -198,12 +198,36 @@ public sealed class DryWindowPredictCommand
                 startHour: startHour,
                 endHour: endHour);
 
-            var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
-            var probs = DryWindowTrainer.PredictVectorProbability(ml, loadedModel, spec, new[] { row });
+            // Phase 3e at window_4h is a CASCADE: load both M_base and
+            // M_extend4 from this version dir and emit their product. At
+            // window_3h the same Phase 3e artefact emits M_base directly
+            // (same shape as 3b — no extend file present, fall through to
+            // the standard single-model path).
+            var extendPath = Path.Combine(versionDir, DryWindow3eCascadeArtefact.ExtendModelFileName(lead));
+            double rawProb;
+            if (metadata.Phase == DryWindow3eFeatureBuilder.Phase3e
+                && windowHours == 4 && File.Exists(extendPath))
+            {
+                var baseModel   = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
+                var extendModel = ml.Model.Load(extendPath, out _);
+                var product = DryWindow3eCascadeArtefact.PredictRawProductForExtend(
+                    ml, baseModel, extendModel, spec, new[] { row });
+                rawProb = product[0];
+            }
+            else
+            {
+                var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
+                var probs = DryWindowTrainer.PredictVectorProbability(ml, loadedModel, spec, new[] { row });
+                rawProb = probs[0];
+            }
+
             // Apply isotonic calibration if the artefact carries one — older
-            // pre-calibration models simply return raw probs unchanged.
+            // pre-calibration models simply return raw probs unchanged. For
+            // 3e/4h the calibrator was fitted to the PRODUCT against 4h truth
+            // at training time, so applying it here is the right end-to-end
+            // calibration step.
             var calibrator = ModelArtifact.TryLoadLeadCalibrator(versionDir, lead);
-            var prob = calibrator is null ? probs[0] : calibrator.Predict(probs[0]);
+            var prob = calibrator is null ? rawProb : calibrator.Predict(rawProb);
             var climProb = climatology.Predict(targetDate);
 
             // Build per-model output fields: populate only spec.Models, null elsewhere.

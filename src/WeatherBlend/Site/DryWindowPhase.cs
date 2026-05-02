@@ -48,6 +48,14 @@ public static class DryWindowPhases
         ChampionVsChallengerLabel: "Phase 3d-shape (challenger)",
         Color: "#7c4dff");
 
+    public static readonly DryWindowPhase Phase3e = new(
+        Key: "3e",
+        LongTitle: "Phase 3e — conditional cascade for 3h + 4h windows",
+        ShortTitle: "Phase 3e (cascade)",
+        Description: "B2 decomposition. Trains a base classifier for P(3h dry block) and a conditional classifier for P(extends to 4h | has 3h block). At predict time, P(3h) = M_base, P(4h) = M_base × M_extend4. Monotonicity P(4h) ≤ P(3h) holds by construction. 6h stays on 3b because the conditional subset is too sparse to be reliable.",
+        ChampionVsChallengerLabel: "Phase 3e (cascade)",
+        Color: "#26a69a");
+
     /// <summary>
     /// Display-metadata records keyed by phase string. Source of truth for
     /// "if this phase ever ships, here's what its card / heading looks like";
@@ -59,6 +67,7 @@ public static class DryWindowPhases
         {
             [Phase3b.Key]      = Phase3b,
             [Phase3dShape.Key] = Phase3dShape,
+            [Phase3e.Key]      = Phase3e,
         };
 
     /// <summary>

@@ -618,6 +618,26 @@ public static class ModelArtifact
     }
 
     /// <summary>
+    /// Append a single version to the station's Active list (champion + challengers).
+    /// Idempotent: a version that's already Active is left in place. Doesn't touch
+    /// Current. Used by 3e to register itself as a challenger alongside the existing
+    /// 3b champion without disturbing the latter.
+    /// </summary>
+    public static void AddStationActive(string modelsRoot, string target, string station, string versionDirName)
+    {
+        MutateManifest(modelsRoot, target, m =>
+        {
+            if (!m.Stations.TryGetValue(station, out var entry))
+            {
+                entry = new StationEntry();
+                m.Stations[station] = entry;
+            }
+            if (!entry.Active.Contains(versionDirName))
+                entry.Active.Add(versionDirName);
+        });
+    }
+
+    /// <summary>
     /// Versions that should produce predictions/verify rows for this station. Falls
     /// back to [Current] when Active is empty (legacy per-station entries written
     /// before Phase 3c). Returns empty if neither is populated.

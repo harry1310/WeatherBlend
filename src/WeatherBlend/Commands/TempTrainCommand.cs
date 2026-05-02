@@ -72,9 +72,18 @@ public sealed class TempTrainCommand
         }
 
         var fs = (featureSet ?? "lean").ToLowerInvariant();
-        if (fs is not ("lean" or "rich"))
+        if (fs is not ("lean" or "rich" or "cascade"))
         {
-            _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich.", featureSet);
+            _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich | cascade.", featureSet);
+            return 2;
+        }
+        // "cascade" = Phase 3e conditional decomposition; only meaningful for
+        // dry-window (B2 trains M_base + M_extend4 jointly for windows 3 + 4).
+        if (fs == "cascade" && t != "dry-window")
+        {
+            _log.LogError(
+                "--feature-set cascade is only supported for target dry-window " +
+                "(it identifies the Phase 3e conditional decomposition).");
             return 2;
         }
         if (elementTarget is not null && fs != "lean")
@@ -109,12 +118,17 @@ public sealed class TempTrainCommand
             "precipitation" => fs == "rich"
                                   ? await RunPhase3cAsync(leads, station, ct)
                                   : await RunPhase3aAsync(leads, station, ct),
-            // dry-window: lean → Phase 3b (53 features), rich → Phase 3d-shape
-            // (3b + 7 ensemble-mean within-day rain-structure columns).
+            // dry-window: lean → Phase 3b (53 features),
+            //             rich → Phase 3d-shape (3b + 7 within-day shape features),
+            //             cascade → Phase 3e conditional decomposition (windows 3 + 4 jointly).
             "dry-window"    => await _dryWindow.RunAsync(
                                    station ?? "all", window ?? "all", leads,
-                                   fs == "rich" ? Train.DryWindow.DryWindowFeatureBuilder.Phase3dShape
-                                                : Train.DryWindow.DryWindowFeatureBuilder.Phase3b,
+                                   fs switch
+                                   {
+                                       "rich"    => Train.DryWindow.DryWindowFeatureBuilder.Phase3dShape,
+                                       "cascade" => Train.DryWindow.DryWindow3eFeatureBuilder.Phase3e,
+                                       _         => Train.DryWindow.DryWindowFeatureBuilder.Phase3b,
+                                   },
                                    ct),
             // Per-variable element blenders: one dispatcher routes wind / humidity /
             // shortwave-radiation / cloud-cover to its dedicated IElementBlender.

@@ -34,7 +34,11 @@ public static class ActivePhasePolicy
         {
             ["temperature"]   = new[] { "2b", "2c" },
             ["precipitation"] = new[] { "3a", "3c" },
-            ["dry_window"]    = new[] { "3b" },           // 3d-shape dropped 2026-04-29 (no Brier gain)
+            // 3e (B2 conditional decomposition for windows 3 + 4) added
+            // 2026-05-03 as a challenger to 3b. 6h stays 3b-only because the
+            // conditional subset for a 6|4 stage is too sparse to be reliable.
+            // 3d-shape was dropped 2026-04-29 (no Brier gain on the daytime label).
+            ["dry_window"]    = new[] { "3b", "3e" },
         };
 
     /// <summary>

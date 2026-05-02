@@ -58,7 +58,9 @@ public static partial class SitePages
                    Currently shipping <strong>Phase 3b (lean, 59 features)</strong>: per-NWP precip aggregates (sum, max-hour, wet-hour count, longest dry run, has-dry-window indicator, max prob),
                    ensemble cross-NWP summaries, RH/dew-depression/cloud/CAPE/wind covariates, and DOY calendar encodings. Bellever's blender ships PAV-calibrated;
                    Princetown and Hexworthy ship raw (their raw outputs were already well-calibrated, PAV overfit the small validation slice).
-                   Phase 3d-shape (60-feature variant adding within-window rain-structure features) was tested 2026-04-29 and gave no consistent Brier improvement, so it doesn't render.</p>
+                   <strong>Phase 3e (cascade)</strong> is shipping alongside 3b at 3h + 4h as a challenger: trains M_base for P(3h) and M_extend4 for P(extends to 4h | has 3h),
+                   so P(4h) = M_base · M_extend4 ≤ P(3h) by construction (no more cross-window monotonicity violations between the two windows).
+                   6h stays 3b-only — the conditional subset for a 6|4 stage is too sparse. Phase 3d-shape was tested 2026-04-29 and gave no consistent Brier improvement, so it doesn't render.</p>
               </hgroup>
             """);
 

@@ -587,20 +587,36 @@ public static partial class SitePages
         var leadOrder = Leads.Short;
 
         var content = new StringBuilder();
+        var station = currentStation;
 
+        foreach (var window in windows)
         {
-            var station = currentStation;
+            var cutoff = input.GeneratedAtUtc.Date.AddDays(-7);
+            var windowRows = input.DryWindowPredictions
+                .Where(d => d.Station == station && d.WindowHours == window && d.TargetDateUtc >= cutoff)
+                .ToList();
+            if (windowRows.Count == 0) continue;
 
-            foreach (var window in windows)
+            content.Append(Ci, $"<h4>{window}-hour dry window</h4>");
+
+            // Bucket by phase so 3b champion + 3e challenger render as
+            // separate tables under the same window heading. Mirrors the
+            // dry-window page's per-phase grouping. Phases not in
+            // DryWindowPhases.All silently drop (they're retired).
+            bool anyPhaseRendered = false;
+            foreach (var phase in DryWindowPhases.All)
             {
-                var cutoff = input.GeneratedAtUtc.Date.AddDays(-7);
-                var latest = input.DryWindowPredictions
-                    .Where(d => d.Station == station && d.WindowHours == window && d.TargetDateUtc >= cutoff)
+                var phaseRows = windowRows
+                    .Where(d => DryWindowPhases.Bucket(input.PhaseByVersion, d.Version) == phase)
+                    .ToList();
+                if (phaseRows.Count == 0) continue;
+                anyPhaseRendered = true;
+
+                // Latest prediction per (target_date, lead) within this phase bucket.
+                var latest = phaseRows
                     .GroupBy(d => (d.TargetDateUtc, d.LeadHours))
                     .Select(g => g.OrderByDescending(d => d.PredictedAtUtc).First())
                     .ToList();
-
-                if (latest.Count == 0) continue;
 
                 var dates = latest.Select(d => d.TargetDateUtc).Distinct().OrderBy(d => d).ToList();
 
@@ -640,8 +656,16 @@ public static partial class SitePages
                         """);
                 }
 
+                // Only emit the phase sub-heading when more than one phase
+                // is shipping for this window — single-phase windows (6h)
+                // stay clean, multi-phase windows (3h, 4h with 3b + 3e)
+                // get headed for clarity.
+                if (DryWindowPhases.All.Count > 1)
+                {
+                    content.Append(Ci, $"<h5>{Escape(phase.ShortTitle)}</h5>");
+                }
+
                 content.Append(Ci, $"""
-                    <h5>{window}-hour dry window</h5>
                     <figure>
                       <table>
                         <thead>
@@ -658,6 +682,11 @@ public static partial class SitePages
                       </table>
                     </figure>
                     """);
+            }
+
+            if (!anyPhaseRendered)
+            {
+                content.Append("<p><em>No predictions in known phase buckets for this window.</em></p>");
             }
         }
 

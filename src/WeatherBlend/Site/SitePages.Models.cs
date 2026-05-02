@@ -331,6 +331,8 @@ public static partial class SitePages
                 => "Per-(station, window) classifier for whether at least one N-hour dry block occurs in the target UTC day.",
             ("dry_window", "3d-shape")
                 => "Phase 3b features plus seven within-day shape descriptors (precip distribution moments).",
+            ("dry_window", "3e")
+                => "Conditional cascade. Trains M_base for P(3h block) and M_extend4 for P(extends to 4h | has 3h). At predict time the 3h card shows M_base; the 4h card shows M_base · M_extend4. Guarantees P(4h) ≤ P(3h) by construction. 6h stays on 3b.",
             _ => $"Phase {phase} blender.",
         };
     }
