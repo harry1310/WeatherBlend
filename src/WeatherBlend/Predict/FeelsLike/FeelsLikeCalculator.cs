@@ -90,6 +90,88 @@ public static class FeelsLikeCalculator
         return EmissivityGround * SigmaSb * tk * tk * tk * tk;
     }
 
+    /// <summary>
+    /// Solar altitude (radians, 0 at horizon, π/2 at zenith) at the given
+    /// (lat, lon, UTC time). Spencer 1971 declination + simple equation-of-time
+    /// — accurate to within ~1° for our purposes (Bonehill comfort cards), no
+    /// need for Reda-Andreas-grade ephemerides. Negative below horizon.
+    /// </summary>
+    public static double SolarAltitudeRadians(double latitudeDeg, double longitudeDeg, DateTime utcTime)
+    {
+        // Day of year in fractional form so the equation-of-time + declination
+        // stay smooth across midnight UTC.
+        double doy = utcTime.DayOfYear + (utcTime.Hour + utcTime.Minute / 60.0) / 24.0;
+
+        // Spencer's Fourier series for declination (radians).
+        double gamma = 2.0 * Math.PI * (doy - 1.0) / 365.0;
+        double decl = 0.006918
+                    - 0.399912 * Math.Cos(gamma)
+                    + 0.070257 * Math.Sin(gamma)
+                    - 0.006758 * Math.Cos(2 * gamma)
+                    + 0.000907 * Math.Sin(2 * gamma)
+                    - 0.002697 * Math.Cos(3 * gamma)
+                    + 0.001480 * Math.Sin(3 * gamma);
+
+        // Equation of time (minutes), again Spencer's series.
+        double eqt = 229.18 * (0.000075
+                             + 0.001868 * Math.Cos(gamma)
+                             - 0.032077 * Math.Sin(gamma)
+                             - 0.014615 * Math.Cos(2 * gamma)
+                             - 0.040849 * Math.Sin(2 * gamma));
+
+        // Hour angle: how far west of solar noon we are, in radians.
+        double solarTimeMinutes = utcTime.Hour * 60.0 + utcTime.Minute + 4.0 * longitudeDeg + eqt;
+        double hourAngle = Math.PI / 12.0 * (solarTimeMinutes / 60.0 - 12.0);
+
+        double latRad = latitudeDeg * Math.PI / 180.0;
+        double sinAlt = Math.Sin(latRad) * Math.Sin(decl)
+                      + Math.Cos(latRad) * Math.Cos(decl) * Math.Cos(hourAngle);
+        return Math.Asin(Math.Clamp(sinAlt, -1.0, 1.0));
+    }
+
+    /// <summary>
+    /// Clear-sky surface global-horizontal irradiance (W/m²) ceiling for a
+    /// given solar altitude. Top-of-atmosphere times a flat 0.75 atmospheric
+    /// transmission — coarse but adequate as an upper bound: real clear-sky
+    /// transmission varies 0.7–0.8 with aerosol/water vapour, so 0.75 sits
+    /// in the middle. Returns 0 below horizon.
+    /// </summary>
+    public static double ClearSkyMaxGhiWm2(double solarAltitudeRadians)
+    {
+        double sinAlt = Math.Sin(solarAltitudeRadians);
+        if (sinAlt <= 0) return 0.0;
+        const double SolarConstantApprox = 1100.0;     // ≈ TOA × atmospheric path correction
+        const double AtmosphericTransmittance = 0.75;
+        return SolarConstantApprox * sinAlt * AtmosphericTransmittance;
+    }
+
+    /// <summary>
+    /// Cap raw NWP shortwave by a cloud-attenuated clear-sky ceiling. Why:
+    /// NWP cloud cover is fractional sky cover, not optical depth, and ECMWF
+    /// (and the blend) routinely report SW values consistent with thin or
+    /// patchy cloud even when fractional cover is 70–90%. Feeding those
+    /// values straight into <see cref="Tmrt"/> produces Tmrt ≈ Ta + 25K under
+    /// "decent chance of rain" conditions, which is wrong direction.
+    ///
+    /// The bound is `Iclr · (1 − 0.65·cloud_frac)` — Kasten & Czeplak 1980 —
+    /// applied only as a max; if NWP SW already sits below the bound (dawn
+    /// /dusk, broken cloud at low altitude) it passes through unchanged.
+    /// Intentionally a floor on cloud-effect rather than a recalibration of
+    /// <see cref="HumanShortwaveCoefficient"/> — we still trust NWP SW on
+    /// clear-sky days where it agrees with cloud cover.
+    /// </summary>
+    public static double CapShortwaveByCloud(
+        double swInputWm2, double cloudFrac,
+        double latitudeDeg, double longitudeDeg, DateTime utcTime)
+    {
+        double altRad = SolarAltitudeRadians(latitudeDeg, longitudeDeg, utcTime);
+        double iClr = ClearSkyMaxGhiWm2(altRad);
+        if (iClr <= 0) return Math.Max(swInputWm2, 0.0);   // night — pass-through (will be ~0)
+        double cc = Math.Clamp(cloudFrac, 0.0, 1.0);
+        double iMax = iClr * (1.0 - 0.65 * cc);
+        return Math.Min(Math.Max(swInputWm2, 0.0), iMax);
+    }
+
     /// <summary>Mean radiant temperature (°C) from a hemisphere-weighted
     /// radiation balance for an upright person (Thorsson et al. 2007 /
     /// Lindberg et al. 2008 simplified form):

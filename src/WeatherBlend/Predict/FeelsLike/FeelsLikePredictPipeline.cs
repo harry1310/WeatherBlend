@@ -20,43 +20,39 @@ namespace WeatherBlend.Predict.FeelsLike;
 /// (mirrors the convention "first Active = champion"). Drops any (lead, valid)
 /// row that is missing in any one input — UTCI requires all five.
 ///
-/// **Cloud sourcing**: <see cref="UseEcmwfRawForCloud"/> defaults to true.
-/// The cloud blender currently loses to best-single ECMWF at 24h (~−10.8% MAE)
-/// and is roughly tied at longer leads. While that's true we read the
-/// per-model <c>ModelEcmwf</c> field from the cloud blender's prediction
-/// parquet (it's persisted alongside <c>BlendValue</c> for exactly this kind
-/// of fallback). Flip the flag back once the cloud blender beats ECMWF.
-/// Provenance row carries the suffix <c>+ecmwf_raw</c> so the source is
-/// auditable per-row.
+/// **All inputs come from the blenders** — temperature, humidity, wind, cloud
+/// cover, and shortwave radiation are read from their respective
+/// <c>BlendValue</c> columns. Earlier ("v1", before 2026-05-04) the pipeline
+/// pulled cloud + radiation from per-model ECMWF raw on the theory that the
+/// two would be physically self-consistent within one model; in practice
+/// ECMWF was the optimistic outlier on cloud (e.g. 71% vs blend 82%) AND
+/// reported clear-sky-like SW (596 W/m² under "71% cloud"), which produced
+/// Tmrt ≈ Ta + 25 K under cloudy May days and a UTCI 6–8 K above air
+/// temperature. The blender values are noisier per-row but better calibrated
+/// against ERA5; the cloud-aware SW cap below handles the residual
+/// "NWP-SW-too-bright" case.
 ///
-/// **Radiation sourcing**: <see cref="UseEcmwfRawForRadiation"/> also defaults
-/// to true. Less about accuracy (the radiation blender is roughly tied with
-/// raw ECMWF: ~−1 / +4 / +1% MAE across the three leads) and more about
-/// physical consistency with the ECMWF-raw cloud above. The element blenders
-/// are independent LightGBMs trained on uncorrelated targets, so cloud and
-/// radiation coming from different sources can disagree (e.g. 97% cloud
-/// + 312 W/m² SW for Bonehill 2026-05-02 15Z, which is implausible — solar
-/// transmittance through 97% cloud is ~5–15%). Pulling SW from raw ECMWF
-/// alongside ECMWF cloud gives a self-consistent NWP view of the sky for
-/// Tmrt to integrate. Trades 1–4% radiation MAE for cross-input coherence;
-/// for UTCI specifically this is the right trade.
+/// **Shortwave cap**: before computing Tmrt, the SW input is capped via
+/// <see cref="FeelsLikeCalculator.CapShortwaveByCloud"/> using the location's
+/// solar geometry and the row's blended cloud cover. Acts as a physical
+/// upper bound on `clear-sky × Kasten-Czeplak`; passes NWP SW through
+/// unchanged when it already sits below that bound.
 /// </summary>
 public static class FeelsLikePredictPipeline
 {
-    public const string OutputModelVersion = "v1";
-
-    /// <summary>Pull the ECMWF per-model value from the cloud prediction parquet
-    /// instead of the blended value. Temporary workaround until the cloud blender
-    /// beats best-single ECMWF — see class docstring.</summary>
-    public static bool UseEcmwfRawForCloud { get; set; } = true;
-
-    /// <summary>Same trick for shortwave radiation. Trades 1–4% radiation MAE
-    /// for physical consistency with the cloud input — see class docstring.</summary>
-    public static bool UseEcmwfRawForRadiation { get; set; } = true;
+    /// <summary>
+    /// Bumped from v1 to v2 on 2026-05-04: pipeline now uses blended values
+    /// for every input and applies a cloud-aware SW cap before Tmrt. Numbers
+    /// will differ from v1 — write under a fresh model_version so v1 history
+    /// stays untouched on R2 and the change is auditable.
+    /// </summary>
+    public const string OutputModelVersion = "v2";
 
     public static async Task<List<FeelsLikePredictionRow>> ComposeForAnchorAsync(
         ILogger log,
         string locationName,
+        double latitudeDeg,
+        double longitudeDeg,
         string predictionsRoot,
         string modelsRoot,
         DateTime anchor,
@@ -64,12 +60,10 @@ public static class FeelsLikePredictPipeline
         CancellationToken ct)
     {
         var temp = await LoadTemperatureLeanAsync(log, predictionsRoot, modelsRoot, anchor, ct);
-        var hum  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.Humidity,         anchor, ct);
-        var wnd  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.Wind,             anchor, ct);
-        var rad  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.ShortwaveRadiation, anchor, ct,
-            useEcmwfRaw: UseEcmwfRawForRadiation);
-        var cld  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.CloudCover,       anchor, ct,
-            useEcmwfRaw: UseEcmwfRawForCloud);
+        var hum  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.Humidity,           anchor, ct);
+        var wnd  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.Wind,               anchor, ct);
+        var rad  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.ShortwaveRadiation, anchor, ct);
+        var cld  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.CloudCover,         anchor, ct);
 
         if (temp.Rows.Count == 0 || hum.Rows.Count == 0 || wnd.Rows.Count == 0 ||
             rad.Rows.Count == 0 || cld.Rows.Count == 0)
@@ -90,8 +84,13 @@ public static class FeelsLikePredictPipeline
             double ta = t.Value;
             double rh = ClampPercent(h.Value);
             double ws = Math.Max(w.Value, 0.0);
-            double sw = Math.Max(r.Value, 0.0);
+            double swInput = Math.Max(r.Value, 0.0);
             double cc = ClampPercent(c.Value);
+
+            // Cap NWP SW by `clear-sky × Kasten-Czeplak(cloud)`. Passes
+            // through unchanged when NWP SW is already below the bound.
+            double sw = FeelsLikeCalculator.CapShortwaveByCloud(
+                swInput, cc / 100.0, latitudeDeg, longitudeDeg, key.Valid);
 
             double pHpa = FeelsLikeCalculator.VapourPressureHpa(ta, rh);
             double lDown = FeelsLikeCalculator.LongwaveDownWm2(ta, cc / 100.0, pHpa);
@@ -172,31 +171,23 @@ public static class FeelsLikePredictPipeline
 
     private static async Task<InputStream> LoadElementAsync(
         ILogger log, string predictionsRoot, string modelsRoot, ElementTarget target,
-        DateTime anchor, CancellationToken ct, bool useEcmwfRaw = false)
+        DateTime anchor, CancellationToken ct)
     {
         var version = PickActiveVersion(modelsRoot, target.ModelDirName, log);
-        if (useEcmwfRaw) version += "+ecmwf_raw";
         var path = Path.Combine(predictionsRoot, target.ModelDirName,
-            $"model_version={(useEcmwfRaw ? version[..^"+ecmwf_raw".Length] : version)}",
-            $"date={anchor:yyyy-MM-dd}", "predictions.parquet");
+            $"model_version={version}", $"date={anchor:yyyy-MM-dd}", "predictions.parquet");
         if (!File.Exists(path))
         {
             log.LogWarning("  {Slug}: predictions parquet not found at {Path}", target.CliName, path);
             return new InputStream(version, new Dictionary<(int, DateTime), Sample>());
         }
         var raw = (await ParquetSerializer.DeserializeAsync<ElementPredictionRow>(path, cancellationToken: ct)).ToList();
-        if (useEcmwfRaw)
-        {
-            log.LogInformation("  {Slug}: using ModelEcmwf per-row instead of BlendValue (UseEcmwfRawForCloud=true)", target.CliName);
-        }
         var grouped = raw
-            .Select(r => (Row: r, Sample: useEcmwfRaw ? r.ModelEcmwf : (double?)r.BlendValue))
-            .Where(x => x.Sample.HasValue)
-            .GroupBy(x => (Lead: x.Row.LeadHours, Valid: x.Row.ValidTimeUtc))
-            .Select(g => g.MaxBy(x => x.Row.PredictionMadeAtUtc))
+            .GroupBy(r => (Lead: r.LeadHours, Valid: r.ValidTimeUtc))
+            .Select(g => g.MaxBy(r => r.PredictionMadeAtUtc)!)
             .ToDictionary(
-                x => (x.Row.LeadHours, x.Row.ValidTimeUtc),
-                x => new Sample(x.Sample!.Value, x.Row.PredictionMadeAtUtc));
+                r => (r.LeadHours, r.ValidTimeUtc),
+                r => new Sample(r.BlendValue, r.PredictionMadeAtUtc));
         return new InputStream(version, grouped);
     }
 }

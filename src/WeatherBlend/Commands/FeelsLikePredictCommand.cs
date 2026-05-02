@@ -42,8 +42,8 @@ public sealed class FeelsLikePredictCommand
             anchor, forDate?.ToString("yyyy-MM-dd") ?? "live");
 
         var rows = await FeelsLikePredictPipeline.ComposeForAnchorAsync(
-            _log, _cfg.Location.Name, _cfg.Storage.PredictionsPath, modelsRoot,
-            anchor, predictionMadeAt, ct);
+            _log, _cfg.Location.Name, _cfg.Location.Latitude, _cfg.Location.Longitude,
+            _cfg.Storage.PredictionsPath, modelsRoot, anchor, predictionMadeAt, ct);
 
         if (rows.Count == 0)
         {

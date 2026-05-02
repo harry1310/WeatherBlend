@@ -120,6 +120,67 @@ public class FeelsLikeCalculatorTests
         hi.Should().BeGreaterThan(md);
     }
 
+    // ---------- solar geometry + cloud-aware SW cap ----------
+
+    [Theory]
+    // Bonehill, May 4 (DOY 124), 12:00 UTC: peak altitude is ~55° (since
+    // solar noon at lon -3.79° is ~12:15 UTC) — sin(55°) ≈ 0.82.
+    [InlineData(2026,  5,  4, 12,  0, 50.5831, -3.7931, 0.78, 0.86)]
+    // Mid-afternoon UTC, altitude ~49°: sin ≈ 0.76.
+    [InlineData(2026,  5,  4, 14,  0, 50.5831, -3.7931, 0.70, 0.80)]
+    // Equinox 12:00 UTC, altitude ~ 90 - lat = 39° at Bonehill — sin ≈ 0.63.
+    [InlineData(2026,  3, 21, 12,  0, 50.5831, -3.7931, 0.55, 0.70)]
+    public void SolarAltitude_ranges_match_published_curves(
+        int yyyy, int mo, int dd, int hh, int mi, double latDeg, double lonDeg,
+        double minSinAlt, double maxSinAlt)
+    {
+        var t = new DateTime(yyyy, mo, dd, hh, mi, 0, DateTimeKind.Utc);
+        var altRad = FeelsLikeCalculator.SolarAltitudeRadians(latDeg, lonDeg, t);
+        var sinAlt = System.Math.Sin(altRad);
+        sinAlt.Should().BeInRange(minSinAlt, maxSinAlt);
+    }
+
+    [Fact]
+    public void SolarAltitude_below_horizon_at_midnight()
+    {
+        // Bonehill, mid-summer midnight UTC — sun is well below the horizon.
+        var t = new DateTime(2026, 6, 21, 0, 0, 0, DateTimeKind.Utc);
+        FeelsLikeCalculator.SolarAltitudeRadians(50.5831, -3.7931, t)
+            .Should().BeLessThan(0.0);
+    }
+
+    [Fact]
+    public void ClearSkyMaxGhi_is_zero_below_horizon()
+    {
+        FeelsLikeCalculator.ClearSkyMaxGhiWm2(-0.1).Should().Be(0.0);
+    }
+
+    [Fact]
+    public void CapShortwaveByCloud_caps_optimistic_NWP_under_high_cloud()
+    {
+        // Anchored on the regression that motivated the cap: Bonehill Sun
+        // 2026-05-04 11:00 UTC, ECMWF reported 513 W/m² SW under "88% cloud",
+        // which is essentially clear-sky-equivalent transmittance and
+        // produced Tmrt ≈ Ta + 24 K. The cap should pull SW well below 513.
+        var t = new DateTime(2026, 5, 4, 11, 0, 0, DateTimeKind.Utc);
+        var capped = FeelsLikeCalculator.CapShortwaveByCloud(
+            swInputWm2: 513, cloudFrac: 0.88,
+            latitudeDeg: 50.5831, longitudeDeg: -3.7931, utcTime: t);
+        capped.Should().BeLessThan(350.0);   // generous upper bound; expect ~280
+        capped.Should().BeGreaterThan(150.0);
+    }
+
+    [Fact]
+    public void CapShortwaveByCloud_passes_through_when_NWP_already_below_bound()
+    {
+        // Clear-sky day: NWP SW of 200 W/m² at noon under 0% cloud is already
+        // below the ~825 W/m² ceiling — cap is a no-op.
+        var t = new DateTime(2026, 5, 4, 12, 0, 0, DateTimeKind.Utc);
+        FeelsLikeCalculator.CapShortwaveByCloud(200, cloudFrac: 0.0,
+            latitudeDeg: 50.5831, longitudeDeg: -3.7931, utcTime: t)
+            .Should().Be(200.0);
+    }
+
     // ---------- wind ----------
 
     [Fact]
