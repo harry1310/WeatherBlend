@@ -298,21 +298,21 @@ public static partial class SitePages
 
         foreach (var lead in Leads.Short)
         {
-            var versions = stationRows.Where(r => r.LeadHours == lead)
-                .Select(r => r.ModelVersion).Distinct().OrderBy(v => v, StringComparer.Ordinal).ToList();
+            var phases = stationRows.Where(r => r.LeadHours == lead)
+                .Select(r => r.Phase).Distinct().OrderBy(p => p, StringComparer.Ordinal).ToList();
 
             var series = new List<LineSeries>();
             var palette = new[] { "#7c4dff", "#26a69a", "#ef5350", "#ffa726", "#42a5f5" };
-            for (int i = 0; i < versions.Count; i++)
+            for (int i = 0; i < phases.Count; i++)
             {
-                var v = versions[i];
+                var p = phases[i];
                 var pts = stationRows
-                    .Where(r => r.LeadHours == lead && r.ModelVersion == v)
+                    .Where(r => r.LeadHours == lead && r.Phase == p)
                     .OrderBy(r => r.WindowEndUtc)
                     .Select(r => (X: r.WindowEndUtc.ToOADate(), Y: r.BlendBrier))
                     .ToList();
                 if (pts.Count > 0)
-                    series.Add(new LineSeries(v, palette[i % palette.Length], pts));
+                    series.Add(new LineSeries($"Phase {p}", palette[i % palette.Length], pts));
             }
 
             content.Append(Ci, $"<h4>Lead +{lead}h</h4>");
@@ -362,21 +362,21 @@ public static partial class SitePages
         var content = new StringBuilder();
         foreach (var lead in Leads.Full)
         {
-            var versions = input.RollingMae.Where(r => r.LeadHours == lead)
-                .Select(r => r.ModelVersion).Distinct().OrderBy(v => v, StringComparer.Ordinal).ToList();
+            var phases = input.RollingMae.Where(r => r.LeadHours == lead)
+                .Select(r => r.Phase).Distinct().OrderBy(p => p, StringComparer.Ordinal).ToList();
 
             var series = new List<LineSeries>();
             var palette = new[] { "#7c4dff", "#26a69a", "#ef5350", "#ffa726", "#42a5f5" };
-            for (int i = 0; i < versions.Count; i++)
+            for (int i = 0; i < phases.Count; i++)
             {
-                var v = versions[i];
+                var p = phases[i];
                 var pts = input.RollingMae
-                    .Where(r => r.LeadHours == lead && r.ModelVersion == v)
+                    .Where(r => r.LeadHours == lead && r.Phase == p)
                     .OrderBy(r => r.WindowEndUtc)
                     .Select(r => (X: r.WindowEndUtc.ToOADate(), Y: r.BlendMae))
                     .ToList();
                 if (pts.Count > 0)
-                    series.Add(new LineSeries(v, palette[i % palette.Length], pts));
+                    series.Add(new LineSeries($"Phase {p}", palette[i % palette.Length], pts));
             }
 
             content.Append(Ci, $"<h4>Lead +{lead}h</h4>");

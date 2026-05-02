@@ -121,6 +121,11 @@ public class RenderSiteCommandTests : IDisposable
             FeatureVectorHash = "",
         };
 
+    private static readonly Dictionary<string, string> PhaseTwoB =
+        new(StringComparer.Ordinal) { ["v1"] = "2b", ["v2"] = "2b" };
+    private static readonly Dictionary<string, string> PhaseTwoBAndTwoC =
+        new(StringComparer.Ordinal) { ["v1"] = "2b", ["v2"] = "2c" };
+
     [Fact]
     public void ComputeRollingMae_returns_empty_when_no_pairs()
     {
@@ -129,12 +134,83 @@ public class RenderSiteCommandTests : IDisposable
         var truth = new Dictionary<DateTime, double>();
         RenderSiteCommand.ComputeRollingMae(
                 Array.Empty<WeatherBlend.Models.TempPredictionRow>(),
-                truth, windowDays: 14)
+                truth, PhaseTwoB, windowDays: 14)
             .Should().BeEmpty();
 
         var pred = new[] { Pred("v1", 24,
             new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc), 10.0) };
-        RenderSiteCommand.ComputeRollingMae(pred, truth, 14).Should().BeEmpty();
+        RenderSiteCommand.ComputeRollingMae(pred, truth, PhaseTwoB, 14).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ComputeRollingMae_drops_predictions_whose_version_has_no_phase()
+    {
+        // Versions outside phaseByVersion are retired or pre-roadmap; their
+        // points would otherwise leak into a "Phase " (empty) line on the
+        // chart. Drop them at the source.
+        var t = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
+        var preds = new[] { Pred("retired_version", 24, t, 10.0) };
+        var truth = new Dictionary<DateTime, double> { [t] = 11.0 };
+
+        RenderSiteCommand.ComputeRollingMae(preds, truth,
+            new Dictionary<string, string>(StringComparer.Ordinal), 14).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ComputeRollingMae_groups_two_versions_of_same_phase_into_one_series()
+    {
+        // The whole point of the 2026-05-02 refactor: a retrain that mints v2
+        // (still phase 2b) shouldn't fragment the chart. Predictions from v1
+        // and v2 for the same phase + lead must collapse into one continuous
+        // series; per-(valid-time) duplicates dedup to the latest prediction.
+        var t1 = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
+        var t2 = new DateTime(2026, 4, 23, 12, 0, 0, DateTimeKind.Utc);
+        var truth = new Dictionary<DateTime, double> { [t1] = 9.0, [t2] = 10.0 };
+
+        var v1Old = Pred("v1", 24, t1, 10.0);                  // |10-9| = 1.0
+        var v2New = Pred("v2", 24, t2, 11.5);                  // |11.5-10| = 1.5
+        // Same valid-time as v1Old but a v2 prediction made later — should
+        // win the dedup and replace v1Old's contribution to t1.
+        var v2OverridesT1 = new WeatherBlend.Models.TempPredictionRow
+        {
+            LocationName = "bonehill_rocks", ModelVersion = "v2",
+            PredictionMadeAtUtc = t1.AddHours(1),     // later than v1Old's
+            ValidTimeUtc = t1, LeadHours = 24,
+            BlendTemperature = 9.5,                   // |9.5-9| = 0.5
+            FeatureVectorHash = "",
+        };
+
+        var points = RenderSiteCommand.ComputeRollingMae(
+            new[] { v1Old, v2OverridesT1, v2New }, truth, PhaseTwoB, windowDays: 14);
+
+        // One phase ("2b") × one lead → one series, two points.
+        points.Select(p => p.Phase).Distinct().Should().Equal("2b");
+        points.Should().HaveCount(2);
+        points[0].N.Should().Be(1);
+        points[0].BlendMae.Should().BeApproximately(0.5, 1e-9);   // v2's later prediction wins t1
+        points[1].N.Should().Be(2);
+        points[1].BlendMae.Should().BeApproximately((0.5 + 1.5) / 2.0, 1e-9);
+    }
+
+    [Fact]
+    public void ComputeRollingMae_keeps_two_phases_in_separate_series()
+    {
+        // Two versions with different phases must stay split — a 2c challenger
+        // must not be averaged into the 2b champion's series even at the same
+        // lead and valid-time.
+        var t = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
+        var truth = new Dictionary<DateTime, double> { [t] = 10.0 };
+        var preds = new[]
+        {
+            Pred("v1", 24, t, 10.0),   // phase 2b → MAE 0.0
+            Pred("v2", 24, t, 12.0),   // phase 2c → MAE 2.0
+        };
+
+        var points = RenderSiteCommand.ComputeRollingMae(preds, truth, PhaseTwoBAndTwoC, 14);
+
+        points.Should().HaveCount(2);
+        points.Select(p => (p.Phase, p.BlendMae)).Should().BeEquivalentTo(
+            new (string, double)[] { ("2b", 0.0), ("2c", 2.0) });
     }
 
     [Fact]
@@ -159,7 +235,7 @@ public class RenderSiteCommandTests : IDisposable
             [t1] = 9.0, [t2] = 10.0, [t3] = 13.0,
         };
 
-        var points = RenderSiteCommand.ComputeRollingMae(preds, truth, windowDays: 14);
+        var points = RenderSiteCommand.ComputeRollingMae(preds, truth, PhaseTwoB, windowDays: 14);
 
         // One point per paired day. Cumulative MAE because the window covers
         // all of the paired data behind each day.
@@ -183,7 +259,7 @@ public class RenderSiteCommandTests : IDisposable
             .ToArray();
         var truth = preds.ToDictionary(p => p.ValidTimeUtc, p => p.BlendTemperature - 1.0);
 
-        var points = RenderSiteCommand.ComputeRollingMae(preds, truth, windowDays: 3);
+        var points = RenderSiteCommand.ComputeRollingMae(preds, truth, PhaseTwoB, windowDays: 3);
 
         // 5 points, one per day. N caps at 3 from day 3 onwards.
         points.Should().HaveCount(5);
@@ -212,6 +288,9 @@ public class RenderSiteCommandTests : IDisposable
         TruthFor(string station, IReadOnlyDictionary<DateTime, double> truthByTime)
         => new Dictionary<string, IReadOnlyDictionary<DateTime, double>> { [station] = truthByTime };
 
+    private static readonly Dictionary<string, string> PrecipPhases3a3c =
+        new(StringComparer.Ordinal) { ["v3a"] = "3a", ["v3c"] = "3c" };
+
     [Fact]
     public void ComputeRollingBrier_returns_empty_when_no_pairs()
     {
@@ -220,13 +299,15 @@ public class RenderSiteCommandTests : IDisposable
         RenderSiteCommand.ComputeRollingBrier(
                 Array.Empty<SitePages.PrecipForecastPoint>(),
                 new Dictionary<string, IReadOnlyDictionary<DateTime, double>>(),
+                PrecipPhases3a3c,
                 windowDays: 30)
             .Should().BeEmpty();
 
         var preds = new[] { Precip("ea_bellever_dartmoor", "v3a", 24,
             new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc), 0.5) };
         RenderSiteCommand.ComputeRollingBrier(preds,
-                new Dictionary<string, IReadOnlyDictionary<DateTime, double>>(), 30)
+                new Dictionary<string, IReadOnlyDictionary<DateTime, double>>(),
+                PrecipPhases3a3c, 30)
             .Should().BeEmpty();
     }
 
@@ -249,7 +330,7 @@ public class RenderSiteCommandTests : IDisposable
         var truth = TruthFor("ea_bellever_dartmoor",
             new Dictionary<DateTime, double> { [t1] = 0.5, [t2] = 0.05 });
 
-        var points = RenderSiteCommand.ComputeRollingBrier(preds, truth, windowDays: 30);
+        var points = RenderSiteCommand.ComputeRollingBrier(preds, truth, PrecipPhases3a3c, windowDays: 30);
 
         points.Should().HaveCount(2);
         points[0].BlendBrier.Should().BeApproximately(0.04, 1e-9);
@@ -273,7 +354,7 @@ public class RenderSiteCommandTests : IDisposable
         var truth = TruthFor("ea_bellever_dartmoor",
             preds.ToDictionary(p => p.ValidTimeUtc, _ => 0.0));
 
-        var points = RenderSiteCommand.ComputeRollingBrier(preds, truth, windowDays: 3);
+        var points = RenderSiteCommand.ComputeRollingBrier(preds, truth, PrecipPhases3a3c, windowDays: 3);
 
         points.Should().HaveCount(5);
         points.Select(p => p.N).Should().Equal(1, 2, 3, 3, 3);
@@ -282,11 +363,11 @@ public class RenderSiteCommandTests : IDisposable
     }
 
     [Fact]
-    public void ComputeRollingBrier_separates_per_station_per_version_per_lead()
+    public void ComputeRollingBrier_separates_per_station_per_phase_per_lead()
     {
-        // Two stations × two versions × two leads → eight series, no
-        // cross-talk. Mirrors the ComputeRollingMae per-(version, lead)
-        // separation but with a station axis on top.
+        // Two stations × two phases × two leads → eight series, no
+        // cross-talk. The 2026-05-02 phase-grouping refactor preserves all
+        // three axes; only the version axis collapses into phase.
         var t = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
         var preds = new[]
         {
@@ -305,27 +386,29 @@ public class RenderSiteCommandTests : IDisposable
             ["ea_princetown"]        = new Dictionary<DateTime, double> { [t] = 0.0 },
         };
 
-        var points = RenderSiteCommand.ComputeRollingBrier(preds, truth, windowDays: 30);
+        var points = RenderSiteCommand.ComputeRollingBrier(preds, truth, PrecipPhases3a3c, windowDays: 30);
 
         points.Should().HaveCount(8);
-        points.Select(p => (p.Station, p.ModelVersion, p.LeadHours)).Should().BeEquivalentTo(
+        points.Select(p => (p.Station, p.Phase, p.LeadHours)).Should().BeEquivalentTo(
             new (string, string, int)[]
             {
-                ("ea_bellever_dartmoor", "v3a", 24),
-                ("ea_bellever_dartmoor", "v3a", 48),
-                ("ea_bellever_dartmoor", "v3c", 24),
-                ("ea_bellever_dartmoor", "v3c", 48),
-                ("ea_princetown",        "v3a", 24),
-                ("ea_princetown",        "v3a", 48),
-                ("ea_princetown",        "v3c", 24),
-                ("ea_princetown",        "v3c", 48),
+                ("ea_bellever_dartmoor", "3a", 24),
+                ("ea_bellever_dartmoor", "3a", 48),
+                ("ea_bellever_dartmoor", "3c", 24),
+                ("ea_bellever_dartmoor", "3c", 48),
+                ("ea_princetown",        "3a", 24),
+                ("ea_princetown",        "3a", 48),
+                ("ea_princetown",        "3c", 24),
+                ("ea_princetown",        "3c", 48),
             });
     }
 
     [Fact]
-    public void ComputeRollingMae_separates_per_version_and_per_lead()
+    public void ComputeRollingMae_separates_per_phase_and_per_lead()
     {
-        // Two versions × two leads → four series of points, no cross-talk.
+        // Two phases × two leads → four series of points, no cross-talk.
+        // Two phases here means two versions in different phase buckets,
+        // unlike the same-phase dedup test above.
         var t = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
         var preds = new[]
         {
@@ -336,10 +419,10 @@ public class RenderSiteCommandTests : IDisposable
         };
         var truth = new Dictionary<DateTime, double> { [t] = 10.0 };
 
-        var points = RenderSiteCommand.ComputeRollingMae(preds, truth, 14);
+        var points = RenderSiteCommand.ComputeRollingMae(preds, truth, PhaseTwoBAndTwoC, 14);
         points.Should().HaveCount(4);
-        points.Select(p => (p.ModelVersion, p.LeadHours)).Should().BeEquivalentTo(
-            new (string, int)[] { ("v1", 24), ("v1", 48), ("v2", 24), ("v2", 48) });
+        points.Select(p => (p.Phase, p.LeadHours)).Should().BeEquivalentTo(
+            new (string, int)[] { ("2b", 24), ("2b", 48), ("2c", 24), ("2c", 48) });
     }
 
     // ---------- helpers ----------

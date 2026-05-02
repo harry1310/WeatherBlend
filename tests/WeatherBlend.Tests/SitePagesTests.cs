@@ -602,11 +602,11 @@ public class SitePagesTests
         var generatedAt = new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc);
         var rolling = new[]
         {
-            new SitePages.RollingBrierPoint("ea_bellever_dartmoor", "v3a", 24,
+            new SitePages.RollingBrierPoint("ea_bellever_dartmoor", "3a", 24,
                 generatedAt.AddDays(-1).AddTicks(-1), 0.18, 50),
-            new SitePages.RollingBrierPoint("ea_bellever_dartmoor", "v3a", 48,
+            new SitePages.RollingBrierPoint("ea_bellever_dartmoor", "3a", 48,
                 generatedAt.AddDays(-1).AddTicks(-1), 0.22, 30),
-            new SitePages.RollingBrierPoint("ea_bellever_dartmoor", "v3a", 72,
+            new SitePages.RollingBrierPoint("ea_bellever_dartmoor", "3a", 72,
                 generatedAt.AddDays(-1).AddTicks(-1), 0.25, 20),
         };
         var input = MakeEmptyForecastInput() with
@@ -632,8 +632,9 @@ public class SitePagesTests
 
         html.Should().Contain("Rolling Brier");
         html.Should().Contain("Lead +24h").And.Contain("Lead +48h").And.Contain("Lead +72h");
-        // Version label reaches the chart payload.
-        html.Should().Contain("v3a");
+        // Phase label (not version) reaches the chart payload — one line per
+        // phase across retrains, not per ModelVersion.
+        html.Should().Contain("Phase 3a");
     }
 
     [Fact]

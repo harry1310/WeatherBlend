@@ -86,13 +86,16 @@ public sealed class RenderSiteCommand
         _log.LogInformation("Loaded {N} METAR observations ({Station}).",
             metar.Count, string.IsNullOrWhiteSpace(_cfg.Location.Metar.Primary) ? "none" : _cfg.Location.Metar.Primary);
 
-        var rolling = ComputeRollingMae(predictions, truth, rollingWindowDays);
+        // PhaseByVersion has to be computed before the rolling functions so
+        // they can group by phase rather than version (a retrain would
+        // otherwise fragment the chart into stubs).
+        var phaseByVersion = LoadPhaseByVersion(predictions, precip, dryWindow);
+        var rolling = ComputeRollingMae(predictions, truth, phaseByVersion, rollingWindowDays);
         // Precip uses a longer 30-day rolling window than temp's because wet
         // hours are sparser — the verify command's defaults pin this rule
         // (PrecipVerifyCommand: 30d window vs TempVerifyCommand: 14d).
         const int precipRollingWindowDays = 30;
 
-        var phaseByVersion = LoadPhaseByVersion(predictions, precip, dryWindow);
         _log.LogInformation("Phase map: {Entries}",
             string.Join(", ", phaseByVersion.Select(kv => $"{kv.Key}→{kv.Value}")));
 
@@ -125,7 +128,7 @@ public sealed class RenderSiteCommand
             TruthByTime = truth,
             MetarByTime = metar,
             RollingMae = rolling,
-            RollingBrier = ComputeRollingBrier(precip, rainfall, precipRollingWindowDays),
+            RollingBrier = ComputeRollingBrier(precip, rainfall, phaseByVersion, precipRollingWindowDays),
             PrecipPredictions = precip,
             DryWindowPredictions = dryWindow,
             PhaseByVersion = phaseByVersion,
@@ -471,7 +474,7 @@ ORDER BY 1";
     }
 
     /// <summary>
-    /// Rolling MAE per (ModelVersion, LeadHours, daily window end) across the last
+    /// Rolling MAE per (Phase, LeadHours, daily window end) across the last
     /// <paramref name="windowDays"/>. One point per day from the earliest paired
     /// date through the latest. Days with fewer than <paramref name="windowDays"/>
     /// of data behind them emit a point computed over whatever's available in
@@ -480,16 +483,36 @@ ORDER BY 1";
     /// is younger than the rolling window. Without that, a 14-day window over
     /// 3 days of data renders an empty chart even though the underlying pairs
     /// are right there in the per-lead chart above.
+    ///
+    /// Grouping rule (changed 2026-05-02): predictions are deduped by
+    /// (Phase, Lead, ValidTime) — the freshest <c>PredictionMadeAtUtc</c>
+    /// wins per cell — and then aggregated by Phase. Previously this method
+    /// emitted one series per <c>ModelVersion</c>, which meant a retrain
+    /// fragmented the chart into a long line for the old version and a
+    /// short stub for the new one. Predictions whose version is missing
+    /// from <paramref name="phaseByVersion"/> (retired phases without
+    /// metadata on disk) are dropped; the renderer treats them as
+    /// off-roadmap.
     /// </summary>
     internal static IReadOnlyList<SitePages.RollingMaePoint> ComputeRollingMae(
         IReadOnlyList<TempPredictionRow> predictions,
         IReadOnlyDictionary<DateTime, double> truthByTime,
+        IReadOnlyDictionary<string, string> phaseByVersion,
         int windowDays)
     {
-        // Pair each prediction with its ERA5 truth (drop unpaired).
+        // Pair, attach phase, drop versions that don't map to a known phase.
         var paired = predictions
             .Where(p => truthByTime.ContainsKey(p.ValidTimeUtc))
-            .Select(p => (p.ModelVersion, p.LeadHours, p.ValidTimeUtc, Pred: p.BlendTemperature, Truth: truthByTime[p.ValidTimeUtc]))
+            .Where(p => phaseByVersion.TryGetValue(p.ModelVersion, out var ph) && !string.IsNullOrEmpty(ph))
+            .Select(p => (
+                Phase: phaseByVersion[p.ModelVersion],
+                p.LeadHours,
+                p.ValidTimeUtc,
+                p.PredictionMadeAtUtc,
+                Pred: p.BlendTemperature,
+                Truth: truthByTime[p.ValidTimeUtc]))
+            .GroupBy(p => (p.Phase, p.LeadHours, p.ValidTimeUtc))
+            .Select(g => g.OrderByDescending(p => p.PredictionMadeAtUtc).First())
             .ToList();
 
         if (paired.Count == 0) return Array.Empty<SitePages.RollingMaePoint>();
@@ -499,9 +522,9 @@ ORDER BY 1";
 
         var points = new List<SitePages.RollingMaePoint>();
 
-        foreach (var (version, lead) in paired.Select(p => (p.ModelVersion, p.LeadHours)).Distinct())
+        foreach (var (phase, lead) in paired.Select(p => (p.Phase, p.LeadHours)).Distinct())
         {
-            var subset = paired.Where(p => p.ModelVersion == version && p.LeadHours == lead).ToList();
+            var subset = paired.Where(p => p.Phase == phase && p.LeadHours == lead).ToList();
             if (subset.Count == 0) continue;
 
             // Emit one rolling-MAE point per calendar day end across the
@@ -518,7 +541,7 @@ ORDER BY 1";
                 if (inWindow.Count == 0) continue;
 
                 var mae = inWindow.Sum(r => Math.Abs(r.Pred - r.Truth)) / inWindow.Count;
-                points.Add(new SitePages.RollingMaePoint(version, lead, windowEnd, mae, inWindow.Count));
+                points.Add(new SitePages.RollingMaePoint(phase, lead, windowEnd, mae, inWindow.Count));
             }
         }
 
@@ -526,7 +549,7 @@ ORDER BY 1";
     }
 
     /// <summary>
-    /// Rolling Brier per (Station, ModelVersion, LeadHours, day-end) across
+    /// Rolling Brier per (Station, Phase, LeadHours, day-end) across
     /// the last <paramref name="windowDays"/>. Mirror of
     /// <see cref="ComputeRollingMae"/> for binary classification: pairs each
     /// prediction's <c>ProbWet</c> with the EA gauge's wet/dry indicator at
@@ -535,28 +558,45 @@ ORDER BY 1";
     /// blender was trained on. Partial-window points emit at the start of
     /// the data — same rule the temp rolling-MAE uses (commit 4028ba5),
     /// readers gauge stability from the per-point <c>N</c>.
+    ///
+    /// Phase grouping (changed 2026-05-02): same rule as
+    /// <see cref="ComputeRollingMae"/> — dedup by (Station, Phase, Lead,
+    /// ValidTime) preferring the freshest <c>PredictedAtUtc</c>, then group
+    /// by Phase. Predictions whose version isn't in
+    /// <paramref name="phaseByVersion"/> are dropped.
     /// </summary>
     internal static IReadOnlyList<SitePages.RollingBrierPoint> ComputeRollingBrier(
         IReadOnlyList<SitePages.PrecipForecastPoint> predictions,
         IReadOnlyDictionary<string, IReadOnlyDictionary<DateTime, double>> rainfallByStation,
+        IReadOnlyDictionary<string, string> phaseByVersion,
         int windowDays)
     {
         const double WetThresholdMm = 0.1;
 
         // Pair each prediction with its station's truth (drop unpaired —
         // either station has no truth dict yet, or that hour didn't pass
-        // the 4-of-4 quarter-hour gate upstream).
+        // the 4-of-4 quarter-hour gate upstream). Drop versions without a
+        // known phase. Then dedup (Station, Phase, Lead, ValidTime) to the
+        // freshest prediction so two versions of the same phase don't
+        // double-count the same hour in the rolling window.
         var paired = predictions
             .Where(p => rainfallByStation.TryGetValue(p.Station, out var byTime)
                         && byTime.ContainsKey(p.ValidTimeUtc))
+            .Where(p => phaseByVersion.TryGetValue(p.Version, out var ph) && !string.IsNullOrEmpty(ph))
             .Select(p =>
             {
                 var byTime = rainfallByStation[p.Station];
                 var truthMm = byTime[p.ValidTimeUtc];
-                return (p.Station, p.Version, p.LeadHours, p.ValidTimeUtc,
+                return (p.Station,
+                        Phase: phaseByVersion[p.Version],
+                        p.LeadHours,
+                        p.ValidTimeUtc,
+                        p.PredictedAtUtc,
                         Pred: p.ProbWet,
                         Truth: truthMm >= WetThresholdMm ? 1.0 : 0.0);
             })
+            .GroupBy(p => (p.Station, p.Phase, p.LeadHours, p.ValidTimeUtc))
+            .Select(g => g.OrderByDescending(p => p.PredictedAtUtc).First())
             .ToList();
 
         if (paired.Count == 0) return Array.Empty<SitePages.RollingBrierPoint>();
@@ -565,11 +605,11 @@ ORDER BY 1";
         var maxDate = paired.Max(r => r.ValidTimeUtc).Date;
 
         var points = new List<SitePages.RollingBrierPoint>();
-        foreach (var (station, version, lead) in paired
-            .Select(p => (p.Station, p.Version, p.LeadHours)).Distinct())
+        foreach (var (station, phase, lead) in paired
+            .Select(p => (p.Station, p.Phase, p.LeadHours)).Distinct())
         {
             var subset = paired.Where(p => p.Station == station
-                                        && p.Version == version
+                                        && p.Phase == phase
                                         && p.LeadHours == lead).ToList();
             if (subset.Count == 0) continue;
 
@@ -582,7 +622,7 @@ ORDER BY 1";
                 if (inWindow.Count == 0) continue;
                 var brier = inWindow.Sum(r => (r.Pred - r.Truth) * (r.Pred - r.Truth)) / inWindow.Count;
                 points.Add(new SitePages.RollingBrierPoint(
-                    station, version, lead, windowEnd, brier, inWindow.Count));
+                    station, phase, lead, windowEnd, brier, inWindow.Count));
             }
         }
         return points;

@@ -274,15 +274,23 @@ public static partial class SitePages
         int TestRows,
         int TestCalendarMonths);
 
-    public sealed record RollingMaePoint(string ModelVersion, int LeadHours, DateTime WindowEndUtc, double BlendMae, int N);
+    /// <summary>One per (Phase, LeadHours, day-end) rolling-MAE point.
+    /// Grouped on <c>Phase</c> rather than <c>ModelVersion</c> so a retrain
+    /// — which mints a new version — doesn't fragment the chart into a
+    /// short stub for the new version sitting next to the long history of
+    /// the old one. When two versions of the same phase have predictions
+    /// for the same valid hour, the freshest <c>PredictionMadeAtUtc</c>
+    /// wins (same rule as everywhere else in the renderer).</summary>
+    public sealed record RollingMaePoint(string Phase, int LeadHours, DateTime WindowEndUtc, double BlendMae, int N);
 
-    /// <summary>Per-(Station, ModelVersion, LeadHours, WindowEndUtc) rolling
-    /// Brier score for the precip blender. <c>BlendBrier</c> is the mean of
+    /// <summary>Per-(Station, Phase, LeadHours, WindowEndUtc) rolling Brier
+    /// score for the precip blender. <c>BlendBrier</c> is the mean of
     /// <c>(ProbWet − truthBinary)²</c> over the window's pairs, where
     /// truthBinary = 1 iff the EA gauge recorded ≥ 0.1 mm/h that hour. <c>N</c>
     /// is the pair count in the window — readers use it to gauge stability
-    /// the same way they do on the temperature rolling MAE chart.</summary>
-    public sealed record RollingBrierPoint(string Station, string ModelVersion, int LeadHours, DateTime WindowEndUtc, double BlendBrier, int N);
+    /// the same way they do on the temperature rolling MAE chart.
+    /// Phase grouping mirrors <see cref="RollingMaePoint"/>.</summary>
+    public sealed record RollingBrierPoint(string Station, string Phase, int LeadHours, DateTime WindowEndUtc, double BlendBrier, int N);
 
     public sealed record PrecipForecastPoint(
         string Station,
