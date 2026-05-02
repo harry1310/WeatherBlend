@@ -24,6 +24,7 @@ public static class ElementTrainerHarness
     public sealed record ElementTrainerInputs(
         ElementTarget Target,
         TempTrainer.Hyperparameters Hyperparameters,
+        string ModelsRoot,
         Func<int, BlenderSpec> BuildSpec,
         Func<BlenderSpec, CancellationToken, IReadOnlyList<RegressionTrainingRow>> LoadRowsForSpec,
         IReadOnlyList<string> DeviationsFromBrief);
@@ -35,7 +36,7 @@ public static class ElementTrainerHarness
         CancellationToken ct)
     {
         var now = DateTime.UtcNow;
-        var modelsRoot = Path.Combine("data", "models");
+        var modelsRoot = inputs.ModelsRoot;
         var versionDir = ModelArtifact.BuildVersionDir(modelsRoot, inputs.Target.ModelDirName, now);
         var versionName = Path.GetFileName(versionDir);
 

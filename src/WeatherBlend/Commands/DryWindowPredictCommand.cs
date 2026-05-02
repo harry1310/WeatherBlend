@@ -40,7 +40,7 @@ public sealed class DryWindowPredictCommand
 
     public async Task<int> RunAsync(string stationArg, string windowArg, string modelVersion, DateOnly? forDate, CancellationToken ct)
     {
-        var modelsRoot = Path.Combine("data", "models");
+        var modelsRoot = _cfg.Storage.ModelsPath;
         var manifestPath = Path.Combine(modelsRoot, "dry_window", ModelArtifact.ManifestFileName);
         if (!File.Exists(manifestPath))
         {

@@ -138,7 +138,7 @@ public sealed class TempTrainCommand
     private async Task<int> RunPhase2bAsync(int[] leads, CancellationToken ct)
     {
         var now = DateTime.UtcNow;
-        var modelsRoot = Path.Combine("data", "models");
+        var modelsRoot = _cfg.Storage.ModelsPath;
         var versionDir = ModelArtifact.BuildVersionDir(modelsRoot, "temperature", now);
         var versionName = Path.GetFileName(versionDir);
 
@@ -270,7 +270,7 @@ public sealed class TempTrainCommand
     private async Task<int> RunPhase2cAsync(int[] leads, CancellationToken ct)
     {
         var now = DateTime.UtcNow;
-        var modelsRoot = Path.Combine("data", "models");
+        var modelsRoot = _cfg.Storage.ModelsPath;
         var versionDir = ModelArtifact.BuildVersionDir(modelsRoot, "temperature", now, suffix: "phase2c");
         var versionName = Path.GetFileName(versionDir);
 
@@ -453,7 +453,7 @@ public sealed class TempTrainCommand
         // collector can live alongside the EA one without colliding.
         var stationSlug = StationSlug.WithEaPrefix(primaryStation);
         var now = DateTime.UtcNow;
-        var modelsRoot = Path.Combine("data", "models");
+        var modelsRoot = _cfg.Storage.ModelsPath;
         var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "precipitation", stationSlug, now);
         var versionName = Path.GetFileName(versionDir);
 
@@ -629,7 +629,7 @@ public sealed class TempTrainCommand
             stationsToTrain = new[] { match.Name };
         }
 
-        var modelsRoot = Path.Combine("data", "models");
+        var modelsRoot = _cfg.Storage.ModelsPath;
         var hp = new PrecipOccurrenceTrainer.Hyperparameters();
 
         _log.LogInformation("Phase 3c — rich-feature precip blender, stations=[{Stations}], leads=[{Leads}]",

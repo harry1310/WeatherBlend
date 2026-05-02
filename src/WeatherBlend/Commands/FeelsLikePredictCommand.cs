@@ -34,7 +34,7 @@ public sealed class FeelsLikePredictCommand
 
     public async Task<int> RunAsync(DateOnly? forDate, CancellationToken ct)
     {
-        var modelsRoot = Path.Combine("data", "models");
+        var modelsRoot = _cfg.Storage.ModelsPath;
         var predictionMadeAt = DateTime.UtcNow;
         var anchor = PredictAnchor.Compute(predictionMadeAt, forDate);
 

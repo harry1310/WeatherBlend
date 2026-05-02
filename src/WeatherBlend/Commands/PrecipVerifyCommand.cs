@@ -45,7 +45,7 @@ public sealed class PrecipVerifyCommand
         double driftThreshold,
         CancellationToken ct)
     {
-        var modelsRoot = Path.Combine("data", "models");
+        var modelsRoot = _cfg.Storage.ModelsPath;
         var allStations = ModelArtifact.ListStations(modelsRoot, "precipitation");
         if (allStations.Count == 0)
         {

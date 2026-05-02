@@ -73,7 +73,7 @@ public sealed class PrecipPredictCommand
     /// </summary>
     public async Task<int> RunAsync(string truthStation, string modelVersion, DateOnly? forDate, CancellationToken ct)
     {
-        var modelsRoot = Path.Combine("data", "models");
+        var modelsRoot = _cfg.Storage.ModelsPath;
 
         var stationsToRun = ResolveStations(modelsRoot, truthStation);
         if (stationsToRun.Count == 0)

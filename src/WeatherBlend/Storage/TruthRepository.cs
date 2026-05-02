@@ -101,6 +101,46 @@ ORDER BY 1";
     }
 
     /// <summary>
+    /// Bulk fetch of EA hourly rainfall for every configured station, keyed
+    /// by <c>StationName</c> (the friendly form, e.g. <c>"Bellever Dartmoor"</c>).
+    /// Single SQL query rather than the per-station fan-out
+    /// <see cref="GetEaHourlyRainfallByStation"/> uses — pays one read for
+    /// many stations, useful when the caller wants every station's data at
+    /// once (start-hour verify groups by station internally). Same 4-of-4
+    /// quarter-hour completeness gate.
+    /// </summary>
+    public IReadOnlyDictionary<string, IReadOnlyDictionary<DateTime, double>>
+        GetEaHourlyRainfallAllStations(DateTime start, DateTime end, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.RainfallPath, "**", "*.parquet"));
+
+        var sql = $@"
+SELECT StationName,
+       date_trunc('hour', ObservedTimeUtc) AS valid_time,
+       SUM(Value15MinMm) AS mm_hour
+FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
+  AND Value15MinMm IS NOT NULL
+  AND ObservedTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
+  AND ObservedTimeUtc <= TIMESTAMP '{end.AddHours(1):yyyy-MM-dd HH:mm:ss}'
+GROUP BY StationName, valid_time
+HAVING COUNT(*) = 4
+ORDER BY StationName, valid_time";
+
+        var rows = ParquetReader.Query(sql,
+            r => (Station: r.GetString(0), Hour: r.GetDateTime(1), Mm: r.GetDouble(2)),
+            _log, "Rainfall tree empty — bulk-by-station read returns no rows.", ct);
+
+        var result = new Dictionary<string, IReadOnlyDictionary<DateTime, double>>(StringComparer.Ordinal);
+        foreach (var grp in rows.GroupBy(r => r.Station, StringComparer.Ordinal))
+        {
+            result[grp.Key] = grp.ToDictionary(r => r.Hour, r => r.Mm);
+        }
+        return result;
+    }
+
+    /// <summary>
     /// Multi-station fan-out of <see cref="GetEaHourlyRainfall"/>, taking
     /// <c>ea_*</c> slugs (the format predictions use in their
     /// <c>TruthStation</c> column). Slug → <c>StationName</c> mapping is

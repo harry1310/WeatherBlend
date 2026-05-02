@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using WeatherBlend.Config;
 using WeatherBlend.Train;
 
 namespace WeatherBlend.Storage;
@@ -30,17 +31,13 @@ namespace WeatherBlend.Storage;
 /// </summary>
 public sealed class ModelMetadataRepository
 {
-    /// <summary>Hard-coded to match every existing call site
-    /// (<c>Path.Combine("data", "models")</c>) — we don't currently expose this
-    /// via <c>AppConfig.Storage</c>. If/when it moves into config, change it
-    /// here and the rest of the codebase still needs migrating separately.</summary>
-    private const string ModelsRoot = "data/models";
-
     private readonly ILogger<ModelMetadataRepository> _log;
+    private readonly string _modelsRoot;
 
-    public ModelMetadataRepository(ILogger<ModelMetadataRepository> log)
+    public ModelMetadataRepository(ILogger<ModelMetadataRepository> log, AppConfig cfg)
     {
         _log = log;
+        _modelsRoot = cfg.Storage.ModelsPath;
     }
 
     // ------------------------------------------------------------------
@@ -103,7 +100,7 @@ public sealed class ModelMetadataRepository
         var result = new Dictionary<string, ModelArtifact.TrainingMetadata>(StringComparer.Ordinal);
         foreach (var v in versions.Distinct(StringComparer.Ordinal))
         {
-            var dir = Path.Combine(ModelsRoot, target, v);
+            var dir = Path.Combine(_modelsRoot, target, v);
             var meta = TryLoadFromDir(dir, $"{target}/{v}");
             if (meta is not null) result[v] = meta;
         }
@@ -120,7 +117,7 @@ public sealed class ModelMetadataRepository
         var result = new Dictionary<(string, string), ModelArtifact.TrainingMetadata>();
         foreach (var (station, version) in keys.Distinct())
         {
-            var dir = Path.Combine(ModelsRoot, "precipitation", station, version);
+            var dir = Path.Combine(_modelsRoot, "precipitation", station, version);
             var meta = TryLoadFromDir(dir, $"precipitation/{station}/{version}");
             if (meta is not null) result[(station, version)] = meta;
         }
@@ -137,7 +134,7 @@ public sealed class ModelMetadataRepository
     public ModelArtifact.TrainingMetadata? TryGetDryWindowTrainingMetadata(
         string station, int windowHours, string version)
     {
-        var dir = Path.Combine(ModelsRoot, "dry_window", station, $"window_{windowHours}h", version);
+        var dir = Path.Combine(_modelsRoot, "dry_window", station, $"window_{windowHours}h", version);
         return TryLoadFromDir(dir, $"dry_window/{station}/{windowHours}h/{version}");
     }
 
@@ -166,7 +163,7 @@ public sealed class ModelMetadataRepository
 
         foreach (var v in temperatureVersions.Distinct(StringComparer.Ordinal))
         {
-            var meta = TryLoadFromDir(Path.Combine(ModelsRoot, "temperature", v), $"temperature/{v}");
+            var meta = TryLoadFromDir(Path.Combine(_modelsRoot, "temperature", v), $"temperature/{v}");
             if (meta is not null && !string.IsNullOrWhiteSpace(meta.Phase))
                 phases[v] = meta.Phase;
         }
@@ -174,7 +171,7 @@ public sealed class ModelMetadataRepository
         foreach (var (station, version) in precipitationKeys.Distinct())
         {
             var meta = TryLoadFromDir(
-                Path.Combine(ModelsRoot, "precipitation", station, version),
+                Path.Combine(_modelsRoot, "precipitation", station, version),
                 $"precipitation/{station}/{version}");
             if (meta is not null && !string.IsNullOrWhiteSpace(meta.Phase))
                 phases[version] = meta.Phase;
@@ -183,7 +180,7 @@ public sealed class ModelMetadataRepository
         foreach (var (station, window, version) in dryWindowKeys.Distinct())
         {
             var meta = TryLoadFromDir(
-                Path.Combine(ModelsRoot, "dry_window", station, $"window_{window}h", version),
+                Path.Combine(_modelsRoot, "dry_window", station, $"window_{window}h", version),
                 $"dry_window/{station}/{window}h/{version}");
             if (meta is not null && !string.IsNullOrWhiteSpace(meta.Phase))
                 phases[version] = meta.Phase;
@@ -203,7 +200,7 @@ public sealed class ModelMetadataRepository
     /// </summary>
     private ModelArtifact.Manifest? TryReadManifest(string target)
     {
-        var manifestPath = Path.Combine(ModelsRoot, target, ModelArtifact.ManifestFileName);
+        var manifestPath = Path.Combine(_modelsRoot, target, ModelArtifact.ManifestFileName);
         if (!File.Exists(manifestPath)) return null;
         try
         {

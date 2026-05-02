@@ -1,3 +1,5 @@
+using WeatherBlend.Models;
+
 namespace WeatherBlend.Site;
 
 /// <summary>
@@ -47,18 +49,37 @@ public static class DryWindowPhases
         Color: "#7c4dff");
 
     /// <summary>
-    /// Phases the site renders. <see cref="Phase3dShape"/> is intentionally
-    /// excluded as of 2026-04-29 — the shape-features-vs-lean bake-off on
-    /// the new daytime label produced no consistent improvement (mean
-    /// +1.6% Brier worse, 7 wins / 9 losses / 11 ties across 27 cells).
-    /// The <c>Phase3dShape</c> constant + training pipeline are kept so a
-    /// future revisit (e.g. with a larger validation slice) is one-line:
-    /// re-add it here.
+    /// Display-metadata records keyed by phase string. Source of truth for
+    /// "if this phase ever ships, here's what its card / heading looks like";
+    /// pure presentation, no membership claim. Membership is decided by
+    /// <see cref="ActivePhasePolicy"/> — see <see cref="All"/>.
     /// </summary>
-    public static readonly IReadOnlyList<DryWindowPhase> All = new[]
-    {
-        Phase3b,
-    };
+    private static readonly IReadOnlyDictionary<string, DryWindowPhase> _byKey =
+        new Dictionary<string, DryWindowPhase>(StringComparer.OrdinalIgnoreCase)
+        {
+            [Phase3b.Key]      = Phase3b,
+            [Phase3dShape.Key] = Phase3dShape,
+        };
+
+    /// <summary>
+    /// Phases the site renders, in champion-first order. Derived from
+    /// <see cref="ActivePhasePolicy"/> so adding/removing a phase is a
+    /// one-line change in the policy file — no risk of drift between
+    /// "what the policy says is shipping" and "what the dry-window page
+    /// loops over". Phases listed in the policy without a matching
+    /// <see cref="DryWindowPhase"/> record are skipped (with the assumption
+    /// that anyone adding a phase to the policy will also add its display
+    /// metadata here in the same change).
+    ///
+    /// As of 2026-04-29 the policy lists only "3b"; <see cref="Phase3dShape"/>
+    /// stays in <see cref="_byKey"/> as a ready-to-render record so a future
+    /// re-promotion is a one-line policy edit.
+    /// </summary>
+    public static IReadOnlyList<DryWindowPhase> All =>
+        ActivePhasePolicy.ByTarget["dry_window"]
+            .Where(_byKey.ContainsKey)
+            .Select(k => _byKey[k])
+            .ToList();
 
     /// <summary>Phases that participate in side-by-side overlay charts.</summary>
     public static readonly IReadOnlyList<DryWindowPhase> Comparable = All;

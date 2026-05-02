@@ -32,6 +32,7 @@ public sealed class WindBlender : IElementBlender
             // wind (only target where the 6-model wins on the same fixed test set).
             Hyperparameters: new TempTrainer.Hyperparameters(
                 SubsampleFraction: 1.0, SubsampleFrequency: 0, FeatureFraction: 1.0),
+            ModelsRoot: _cfg.Storage.ModelsPath,
             BuildSpec: lead => WindFeatureBuilder.BuildSpec(_cfg.Blenders, lead),
             LoadRowsForSpec: (spec, c) => WindFeatureBuilder.BuildForLead(
                 _cfg.Storage.ForecastsPath, _cfg.Storage.Era5Path, _cfg.Location.Name, spec, c),

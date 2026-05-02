@@ -40,7 +40,7 @@ public sealed class StartHourPredictCommand
 
     public async Task<int> RunAsync(DateOnly? forDate, CancellationToken ct)
     {
-        var modelsRoot = Path.Combine("data", "models");
+        var modelsRoot = _cfg.Storage.ModelsPath;
         var predictionMadeAt = DateTime.UtcNow;
         var anchor = PredictAnchor.Compute(predictionMadeAt, forDate);
         var anchorDate = anchor.Date;

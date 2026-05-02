@@ -52,7 +52,7 @@ public sealed class PrecipReplayCommand
     public async Task<int> RunAsync(
         string truthStationSlug, string modelVersion, int[] leads, CancellationToken ct)
     {
-        var modelsRoot = Path.Combine("data", "models");
+        var modelsRoot = _cfg.Storage.ModelsPath;
         var versionDir = ModelArtifact.ResolveStationVersionDir(
             modelsRoot, "precipitation", truthStationSlug, modelVersion);
         var metadata = ModelArtifact.LoadTrainingMetadata(versionDir);

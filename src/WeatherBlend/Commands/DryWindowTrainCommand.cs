@@ -67,7 +67,7 @@ public sealed class DryWindowTrainCommand
         _log.LogInformation("Phase {Phase} — stations=[{Stations}] windows=[{W}] leads=[{L}]",
             phase, string.Join(", ", stations), string.Join(",", windows), string.Join(",", leads));
 
-        var modelsRoot = Path.Combine("data", "models");
+        var modelsRoot = _cfg.Storage.ModelsPath;
         var hp = new DryWindowTrainer.Hyperparameters();
         _log.LogInformation("Hyperparameters: iter={Iter} lr={Lr} leaves={Leaves} esr={Esr} seed={Seed}",
             hp.NumberOfIterations, hp.LearningRate, hp.NumberOfLeaves, hp.EarlyStoppingRound, hp.Seed);

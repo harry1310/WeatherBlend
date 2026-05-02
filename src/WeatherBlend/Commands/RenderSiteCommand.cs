@@ -239,7 +239,7 @@ public sealed class RenderSiteCommand
         // Only load metadata for versions that actually emitted predictions in the
         // window. Anything else is stale / experimental / deleted and the Models page
         // would list it with no corresponding forecast activity.
-        var modelsRoot = Path.Combine("data", "models");
+        var modelsRoot = _cfg.Storage.ModelsPath;
         var summaries = new List<SitePages.ModelSummary>();
 
         foreach (var version in predictions.Select(p => p.ModelVersion).Distinct())

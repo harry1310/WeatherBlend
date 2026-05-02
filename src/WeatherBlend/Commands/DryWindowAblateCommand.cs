@@ -40,7 +40,7 @@ public sealed class DryWindowAblateCommand
 
     public async Task<int> RunAsync(CancellationToken ct)
     {
-        var modelsRoot = Path.Combine("data", "models");
+        var modelsRoot = _cfg.Storage.ModelsPath;
         var manifestPath = Path.Combine(modelsRoot, "dry_window", ModelArtifact.ManifestFileName);
         if (!File.Exists(manifestPath))
         {

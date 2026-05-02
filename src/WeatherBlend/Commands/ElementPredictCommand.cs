@@ -41,7 +41,7 @@ public sealed class ElementPredictCommand
 
     public async Task<int> RunAsync(ElementTarget target, string modelVersion, DateOnly? forDate, CancellationToken ct)
     {
-        var modelsRoot = Path.Combine("data", "models");
+        var modelsRoot = _cfg.Storage.ModelsPath;
         var versions = ResolveRequestedVersions(modelsRoot, target.ModelDirName, modelVersion);
         if (versions.Count == 0)
         {

@@ -32,11 +32,13 @@ public sealed class StartHourVerifyCommand
 {
     private readonly ILogger<StartHourVerifyCommand> _log;
     private readonly AppConfig _cfg;
+    private readonly TruthRepository _truth;
 
-    public StartHourVerifyCommand(ILogger<StartHourVerifyCommand> log, AppConfig cfg)
+    public StartHourVerifyCommand(ILogger<StartHourVerifyCommand> log, AppConfig cfg, TruthRepository truth)
     {
         _log = log;
         _cfg = cfg;
+        _truth = truth;
     }
 
     public async Task<int> RunAsync(
@@ -64,7 +66,12 @@ public sealed class StartHourVerifyCommand
         _log.LogInformation("Loaded {N} curve rows.", curveRows.Count);
 
         // Hourly truth keyed by (station-friendly-name, target_date_utc, hour-of-day).
-        var rainfall = QueryHourlyRainfall(windowStart.AddDays(-1), windowEnd.AddDays(1), ct);
+        // Pull flat hourly rainfall via the shared repo (single SQL with the
+        // 4-of-4 quarter-hour gate), then split into the (date, hour-of-day)
+        // shape the per-cell scoring loop wants. Repo gives the canonical
+        // shape; the day/hour split is local to this caller.
+        var rainfall = ToByDateHour(_truth.GetEaHourlyRainfallAllStations(
+            windowStart.AddDays(-1), windowEnd.AddDays(1), ct));
         _log.LogInformation("Loaded {N} hourly rainfall rows across {S} stations.",
             rainfall.Sum(kv => kv.Value.Count), rainfall.Count);
 
@@ -234,46 +241,29 @@ WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
             _log, "Start-hour predict tree empty — verify reports zero rows.", ct);
     }
 
-    /// <summary>Hourly EA rainfall keyed by station-friendly-name → date →
-    /// hour → mm. 4-of-4 gate so partial hours don't quietly become "dry".</summary>
-    private Dictionary<string, Dictionary<DateTime, Dictionary<int, double>>>
-        QueryHourlyRainfall(DateTime start, DateTime end, CancellationToken ct)
+    /// <summary>
+    /// Reshape the repo's flat (station → hourUtc → mm) view into the
+    /// (station → targetDateUtc → hourOfDay → mm) shape the per-cell scoring
+    /// loop indexes by. Pure local restructuring; no SQL.
+    /// </summary>
+    private static Dictionary<string, Dictionary<DateTime, Dictionary<int, double>>>
+        ToByDateHour(IReadOnlyDictionary<string, IReadOnlyDictionary<DateTime, double>> hourlyByStation)
     {
-        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.RainfallPath, "**", "*.parquet"));
-        var sql = $@"
-SELECT StationName,
-       date_trunc('day', date_trunc('hour', ObservedTimeUtc))::DATE AS day,
-       extract(hour from ObservedTimeUtc) AS h,
-       SUM(Value15MinMm) AS mm
-FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
-  AND Value15MinMm IS NOT NULL
-  AND ObservedTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
-  AND ObservedTimeUtc <= TIMESTAMP '{end.AddHours(1):yyyy-MM-dd HH:mm:ss}'
-GROUP BY 1, 2, 3
-HAVING COUNT(*) = 4";
-
-        var rows = ParquetReader.Query(sql, r => (
-            Station: r.GetString(0),
-            Day:     DateTime.SpecifyKind(r.GetDateTime(1), DateTimeKind.Utc),
-            Hour:    Convert.ToInt32(r.GetValue(2)),
-            Mm:      r.GetDouble(3)),
-            _log, "Rainfall tree empty — verify cannot score.", ct);
-
         var result = new Dictionary<string, Dictionary<DateTime, Dictionary<int, double>>>(StringComparer.Ordinal);
-        foreach (var row in rows)
+        foreach (var (station, hourly) in hourlyByStation)
         {
-            if (!result.TryGetValue(row.Station, out var byDate))
+            var byDate = new Dictionary<DateTime, Dictionary<int, double>>();
+            foreach (var (hourUtc, mm) in hourly)
             {
-                byDate = new Dictionary<DateTime, Dictionary<int, double>>();
-                result[row.Station] = byDate;
+                var day = DateTime.SpecifyKind(hourUtc.Date, DateTimeKind.Utc);
+                if (!byDate.TryGetValue(day, out var byHour))
+                {
+                    byHour = new Dictionary<int, double>();
+                    byDate[day] = byHour;
+                }
+                byHour[hourUtc.Hour] = mm;
             }
-            if (!byDate.TryGetValue(row.Day, out var byHour))
-            {
-                byHour = new Dictionary<int, double>();
-                byDate[row.Day] = byHour;
-            }
-            byHour[row.Hour] = row.Mm;
+            result[station] = byDate;
         }
         return result;
     }

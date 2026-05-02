@@ -112,6 +112,17 @@ public sealed class StorageConfig
     public string PredictionsPath { get; set; } = "data/predictions";
     public string ReportsPath { get; set; } = "data/reports";
     public string MetOfficeObsPath { get; set; } = "data/truth/met_office_obs";
+
+    /// <summary>
+    /// Root of the trained-model artefact tree
+    /// (<c>{ModelsPath}/{target}/{station?}/{window?}/{version}/...</c>).
+    /// Promoted to config 2026-05-02 — was hard-coded as
+    /// <c>"data/models"</c> in 18+ call sites; now lives alongside every
+    /// other tree path so a future retarget (e.g. to a SAN mount) is a
+    /// one-line config edit. <see cref="ModelMetadataRepository"/> is the
+    /// canonical reader; train and predict commands also write under it.
+    /// </summary>
+    public string ModelsPath { get; set; } = "data/models";
 }
 
 public sealed class MetOfficeConfig

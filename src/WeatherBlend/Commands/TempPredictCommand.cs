@@ -45,7 +45,7 @@ public sealed class TempPredictCommand
             return 2;
         }
 
-        var modelsRoot = Path.Combine("data", "models");
+        var modelsRoot = _cfg.Storage.ModelsPath;
         var versions = ResolveRequestedVersions(modelsRoot, modelVersion);
         if (versions.Count == 0)
         {
