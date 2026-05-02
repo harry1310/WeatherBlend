@@ -1,0 +1,60 @@
+name: Sync render-site inputs from R2
+description: Pulls every R2 tree the `render-site` command reads. Single source of truth so render-site.yml and predict-and-render.yml can never drift on the dependency list (the missing-`data/reports` regression on 2026-05-01 was exactly that drift).
+
+inputs:
+  bucket:
+    description: R2 bucket name (typically secrets.R2_BUCKET).
+    required: true
+  access_key_id:
+    description: R2 access key ID.
+    required: true
+  secret_access_key:
+    description: R2 secret access key.
+    required: true
+  endpoint:
+    description: R2 S3 endpoint URL.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/setup-r2
+      with:
+        access_key_id: ${{ inputs.access_key_id }}
+        secret_access_key: ${{ inputs.secret_access_key }}
+        endpoint: ${{ inputs.endpoint }}
+
+    - name: Sync render-site input trees from R2
+      shell: bash
+      env:
+        R2_BUCKET: ${{ inputs.bucket }}
+      # The list below is THE canonical render-site dependency set. Add any
+      # new tree the RenderSiteCommand starts reading here, in this single
+      # place. Both render-site.yml (manual + post-verify auto) and the
+      # render step of predict-and-render.yml (every 2h) consume it.
+      #
+      # Tree purposes:
+      #   data/predictions     — the prediction parquet the home page + per-lead
+      #                          forecasts + skill charts read.
+      #   data/truth/era5      — temperature truth for skill charts.
+      #   data/truth/metar     — METAR comparison line for the temp skill page.
+      #   data/truth/rainfall  — EA gauge truth for precip + rain-skill charts.
+      #   data/models          — training_metadata.json (Models page metrics +
+      #                          phase labels) and MANIFEST.json (champion
+      #                          filter for home-page forecast cards).
+      #   data/reports         — verify_*.json sidecars feed the Models page's
+      #                          per-card "Verify history" table. Missing this
+      #                          tree was the silent-empty bug on 2026-05-01.
+      run: |
+        for tree in \
+            data/predictions \
+            data/truth/era5 \
+            data/truth/metar \
+            data/truth/rainfall \
+            data/models \
+            data/reports; do
+          mkdir -p "${tree}"
+          echo "::group::sync ${tree}"
+          rclone copy "r2:${R2_BUCKET}/${tree}" "./${tree}" --fast-list --transfers 16 --checkers 32 --progress
+          echo "::endgroup::"
+        done

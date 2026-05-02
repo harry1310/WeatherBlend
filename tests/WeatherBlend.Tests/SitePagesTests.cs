@@ -227,14 +227,14 @@ public class SitePagesTests
     }
 
     [Fact]
-    public void RenderModels_renders_per_card_verify_history_when_matching_run_present()
+    public void RenderModels_renders_per_card_verify_history_when_matching_phase_present()
     {
         // Verify history table appears below the per-card test-score table
-        // when a verify-history file matches the card's (target, station,
-        // version, windowHours). Pin the most-likely-to-regress shape:
-        //   - matching version + null station + null windowHours for temp
-        //   - per-lead BlendMetric appears in the table
-        //   - drift flag in the last column reflects DriftFlag from the row
+        // when a verify-history row matches the card's (target, station,
+        // windowHours, phase). Match is on Phase, not ModelVersion — the
+        // card always shows the latest Active version while verify rows
+        // necessarily lag (5d truth latency), so version-strict matching
+        // would never surface history for a freshly retrained champion.
         var trained = new DateTime(2026, 4, 20, 12, 0, 0, DateTimeKind.Utc);
         var perLead = new Dictionary<int, SitePages.PerLeadMetric>
         {
@@ -242,7 +242,7 @@ public class SitePagesTests
         };
         var summary = new SitePages.ModelSummary(
             Composite: "temperature",
-            Version: "temp_v2b",
+            Version: "v2026-04-28_232613",   // current (post-retrain) Active version
             Phase: "2b",
             DataSource: "era5",
             TrainedAtUtc: trained,
@@ -261,8 +261,11 @@ public class SitePagesTests
             {
                 new()
                 {
-                    Station = null, ModelVersion = "temp_v2b", LeadHours = 24,
-                    WindowHours = null, N = 100,
+                    // Different ModelVersion from the card on purpose: the
+                    // verify run scored an older version of the same phase.
+                    Station = null, ModelVersion = "v2026-04-21_201231_phase2redo",
+                    Phase = "2b",
+                    LeadHours = 24, WindowHours = null, N = 100,
                     BlendMetric = 1.234, DriftFlag = false,
                 },
             },
@@ -286,17 +289,19 @@ public class SitePagesTests
     }
 
     [Fact]
-    public void RenderModels_omits_verify_history_section_when_no_matching_run()
+    public void RenderModels_omits_verify_history_section_when_no_matching_phase()
     {
-        // Different version / different target → no rows match → no
-        // history table renders. Card stays clean for fresh-deploy state.
+        // Different phase / different target → no rows match → no
+        // history table renders. Card stays clean for fresh-deploy state
+        // and for the (rare) case where verify only ever scored a different
+        // phase's lineage.
         var trained = new DateTime(2026, 4, 20, 12, 0, 0, DateTimeKind.Utc);
         var perLead = new Dictionary<int, SitePages.PerLeadMetric>
         {
             [24] = new(24, "gfs", 1.23, 1.18, 0.987, 1.42, +0.05, 420, 6),
         };
         var summary = new SitePages.ModelSummary(
-            Composite: "temperature", Version: "temp_v2b", Phase: "2b",
+            Composite: "temperature", Version: "v_x", Phase: "2b",
             DataSource: "era5", TrainedAtUtc: trained,
             MetricLabel: "Test MAE (°C)", PerLead: perLead);
 
@@ -309,7 +314,8 @@ public class SitePagesTests
             {
                 new()
                 {
-                    Station = null, ModelVersion = "different_version_v9",
+                    Station = null, ModelVersion = "v_y",
+                    Phase = "2c",   // wrong phase for the card under test
                     LeadHours = 24, WindowHours = null, N = 100,
                     BlendMetric = 1.5, DriftFlag = true,
                 },

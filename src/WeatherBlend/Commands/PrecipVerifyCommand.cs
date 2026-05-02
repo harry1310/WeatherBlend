@@ -115,6 +115,7 @@ public sealed class PrecipVerifyCommand
             {
                 Station = r.TruthStation,
                 ModelVersion = r.ModelVersion,
+                Phase = metadata.TryGetValue((r.TruthStation, r.ModelVersion), out var meta) ? meta.Phase : null,
                 LeadHours = r.LeadHours,
                 WindowHours = null,
                 N = r.N,

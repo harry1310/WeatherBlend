@@ -102,6 +102,7 @@ public sealed class ElementVerifyCommand
             {
                 Station = null,
                 ModelVersion = r.ModelVersion,
+                Phase = metadata.TryGetValue(r.ModelVersion, out var meta) ? meta.Phase : null,
                 LeadHours = r.LeadHours,
                 WindowHours = null,
                 N = r.N,

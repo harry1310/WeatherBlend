@@ -143,7 +143,7 @@ public static partial class SitePages
                 """);
         }
 
-        var historyHtml = RenderVerifyHistorySection(composite, m.Version, verifyHistory);
+        var historyHtml = RenderVerifyHistorySection(composite, m.Phase, verifyHistory);
 
         return $"""
             <article class="blender-card">
@@ -172,18 +172,26 @@ public static partial class SitePages
 
     /// <summary>
     /// Per-card "Verify history" sub-section: one row per past weekly verify
-    /// run for this exact (target, station, version, windowHours) cell, with
-    /// per-lead blend metric columns and a drift indicator. Filters
+    /// run for this card's (target, station, windowHours, phase) lineage,
+    /// with per-lead blend metric columns and a drift indicator. Filters
     /// <paramref name="verifyHistory"/> to runs whose <c>Target</c>,
-    /// <c>Station</c>, <c>WindowHours</c>, and <c>ModelVersion</c> all match
-    /// the card; sorted newest-first so the most recent run sits at the top.
-    /// Renders nothing when there's no matching history yet — keeps the card
+    /// <c>Station</c>, <c>WindowHours</c> and <c>Phase</c> match the card,
+    /// sorted newest-first.
+    ///
+    /// Phase-based (not version-based) match is deliberate: the card always
+    /// represents the current Active version of a phase, but verify can only
+    /// score versions whose paired truth window has fully landed (the
+    /// 5-day ERA5 latency etc.). A freshly retrained champion therefore
+    /// has no exact-version verify rows for ~5 days. Matching by phase
+    /// keeps the same lineage's history visible across retrains.
+    ///
+    /// Renders nothing when no matching history is on disk — keeps the card
     /// clean for fresh-deploy / pre-first-verify states.
     /// </summary>
-    private static string RenderVerifyHistorySection(string composite, string version,
+    private static string RenderVerifyHistorySection(string composite, string phase,
         IReadOnlyList<WeatherBlend.Models.VerifyHistoryFile> verifyHistory)
     {
-        if (verifyHistory.Count == 0) return "";
+        if (verifyHistory.Count == 0 || string.IsNullOrEmpty(phase)) return "";
         var (target, station, windowHours) = ParseCompositeForHistory(composite);
 
         // Find every (file, row) pair that matches this card. Each matching
@@ -194,7 +202,7 @@ public static partial class SitePages
             .Select(f =>
             {
                 var rows = f.Rows.Where(r =>
-                        r.ModelVersion == version
+                        string.Equals(r.Phase, phase, StringComparison.Ordinal)
                         && r.Station == station
                         && r.WindowHours == windowHours)
                     .ToList();
@@ -220,8 +228,16 @@ public static partial class SitePages
         var tbody = new StringBuilder();
         foreach (var (file, rows) in matchingFiles)
         {
-            var byLead = rows.ToDictionary(r => r.LeadHours);
-            var driftAny = rows.Any(r => r.DriftFlag);
+            // A single verify file can contain multiple versions of the same
+            // phase (e.g. v..._phase3a from Apr 23 + v..._phase3a from Apr 26),
+            // so per-lead values are picked from the latest version (lexicographic
+            // sort works because every version starts with `vYYYY-MM-DD_HHmmss`).
+            var byLead = rows
+                .GroupBy(r => r.LeadHours)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.OrderByDescending(r => r.ModelVersion, StringComparer.Ordinal).First());
+            var driftAny = byLead.Values.Any(r => r.DriftFlag);
 
             var leadCells = new StringBuilder();
             foreach (var lead in allLeads)

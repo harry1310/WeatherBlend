@@ -61,52 +61,24 @@ jobs:
           dotnet-version: "10.0.x"
           dotnet-quality: preview
 
-      - name: Install rclone
-        run: |
-          curl -fsSL https://rclone.org/install.sh | sudo bash
-          rclone version
+      # Render-input trees come via the shared composite action — same list
+      # render-site.yml uses, no risk of drift between the two workflows.
+      - uses: ./.github/actions/sync-render-inputs
+        with:
+          bucket: ${{ secrets.R2_BUCKET }}
+          access_key_id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          secret_access_key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          endpoint: ${{ secrets.R2_ENDPOINT }}
 
-      - name: Configure rclone for R2
-        env:
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-        run: |
-          mkdir -p ~/.config/rclone
-          cat > ~/.config/rclone/rclone.conf <<EOF
-          [r2]
-          type = s3
-          provider = Cloudflare
-          access_key_id = ${R2_ACCESS_KEY_ID}
-          secret_access_key = ${R2_SECRET_ACCESS_KEY}
-          endpoint = ${R2_ENDPOINT}
-          acl = private
-          EOF
-
-      - name: Pull models + forecasts + predictions + truth trees from R2
+      - name: Pull predict-only forecasts tree from R2
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
-        # Union of predict's needs (models, forecasts, predictions, rainfall)
-        # and render's needs (predictions, era5, metar, rainfall, models). One
-        # sync = one pull cost. ERA5 + METAR are render-only — predict never
-        # reads them — but pulling them here is cheaper than two workflows.
+        # The predict step reads raw NWP forecasts that the render step does
+        # not — every other tree is in the shared sync above. rclone is
+        # already installed and configured by the composite action above.
         run: |
-          mkdir -p data/models data/forecasts data/predictions \
-                   data/truth/era5 data/truth/metar data/truth/rainfall
-
-          rclone copy "r2:${R2_BUCKET}/data/models"          ./data/models          --fast-list --transfers 16 --checkers 32 --progress
-          rclone copy "r2:${R2_BUCKET}/data/forecasts"       ./data/forecasts       --fast-list --transfers 16 --checkers 32 --progress
-          rclone copy "r2:${R2_BUCKET}/data/predictions"     ./data/predictions     --fast-list --transfers 16 --checkers 32 --progress
-          rclone copy "r2:${R2_BUCKET}/data/truth/era5"      ./data/truth/era5      --fast-list --transfers 16 --checkers 32 --progress
-          rclone copy "r2:${R2_BUCKET}/data/truth/metar"     ./data/truth/metar     --fast-list --transfers 16 --checkers 32 --progress
-          rclone copy "r2:${R2_BUCKET}/data/truth/rainfall"  ./data/truth/rainfall  --fast-list --transfers 16 --checkers 32 --progress
-
-          # Verify reports — the Models page reads the JSON sidecars to
-          # render a per-(target, station, version) "Verify history" table.
-          # Cheap to pull (a few hundred kB total); markdown reports come
-          # along too even though render-site only consumes the .json files.
-          mkdir -p data/reports
-          rclone copy "r2:${R2_BUCKET}/data/reports"         ./data/reports         --fast-list --transfers 16 --checkers 32 --progress
+          mkdir -p data/forecasts
+          rclone copy "r2:${R2_BUCKET}/data/forecasts" ./data/forecasts --fast-list --transfers 16 --checkers 32 --progress
 
       - name: Build
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo

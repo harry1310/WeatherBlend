@@ -1,0 +1,40 @@
+name: Set up rclone for R2
+description: Install rclone and write a Cloudflare-R2 remote at ~/.config/rclone/rclone.conf as `r2:`. Single source of truth for the install + config boilerplate previously duplicated across verify, render-site, and predict-and-render workflows.
+
+inputs:
+  access_key_id:
+    description: R2 access key ID (typically secrets.R2_ACCESS_KEY_ID).
+    required: true
+  secret_access_key:
+    description: R2 secret access key (typically secrets.R2_SECRET_ACCESS_KEY).
+    required: true
+  endpoint:
+    description: R2 S3 endpoint URL (typically secrets.R2_ENDPOINT).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install rclone
+      shell: bash
+      run: |
+        curl -fsSL https://rclone.org/install.sh | sudo bash
+        rclone version
+
+    - name: Configure rclone for R2
+      shell: bash
+      env:
+        R2_ACCESS_KEY_ID: ${{ inputs.access_key_id }}
+        R2_SECRET_ACCESS_KEY: ${{ inputs.secret_access_key }}
+        R2_ENDPOINT: ${{ inputs.endpoint }}
+      run: |
+        mkdir -p ~/.config/rclone
+        cat > ~/.config/rclone/rclone.conf <<EOF
+        [r2]
+        type = s3
+        provider = Cloudflare
+        access_key_id = ${R2_ACCESS_KEY_ID}
+        secret_access_key = ${R2_SECRET_ACCESS_KEY}
+        endpoint = ${R2_ENDPOINT}
+        acl = private
+        EOF

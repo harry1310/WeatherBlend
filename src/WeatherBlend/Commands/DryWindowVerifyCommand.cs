@@ -180,6 +180,7 @@ public sealed class DryWindowVerifyCommand
             {
                 Station = r.Station,
                 ModelVersion = r.Version,
+                Phase = string.IsNullOrEmpty(r.Phase) ? null : r.Phase,
                 LeadHours = r.LeadHours,
                 WindowHours = r.WindowHours,
                 N = r.N,

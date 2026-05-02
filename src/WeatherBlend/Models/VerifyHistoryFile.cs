@@ -69,6 +69,18 @@ public sealed class VerifyHistoryRow
     public string? Station { get; init; }
 
     public required string ModelVersion { get; init; }
+
+    /// <summary>training_metadata.Phase for <see cref="ModelVersion"/> at the
+    /// time of the run (e.g. <c>"2b"</c>, <c>"2c"</c>, <c>"3a"</c>,
+    /// <c>"3c"</c>, <c>"3b"</c>). The Models-page renderer matches per-card
+    /// history on this field rather than on <see cref="ModelVersion"/>: the
+    /// card represents the current champion/challenger of a phase, but verify
+    /// inevitably scores older versions (5-day truth latency means the freshly
+    /// retrained Active version has zero paired rows). Matching by phase
+    /// surfaces the lineage's verify history on the same card across retrains.
+    /// Optional for backward compat with sidecars written before this field
+    /// existed; the renderer treats null/empty as "won't match".</summary>
+    public string? Phase { get; init; }
     public required int LeadHours { get; init; }
 
     /// <summary>Dry-window only — the window length in hours (3 / 4 / 6).</summary>
