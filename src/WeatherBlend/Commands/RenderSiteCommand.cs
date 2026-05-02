@@ -25,11 +25,16 @@ public sealed class RenderSiteCommand
 {
     private readonly ILogger<RenderSiteCommand> _log;
     private readonly AppConfig _cfg;
+    private readonly TruthRepository _truth;
+    private readonly ModelMetadataRepository _metadata;
 
-    public RenderSiteCommand(ILogger<RenderSiteCommand> log, AppConfig cfg)
+    public RenderSiteCommand(ILogger<RenderSiteCommand> log, AppConfig cfg,
+        TruthRepository truth, ModelMetadataRepository metadata)
     {
         _log = log;
         _cfg = cfg;
+        _truth = truth;
+        _metadata = metadata;
     }
 
     public async Task<int> RunAsync(
@@ -79,17 +84,20 @@ public sealed class RenderSiteCommand
         // ERA5 is gapless-for-past, but only past — query up to the clock time.
         // Persistence-lookback headroom (up to 72h before the earliest prediction)
         // keeps rolling-MAE truth pairs matchable at the start of the window.
-        var truth = QueryTruth(windowStart.AddDays(-3), now, ct);
+        var truth = _truth.GetEra5Hourly(windowStart.AddDays(-3), now, ct);
         _log.LogInformation("Loaded {N} ERA5 truth points.", truth.Count);
 
-        var metar = QueryMetar(windowStart, now, ct);
+        var metar = _truth.GetMetarTemperature(_cfg.Location.Metar.Primary, windowStart, now, ct);
         _log.LogInformation("Loaded {N} METAR observations ({Station}).",
             metar.Count, string.IsNullOrWhiteSpace(_cfg.Location.Metar.Primary) ? "none" : _cfg.Location.Metar.Primary);
 
         // PhaseByVersion has to be computed before the rolling functions so
         // they can group by phase rather than version (a retrain would
         // otherwise fragment the chart into stubs).
-        var phaseByVersion = LoadPhaseByVersion(predictions, precip, dryWindow);
+        var phaseByVersion = _metadata.GetPhaseByVersion(
+            predictions.Select(p => p.ModelVersion),
+            precip.Select(p => (p.Station, p.Version)),
+            dryWindow.Select(d => (d.Station, d.WindowHours, d.Version)));
         var rolling = ComputeRollingMae(predictions, truth, phaseByVersion, rollingWindowDays);
         // Precip uses a longer 30-day rolling window than temp's because wet
         // hours are sparser — the verify command's defaults pin this rule
@@ -102,11 +110,11 @@ public sealed class RenderSiteCommand
         var rainfall = LoadRainfallTruth(windowStart, now, precip, ct);
         _log.LogInformation("Rainfall truth: {N} stations loaded.", rainfall.Count);
 
-        var currentVersion = LoadCurrentTemperatureVersion();
+        var currentVersion = _metadata.GetChampion("temperature");
         _log.LogInformation("Champion (temperature): {Version}",
             string.IsNullOrEmpty(currentVersion) ? "(none)" : currentVersion);
 
-        var precipCurrentByStation = LoadCurrentPrecipByStation();
+        var precipCurrentByStation = _metadata.GetChampionsByStation("precipitation");
         _log.LogInformation("Champion (precipitation): {Entries}",
             precipCurrentByStation.Count == 0
                 ? "(none)"
@@ -268,209 +276,21 @@ public sealed class RenderSiteCommand
         }
     }
 
-    private string LoadCurrentTemperatureVersion()
-    {
-        // Reads MANIFEST.json directly rather than calling ResolveVersionDir("current"),
-        // which throws when the manifest is absent — on a fresh checkout the home page
-        // should still render, just without a champion filter.
-        var manifestPath = Path.Combine("data", "models", "temperature", ModelArtifact.ManifestFileName);
-        if (!File.Exists(manifestPath)) return "";
-        try
-        {
-            var json = File.ReadAllText(manifestPath);
-            var manifest = System.Text.Json.JsonSerializer.Deserialize<ModelArtifact.Manifest>(json);
-            return manifest?.Current ?? "";
-        }
-        catch (Exception ex)
-        {
-            _log.LogWarning("Failed to read temperature manifest: {Msg}", ex.Message);
-            return "";
-        }
-    }
 
-    private Dictionary<string, string> LoadCurrentPrecipByStation()
-    {
-        // Precipitation uses the per-station manifest layout: one StationEntry per EA
-        // station slug, each with its own Current. Missing manifest → no champion,
-        // home page skips the P(wet) chip rather than falling back to "latest anywhere".
-        var manifestPath = Path.Combine("data", "models", "precipitation", ModelArtifact.ManifestFileName);
-        if (!File.Exists(manifestPath)) return new(StringComparer.Ordinal);
-        try
-        {
-            var json = File.ReadAllText(manifestPath);
-            var manifest = System.Text.Json.JsonSerializer.Deserialize<ModelArtifact.Manifest>(json);
-            if (manifest?.Stations is null) return new(StringComparer.Ordinal);
-            return manifest.Stations
-                .Where(kv => !string.IsNullOrEmpty(kv.Value.Current))
-                .ToDictionary(kv => kv.Key, kv => kv.Value.Current, StringComparer.Ordinal);
-        }
-        catch (Exception ex)
-        {
-            _log.LogWarning("Failed to read precipitation manifest: {Msg}", ex.Message);
-            return new(StringComparer.Ordinal);
-        }
-    }
-
-    private Dictionary<string, string> LoadPhaseByVersion(
-        IReadOnlyList<TempPredictionRow> predictions,
-        IReadOnlyList<SitePages.PrecipForecastPoint> precip,
-        IReadOnlyList<SitePages.DryWindowForecastPoint> dryWindow)
-    {
-        // Only the versions that actually produced predictions are worth reading.
-        // Missing training_metadata.json is non-fatal — the caller treats empty phase
-        // as "other" and renders the row outside the 2b/2c or 3a/3c charts.
-        var modelsRoot = Path.Combine("data", "models");
-        var phases = new Dictionary<string, string>(StringComparer.Ordinal);
-
-        // Temperature: flat tree data/models/temperature/{version}/.
-        foreach (var v in predictions.Select(p => p.ModelVersion).Distinct())
-        {
-            try
-            {
-                var dir = ModelArtifact.ResolveVersionDir(modelsRoot, "temperature", v);
-                if (!Directory.Exists(dir)) continue;
-                var metadataPath = Path.Combine(dir, ModelArtifact.TrainingMetadataFileName);
-                if (!File.Exists(metadataPath)) continue;
-                var metadata = ModelArtifact.LoadTrainingMetadata(dir);
-                if (!string.IsNullOrWhiteSpace(metadata.Phase))
-                    phases[v] = metadata.Phase;
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning("Phase lookup failed for temperature {Version}: {Msg}", v, ex.Message);
-            }
-        }
-
-        // Precipitation: per-station tree data/models/precipitation/{station}/{version}/.
-        // Same version string can recur across stations (e.g. v..._phase3c at all three
-        // stations), but the Phase is the same — probing any one station that produced
-        // the version is enough, so we iterate distinct (station, version) pairs and the
-        // later write just overwrites with the identical value.
-        foreach (var (station, version) in precip.Select(p => (p.Station, p.Version)).Distinct())
-        {
-            try
-            {
-                var dir = Path.Combine(modelsRoot, "precipitation", station, version);
-                if (!Directory.Exists(dir)) continue;
-                var metadataPath = Path.Combine(dir, ModelArtifact.TrainingMetadataFileName);
-                if (!File.Exists(metadataPath)) continue;
-                var metadata = ModelArtifact.LoadTrainingMetadata(dir);
-                if (!string.IsNullOrWhiteSpace(metadata.Phase))
-                    phases[version] = metadata.Phase;
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning("Phase lookup failed for precipitation {Station}/{Version}: {Msg}", station, version, ex.Message);
-            }
-        }
-
-        // Dry-window: per-(station, window) tree data/models/dry_window/{station}/window_{N}h/{version}/.
-        // Phase 3d artefacts have phase-suffixed version dirs ("..._phase3d_shape", "..._phase3d_calibrated"),
-        // so version strings don't collide across composites — a flat version→phase map is safe.
-        foreach (var (station, window, version) in dryWindow.Select(d => (d.Station, d.WindowHours, d.Version)).Distinct())
-        {
-            try
-            {
-                var dir = Path.Combine(modelsRoot, "dry_window", station, $"window_{window}h", version);
-                if (!Directory.Exists(dir)) continue;
-                var metadataPath = Path.Combine(dir, ModelArtifact.TrainingMetadataFileName);
-                if (!File.Exists(metadataPath)) continue;
-                var metadata = ModelArtifact.LoadTrainingMetadata(dir);
-                if (!string.IsNullOrWhiteSpace(metadata.Phase))
-                    phases[version] = metadata.Phase;
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning("Phase lookup failed for dry-window {Station}/{Window}h/{Version}: {Msg}",
-                    station, window, version, ex.Message);
-            }
-        }
-
-        return phases;
-    }
-
+    /// <summary>
+    /// Resolve EA rainfall truth for the stations that actually produced
+    /// precip predictions in the window. Pure delegate to
+    /// <see cref="TruthRepository.GetEaHourlyRainfallByStation"/>; this stub
+    /// only exists because we want the per-station list to be derived from
+    /// the predictions (so empty windows skip the I/O entirely).
+    /// </summary>
     private IReadOnlyDictionary<string, IReadOnlyDictionary<DateTime, double>> LoadRainfallTruth(
         DateTime start, DateTime end,
         IReadOnlyList<SitePages.PrecipForecastPoint> precip,
         CancellationToken ct)
     {
-        // Only load truth for stations that actually produced precip predictions in the
-        // window. Mirrors PrecipVerifyCommand's slug → StationName mapping so the filter
-        // resolves to the exact StationName stored in the truth parquet.
         var stations = precip.Select(p => p.Station).Distinct().ToList();
-        if (stations.Count == 0)
-            return new Dictionary<string, IReadOnlyDictionary<DateTime, double>>();
-
-        var stationNamesBySlug = _cfg.Location.Rainfall.Stations.ToDictionary(
-            s => "ea_" + Slugify(s.Name),
-            s => s.Name,
-            StringComparer.OrdinalIgnoreCase);
-
-        var result = new Dictionary<string, IReadOnlyDictionary<DateTime, double>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var slug in stations)
-        {
-            if (!stationNamesBySlug.TryGetValue(slug, out var stationName))
-            {
-                _log.LogWarning("Rainfall truth: no config station for slug {Slug}.", slug);
-                result[slug] = new Dictionary<DateTime, double>();
-                continue;
-            }
-            result[slug] = QueryHourlyRainfall(stationName, start, end, ct);
-        }
-        return result;
-    }
-
-    private IReadOnlyDictionary<DateTime, double> QueryHourlyRainfall(
-        string stationName, DateTime start, DateTime end, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-
-        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.RainfallPath, "**", "*.parquet"));
-
-        // Same 4-of-4 aggregation as PrecipVerify so a partial hour can't flip wet↔dry.
-        var sql = $@"
-SELECT date_trunc('hour', ObservedTimeUtc) AS valid_time,
-       SUM(Value15MinMm) AS mm_hour
-FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
-  AND StationName  = '{stationName.Replace("'", "''")}'
-  AND Value15MinMm IS NOT NULL
-  AND ObservedTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
-  AND ObservedTimeUtc <= TIMESTAMP '{end.AddHours(1):yyyy-MM-dd HH:mm:ss}'
-GROUP BY 1
-HAVING COUNT(*) = 4
-ORDER BY 1";
-
-        var rows = ParquetReader.Query(
-            sql,
-            r => (Hour: r.GetDateTime(0), Mm: r.GetDouble(1)),
-            _log,
-            $"Rainfall tree empty for {stationName}.",
-            ct);
-        return rows.ToDictionary(x => x.Hour, x => x.Mm);
-    }
-
-    // Kept local (rather than importing Slugify from PrecipVerifyCommand) so this file
-    // doesn't depend on that command's internals. The rule is simple: lowercase,
-    // non-alphanumeric → underscore, collapse repeats.
-    private static string Slugify(string input)
-    {
-        var sb = new System.Text.StringBuilder(input.Length);
-        var lastWasUnderscore = false;
-        foreach (var c in input.ToLowerInvariant())
-        {
-            if (char.IsLetterOrDigit(c))
-            {
-                sb.Append(c);
-                lastWasUnderscore = false;
-            }
-            else if (!lastWasUnderscore)
-            {
-                sb.Append('_');
-                lastWasUnderscore = true;
-            }
-        }
-        return sb.ToString().Trim('_');
+        return _truth.GetEaHourlyRainfallByStation(stations, start, end, ct);
     }
 
     /// <summary>
@@ -943,55 +763,6 @@ ORDER BY TruthStation, WindowHours, LeadHours, TargetDateUtc";
             _log, "Dry-window predictions tree empty — dry-window page will render an empty state.", ct);
     }
 
-    private IReadOnlyList<(DateTime ObservedTimeUtc, double Temperature2m)> QueryMetar(
-        DateTime start, DateTime end, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-
-        var station = _cfg.Location.Metar.Primary;
-        if (string.IsNullOrWhiteSpace(station))
-        {
-            _log.LogWarning("No primary METAR station configured — METAR chart series will be empty.");
-            return Array.Empty<(DateTime, double)>();
-        }
-
-        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.ObservationsPath, "**", "*.parquet"));
-
-        // Filter on in-file Station column (authoritative per CLAUDE.md gotcha about
-        // hive-key vs column collision). Primary station only — secondary fallback
-        // would confuse the chart legend.
-        var sql = $@"
-SELECT ObservedTimeUtc, Temperature2m
-FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name}'
-  AND Station = '{station.Replace("'", "''")}'
-  AND Temperature2m IS NOT NULL
-  AND ObservedTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
-  AND ObservedTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
-ORDER BY ObservedTimeUtc";
-
-        return ParquetReader.Query(sql, r => (r.GetDateTime(0), r.GetDouble(1)),
-            _log, "METAR tree empty — METAR chart series will be empty.", ct);
-    }
-
-    private IReadOnlyDictionary<DateTime, double> QueryTruth(DateTime start, DateTime end, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-
-        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.Era5Path, "**", "*.parquet"));
-
-        var sql = $@"
-SELECT ValidTimeUtc, Temperature2m
-FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name}'
-  AND Temperature2m IS NOT NULL
-  AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
-  AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'";
-
-        var rows = ParquetReader.Query(sql, r => (Time: r.GetDateTime(0), Temp: r.GetDouble(1)),
-            _log, "ERA5 tree empty — skill charts will be empty.", ct);
-        return rows.ToDictionary(x => x.Time, x => x.Temp);
-    }
 
     private static double? NullableDouble(IDataReader r, int ord)
         => r.IsDBNull(ord) ? null : r.GetDouble(ord);

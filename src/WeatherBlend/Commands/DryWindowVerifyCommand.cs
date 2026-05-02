@@ -27,11 +27,16 @@ public sealed class DryWindowVerifyCommand
 {
     private readonly ILogger<DryWindowVerifyCommand> _log;
     private readonly AppConfig _cfg;
+    private readonly TruthRepository _truth;
+    private readonly ModelMetadataRepository _metadata;
 
-    public DryWindowVerifyCommand(ILogger<DryWindowVerifyCommand> log, AppConfig cfg)
+    public DryWindowVerifyCommand(ILogger<DryWindowVerifyCommand> log, AppConfig cfg,
+        TruthRepository truth, ModelMetadataRepository metadata)
     {
         _log = log;
         _cfg = cfg;
+        _truth = truth;
+        _metadata = metadata;
     }
 
     public async Task<int> RunAsync(
@@ -43,16 +48,12 @@ public sealed class DryWindowVerifyCommand
         double driftThreshold,
         CancellationToken ct)
     {
-        var modelsRoot = Path.Combine("data", "models");
-        var manifestPath = Path.Combine(modelsRoot, "dry_window", ModelArtifact.ManifestFileName);
-        if (!File.Exists(manifestPath))
+        var manifest = _metadata.TryGetManifest("dry_window");
+        if (manifest is null)
         {
-            _log.LogError("No dry_window manifest at {Path}. Train first.", manifestPath);
+            _log.LogError("No dry_window manifest. Train first.");
             return 2;
         }
-        var manifest = System.Text.Json.JsonSerializer.Deserialize<ModelArtifact.Manifest>(
-            File.ReadAllText(manifestPath))
-            ?? throw new InvalidOperationException("Failed to parse dry_window manifest.");
 
         var entries = FilterEntries(manifest, stationArg, windowArg);
         if (entries.Count == 0)
@@ -132,21 +133,13 @@ public sealed class DryWindowVerifyCommand
             // Phase tag from the same metadata so the headline can group 3b vs 3d-shape.
             double? trainingBrier = null;
             string phase = "";
-            try
+            var metadata = _metadata.TryGetDryWindowTrainingMetadata(
+                g.Key.TruthStation, g.Key.WindowHours, g.Key.ModelVersion);
+            if (metadata is not null)
             {
-                var versionDir = ModelArtifact.ResolveStationVersionDir(
-                    modelsRoot, "dry_window",
-                    $"{g.Key.TruthStation}/window_{g.Key.WindowHours}h",
-                    g.Key.ModelVersion);
-                var metadata = ModelArtifact.LoadTrainingMetadata(versionDir);
                 if (metadata.PerLead.TryGetValue(g.Key.LeadHours.ToString(CultureInfo.InvariantCulture), out var pl))
                     trainingBrier = pl.BlendTestMae;
                 phase = metadata.Phase ?? "";
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning("Metadata load failed for {Key}/window_{W}h v{V}: {Msg}",
-                    g.Key.TruthStation, g.Key.WindowHours, g.Key.ModelVersion, ex.Message);
             }
 
             var drift = trainingBrier.HasValue && trainingBrier.Value > 0
@@ -323,21 +316,25 @@ ORDER BY TruthStation, WindowHours, ModelVersion, LeadHours, TargetDateUtc";
     private IReadOnlyDictionary<(string Station, int WindowHours), IReadOnlyDictionary<DateOnly, bool>>
         QueryTruthLabels(string[] stationSlugs, int[] windowLengths, DateTime start, DateTime end, CancellationToken ct)
     {
-        var slugToName = _cfg.Location.Rainfall.Stations.ToDictionary(
-            s => "ea_" + Slugify(s.Name),
-            s => s.Name,
-            StringComparer.OrdinalIgnoreCase);
+        // Slug → hourly mm via the shared repo (4-of-4 quarter-hour gate
+        // applied internally). Slugs without a config match come back as
+        // empty dicts and silently no-op the label-building loop, mirroring
+        // the pre-repo behaviour.
+        var truthByStation = _truth.GetEaHourlyRainfallByStation(stationSlugs, start, end, ct);
 
         var result = new Dictionary<(string, int), IReadOnlyDictionary<DateOnly, bool>>();
         foreach (var slug in stationSlugs)
         {
-            if (!slugToName.TryGetValue(slug, out var stationName))
-            {
-                _log.LogWarning("Slug '{Slug}' doesn't map to a configured rainfall station.", slug);
-                continue;
-            }
-            var hourly = QueryHourlyTruth(stationName, start, end, ct);
-            if (hourly.Count == 0) continue;
+            if (!truthByStation.TryGetValue(slug, out var hourlyDict) || hourlyDict.Count == 0) continue;
+
+            // DryWindowLabelBuilder consumes its own typed pair shape — convert
+            // the dict view from the repo into the list view it expects, in
+            // chronological order.
+            var hourly = hourlyDict
+                .OrderBy(kv => kv.Key)
+                .Select(kv => new DryWindowLabelBuilder.HourlyTruth(
+                    DateTime.SpecifyKind(kv.Key, DateTimeKind.Utc), kv.Value))
+                .ToList();
 
             var labels = DryWindowLabelBuilder.Build(hourly, windowLengths, _cfg.DryWindow.BuildDaytimeWindow());
             foreach (var w in windowLengths)
@@ -349,31 +346,6 @@ ORDER BY TruthStation, WindowHours, ModelVersion, LeadHours, TargetDateUtc";
             }
         }
         return result;
-    }
-
-    private IReadOnlyList<DryWindowLabelBuilder.HourlyTruth> QueryHourlyTruth(
-        string stationName, DateTime start, DateTime end, CancellationToken ct)
-    {
-        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.RainfallPath, "**", "*.parquet"));
-
-        var sql = $@"
-SELECT date_trunc('hour', ObservedTimeUtc) AS valid_time,
-       SUM(Value15MinMm) AS mm_hour
-FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
-  AND StationName  = '{stationName.Replace("'", "''")}'
-  AND Value15MinMm IS NOT NULL
-  AND ObservedTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
-  AND ObservedTimeUtc <= TIMESTAMP '{end.AddHours(1):yyyy-MM-dd HH:mm:ss}'
-GROUP BY 1
-HAVING COUNT(*) = 4
-ORDER BY 1";
-
-        return ParquetReader.Query(sql, r =>
-            new DryWindowLabelBuilder.HourlyTruth(
-                DateTime.SpecifyKind(r.GetDateTime(0), DateTimeKind.Utc),
-                r.GetDouble(1)),
-            _log, $"No rainfall parquet for station {stationName}.", ct);
     }
 
     private static double MeanOfModels(DryWindowPredictionRow p)

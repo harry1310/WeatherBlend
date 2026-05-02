@@ -23,11 +23,16 @@ public sealed class TempVerifyCommand
 {
     private readonly ILogger<TempVerifyCommand> _log;
     private readonly AppConfig _cfg;
+    private readonly TruthRepository _truth;
+    private readonly ModelMetadataRepository _metadata;
 
-    public TempVerifyCommand(ILogger<TempVerifyCommand> log, AppConfig cfg)
+    public TempVerifyCommand(ILogger<TempVerifyCommand> log, AppConfig cfg,
+        TruthRepository truth, ModelMetadataRepository metadata)
     {
         _log = log;
         _cfg = cfg;
+        _truth = truth;
+        _metadata = metadata;
     }
 
     public async Task<int> RunAsync(
@@ -65,10 +70,11 @@ public sealed class TempVerifyCommand
 
         // ERA5 lookup needs to cover the whole window plus the persistence-lookback
         // (up to 72h before windowStart) so persistence MAE can resolve.
-        var truth = QueryTruth(windowStart.AddHours(-72), windowEnd, ct);
+        var truth = _truth.GetEra5Hourly(windowStart.AddHours(-72), windowEnd, ct);
         _log.LogInformation("Loaded {N} ERA5 truth points.", truth.Count);
 
-        var metadata = LoadMetadataForVersions(predictions.Select(p => p.ModelVersion).Distinct());
+        var metadata = _metadata.GetTrainingMetadataForVersions("temperature",
+            predictions.Select(p => p.ModelVersion));
         _log.LogInformation("Loaded metadata for {N} versions: {Versions}",
             metadata.Count, string.Join(", ", metadata.Keys));
 
@@ -191,51 +197,6 @@ ORDER BY ModelVersion, LeadHours, ValidTimeUtc";
             TempRange = NullableDouble(r, 22),
             FeatureVectorHash = r.IsDBNull(23) ? "" : r.GetString(23),
         }, _log, "Predictions tree empty — nothing to verify.", ct);
-    }
-
-    private IReadOnlyDictionary<DateTime, double> QueryTruth(
-        DateTime start, DateTime end, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-
-        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.Era5Path, "**", "*.parquet"));
-
-        var sql = $@"
-SELECT ValidTimeUtc, Temperature2m
-FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name}'
-  AND Temperature2m IS NOT NULL
-  AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
-  AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'";
-
-        var rows = ParquetReader.Query(sql, r => (Time: r.GetDateTime(0), Temp: r.GetDouble(1)),
-            _log, "ERA5 tree empty — cannot verify.", ct);
-        return rows.ToDictionary(x => x.Time, x => x.Temp);
-    }
-
-    private IReadOnlyDictionary<string, ModelArtifact.TrainingMetadata> LoadMetadataForVersions(
-        IEnumerable<string> versions)
-    {
-        var modelsRoot = Path.Combine("data", "models");
-        var result = new Dictionary<string, ModelArtifact.TrainingMetadata>();
-        foreach (var v in versions)
-        {
-            try
-            {
-                var dir = ModelArtifact.ResolveVersionDir(modelsRoot, "temperature", v);
-                if (!Directory.Exists(dir))
-                {
-                    _log.LogWarning("Metadata missing for version {V} — drift column will be blank.", v);
-                    continue;
-                }
-                result[v] = ModelArtifact.LoadTrainingMetadata(dir);
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning("Failed to load metadata for version {V}: {Msg}", v, ex.Message);
-            }
-        }
-        return result;
     }
 
     private static double? NullableDouble(IDataReader r, int ord)

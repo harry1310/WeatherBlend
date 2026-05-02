@@ -24,11 +24,16 @@ public sealed class ElementVerifyCommand
 {
     private readonly ILogger<ElementVerifyCommand> _log;
     private readonly AppConfig _cfg;
+    private readonly TruthRepository _truth;
+    private readonly ModelMetadataRepository _metadata;
 
-    public ElementVerifyCommand(ILogger<ElementVerifyCommand> log, AppConfig cfg)
+    public ElementVerifyCommand(ILogger<ElementVerifyCommand> log, AppConfig cfg,
+        TruthRepository truth, ModelMetadataRepository metadata)
     {
         _log = log;
         _cfg = cfg;
+        _truth = truth;
+        _metadata = metadata;
     }
 
     public async Task<int> RunAsync(
@@ -59,12 +64,11 @@ public sealed class ElementVerifyCommand
         }
 
         var truthCol = TruthColumnFor(target);
-        var truth = QueryTruth(truthCol, windowStart, windowEnd, ct);
+        var truth = _truth.GetEra5Hourly(windowStart, windowEnd, ct, truthCol);
         _log.LogInformation("Loaded {N} ERA5 truth points (column={Col}).", truth.Count, truthCol);
 
-        var modelsRoot = Path.Combine("data", "models");
-        var metadata = LoadMetadataForVersions(modelsRoot, target.ModelDirName,
-            predictions.Select(p => p.ModelVersion).Distinct());
+        var metadata = _metadata.GetTrainingMetadataForVersions(target.ModelDirName,
+            predictions.Select(p => p.ModelVersion));
         _log.LogInformation("Loaded metadata for {N} versions.", metadata.Count);
 
         var rows = ElementVerifier.Compute(new ElementVerifier.Inputs
@@ -184,43 +188,6 @@ ORDER BY ModelVersion, LeadHours, ValidTimeUtc";
             Range = NullableDouble(r, 23),
             FeatureVectorHash = r.IsDBNull(24) ? "" : r.GetString(24),
         }, _log, $"Predictions tree empty for {target.CliName} — nothing to verify.", ct);
-    }
-
-    private IReadOnlyDictionary<DateTime, double> QueryTruth(
-        string truthCol, DateTime start, DateTime end, CancellationToken ct)
-    {
-        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.Era5Path, "**", "*.parquet"));
-
-        var sql = $@"
-SELECT ValidTimeUtc, {truthCol}
-FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name}'
-  AND {truthCol} IS NOT NULL
-  AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
-  AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'";
-
-        var rows = ParquetReader.Query(sql, r => (Time: r.GetDateTime(0), Val: r.GetDouble(1)),
-            _log, "ERA5 tree empty — cannot verify.", ct);
-        return rows.ToDictionary(x => x.Time, x => x.Val);
-    }
-
-    private IReadOnlyDictionary<string, ModelArtifact.TrainingMetadata> LoadMetadataForVersions(
-        string modelsRoot, string modelDirName, IEnumerable<string> versions)
-    {
-        var dict = new Dictionary<string, ModelArtifact.TrainingMetadata>();
-        foreach (var v in versions.Distinct())
-        {
-            try
-            {
-                var dir = ModelArtifact.ResolveVersionDir(modelsRoot, modelDirName, v);
-                dict[v] = ModelArtifact.LoadTrainingMetadata(dir);
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning("Could not load metadata for version {V}: {Msg}", v, ex.Message);
-            }
-        }
-        return dict;
     }
 
     private static double? NullableDouble(IDataReader r, int ord) => r.IsDBNull(ord) ? null : r.GetDouble(ord);

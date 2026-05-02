@@ -8,6 +8,7 @@ using Serilog;
 using WeatherBlend.Collect;
 using WeatherBlend.Commands;
 using WeatherBlend.Config;
+using WeatherBlend.Storage;
 using WeatherBlend.Train.Element;
 using WeatherBlend.Train.Element.Cloud;
 using WeatherBlend.Train.Element.Humidity;
@@ -116,6 +117,12 @@ public static class Program
                               ?? @"C:\Tools\wgrib2\wgrib2.exe";
                     return new Wgrib2(exe, sp.GetRequiredService<ILogger<Wgrib2>>());
                 });
+
+                // Storage repositories — thin layer over ParquetReader that
+                // de-duplicates SQL/row-mapping previously copy-pasted across
+                // commands. Singleton: stateless, just config + logger.
+                services.AddSingleton<TruthRepository>();
+                services.AddSingleton<ModelMetadataRepository>();
 
                 services.AddTransient<CollectCommand>();
                 services.AddTransient<MetOfficeBootstrapCommand>();

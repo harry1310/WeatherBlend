@@ -24,11 +24,16 @@ public sealed class PrecipVerifyCommand
 {
     private readonly ILogger<PrecipVerifyCommand> _log;
     private readonly AppConfig _cfg;
+    private readonly TruthRepository _truth;
+    private readonly ModelMetadataRepository _metadata;
 
-    public PrecipVerifyCommand(ILogger<PrecipVerifyCommand> log, AppConfig cfg)
+    public PrecipVerifyCommand(ILogger<PrecipVerifyCommand> log, AppConfig cfg,
+        TruthRepository truth, ModelMetadataRepository metadata)
     {
         _log = log;
         _cfg = cfg;
+        _truth = truth;
+        _metadata = metadata;
     }
 
     public async Task<int> RunAsync(
@@ -75,13 +80,13 @@ public sealed class PrecipVerifyCommand
         }
 
         // Truth lookup needs to cover the window + persistence lookback (up to 72h before windowStart).
-        var truth = QueryTruth(stations, windowStart.AddHours(-72), windowEnd, ct);
+        var truth = _truth.GetEaHourlyRainfallByStation(stations, windowStart.AddHours(-72), windowEnd, ct);
         var truthPoints = truth.Sum(kv => kv.Value.Count);
         _log.LogInformation("Loaded {N} hourly rainfall truth points across {S} stations.",
             truthPoints, truth.Count);
 
-        var metadata = LoadMetadataForKeys(modelsRoot,
-            predictions.Select(p => (p.TruthStation, p.ModelVersion)).Distinct());
+        var metadata = _metadata.GetTrainingMetadataForPrecipitationKeys(
+            predictions.Select(p => (p.TruthStation, p.ModelVersion)));
         _log.LogInformation("Loaded metadata for {N} (station, version) keys.", metadata.Count);
 
         var rows = PrecipVerifier.Compute(new PrecipVerifier.Inputs
@@ -200,83 +205,6 @@ ORDER BY TruthStation, ModelVersion, LeadHours, ValidTimeUtc";
             PrecipAgreementWet01 = NullableDouble(r, 16),
             FeatureVectorHash   = r.IsDBNull(17) ? "" : r.GetString(17),
         }, _log, "Predictions tree empty for requested stations — nothing to verify.", ct);
-    }
-
-    private IReadOnlyDictionary<string, IReadOnlyDictionary<DateTime, double>> QueryTruth(
-        IReadOnlyList<string> stations,
-        DateTime start, DateTime end, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-
-        // Map slug → StationName by matching against the config's rainfall stations.
-        // Training uses `ea_<Slugify(StationConfig.Name)>`; reverse that here so DuckDB
-        // can filter on the exact StationName stored in the truth parquet.
-        var stationNamesBySlug = _cfg.Location.Rainfall.Stations.ToDictionary(
-            s => "ea_" + Slugify(s.Name),
-            s => s.Name,
-            StringComparer.OrdinalIgnoreCase);
-
-        var result = new Dictionary<string, IReadOnlyDictionary<DateTime, double>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var slug in stations)
-        {
-            if (!stationNamesBySlug.TryGetValue(slug, out var stationName))
-            {
-                _log.LogWarning("No config rainfall station maps to slug {Slug} — truth lookup will be empty.", slug);
-                result[slug] = new Dictionary<DateTime, double>();
-                continue;
-            }
-            result[slug] = QueryHourlyTruth(stationName, start, end, ct);
-        }
-        return result;
-    }
-
-    private IReadOnlyDictionary<DateTime, double> QueryHourlyTruth(
-        string stationName, DateTime start, DateTime end, CancellationToken ct)
-    {
-        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.RainfallPath, "**", "*.parquet"));
-
-        // Same aggregation rule as training: four readings per hour required, else drop.
-        // Otherwise a partial hour understates observed mm and can flip wet→dry at boundary.
-        var sql = $@"
-SELECT date_trunc('hour', ObservedTimeUtc) AS valid_time,
-       SUM(Value15MinMm) AS mm_hour
-FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
-  AND StationName  = '{stationName.Replace("'", "''")}'
-  AND Value15MinMm IS NOT NULL
-  AND ObservedTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
-  AND ObservedTimeUtc <= TIMESTAMP '{end.AddHours(1):yyyy-MM-dd HH:mm:ss}'
-GROUP BY 1
-HAVING COUNT(*) = 4
-ORDER BY 1";
-
-        var rows = ParquetReader.Query(sql, r => (Hour: r.GetDateTime(0), Mm: r.GetDouble(1)),
-            _log, $"Rainfall tree empty for station {stationName} — cannot verify.", ct);
-        return rows.ToDictionary(x => x.Hour, x => x.Mm);
-    }
-
-    private IReadOnlyDictionary<(string Station, string Version), ModelArtifact.TrainingMetadata>
-        LoadMetadataForKeys(string modelsRoot, IEnumerable<(string Station, string Version)> keys)
-    {
-        var result = new Dictionary<(string, string), ModelArtifact.TrainingMetadata>();
-        foreach (var (station, version) in keys)
-        {
-            try
-            {
-                var dir = ModelArtifact.ResolveStationVersionDir(modelsRoot, "precipitation", station, version);
-                if (!Directory.Exists(dir))
-                {
-                    _log.LogWarning("Metadata missing for {Station} / {V} — drift column will be blank.", station, version);
-                    continue;
-                }
-                result[(station, version)] = ModelArtifact.LoadTrainingMetadata(dir);
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning("Failed to load metadata for {Station} / {V}: {Msg}", station, version, ex.Message);
-            }
-        }
-        return result;
     }
 
     private static double? NullableDouble(IDataReader r, int ord)
