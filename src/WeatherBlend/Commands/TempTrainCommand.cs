@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
 using WeatherBlend.Evaluate.Temp;
 using WeatherBlend.Evaluate.Precip;
+using WeatherBlend.Models;
 using WeatherBlend.Train;
 using WeatherBlend.Train.Common;
 using WeatherBlend.Train.Element;
@@ -450,7 +451,7 @@ public sealed class TempTrainCommand
         // so the manifest can track a separate "current" pointer per truth source.
         // Slug is prefixed with the provider ("ea_") so a future Met Office Princetown
         // collector can live alongside the EA one without colliding.
-        var stationSlug = "ea_" + Slugify(primaryStation);
+        var stationSlug = StationSlug.WithEaPrefix(primaryStation);
         var now = DateTime.UtcNow;
         var modelsRoot = Path.Combine("data", "models");
         var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "precipitation", stationSlug, now);
@@ -653,7 +654,7 @@ public sealed class TempTrainCommand
         PrecipOccurrenceTrainer.Hyperparameters hp,
         CancellationToken ct)
     {
-        var stationSlug = "ea_" + Slugify(primaryStation);
+        var stationSlug = StationSlug.WithEaPrefix(primaryStation);
         var now = DateTime.UtcNow;
         var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "precipitation", stationSlug, now, suffix: "phase3c");
         var versionName = Path.GetFileName(versionDir);
@@ -794,16 +795,6 @@ public sealed class TempTrainCommand
 
         await Task.CompletedTask;
         return 0;
-    }
-
-    private static string Slugify(string name)
-    {
-        var chars = name.ToLowerInvariant()
-            .Select(c => char.IsLetterOrDigit(c) ? c : '_')
-            .ToArray();
-        var slug = new string(chars);
-        while (slug.Contains("__")) slug = slug.Replace("__", "_");
-        return slug.Trim('_');
     }
 
     private static Dictionary<string, object> BuildPrecipHpDict(PrecipOccurrenceTrainer.Hyperparameters hp) => new()

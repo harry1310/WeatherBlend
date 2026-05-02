@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.ML;
 using Parquet.Serialization;
 using WeatherBlend.Config;
+using WeatherBlend.Models;
 using WeatherBlend.Site;
 using WeatherBlend.Train;
 
@@ -134,21 +135,9 @@ public sealed class PrecipReplayCommand
         var slugified = bare.ToLowerInvariant();
         foreach (var s in _cfg.Location.Rainfall.Stations)
         {
-            var sSlug = Slugify(s.Name);
+            var sSlug = StationSlug.Of(s.Name);
             if (sSlug.Equals(slugified, StringComparison.Ordinal)) return s.Name;
         }
         return null;
-    }
-
-    private static string Slugify(string input)
-    {
-        var sb = new System.Text.StringBuilder(input.Length);
-        bool lastUs = false;
-        foreach (var c in input.ToLowerInvariant())
-        {
-            if (char.IsLetterOrDigit(c)) { sb.Append(c); lastUs = false; }
-            else if (!lastUs) { sb.Append('_'); lastUs = true; }
-        }
-        return sb.ToString().Trim('_');
     }
 }

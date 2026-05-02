@@ -157,6 +157,57 @@ public class RenderSiteCommandTests : IDisposable
     }
 
     [Fact]
+    public void ComputeRollingMae_drops_predictions_whose_phase_is_retired()
+    {
+        // Regression for the 2026-05-02 rolling-chart bug: phase strings
+        // exist in training_metadata for retired phases (2b_redo,
+        // 3a_isotonic) and were leaking onto the temp/rain skill charts.
+        // The active-phase filter (ActivePhasePolicy) now drops them at the
+        // compute layer, matching the Models page's allowlist.
+        var t = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
+        var preds = new[]
+        {
+            Pred("v_active",  24, t, 10.0),
+            Pred("v_retired", 24, t, 12.0),
+        };
+        var truth = new Dictionary<DateTime, double> { [t] = 10.0 };
+        var phases = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["v_active"]  = "2b",        // shipping
+            ["v_retired"] = "2b_redo",   // off the lineup
+        };
+
+        var points = RenderSiteCommand.ComputeRollingMae(preds, truth, phases, 14);
+        points.Should().HaveCount(1);
+        points[0].Phase.Should().Be("2b");
+        points[0].BlendMae.Should().BeApproximately(0.0, 1e-9);
+    }
+
+    [Fact]
+    public void ComputeRollingBrier_drops_predictions_whose_phase_is_retired()
+    {
+        // Same regression as the MAE variant — 3a_isotonic stops appearing
+        // as a stale precip line.
+        var t = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
+        var preds = new[]
+        {
+            Precip("ea_bellever_dartmoor", "v_active",  24, t, 0.5),
+            Precip("ea_bellever_dartmoor", "v_retired", 24, t, 0.9),
+        };
+        var truth = TruthFor("ea_bellever_dartmoor",
+            new Dictionary<DateTime, double> { [t] = 0.0 });
+        var phases = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["v_active"]  = "3a",
+            ["v_retired"] = "3a_isotonic",
+        };
+
+        var points = RenderSiteCommand.ComputeRollingBrier(preds, truth, phases, 30);
+        points.Should().HaveCount(1);
+        points[0].Phase.Should().Be("3a");
+    }
+
+    [Fact]
     public void ComputeRollingMae_groups_two_versions_of_same_phase_into_one_series()
     {
         // The whole point of the 2026-05-02 refactor: a retrain that mints v2

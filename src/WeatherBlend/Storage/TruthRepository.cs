@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
+using WeatherBlend.Models;
 
 namespace WeatherBlend.Storage;
 
@@ -116,7 +117,7 @@ ORDER BY 1";
             return new Dictionary<string, IReadOnlyDictionary<DateTime, double>>(StringComparer.OrdinalIgnoreCase);
 
         var stationNamesBySlug = _cfg.Location.Rainfall.Stations.ToDictionary(
-            s => "ea_" + Slugify(s.Name),
+            s => StationSlug.WithEaPrefix(s.Name),
             s => s.Name,
             StringComparer.OrdinalIgnoreCase);
 
@@ -189,30 +190,4 @@ ORDER BY ObservedTimeUtc";
         }
     }
 
-    /// <summary>
-    /// Mirrors the slug rule the rainfall predict/verify pipeline uses to map
-    /// <c>StationConfig.Name</c> ("Bellever") → <c>ea_bellever</c>. Lowercase,
-    /// non-alphanumeric → underscore, repeats collapsed, trim leading/trailing.
-    /// Kept private to the repo: callers should pass slugs in and let the repo
-    /// resolve them to <c>StationName</c> internally.
-    /// </summary>
-    private static string Slugify(string input)
-    {
-        var sb = new System.Text.StringBuilder(input.Length);
-        var lastWasUnderscore = false;
-        foreach (var c in input.ToLowerInvariant())
-        {
-            if (char.IsLetterOrDigit(c))
-            {
-                sb.Append(c);
-                lastWasUnderscore = false;
-            }
-            else if (!lastWasUnderscore)
-            {
-                sb.Append('_');
-                lastWasUnderscore = true;
-            }
-        }
-        return sb.ToString().Trim('_');
-    }
 }

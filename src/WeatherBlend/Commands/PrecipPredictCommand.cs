@@ -368,7 +368,7 @@ public sealed class PrecipPredictCommand
         if (explicitSlug is not null)
             return new[] { explicitSlug };
 
-        var derivedSlug = "ea_" + Slugify(truthStation);
+        var derivedSlug = StationSlug.WithEaPrefix(truthStation);
         var match = manifestStations.FirstOrDefault(s =>
             string.Equals(s, derivedSlug, StringComparison.OrdinalIgnoreCase));
         if (match is not null)
@@ -608,20 +608,10 @@ ORDER BY ValidTimeUtc, Model;";
     {
         foreach (var s in _cfg.Location.Rainfall.Stations)
         {
-            var slug = "ea_" + Slugify(s.Name);
+            var slug = StationSlug.WithEaPrefix(s.Name);
             if (string.Equals(slug, stationSlug, StringComparison.OrdinalIgnoreCase))
                 return s.Name;
         }
         return null;
-    }
-
-    private static string Slugify(string name)
-    {
-        var chars = name.ToLowerInvariant()
-            .Select(c => char.IsLetterOrDigit(c) ? c : '_')
-            .ToArray();
-        var slug = new string(chars);
-        while (slug.Contains("__")) slug = slug.Replace("__", "_");
-        return slug.Trim('_');
     }
 }

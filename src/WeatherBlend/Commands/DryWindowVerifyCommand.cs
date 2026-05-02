@@ -1,4 +1,3 @@
-using System.Data;
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -29,14 +28,16 @@ public sealed class DryWindowVerifyCommand
     private readonly AppConfig _cfg;
     private readonly TruthRepository _truth;
     private readonly ModelMetadataRepository _metadata;
+    private readonly PredictionsRepository _predictions;
 
     public DryWindowVerifyCommand(ILogger<DryWindowVerifyCommand> log, AppConfig cfg,
-        TruthRepository truth, ModelMetadataRepository metadata)
+        TruthRepository truth, ModelMetadataRepository metadata, PredictionsRepository predictions)
     {
         _log = log;
         _cfg = cfg;
         _truth = truth;
         _metadata = metadata;
+        _predictions = predictions;
     }
 
     public async Task<int> RunAsync(
@@ -73,7 +74,17 @@ public sealed class DryWindowVerifyCommand
             asOfUtc, windowStart, windowEnd, latencyDays, driftThreshold);
 
         // Fetch predictions from each (station-slug, window) subtree under the prediction root.
-        var predictions = QueryPredictions(entries, windowStart, windowEnd, ct);
+        // Convert manifest composite keys ("ea_<station>/window_Nh") into the
+        // (station, window) tuple list the repo expects.
+        var cells = entries
+            .Select(kv =>
+            {
+                var slug = ParseSlug(kv.Key)!;
+                var window = int.Parse(kv.Key.Split("/window_")[1].TrimEnd('h'), CultureInfo.InvariantCulture);
+                return (Station: slug, WindowHours: window);
+            })
+            .ToList();
+        var predictions = _predictions.GetDryWindowPredictions(cells, windowStart, windowEnd, ct);
         _log.LogInformation("Loaded {N} prediction rows in window.", predictions.Count);
         if (predictions.Count == 0)
         {
@@ -222,7 +233,7 @@ public sealed class DryWindowVerifyCommand
                 var stripped = slug.StartsWith("ea_") ? slug[3..] : slug;
                 if (!slug.Equals(stationArg, StringComparison.OrdinalIgnoreCase)
                     && !stripped.Equals(stationArg, StringComparison.OrdinalIgnoreCase)
-                    && !slug.Equals("ea_" + Slugify(stationArg), StringComparison.OrdinalIgnoreCase))
+                    && !slug.Equals(StationSlug.WithEaPrefix(stationArg), StringComparison.OrdinalIgnoreCase))
                     continue;
             }
             if (!string.Equals(windowArg, "all", StringComparison.OrdinalIgnoreCase))
@@ -238,79 +249,6 @@ public sealed class DryWindowVerifyCommand
     {
         var m = Regex.Match(compositeKey, @"^(?<slug>[^/]+)/window_\d+h$");
         return m.Success ? m.Groups["slug"].Value : null;
-    }
-
-    private IReadOnlyList<DryWindowPredictionRow> QueryPredictions(
-        IReadOnlyList<KeyValuePair<string, ModelArtifact.StationEntry>> entries,
-        DateTime windowStart, DateTime windowEnd, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-
-        var globs = entries
-            .Select(kv =>
-            {
-                var slug = ParseSlug(kv.Key)!;
-                var window = int.Parse(kv.Key.Split("/window_")[1].TrimEnd('h'), CultureInfo.InvariantCulture);
-                return "'" + ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath, "dry_window", slug,
-                    $"window_{window}h", "**", "*.parquet")) + "'";
-            })
-            .ToArray();
-        if (globs.Length == 0) return Array.Empty<DryWindowPredictionRow>();
-
-        var sql = $@"
-SELECT LocationName, TruthStation, WindowHours, ModelVersion,
-       PredictionMadeAtUtc, TargetDateUtc, LeadHours,
-       ProbHasDryWindow, ClimatologyProbHasDryWindow,
-       AgreementHasDryWindow, PrecipSumMean, LongestDryRunMean, WetHourCountMean,
-       HasDryWindowGfs, HasDryWindowEcmwf, HasDryWindowIcon,
-       HasDryWindowMf,  HasDryWindowUkmo,  HasDryWindowGem,  HasDryWindowAifs,  HasDryWindowJma,
-       PrecipSumGfs, PrecipSumEcmwf, PrecipSumIcon, PrecipSumMf, PrecipSumUkmo, PrecipSumGem,
-       PrecipSumAifs, PrecipSumJma,
-       FeatureVectorHash
-FROM read_parquet([{string.Join(", ", globs)}], hive_partitioning = false, union_by_name = true)
-WHERE TargetDateUtc >= TIMESTAMP '{windowStart:yyyy-MM-dd HH:mm:ss}'
-  AND TargetDateUtc <= TIMESTAMP '{windowEnd:yyyy-MM-dd HH:mm:ss}'
-ORDER BY TruthStation, WindowHours, ModelVersion, LeadHours, TargetDateUtc";
-
-        // ParquetReader.Query catches DuckDB's "No files found" signal — note
-        // that the list-form throws "IO Error: No files found that match the
-        // pattern ..." (verified in DuckDbReadParquetProbeTests), so the
-        // standard substring match handles it. If ANY (station, window)
-        // glob is missing, the entire query fails — keeping today's
-        // "missing → empty result" semantics is intentional.
-        return ParquetReader.Query(sql, r => new DryWindowPredictionRow
-        {
-            LocationName = r.GetString(0),
-            TruthStation = r.GetString(1),
-            WindowHours  = r.GetInt32(2),
-            ModelVersion = r.GetString(3),
-            PredictionMadeAtUtc = r.GetDateTime(4),
-            TargetDateUtc       = r.GetDateTime(5),
-            LeadHours           = r.GetInt32(6),
-            ProbHasDryWindow    = r.GetDouble(7),
-            ClimatologyProbHasDryWindow = r.GetDouble(8),
-            AgreementHasDryWindow = Nullable(r,  9),
-            PrecipSumMean         = Nullable(r, 10),
-            LongestDryRunMean     = Nullable(r, 11),
-            WetHourCountMean      = Nullable(r, 12),
-            HasDryWindowGfs   = Nullable(r, 13),
-            HasDryWindowEcmwf = Nullable(r, 14),
-            HasDryWindowIcon  = Nullable(r, 15),
-            HasDryWindowMf    = Nullable(r, 16),
-            HasDryWindowUkmo  = Nullable(r, 17),
-            HasDryWindowGem   = Nullable(r, 18),
-            HasDryWindowAifs  = Nullable(r, 19),
-            HasDryWindowJma   = Nullable(r, 20),
-            PrecipSumGfs   = Nullable(r, 21),
-            PrecipSumEcmwf = Nullable(r, 22),
-            PrecipSumIcon  = Nullable(r, 23),
-            PrecipSumMf    = Nullable(r, 24),
-            PrecipSumUkmo  = Nullable(r, 25),
-            PrecipSumGem   = Nullable(r, 26),
-            PrecipSumAifs  = Nullable(r, 27),
-            PrecipSumJma   = Nullable(r, 28),
-            FeatureVectorHash = r.IsDBNull(29) ? "" : r.GetString(29),
-        }, _log, "Prediction tree empty for requested (station, window) — nothing to verify.", ct);
     }
 
     private IReadOnlyDictionary<(string Station, int WindowHours), IReadOnlyDictionary<DateOnly, bool>>
@@ -357,12 +295,6 @@ ORDER BY TruthStation, WindowHours, ModelVersion, LeadHours, TargetDateUtc";
         Add(p.HasDryWindowAifs); Add(p.HasDryWindowJma);
         return n == 0 ? double.NaN : sum / n;
     }
-
-    private static double? Nullable(IDataReader r, int ord)
-        => r.IsDBNull(ord) ? null : r.GetDouble(ord);
-
-    private static string Slugify(string s) => s.ToLowerInvariant()
-        .Replace(' ', '_').Replace('-', '_').Replace(',', '_');
 
     private static string BuildMarkdown(DateTime asOfUtc, int windowDays, int latencyDays, double driftThreshold,
         IReadOnlyList<VerifyRow> rows)

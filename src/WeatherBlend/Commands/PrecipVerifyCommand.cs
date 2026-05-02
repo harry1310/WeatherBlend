@@ -1,4 +1,3 @@
-using System.Data;
 using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
 using WeatherBlend.Evaluate.Precip;
@@ -26,14 +25,16 @@ public sealed class PrecipVerifyCommand
     private readonly AppConfig _cfg;
     private readonly TruthRepository _truth;
     private readonly ModelMetadataRepository _metadata;
+    private readonly PredictionsRepository _predictions;
 
     public PrecipVerifyCommand(ILogger<PrecipVerifyCommand> log, AppConfig cfg,
-        TruthRepository truth, ModelMetadataRepository metadata)
+        TruthRepository truth, ModelMetadataRepository metadata, PredictionsRepository predictions)
     {
         _log = log;
         _cfg = cfg;
         _truth = truth;
         _metadata = metadata;
+        _predictions = predictions;
     }
 
     public async Task<int> RunAsync(
@@ -71,7 +72,7 @@ public sealed class PrecipVerifyCommand
             "PrecipVerify: as-of {AsOf:yyyy-MM-dd HH:mm}Z, window [{Start:yyyy-MM-dd}..{End:yyyy-MM-dd}], latency {Latency}d, drift {Drift:0.00}×, stations=[{Stations}]",
             asOfUtc, windowStart, windowEnd, latencyDays, driftThreshold, string.Join(", ", stations));
 
-        var predictions = QueryPredictions(stations, windowStart, windowEnd, ct);
+        var predictions = _predictions.GetPrecipitationPredictions(stations, windowStart, windowEnd, ct);
         _log.LogInformation("Loaded {N} prediction rows in window.", predictions.Count);
         if (predictions.Count == 0)
         {
@@ -156,67 +157,9 @@ public sealed class PrecipVerifyCommand
         var exact = all.FirstOrDefault(s => string.Equals(s, filter, StringComparison.OrdinalIgnoreCase));
         if (exact is not null) return new[] { exact };
 
-        var derivedSlug = "ea_" + Slugify(filter);
+        var derivedSlug = StationSlug.WithEaPrefix(filter);
         var byDerived = all.FirstOrDefault(s => string.Equals(s, derivedSlug, StringComparison.OrdinalIgnoreCase));
         return byDerived is null ? Array.Empty<string>() : new[] { byDerived };
     }
 
-    private IReadOnlyList<PrecipPredictionRow> QueryPredictions(
-        IReadOnlyList<string> stations,
-        DateTime start, DateTime end, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-
-        // Only read the station subtrees we're verifying. Passing a per-station glob
-        // list into read_parquet() keeps cross-station noise out of the scan.
-        var globs = string.Join(", ", stations.Select(s =>
-            "'" + ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath, "precipitation", s, "**", "*.parquet")) + "'"));
-
-        var sql = $@"
-SELECT LocationName, TruthStation, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
-       ProbWet, ClimatologyPWet,
-       PrecipGfs, PrecipEcmwf, PrecipIcon, PrecipMf, PrecipUkmo, PrecipGem, PrecipAifs, PrecipJma,
-       PrecipAgreementWet01,
-       FeatureVectorHash
-FROM read_parquet([{globs}], hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
-  AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
-  AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
-ORDER BY TruthStation, ModelVersion, LeadHours, ValidTimeUtc";
-
-        return ParquetReader.Query(sql, r => new PrecipPredictionRow
-        {
-            LocationName        = r.GetString(0),
-            TruthStation        = r.GetString(1),
-            ModelVersion        = r.GetString(2),
-            PredictionMadeAtUtc = r.GetDateTime(3),
-            ValidTimeUtc        = r.GetDateTime(4),
-            LeadHours           = r.GetInt32(5),
-            ProbWet             = r.GetDouble(6),
-            ClimatologyPWet     = r.GetDouble(7),
-            PrecipGfs   = NullableDouble(r,  8),
-            PrecipEcmwf = NullableDouble(r,  9),
-            PrecipIcon  = NullableDouble(r, 10),
-            PrecipMf    = NullableDouble(r, 11),
-            PrecipUkmo  = NullableDouble(r, 12),
-            PrecipGem   = NullableDouble(r, 13),
-            PrecipAifs  = NullableDouble(r, 14),
-            PrecipJma   = NullableDouble(r, 15),
-            PrecipAgreementWet01 = NullableDouble(r, 16),
-            FeatureVectorHash   = r.IsDBNull(17) ? "" : r.GetString(17),
-        }, _log, "Predictions tree empty for requested stations — nothing to verify.", ct);
-    }
-
-    private static double? NullableDouble(IDataReader r, int ord)
-        => r.IsDBNull(ord) ? null : r.GetDouble(ord);
-
-    private static string Slugify(string name)
-    {
-        var chars = name.ToLowerInvariant()
-            .Select(c => char.IsLetterOrDigit(c) ? c : '_')
-            .ToArray();
-        var slug = new string(chars);
-        while (slug.Contains("__")) slug = slug.Replace("__", "_");
-        return slug.Trim('_');
-    }
 }

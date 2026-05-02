@@ -27,14 +27,16 @@ public sealed class RenderSiteCommand
     private readonly AppConfig _cfg;
     private readonly TruthRepository _truth;
     private readonly ModelMetadataRepository _metadata;
+    private readonly PredictionsRepository _predictions;
 
     public RenderSiteCommand(ILogger<RenderSiteCommand> log, AppConfig cfg,
-        TruthRepository truth, ModelMetadataRepository metadata)
+        TruthRepository truth, ModelMetadataRepository metadata, PredictionsRepository predictions)
     {
         _log = log;
         _cfg = cfg;
         _truth = truth;
         _metadata = metadata;
+        _predictions = predictions;
     }
 
     public async Task<int> RunAsync(
@@ -56,16 +58,46 @@ public sealed class RenderSiteCommand
             "Render site: predictions [{Start:yyyy-MM-dd}..{End:yyyy-MM-dd}], rolling {Rolling}d, output → {Dir}",
             windowStart, predictionEnd, rollingWindowDays, outputDir);
 
-        var predictions = QueryPredictions(windowStart, predictionEnd, ct);
+        var predictions = _predictions.GetTemperaturePredictions(windowStart, predictionEnd, ct);
         _log.LogInformation("Loaded {N} temperature prediction rows.", predictions.Count);
 
-        var precip = QueryPrecipPredictions(windowStart, predictionEnd, ct);
+        // Precip + dry-window come back as the canonical domain rows from the
+        // repo; the renderer projects to its lighter SitePages records below.
+        // Pass null for the station/cell filter — render scans the whole subtree
+        // unlike verify, which limits to its requested stations.
+        var precipRows = _predictions.GetPrecipitationPredictions(stations: null, windowStart, predictionEnd, ct);
+        var precip = precipRows.Select(r => new SitePages.PrecipForecastPoint(
+            Station:         r.TruthStation,
+            Version:         r.ModelVersion,
+            PredictedAtUtc:  r.PredictionMadeAtUtc,
+            ValidTimeUtc:    r.ValidTimeUtc,
+            LeadHours:       r.LeadHours,
+            ProbWet:         r.ProbWet,
+            ClimatologyPWet: r.ClimatologyPWet,
+            PrecipGfs:       r.PrecipGfs,
+            PrecipEcmwf:     r.PrecipEcmwf,
+            PrecipIcon:      r.PrecipIcon,
+            PrecipMf:        r.PrecipMf,
+            PrecipUkmo:      r.PrecipUkmo,
+            PrecipGem:       r.PrecipGem,
+            PrecipAifs:      r.PrecipAifs,
+            PrecipJma:       r.PrecipJma)).ToList();
         _log.LogInformation("Loaded {N} precipitation prediction rows.", precip.Count);
 
         var feelsLike = QueryFeelsLikePredictions(windowStart, predictionEnd, ct);
         _log.LogInformation("Loaded {N} feels-like prediction rows.", feelsLike.Count);
 
-        var dryWindow = QueryDryWindowPredictions(windowStart, predictionEnd, ct);
+        var dryWindowRows = _predictions.GetDryWindowPredictions(cells: null, windowStart, predictionEnd, ct);
+        var dryWindow = dryWindowRows.Select(r => new SitePages.DryWindowForecastPoint(
+            Station:                     r.TruthStation,
+            WindowHours:                 r.WindowHours,
+            Version:                     r.ModelVersion,
+            PredictedAtUtc:              r.PredictionMadeAtUtc,
+            TargetDateUtc:               r.TargetDateUtc,
+            LeadHours:                   r.LeadHours,
+            ProbHasDryWindow:            r.ProbHasDryWindow,
+            ClimatologyProbHasDryWindow: r.ClimatologyProbHasDryWindow,
+            AgreementHasDryWindow:       r.AgreementHasDryWindow)).ToList();
         _log.LogInformation("Loaded {N} dry-window prediction rows.", dryWindow.Count);
 
         var startHour = QueryStartHourPredictions(windowStart, predictionEnd, ct);
@@ -323,7 +355,12 @@ public sealed class RenderSiteCommand
         // Pair, attach phase, drop versions that don't map to a known phase.
         var paired = predictions
             .Where(p => truthByTime.ContainsKey(p.ValidTimeUtc))
-            .Where(p => phaseByVersion.TryGetValue(p.ModelVersion, out var ph) && !string.IsNullOrEmpty(ph))
+            // Two filters: version → phase known, AND phase is in the
+            // shipping lineup. The latter drops retired-but-still-on-disk
+            // versions (e.g. v..._phase2redo → "2b_redo") so the chart
+            // shows only what the codebase considers live.
+            .Where(p => phaseByVersion.TryGetValue(p.ModelVersion, out var ph)
+                        && ActivePhasePolicy.IsActive("temperature", ph))
             .Select(p => (
                 Phase: phaseByVersion[p.ModelVersion],
                 p.LeadHours,
@@ -402,7 +439,11 @@ public sealed class RenderSiteCommand
         var paired = predictions
             .Where(p => rainfallByStation.TryGetValue(p.Station, out var byTime)
                         && byTime.ContainsKey(p.ValidTimeUtc))
-            .Where(p => phaseByVersion.TryGetValue(p.Version, out var ph) && !string.IsNullOrEmpty(ph))
+            // Same active-phase filter as ComputeRollingMae — drops retired
+            // phases like "3a_isotonic" so the rain-skill chart matches the
+            // Models page's allowlist.
+            .Where(p => phaseByVersion.TryGetValue(p.Version, out var ph)
+                        && ActivePhasePolicy.IsActive("precipitation", ph))
             .Select(p =>
             {
                 var byTime = rainfallByStation[p.Station];
@@ -448,93 +489,10 @@ public sealed class RenderSiteCommand
         return points;
     }
 
-    private IReadOnlyList<TempPredictionRow> QueryPredictions(DateTime start, DateTime end, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-
-        // Scope to the temperature subtree only — sibling subtrees (precipitation,
-        // dry_window) have different schemas and would surface as nulls or wrong
-        // columns under union_by_name.
-        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath, "temperature", "**", "*.parquet"));
-
-        var sql = $@"
-SELECT LocationName, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
-       BlendTemperature,
-       TempGfs, TempEcmwf, TempIcon, TempMf, TempUkmo, TempGem, TempAifs,
-       RunTimeGfs, RunTimeEcmwf, RunTimeIcon, RunTimeMf, RunTimeUkmo, RunTimeGem, RunTimeAifs,
-       TempMean, TempStd, TempRange,
-       FeatureVectorHash
-FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name}'
-  AND BlendTemperature IS NOT NULL
-  AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
-  AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
-ORDER BY PredictionMadeAtUtc DESC, LeadHours";
-
-        return ParquetReader.Query(sql, r => new TempPredictionRow
-        {
-            LocationName        = r.GetString(0),
-            ModelVersion        = r.GetString(1),
-            PredictionMadeAtUtc = r.GetDateTime(2),
-            ValidTimeUtc        = r.GetDateTime(3),
-            LeadHours           = r.GetInt32(4),
-            BlendTemperature    = r.GetDouble(5),
-            TempGfs   = NullableDouble(r,  6),
-            TempEcmwf = NullableDouble(r,  7),
-            TempIcon  = NullableDouble(r,  8),
-            TempMf    = NullableDouble(r,  9),
-            TempUkmo  = NullableDouble(r, 10),
-            TempGem   = NullableDouble(r, 11),
-            TempAifs  = NullableDouble(r, 12),
-            RunTimeGfs   = NullableDate(r, 13),
-            RunTimeEcmwf = NullableDate(r, 14),
-            RunTimeIcon  = NullableDate(r, 15),
-            RunTimeMf    = NullableDate(r, 16),
-            RunTimeUkmo  = NullableDate(r, 17),
-            RunTimeGem   = NullableDate(r, 18),
-            RunTimeAifs  = NullableDate(r, 19),
-            TempMean  = NullableDouble(r, 20),
-            TempStd   = NullableDouble(r, 21),
-            TempRange = NullableDouble(r, 22),
-            FeatureVectorHash = r.IsDBNull(23) ? "" : r.GetString(23),
-        }, _log, "Predictions tree empty — rendering an empty-state site.", ct);
-    }
-
-    private IReadOnlyList<SitePages.PrecipForecastPoint> QueryPrecipPredictions(
-        DateTime start, DateTime end, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-
-        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath, "precipitation", "**", "*.parquet"));
-
-        var sql = $@"
-SELECT TruthStation, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
-       ProbWet, ClimatologyPWet,
-       PrecipGfs, PrecipEcmwf, PrecipIcon, PrecipMf, PrecipUkmo, PrecipGem, PrecipAifs, PrecipJma
-FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name}'
-  AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
-  AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
-ORDER BY TruthStation, LeadHours, ValidTimeUtc";
-
-        return ParquetReader.Query(sql, r => new SitePages.PrecipForecastPoint(
-            Station:         r.GetString(0),
-            Version:         r.GetString(1),
-            PredictedAtUtc:  r.GetDateTime(2),
-            ValidTimeUtc:    r.GetDateTime(3),
-            LeadHours:       r.GetInt32(4),
-            ProbWet:         r.GetDouble(5),
-            ClimatologyPWet: r.GetDouble(6),
-            PrecipGfs:       r.IsDBNull(7)  ? null : r.GetDouble(7),
-            PrecipEcmwf:     r.IsDBNull(8)  ? null : r.GetDouble(8),
-            PrecipIcon:      r.IsDBNull(9)  ? null : r.GetDouble(9),
-            PrecipMf:        r.IsDBNull(10) ? null : r.GetDouble(10),
-            PrecipUkmo:      r.IsDBNull(11) ? null : r.GetDouble(11),
-            PrecipGem:       r.IsDBNull(12) ? null : r.GetDouble(12),
-            PrecipAifs:      r.IsDBNull(13) ? null : r.GetDouble(13),
-            PrecipJma:       r.IsDBNull(14) ? null : r.GetDouble(14)),
-            _log, "Precipitation predictions tree empty — precip page will render an empty state.", ct);
-    }
+    // (QueryPredictions / QueryPrecipPredictions / QueryDryWindowPredictions
+    // moved to PredictionsRepository on 2026-05-02; the projections from the
+    // domain row types into SitePages.* records happen at the call site
+    // above so the storage layer doesn't import the Site namespace.)
 
     private IReadOnlyList<SitePages.FeelsLikeForecastPoint> QueryFeelsLikePredictions(
         DateTime start, DateTime end, CancellationToken ct)
@@ -732,41 +690,4 @@ ORDER BY TruthStation, WindowHours, LeadHours, TargetDateUtc, StartHourUtc";
             _log, "Start-hour curves tree empty — best-start column will be absent.", ct);
     }
 
-    private IReadOnlyList<SitePages.DryWindowForecastPoint> QueryDryWindowPredictions(
-        DateTime start, DateTime end, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-
-        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath, "dry_window", "**", "*.parquet"));
-
-        // Dry-window predictions are anchored on TargetDateUtc (UTC midnight of the
-        // labelled day), not ValidTimeUtc. Bound on TargetDate instead.
-        var sql = $@"
-SELECT TruthStation, WindowHours, ModelVersion, PredictionMadeAtUtc, TargetDateUtc, LeadHours,
-       ProbHasDryWindow, ClimatologyProbHasDryWindow, AgreementHasDryWindow
-FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name}'
-  AND TargetDateUtc >= TIMESTAMP '{start.Date:yyyy-MM-dd HH:mm:ss}'
-  AND TargetDateUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
-ORDER BY TruthStation, WindowHours, LeadHours, TargetDateUtc";
-
-        return ParquetReader.Query(sql, r => new SitePages.DryWindowForecastPoint(
-            Station:                     r.GetString(0),
-            WindowHours:                 r.GetInt32(1),
-            Version:                     r.GetString(2),
-            PredictedAtUtc:              r.GetDateTime(3),
-            TargetDateUtc:               r.GetDateTime(4),
-            LeadHours:                   r.GetInt32(5),
-            ProbHasDryWindow:            r.GetDouble(6),
-            ClimatologyProbHasDryWindow: r.GetDouble(7),
-            AgreementHasDryWindow:       r.IsDBNull(8) ? null : r.GetDouble(8)),
-            _log, "Dry-window predictions tree empty — dry-window page will render an empty state.", ct);
-    }
-
-
-    private static double? NullableDouble(IDataReader r, int ord)
-        => r.IsDBNull(ord) ? null : r.GetDouble(ord);
-
-    private static DateTime? NullableDate(IDataReader r, int ord)
-        => r.IsDBNull(ord) ? null : r.GetDateTime(ord);
 }

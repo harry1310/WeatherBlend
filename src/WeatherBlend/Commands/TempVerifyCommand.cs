@@ -1,4 +1,3 @@
-using System.Data;
 using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
 using WeatherBlend.Evaluate.Temp;
@@ -25,14 +24,16 @@ public sealed class TempVerifyCommand
     private readonly AppConfig _cfg;
     private readonly TruthRepository _truth;
     private readonly ModelMetadataRepository _metadata;
+    private readonly PredictionsRepository _predictions;
 
     public TempVerifyCommand(ILogger<TempVerifyCommand> log, AppConfig cfg,
-        TruthRepository truth, ModelMetadataRepository metadata)
+        TruthRepository truth, ModelMetadataRepository metadata, PredictionsRepository predictions)
     {
         _log = log;
         _cfg = cfg;
         _truth = truth;
         _metadata = metadata;
+        _predictions = predictions;
     }
 
     public async Task<int> RunAsync(
@@ -59,7 +60,7 @@ public sealed class TempVerifyCommand
             "Verify: as-of {AsOf:yyyy-MM-dd HH:mm}Z, window [{Start:yyyy-MM-dd}..{End:yyyy-MM-dd}], latency {Latency}d, drift {Drift:0.00}×",
             asOfUtc, windowStart, windowEnd, era5LatencyDays, driftThreshold);
 
-        var predictions = QueryPredictions(windowStart, windowEnd, ct);
+        var predictions = _predictions.GetTemperaturePredictions(windowStart, windowEnd, ct);
         _log.LogInformation("Loaded {N} prediction rows in window.", predictions.Count);
 
         if (predictions.Count == 0)
@@ -144,64 +145,4 @@ public sealed class TempVerifyCommand
         return drifting > 0 ? 4 : 0;
     }
 
-    private IReadOnlyList<TempPredictionRow> QueryPredictions(
-        DateTime start, DateTime end, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-
-        // Scope to the temperature subtree only — precipitation / dry-window predictions
-        // live alongside and don't share the temperature schema, so a top-level glob
-        // would pull rows missing TempGfs/…/BlendTemperature and fail the query.
-        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath, "temperature", "**", "*.parquet"));
-
-        // hive_partitioning=false — the `model_version=` hive key collides with the
-        // in-file ModelVersion column under case-insensitive resolution. Same rule
-        // applies across the codebase (see CLAUDE.md gotcha). In-file column wins.
-        var sql = $@"
-SELECT LocationName, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
-       BlendTemperature,
-       TempGfs, TempEcmwf, TempIcon, TempMf, TempUkmo, TempGem, TempAifs,
-       RunTimeGfs, RunTimeEcmwf, RunTimeIcon, RunTimeMf, RunTimeUkmo, RunTimeGem, RunTimeAifs,
-       TempMean, TempStd, TempRange,
-       FeatureVectorHash
-FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name}'
-  AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
-  AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
-ORDER BY ModelVersion, LeadHours, ValidTimeUtc";
-
-        return ParquetReader.Query(sql, r => new TempPredictionRow
-        {
-            LocationName        = r.GetString(0),
-            ModelVersion        = r.GetString(1),
-            PredictionMadeAtUtc = r.GetDateTime(2),
-            ValidTimeUtc        = r.GetDateTime(3),
-            LeadHours           = r.GetInt32(4),
-            BlendTemperature    = r.GetDouble(5),
-            TempGfs   = NullableDouble(r,  6),
-            TempEcmwf = NullableDouble(r,  7),
-            TempIcon  = NullableDouble(r,  8),
-            TempMf    = NullableDouble(r,  9),
-            TempUkmo  = NullableDouble(r, 10),
-            TempGem   = NullableDouble(r, 11),
-            TempAifs  = NullableDouble(r, 12),
-            RunTimeGfs   = NullableDate(r, 13),
-            RunTimeEcmwf = NullableDate(r, 14),
-            RunTimeIcon  = NullableDate(r, 15),
-            RunTimeMf    = NullableDate(r, 16),
-            RunTimeUkmo  = NullableDate(r, 17),
-            RunTimeGem   = NullableDate(r, 18),
-            RunTimeAifs  = NullableDate(r, 19),
-            TempMean  = NullableDouble(r, 20),
-            TempStd   = NullableDouble(r, 21),
-            TempRange = NullableDouble(r, 22),
-            FeatureVectorHash = r.IsDBNull(23) ? "" : r.GetString(23),
-        }, _log, "Predictions tree empty — nothing to verify.", ct);
-    }
-
-    private static double? NullableDouble(IDataReader r, int ord)
-        => r.IsDBNull(ord) ? null : r.GetDouble(ord);
-
-    private static DateTime? NullableDate(IDataReader r, int ord)
-        => r.IsDBNull(ord) ? null : r.GetDateTime(ord);
 }

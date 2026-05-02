@@ -1,4 +1,5 @@
 using System.Text;
+using WeatherBlend.Models;
 using WeatherBlend.Train.Common;
 
 namespace WeatherBlend.Site;
@@ -290,45 +291,22 @@ public static partial class SitePages
     }
 
     /// <summary>
-    /// Active phases per target, ordered champion → challenger. Drives both
-    /// the allowlist (only listed phases render) and the per-card sort order
-    /// (lean on top, rich underneath). Retired phases (3a_isotonic, 3d-calibrated,
-    /// 2b_redo) live on disk but aren't in this list, so their rows are skipped.
-    /// </summary>
-    private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> ActivePhasesByTarget =
-        new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
-        {
-            ["temperature"]   = new[] { "2b", "2c" },
-            ["precipitation"] = new[] { "3a", "3c" },
-            ["dry_window"]    = new[] { "3b" },  // 3d-shape dropped 2026-04-29 (no Brier gain on daytime label)
-        };
-
-    /// <summary>
-    /// True iff the (target, phase) pair should render on the Models page. The
-    /// renderer reads every prediction in the rolling window via DuckDB; any
-    /// version whose phase has been retired but still has window-resident
-    /// prediction rows would otherwise leak through.
+    /// True iff the (target, phase) pair should render on the Models page.
+    /// Thin adapter over <see cref="ActivePhasePolicy.IsActive"/> that splits
+    /// the composite key into its target prefix — the page filters every
+    /// version emitted into the rolling window through this so retired
+    /// phases (still on disk) don't leak onto the cards.
     /// </summary>
     private static bool IsActivePhase(string composite, string phase)
-    {
-        var target = composite.Split('/')[0];
-        return ActivePhasesByTarget.TryGetValue(target, out var allowed)
-            && allowed.Contains(phase, StringComparer.Ordinal);
-    }
+        => ActivePhasePolicy.IsActive(composite.Split('/')[0], phase);
 
     /// <summary>
-    /// Sort key for a phase within a composite — its index in the
-    /// champion-first list, so lean ranks above rich. Unknown phases sort
-    /// last so anything that bypasses the allowlist still renders predictably.
+    /// Sort key for a phase within a composite — index in the
+    /// champion-first <see cref="ActivePhasePolicy"/> list, so lean ranks
+    /// above rich. Unknown phases sort last.
     /// </summary>
     private static int PhasePriority(string composite, string phase)
-    {
-        var target = composite.Split('/')[0];
-        if (!ActivePhasesByTarget.TryGetValue(target, out var ordered)) return int.MaxValue;
-        for (int i = 0; i < ordered.Count; i++)
-            if (string.Equals(ordered[i], phase, StringComparison.Ordinal)) return i;
-        return int.MaxValue;
-    }
+        => ActivePhasePolicy.Priority(composite.Split('/')[0], phase);
 
     /// <summary>
     /// One-sentence prose summary of what each phase actually does — composed for

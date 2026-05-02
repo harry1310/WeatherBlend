@@ -4,6 +4,7 @@ using DuckDB.NET.Data;
 using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
 using WeatherBlend.Evaluate.StartHour;
+using WeatherBlend.Models;
 using WeatherBlend.Storage;
 
 namespace WeatherBlend.Commands;
@@ -283,19 +284,7 @@ HAVING COUNT(*) = 4";
     {
         var bare = slug.StartsWith("ea_", StringComparison.Ordinal) ? slug[3..] : slug;
         foreach (var s in _cfg.Location.Rainfall.Stations)
-            if (Slugify(s.Name).Equals(bare, StringComparison.Ordinal)) return s.Name;
+            if (StationSlug.Of(s.Name).Equals(bare, StringComparison.Ordinal)) return s.Name;
         return null;
-    }
-
-    private static string Slugify(string input)
-    {
-        var sb = new StringBuilder(input.Length);
-        bool lastUs = false;
-        foreach (var c in input.ToLowerInvariant())
-        {
-            if (char.IsLetterOrDigit(c)) { sb.Append(c); lastUs = false; }
-            else if (!lastUs) { sb.Append('_'); lastUs = true; }
-        }
-        return sb.ToString().Trim('_');
     }
 }

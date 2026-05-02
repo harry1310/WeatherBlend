@@ -123,6 +123,7 @@ public static class Program
                 // commands. Singleton: stateless, just config + logger.
                 services.AddSingleton<TruthRepository>();
                 services.AddSingleton<ModelMetadataRepository>();
+                services.AddSingleton<PredictionsRepository>();
 
                 services.AddTransient<CollectCommand>();
                 services.AddTransient<MetOfficeBootstrapCommand>();

@@ -291,7 +291,7 @@ public sealed class DryWindowPredictCommand
         if (slug.Equals(arg, StringComparison.OrdinalIgnoreCase)) return true;
         var slugWithoutPrefix = slug.StartsWith("ea_") ? slug[3..] : slug;
         if (slugWithoutPrefix.Equals(arg, StringComparison.OrdinalIgnoreCase)) return true;
-        var derived = Slugify(arg);
+        var derived = StationSlug.Of(arg);
         return slug.Equals("ea_" + derived, StringComparison.OrdinalIgnoreCase)
             || slugWithoutPrefix.Equals(derived, StringComparison.OrdinalIgnoreCase);
     }
@@ -423,6 +423,4 @@ ORDER BY ValidTimeUtc, Model;";
     private static double? NanToNull(float v) => float.IsNaN(v) ? null : v;
     private static double? NanToNullDouble(float v) => float.IsNaN(v) ? null : (double)v;
 
-    private static string Slugify(string s) => s.ToLowerInvariant()
-        .Replace(' ', '_').Replace('-', '_').Replace(',', '_');
 }

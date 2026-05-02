@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
 using WeatherBlend.Evaluate.DryWindow;
 using WeatherBlend.Evaluate.Precip;
+using WeatherBlend.Models;
 using WeatherBlend.Train;
 using WeatherBlend.Train.Common;
 using WeatherBlend.Train.DryWindow;
@@ -79,7 +80,7 @@ public sealed class DryWindowTrainCommand
             foreach (var window in windows)
             {
                 ct.ThrowIfCancellationRequested();
-                var compositeKey = $"ea_{Slugify(stationName)}/window_{window}h";
+                var compositeKey = $"{StationSlug.WithEaPrefix(stationName)}/window_{window}h";
                 var now = DateTime.UtcNow;
                 // 3b → v{ts} (champion, no suffix). 3d-shape → v{ts}_phase3d_shape so
                 // the manifest's Active list visually distinguishes the variants.
@@ -308,7 +309,7 @@ public sealed class DryWindowTrainCommand
 
     private static bool SlugMatch(string configName, string arg)
     {
-        var slug = Slugify(configName);
+        var slug = StationSlug.Of(configName);
         return slug.Equals(arg, StringComparison.OrdinalIgnoreCase)
             || ($"ea_{slug}").Equals(arg, StringComparison.OrdinalIgnoreCase);
     }
@@ -321,9 +322,6 @@ public sealed class DryWindowTrainCommand
         "6"   => new[] { 6 },
         _     => null,
     };
-
-    private static string Slugify(string s) => s.ToLowerInvariant()
-        .Replace(' ', '_').Replace('-', '_').Replace(',', '_');
 
     /// <summary>
     /// Build a legacy-shaped <see cref="DryWindowClimatology"/> from the new
