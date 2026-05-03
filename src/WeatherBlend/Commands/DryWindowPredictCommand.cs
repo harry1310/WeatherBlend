@@ -280,7 +280,7 @@ public sealed class DryWindowPredictCommand
                 PrecipSumUkmo  = perModelSum[4], PrecipSumGem   = perModelSum[5],
                 PrecipSumAifs  = perModelSum[6], PrecipSumJma   = perModelSum[7],
                 FeatureVectorHash = FeatureHashing.HashFloats(row.Features),
-                ConformalSetTag = ApplyConformalIfPresent(versionDir, lead, prob),
+                ConformalSetTag = ModelArtifact.PredictConformalIfPresent(versionDir, lead, prob),
             });
 
             _log.LogInformation(
@@ -313,18 +313,16 @@ public sealed class DryWindowPredictCommand
         DateTime anchorDate, DateTime predictionMadeAt, CancellationToken ct)
     {
         // 3a champion bound at training time lives in metadata.Hyperparameters.
-        // Values round-trip as JsonElement after deserialisation since the
-        // dictionary value type is `object`.
-        if (metadata.Hyperparameters is null
-            || !metadata.Hyperparameters.TryGetValue("precip_3a_version", out var precip3aRaw)
-            || precip3aRaw is null)
+        // The HpString/HpInt extensions unwrap the JsonElement-after-roundtrip
+        // values uniformly across predict + train-side conformal fit.
+        var precip3aVersion = metadata.Hyperparameters.HpString("precip_3a_version");
+        if (string.IsNullOrEmpty(precip3aVersion))
         {
             _log.LogWarning(
                 "{S}/window_{W}h 3g {V}: missing 'precip_3a_version' in training_metadata.Hyperparameters; skipping.",
                 stationSlug, windowHours, versionName);
             return false;
         }
-        var precip3aVersion = HpString(precip3aRaw)!;
 
         // Load 3a's live prediction parquet for the anchor cycle. One file
         // per (station, model_version, anchor_date) covering ~120h of
@@ -350,12 +348,8 @@ public sealed class DryWindowPredictCommand
             return false;
         }
 
-        var mcSamples = metadata.Hyperparameters.TryGetValue("mc_samples", out var mcs)
-            ? HpInt(mcs) ?? DryWindow3gPredictor.DefaultMcSamples
-            : DryWindow3gPredictor.DefaultMcSamples;
-        var seed = metadata.Hyperparameters.TryGetValue("seed", out var sd)
-            ? HpInt(sd) ?? 42
-            : 42;
+        var mcSamples = metadata.Hyperparameters.HpInt("mc_samples") ?? DryWindow3gPredictor.DefaultMcSamples;
+        var seed = metadata.Hyperparameters.HpInt("seed") ?? 42;
 
         var daytime = _cfg.DryWindow.BuildDaytimeWindow();
         var rng = new Random(seed);
@@ -381,7 +375,7 @@ public sealed class DryWindowPredictCommand
             var stats = DryWindow3gPredictor.SampleStats(qDaytime, windowHours, rng, mcSamples);
             var prob = stats.ProbAtLeast;
             var climProb = climatology.Predict(targetDate);
-            var conformalTag = ApplyConformalIfPresent(versionDir, lead, prob);
+            var conformalTag = ModelArtifact.PredictConformalIfPresent(versionDir, lead, prob);
 
             // Hash the qDaytime vector — gives a stable feature-vector
             // identity per row, mirroring what the LightGBM-based phases write.
@@ -589,43 +583,4 @@ ORDER BY ValidTimeUtc, Model;";
 
     private static double? NanToNull(float v) => float.IsNaN(v) ? null : v;
     private static double? NanToNullDouble(float v) => float.IsNaN(v) ? null : (double)v;
-
-    /// <summary>
-    /// Pull a string out of a Hyperparameters value. After System.Text.Json
-    /// round-trips, primitive dictionary values come back as JsonElement,
-    /// not their original type — Convert.To* throws InvalidCastException on
-    /// JsonElement, so we unwrap explicitly.
-    /// </summary>
-    private static string? HpString(object? v) => v switch
-    {
-        null => null,
-        string s => s,
-        System.Text.Json.JsonElement je when je.ValueKind == System.Text.Json.JsonValueKind.String
-            => je.GetString(),
-        _ => v.ToString(),
-    };
-
-    private static int? HpInt(object? v) => v switch
-    {
-        null => null,
-        int i => i,
-        long l => (int)l,
-        System.Text.Json.JsonElement je when je.ValueKind == System.Text.Json.JsonValueKind.Number
-            => je.GetInt32(),
-        _ => int.TryParse(v.ToString(), out var x) ? x : null,
-    };
-
-    /// <summary>
-    /// Apply the conformal calibrator persisted next to the model, if any.
-    /// Returns the SetTag enum's name as a string ("Dry" / "Wet" /
-    /// "Ambiguous") so the parquet column reads naturally without an enum
-    /// roundtrip. Null when no conformal calibrator was fitted for this
-    /// (versionDir, lead) — keeps legacy behaviour for versions that
-    /// pre-date <c>dry-window-conformal-fit</c>.
-    /// </summary>
-    private static string? ApplyConformalIfPresent(string versionDir, int lead, double prob)
-    {
-        var cal = ModelArtifact.TryLoadLeadConformalCalibrator(versionDir, lead);
-        return cal?.Predict(prob).ToString();
-    }
 }

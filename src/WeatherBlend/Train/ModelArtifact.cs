@@ -256,6 +256,17 @@ public static class ModelArtifact
     }
 
     /// <summary>
+    /// Convenience used by every predict path that wants to attach a
+    /// conformal-set tag to a row's probability: load the per-(versionDir,
+    /// lead) calibrator if one was fitted (precip-conformal-fit /
+    /// dry-window-conformal-fit) and return the SetTag enum's name as a
+    /// string ("Dry" / "Wet" / "Ambiguous"); null when no calibrator is
+    /// present so the parquet column degrades gracefully on legacy versions.
+    /// </summary>
+    public static string? PredictConformalIfPresent(string versionDir, int leadHours, double prob)
+        => TryLoadLeadConformalCalibrator(versionDir, leadHours)?.Predict(prob).ToString();
+
+    /// <summary>
     /// Legacy flat-list schema writer. Used by builders that haven't been migrated
     /// to <see cref="SaveBlenderSpecs"/> yet. Removed after Phase 5 of the
     /// unify-model-membership refactor.

@@ -163,14 +163,12 @@ public sealed class DryWindowConformalFitCommand
         var probs = new List<double>();
         var labels = new List<bool>();
 
-        if (metadata.Hyperparameters is null
-            || !metadata.Hyperparameters.TryGetValue("precip_3a_version", out var v3aRaw)
-            || v3aRaw is null)
+        var v3a = metadata.Hyperparameters.HpString("precip_3a_version");
+        if (string.IsNullOrEmpty(v3a))
         {
             _log.LogWarning("  3g version missing precip_3a_version metadata; skipping");
             return (probs, labels);
         }
-        var v3a = HpString(v3aRaw)!;
         var hourly = DryWindow3gPredictor.LoadReplayHourly(
             _cfg.Storage.PredictionsPath, stationSlug, v3a, lead);
 
@@ -185,7 +183,7 @@ public sealed class DryWindowConformalFitCommand
             // as Hyperparameters["window_hours"]. ds came from the same window,
             // so the row-vector window naturally matches; pull from metadata
             // to be explicit.
-            var window = HpInt(metadata.Hyperparameters.GetValueOrDefault("window_hours")) ?? 3;
+            var window = metadata.Hyperparameters.HpInt("window_hours") ?? 3;
             probs.Add(DryWindow3gPredictor.ProbDryWindow(q, window, rng, DefaultMcSamples));
             labels.Add(row.Label);
         }
@@ -199,23 +197,4 @@ public sealed class DryWindowConformalFitCommand
                 return s.Name;
         return null;
     }
-
-    private static string? HpString(object? v) => v switch
-    {
-        null => null,
-        string s => s,
-        System.Text.Json.JsonElement je when je.ValueKind == System.Text.Json.JsonValueKind.String
-            => je.GetString(),
-        _ => v.ToString(),
-    };
-
-    private static int? HpInt(object? v) => v switch
-    {
-        null => null,
-        int i => i,
-        long l => (int)l,
-        System.Text.Json.JsonElement je when je.ValueKind == System.Text.Json.JsonValueKind.Number
-            => je.GetInt32(),
-        _ => int.TryParse(v?.ToString(), out var x) ? x : null,
-    };
 }
