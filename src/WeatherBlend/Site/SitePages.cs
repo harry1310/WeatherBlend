@@ -314,7 +314,14 @@ public static partial class SitePages
         // training feature row, persisted on PrecipPredictionRow. Defaulted
         // to null so existing positional construction sites compile unchanged
         // — the renderer treats null as "legacy row, hide the chip".
-        double? AgreementWet01 = null);
+        double? AgreementWet01 = null,
+        // Conformal-prediction set tag from precip-conformal-fit
+        // {"Dry", "Wet", "Ambiguous"}. Calibrated alternative to the
+        // NWP-agreement chip — agreement is "do the NWPs agree?" (heuristic);
+        // conformal is "does the model commit at the requested coverage
+        // guarantee?" (distribution-free). Both shown side-by-side in the
+        // hourly-detail table. Null on legacy rows pre-conformal-fit.
+        string? ConformalSetTag = null);
 
     public sealed record FeelsLikeForecastPoint(
         string Version,

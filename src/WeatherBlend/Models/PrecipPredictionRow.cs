@@ -80,4 +80,13 @@ public sealed class PrecipPredictionRow
 
     /// <summary>SHA-256 hex of the 27 feature floats (little-endian, in OccurrenceFeatureNames order).</summary>
     public required string FeatureVectorHash { get; init; }
+
+    /// <summary>
+    /// Conformal-prediction set tag {"Dry", "Wet", "Ambiguous"} when the
+    /// version dir has a fitted conformal calibrator (precip-conformal-fit).
+    /// "Ambiguous" flags rows where the model's P(wet) sits inside the
+    /// 90%-coverage ambiguity zone — calibrated alternative to the per-NWP
+    /// agreement chip. Null on legacy rows / versions without a calibrator.
+    /// </summary>
+    public string? ConformalSetTag { get; init; }
 }

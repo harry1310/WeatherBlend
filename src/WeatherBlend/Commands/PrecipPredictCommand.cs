@@ -337,6 +337,7 @@ public sealed class PrecipPredictCommand
                 PrecipMax  = NanToNull(row.Features[spreadStart + 2]),
                 PrecipAgreementWet01 = NanToNull(row.Features[spreadStart + 3]),
                 FeatureVectorHash = FeatureHashing.HashFloats(row.Features),
+                ConformalSetTag = ApplyConformalIfPresent(versionDir, lead, pWet[0]),
             });
 
             _log.LogInformation(
@@ -599,6 +600,19 @@ ORDER BY ValidTimeUtc, Model;";
     }
 
     private static double? NanToNull(float v) => float.IsNaN(v) ? null : v;
+
+    /// <summary>
+    /// Apply the per-(version, lead) conformal calibrator if one was fitted
+    /// (precip-conformal-fit). Returns the SetTag enum's name as a string;
+    /// null when no calibrator is present (legacy versions or sites that
+    /// haven't run the fit command yet) — the predict path remains
+    /// backwards-compatible.
+    /// </summary>
+    private static string? ApplyConformalIfPresent(string versionDir, int lead, double prob)
+    {
+        var cal = ModelArtifact.TryLoadLeadConformalCalibrator(versionDir, lead);
+        return cal?.Predict(prob).ToString();
+    }
 
     /// <summary>
     /// Reverse-lookup the config rainfall-station friendly name from an "ea_..." slug

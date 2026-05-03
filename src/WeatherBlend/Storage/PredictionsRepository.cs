@@ -137,12 +137,15 @@ ORDER BY ModelVersion, LeadHours, ValidTimeUtc";
                 "'" + ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath, "precipitation", s, "**", "*.parquet")) + "'"))
                 + "], hive_partitioning = false, union_by_name = true)";
 
+        // ConformalSetTag persisted only since precip-conformal-fit (2026-05-03).
+        // union_by_name in the read clause silently fills NULL for older parquets.
         var sql = $@"
 SELECT LocationName, TruthStation, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
        ProbWet, ClimatologyPWet,
        PrecipGfs, PrecipEcmwf, PrecipIcon, PrecipMf, PrecipUkmo, PrecipGem, PrecipAifs, PrecipJma,
        PrecipAgreementWet01,
-       FeatureVectorHash
+       FeatureVectorHash,
+       ConformalSetTag
 FROM {fromClause}
 WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
   AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
@@ -173,6 +176,7 @@ ORDER BY TruthStation, ModelVersion, LeadHours, ValidTimeUtc";
         PrecipJma   = NullableDouble(r, 15),
         PrecipAgreementWet01 = NullableDouble(r, 16),
         FeatureVectorHash    = r.IsDBNull(17) ? "" : r.GetString(17),
+        ConformalSetTag      = r.IsDBNull(18) ? null : r.GetString(18),
     };
 
     // -----------------------------------------------------------------

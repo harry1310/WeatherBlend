@@ -265,6 +265,7 @@ public static partial class SitePages
         if (!latestPerValid.Any(r => r.AgreementWet01.HasValue)) return "";
 
         var rows = new StringBuilder();
+        var anyConformal = latestPerValid.Any(r => !string.IsNullOrEmpty(r.ConformalSetTag));
         foreach (var r in latestPerValid)
         {
             // Agreement is in [0, 1] = fraction of NWPs voting wet that hour.
@@ -284,16 +285,27 @@ public static partial class SitePages
                 "low"    => "color: #9e9e9e; font-style: italic",
                 _        => "",
             };
+            // Second confidence chip from the conformal calibrator (precip-
+            // conformal-fit). Only rendered when at least one row in this
+            // (station, lead) batch has a tag — keeps the column off legacy
+            // forecasts that pre-date the calibrator.
+            var conformalTd = anyConformal
+                ? "<td>" + RenderConformalChip(r.ConformalSetTag) + "</td>"
+                : "";
             rows.Append(Ci, $"""
                 <tr>
                   <td><time datetime="{r.ValidTimeUtc:yyyy-MM-ddTHH:mm}Z">{r.ValidTimeUtc:MM-dd HH'Z'}</time></td>
                   <td class="num" style="{pwetStyle}">{(r.ProbWet * 100).ToString("0", Ci)}%</td>
                   <td class="num">{agreementCell}</td>
                   <td><span class="conf conf-{cls}">{label}</span></td>
+                  {conformalTd}
                 </tr>
                 """);
         }
 
+        var conformalTh = anyConformal
+            ? "<th>Conformal <small>(90% set)</small></th>"
+            : "";
         return $"""
             <details class="hourly-detail">
               <summary>Hourly P(wet) + NWP agreement</summary>
@@ -305,6 +317,7 @@ public static partial class SitePages
                       <th class="num">P(wet)</th>
                       <th class="num">NWPs wet</th>
                       <th>Confidence</th>
+                      {conformalTh}
                     </tr>
                   </thead>
                   <tbody>
@@ -314,6 +327,20 @@ public static partial class SitePages
             </details>
             """;
     }
+
+    /// <summary>
+    /// Conformal set chip — same {"Dry", "Wet", "Ambiguous"} tag the
+    /// dry-window page uses. Confident dry/wet read as high-class colour;
+    /// ambiguous reads low. "—" when no calibrator has been fit for this
+    /// (version, lead).
+    /// </summary>
+    private static string RenderConformalChip(string? tag) => tag switch
+    {
+        "Wet"       => "<span class=\"conf conf-high\">confident wet</span>",
+        "Dry"       => "<span class=\"conf conf-high\">confident dry</span>",
+        "Ambiguous" => "<span class=\"conf conf-low\">ambiguous</span>",
+        _           => "<span class=\"conf conf-unknown\">—</span>",
+    };
 
     /// <summary>
     /// Bucket per-NWP wet-vote agreement into a 3-tier confidence label.

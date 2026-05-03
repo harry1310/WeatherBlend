@@ -147,6 +147,7 @@ public static class Program
                 services.AddTransient<RenderSiteCommand>();
                 services.AddTransient<DryWindowDiagnosticCommand>();
                 services.AddTransient<DryWindowConformalFitCommand>();
+                services.AddTransient<PrecipConformalFitCommand>();
                 services.AddTransient<DryWindowTrainCommand>();
                 services.AddTransient<DryWindowAblateCommand>();
                 services.AddTransient<DryWindowPredictCommand>();
@@ -564,6 +565,24 @@ public static class Program
             Environment.ExitCode = await cmd.RunAsync(alpha, CancellationToken.None);
         }, conformalAlphaOpt);
         root.AddCommand(dryWindowConformalFit);
+
+        // ---- precip-conformal-fit (sibling of dry-window-conformal-fit) ----
+        var precipConformalAlphaOpt = new Option<double>(
+            name: "--alpha",
+            description: "Target miscoverage rate (0.10 = 90% coverage; default 0.10).",
+            getDefaultValue: () => 0.10);
+        var precipConformalFit = new Command(
+            "precip-conformal-fit",
+            "Back-fit conformal calibrators on the val slice for every Active precipitation version (3a + 3c)")
+        {
+            precipConformalAlphaOpt,
+        };
+        precipConformalFit.SetHandler(async (alpha) =>
+        {
+            var cmd = host.Services.GetRequiredService<PrecipConformalFitCommand>();
+            Environment.ExitCode = await cmd.RunAsync(alpha, CancellationToken.None);
+        }, precipConformalAlphaOpt);
+        root.AddCommand(precipConformalFit);
 
         var dryWindowAblate = new Command(
             "dry-window-ablate",
