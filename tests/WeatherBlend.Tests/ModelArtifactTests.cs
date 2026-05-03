@@ -385,6 +385,172 @@ public class ModelArtifactTests : IDisposable
             manifest.Versions.Should().Contain($"v-thread-{i:D2}");
     }
 
+    // ---- PromoteVersion (idempotent same-phase replacement) ------------------
+    //
+    // The promote helpers fix the load-bearing footgun in
+    // UpdateManifest / UpdateStationManifest: the older helpers reset Active to
+    // [new], which silently kicked any active challenger phase out of the rotation
+    // on every champion retrain. The promote variants read each existing Active
+    // entry's training_metadata.Phase and only replace entries with the same
+    // phase as the new version, leaving all other phases (champions or
+    // challengers) untouched. Tests below pin both the same-phase replacement
+    // rule and the "preserve other phases" invariant.
+
+    private static void WritePhaseMetadata(string dir, string version, string phase)
+    {
+        Directory.CreateDirectory(dir);
+        var meta = new ModelArtifact.TrainingMetadata
+        {
+            Version = version,
+            Target = "temperature",
+            Phase = phase,
+            DataSource = "test",
+            TrainedAtUtc = DateTime.UtcNow,
+        };
+        ModelArtifact.SaveTrainingMetadata(dir, meta);
+    }
+
+    [Fact]
+    public void PromoteVersionAsChampion_replaces_same_phase_and_preserves_others()
+    {
+        // Setup: 2b champion (v_base_old) + 2c challenger (v_2c).
+        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base_old"), "v_base_old", "2b");
+        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2c"),       "v_2c",       "2c");
+        ModelArtifact.UpdateManifest(_root, "temperature", "v_base_old");
+        ModelArtifact.SetActive(_root, "temperature", new[] { "v_base_old", "v_2c" });
+
+        // Retrain 2b → v_base_new. Expected: v_base_old is dropped from Active
+        // (replaced by v_base_new), v_2c stays.
+        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base_new"), "v_base_new", "2b");
+        ModelArtifact.PromoteVersionAsChampion(_root, "temperature", "v_base_new", newPhase: "2b");
+
+        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
+            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
+
+        manifest.Current.Should().Be("v_base_new");
+        manifest.Active.Should().BeEquivalentTo(new[] { "v_2c", "v_base_new" });   // 2c preserved
+        manifest.Versions.Should().Contain(new[] { "v_base_old", "v_base_new" });
+    }
+
+    [Fact]
+    public void PromoteVersionAsChallenger_replaces_same_phase_and_does_not_change_Current()
+    {
+        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base"),    "v_base",    "2b");
+        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2c_old"),  "v_2c_old",  "2c");
+        ModelArtifact.UpdateManifest(_root, "temperature", "v_base");
+        ModelArtifact.SetActive(_root, "temperature", new[] { "v_base", "v_2c_old" });
+
+        // Retrain 2c → v_2c_new. Expected: v_2c_old replaced by v_2c_new in
+        // Active, v_base preserved, Current still v_base.
+        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2c_new"), "v_2c_new", "2c");
+        ModelArtifact.PromoteVersionAsChallenger(_root, "temperature", "v_2c_new", newPhase: "2c");
+
+        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
+            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
+
+        manifest.Current.Should().Be("v_base");                                  // unchanged
+        manifest.Active.Should().BeEquivalentTo(new[] { "v_base", "v_2c_new" }); // 2c rotated
+    }
+
+    [Fact]
+    public void PromoteVersion_is_idempotent_across_repeated_same_phase_retrains()
+    {
+        // Run two 2c retrains back-to-back. Active should converge to one 2c
+        // entry per run, not accumulate stale 2c versions across runs.
+        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base"),  "v_base",  "2b");
+        ModelArtifact.UpdateManifest(_root, "temperature", "v_base");
+
+        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2c_a"), "v_2c_a", "2c");
+        ModelArtifact.PromoteVersionAsChallenger(_root, "temperature", "v_2c_a", newPhase: "2c");
+
+        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2c_b"), "v_2c_b", "2c");
+        ModelArtifact.PromoteVersionAsChallenger(_root, "temperature", "v_2c_b", newPhase: "2c");
+
+        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
+            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
+
+        // Active has exactly one 2c (the latest), not both.
+        manifest.Active.Should().BeEquivalentTo(new[] { "v_base", "v_2c_b" });
+        // Versions accumulates both 2c entries (history is preserved).
+        manifest.Versions.Should().Contain(new[] { "v_base", "v_2c_a", "v_2c_b" });
+    }
+
+    [Fact]
+    public void PromoteVersion_preserves_entry_with_unreadable_metadata()
+    {
+        // An Active entry whose training_metadata is missing or malformed has
+        // unknown phase. The promote helper PRESERVES it rather than silently
+        // dropping — caller can clean up explicitly via SetActive if intended.
+        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base"), "v_base", "2b");
+        // v_orphan has no metadata file.
+        Directory.CreateDirectory(Path.Combine(_root, "temperature", "v_orphan"));
+        ModelArtifact.SetActive(_root, "temperature", new[] { "v_base", "v_orphan" });
+
+        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base_new"), "v_base_new", "2b");
+        ModelArtifact.PromoteVersionAsChampion(_root, "temperature", "v_base_new", newPhase: "2b");
+
+        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
+            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
+
+        // v_orphan stays. Only v_base (matching phase 2b) is replaced.
+        manifest.Active.Should().BeEquivalentTo(new[] { "v_orphan", "v_base_new" });
+    }
+
+    [Fact]
+    public void PromoteStationVersionAsChampion_replaces_same_phase_per_station_only()
+    {
+        // Phase 3a champion + 3c challenger at one station. Retraining 3a
+        // replaces only the 3a entry, leaves 3c — and doesn't touch the
+        // OTHER station's manifest entry at all.
+        var stationA = "ea_bellever_dartmoor";
+        var stationB = "ea_princetown";
+
+        WritePhaseMetadata(Path.Combine(_root, "precipitation", stationA, "v_3a_old"), "v_3a_old", "3a");
+        WritePhaseMetadata(Path.Combine(_root, "precipitation", stationA, "v_3c"),     "v_3c",     "3c");
+        WritePhaseMetadata(Path.Combine(_root, "precipitation", stationB, "v_3a_b"),   "v_3a_b",   "3a");
+
+        ModelArtifact.UpdateStationManifest(_root, "precipitation", stationA, "v_3a_old");
+        ModelArtifact.SetStationActive(_root, "precipitation", stationA, new[] { "v_3a_old", "v_3c" });
+        ModelArtifact.UpdateStationManifest(_root, "precipitation", stationB, "v_3a_b");
+
+        WritePhaseMetadata(Path.Combine(_root, "precipitation", stationA, "v_3a_new"), "v_3a_new", "3a");
+        ModelArtifact.PromoteStationVersionAsChampion(
+            _root, "precipitation", stationA, "v_3a_new", newPhase: "3a");
+
+        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
+            File.ReadAllText(Path.Combine(_root, "precipitation", ModelArtifact.ManifestFileName)))!;
+
+        manifest.Stations[stationA].Current.Should().Be("v_3a_new");
+        manifest.Stations[stationA].Active.Should().BeEquivalentTo(new[] { "v_3c", "v_3a_new" });
+        // Other station untouched.
+        manifest.Stations[stationB].Current.Should().Be("v_3a_b");
+        manifest.Stations[stationB].Active.Should().BeEquivalentTo(new[] { "v_3a_b" });
+    }
+
+    [Fact]
+    public void PromoteStationVersionAsChallenger_replaces_same_phase_3e_idempotently()
+    {
+        // Direct regression for the dry-window 3e use case the user shipped:
+        // re-running 3e training should replace the previous 3e in Active
+        // without disturbing the 3b champion entry.
+        var station = "ea_bellever_dartmoor/window_4h";
+
+        WritePhaseMetadata(Path.Combine(_root, "dry_window", station, "v_3b"),    "v_3b",    "3b");
+        WritePhaseMetadata(Path.Combine(_root, "dry_window", station, "v_3e_a"),  "v_3e_a",  "3e");
+        ModelArtifact.UpdateStationManifest(_root, "dry_window", station, "v_3b");
+        ModelArtifact.SetStationActive(_root, "dry_window", station, new[] { "v_3b", "v_3e_a" });
+
+        WritePhaseMetadata(Path.Combine(_root, "dry_window", station, "v_3e_b"), "v_3e_b", "3e");
+        ModelArtifact.PromoteStationVersionAsChallenger(
+            _root, "dry_window", station, "v_3e_b", newPhase: "3e");
+
+        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
+            File.ReadAllText(Path.Combine(_root, "dry_window", ModelArtifact.ManifestFileName)))!;
+
+        manifest.Stations[station].Current.Should().Be("v_3b");                          // unchanged
+        manifest.Stations[station].Active.Should().BeEquivalentTo(new[] { "v_3b", "v_3e_b" });
+    }
+
     /// <summary>
     /// Concurrent SetActive + AppendVersion must compose: every appended version
     /// survives, and the final SetActive winner is one of the values written.

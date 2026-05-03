@@ -148,7 +148,13 @@ public static class ElementTrainerHarness
             DeviationsFromBrief = inputs.DeviationsFromBrief.ToList(),
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
-        ModelArtifact.UpdateManifest(modelsRoot, inputs.Target.ModelDirName, versionName);
+        // Promote: replaces any prior entry with the same Phase in Active and
+        // sets Current. Element targets currently have a single phase each
+        // (lean-wind / lean-humidity / lean-shortwave-radiation / lean-cloud-cover)
+        // so this is functionally equivalent to UpdateManifest today, but the
+        // promote helper future-proofs against a challenger ever being added.
+        ModelArtifact.PromoteVersionAsChampion(
+            modelsRoot, inputs.Target.ModelDirName, versionName, newPhase: inputs.Target.PhaseTag);
 
         log.LogInformation("Element ({Target}) artefacts → {Dir}", inputs.Target.CliName, versionDir);
         log.LogInformation(

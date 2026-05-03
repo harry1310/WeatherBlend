@@ -617,6 +617,149 @@ public static class ModelArtifact
         });
     }
 
+    // ------------------------------------------------------------------
+    // Idempotent promote helpers
+    // ------------------------------------------------------------------
+    //
+    // The lower-level UpdateManifest / SetActive / SetStationActive helpers
+    // unconditionally REPLACE the Active list. That's wrong for any setup
+    // running champion + challenger phases concurrently: retraining one phase
+    // (say 2b) silently kicks the other (2c) out of Active, and predict +
+    // verify stop scoring it on the next cycle. The promote helpers below
+    // are the right-shaped operation for "I just trained version V of phase
+    // P" — they replace any existing Active entry whose Phase matches P
+    // (read from each entry's training_metadata.json) and add V, leaving
+    // every other phase untouched. Idempotent on re-run: training the same
+    // phase twice converges to a one-entry-per-phase Active list rather
+    // than accumulating dead versions or wiping siblings.
+    //
+    // Champion vs challenger is just a two-line difference:
+    //   PromoteVersionAsChampion sets Current = newVersionName too
+    //   PromoteVersionAsChallenger leaves Current alone
+    // Both add to Versions and Active. Pass the Phase string from the
+    // training_metadata you just wrote — the helper doesn't try to infer
+    // it from the version-name suffix because the suffix scheme isn't
+    // load-bearing (some phases have suffixes, some don't).
+
+    /// <summary>
+    /// Promote a freshly-trained version to champion of a flat-target
+    /// manifest (temperature, element_*). Sets <c>Current = newVersionName</c>;
+    /// in <c>Active</c>, replaces any existing entry whose Phase matches
+    /// <paramref name="newPhase"/> and appends the new version. Other
+    /// phases (challengers) survive untouched.
+    /// </summary>
+    public static void PromoteVersionAsChampion(
+        string modelsRoot, string target, string newVersionName, string newPhase)
+        => PromoteVersionFlat(modelsRoot, target, newVersionName, newPhase, asChampion: true);
+
+    /// <summary>
+    /// Register a challenger version in a flat-target manifest. Same as
+    /// <see cref="PromoteVersionAsChampion"/> but does NOT touch
+    /// <c>Current</c> — the existing champion stays the headline forecast.
+    /// </summary>
+    public static void PromoteVersionAsChallenger(
+        string modelsRoot, string target, string newVersionName, string newPhase)
+        => PromoteVersionFlat(modelsRoot, target, newVersionName, newPhase, asChampion: false);
+
+    /// <summary>
+    /// Per-station variant of <see cref="PromoteVersionAsChampion"/>. Same
+    /// semantics on a station entry within a station-keyed manifest
+    /// (precipitation, dry_window).
+    /// </summary>
+    public static void PromoteStationVersionAsChampion(
+        string modelsRoot, string target, string station, string newVersionName, string newPhase)
+        => PromoteStationVersionInternal(modelsRoot, target, station, newVersionName, newPhase, asChampion: true);
+
+    /// <summary>
+    /// Per-station variant of <see cref="PromoteVersionAsChallenger"/>.
+    /// Same-phase replacement, no <c>Current</c> change.
+    /// </summary>
+    public static void PromoteStationVersionAsChallenger(
+        string modelsRoot, string target, string station, string newVersionName, string newPhase)
+        => PromoteStationVersionInternal(modelsRoot, target, station, newVersionName, newPhase, asChampion: false);
+
+    private static void PromoteVersionFlat(
+        string modelsRoot, string target, string newVersionName, string newPhase, bool asChampion)
+    {
+        MutateManifest(modelsRoot, target, m =>
+        {
+            if (asChampion) m.Current = newVersionName;
+            if (!m.Versions.Contains(newVersionName)) m.Versions.Add(newVersionName);
+            m.Active = ComposeActive(m.Active, newVersionName, newPhase,
+                phaseOfVersion: v => TryReadVersionPhase(Path.Combine(modelsRoot, target, v)));
+        });
+    }
+
+    private static void PromoteStationVersionInternal(
+        string modelsRoot, string target, string station, string newVersionName, string newPhase, bool asChampion)
+    {
+        MutateManifest(modelsRoot, target, m =>
+        {
+            if (!m.Stations.TryGetValue(station, out var entry))
+            {
+                entry = new StationEntry();
+                m.Stations[station] = entry;
+            }
+            if (asChampion) entry.Current = newVersionName;
+            if (!entry.Versions.Contains(newVersionName)) entry.Versions.Add(newVersionName);
+            entry.Active = ComposeActive(entry.Active, newVersionName, newPhase,
+                phaseOfVersion: v => TryReadVersionPhase(Path.Combine(modelsRoot, target, station, v)));
+        });
+    }
+
+    /// <summary>
+    /// Build the new Active list: drop entries whose Phase matches
+    /// <paramref name="newPhase"/>, append <paramref name="newVersionName"/>,
+    /// dedupe (preserving the first occurrence of each version). Phase
+    /// resolution is delegated so the same composition rule works for both
+    /// flat and station layouts. Versions whose metadata is unreadable
+    /// (missing dir, malformed JSON) are PRESERVED — we don't silently
+    /// retire something we can't introspect.
+    /// </summary>
+    private static List<string> ComposeActive(
+        IReadOnlyList<string> existing,
+        string newVersionName,
+        string newPhase,
+        Func<string, string?> phaseOfVersion)
+    {
+        var preserved = new List<string>(existing.Count + 1);
+        foreach (var v in existing)
+        {
+            if (string.Equals(v, newVersionName, StringComparison.Ordinal)) continue;  // dedupe later
+            var phase = phaseOfVersion(v);
+            // Drop only when we can read the phase AND it matches. Unknown
+            // phase → leave it alone (caller can clean up explicitly via
+            // SetStationActive if they really mean to).
+            if (phase is not null && string.Equals(phase, newPhase, StringComparison.Ordinal))
+                continue;
+            preserved.Add(v);
+        }
+        preserved.Add(newVersionName);
+        return preserved;
+    }
+
+    /// <summary>
+    /// Read the <c>Phase</c> field from <c>training_metadata.json</c> at
+    /// <paramref name="versionDir"/>. Returns null on missing dir, missing
+    /// file, or any deserialise error — callers treat null as "unknown
+    /// phase, don't touch this entry".
+    /// </summary>
+    private static string? TryReadVersionPhase(string versionDir)
+    {
+        try
+        {
+            if (!Directory.Exists(versionDir)) return null;
+            var path = Path.Combine(versionDir, TrainingMetadataFileName);
+            if (!File.Exists(path)) return null;
+            var meta = LoadTrainingMetadata(versionDir);
+            return string.IsNullOrEmpty(meta.Phase) ? null : meta.Phase;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     /// <summary>
     /// Append a single version to the station's Active list (champion + challengers).
     /// Idempotent: a version that's already Active is left in place. Doesn't touch

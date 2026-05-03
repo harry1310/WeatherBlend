@@ -268,7 +268,9 @@ public sealed class TempTrainCommand
             },
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
-        ModelArtifact.UpdateManifest(modelsRoot, "temperature", versionName);
+        // Promote 2b: replaces any prior 2b entry in Active and sets Current.
+        // Any active 2c challenger survives untouched.
+        ModelArtifact.PromoteVersionAsChampion(modelsRoot, "temperature", versionName, newPhase: "2b");
 
         _log.LogInformation("Phase 2b artefacts → {Dir}", versionDir);
         _log.LogInformation("Summary — {Summary}",
@@ -399,12 +401,11 @@ public sealed class TempTrainCommand
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
 
-        // Champion/challenger: 2c is added to the active set without unseating 2b as
-        // the default. Predict + verify will iterate both versions every cycle.
-        ModelArtifact.AppendVersion(modelsRoot, "temperature", versionName);
-        var existingActive = ModelArtifact.ResolveActive(modelsRoot, "temperature");
-        var newActive = existingActive.Concat(new[] { versionName }).Distinct().ToList();
-        ModelArtifact.SetActive(modelsRoot, "temperature", newActive);
+        // Promote 2c as a challenger: replaces any prior 2c entry in Active
+        // (so re-training is idempotent) and leaves Current = 2b champion.
+        // Predict + verify iterate both versions every cycle.
+        ModelArtifact.PromoteVersionAsChallenger(modelsRoot, "temperature", versionName, newPhase: "2c");
+        var newActive = ModelArtifact.ResolveActive(modelsRoot, "temperature");
 
         _log.LogInformation("Phase 2c artefacts → {Dir}", versionDir);
         _log.LogInformation("Active versions now: [{Active}]", string.Join(", ", newActive));
@@ -601,7 +602,10 @@ public sealed class TempTrainCommand
             },
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
-        ModelArtifact.UpdateStationManifest(modelsRoot, "precipitation", stationSlug, versionName);
+        // Promote 3a: replaces any prior 3a entry in the per-station Active
+        // and sets Current. Any active 3c challenger survives untouched.
+        ModelArtifact.PromoteStationVersionAsChampion(
+            modelsRoot, "precipitation", stationSlug, versionName, newPhase: "3a");
 
         _log.LogInformation("Phase 3a artefacts → {Dir}", versionDir);
         _log.LogInformation("Summary — {Summary}",
@@ -795,11 +799,12 @@ public sealed class TempTrainCommand
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
 
-        // Champion/challenger: add 3c to Active without unseating 3a as Current.
-        ModelArtifact.AppendStationVersion(modelsRoot, "precipitation", stationSlug, versionName);
-        var existing = ModelArtifact.ResolveStationActive(modelsRoot, "precipitation", stationSlug);
-        var newActive = existing.Concat(new[] { versionName }).Distinct().ToList();
-        ModelArtifact.SetStationActive(modelsRoot, "precipitation", stationSlug, newActive);
+        // Promote 3c as a challenger: replaces any prior 3c entry in Active
+        // (idempotent re-train) and leaves Current = 3a champion. Any other
+        // active phases survive untouched.
+        ModelArtifact.PromoteStationVersionAsChallenger(
+            modelsRoot, "precipitation", stationSlug, versionName, newPhase: "3c");
+        var newActive = ModelArtifact.ResolveStationActive(modelsRoot, "precipitation", stationSlug);
 
         _log.LogInformation("Phase 3c artefacts → {Dir}", versionDir);
         _log.LogInformation("Active versions for station {Station} now: [{Active}]", stationSlug, string.Join(", ", newActive));

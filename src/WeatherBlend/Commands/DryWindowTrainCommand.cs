@@ -268,11 +268,15 @@ public sealed class DryWindowTrainCommand
                 ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
                 if (phase == DryWindowFeatureBuilder.Phase3b)
                 {
-                    // 3b is the only phase the site renders (2026-04-29). Reset Active to just
-                    // this version so any stale 3d-shape (or older 3b) entries from earlier
-                    // training cycles are dropped from the predict/render rotation.
-                    ModelArtifact.UpdateStationManifest(modelsRoot, "dry_window", compositeKey, versionName);
-                    ModelArtifact.SetStationActive(modelsRoot, "dry_window", compositeKey, new[] { versionName });
+                    // Promote the new 3b version: replace any prior 3b entry in
+                    // Active with this one and set Current = newVersion. Any
+                    // OTHER active phases (3e challenger today) survive — that's
+                    // the whole point of PromoteStationVersionAsChampion vs the
+                    // older UpdateStationManifest + SetStationActive([new])
+                    // pattern that silently kicked challengers out.
+                    ModelArtifact.PromoteStationVersionAsChampion(
+                        modelsRoot, "dry_window", compositeKey, versionName,
+                        newPhase: DryWindowFeatureBuilder.Phase3b);
                 }
                 else
                 {
@@ -602,12 +606,15 @@ public sealed class DryWindowTrainCommand
             ModelArtifact.SaveTrainingMetadata(versionDir3h, metadata3h);
             ModelArtifact.SaveTrainingMetadata(versionDir4h, metadata4h);
 
-            // Append to Active list as a CHALLENGER alongside the 3b champion.
-            // Don't reset Current — 3b stays the champion until/unless promoted.
-            ModelArtifact.AppendStationVersion(modelsRoot, "dry_window", compositeKey3h, versionName);
-            ModelArtifact.AppendStationVersion(modelsRoot, "dry_window", compositeKey4h, versionName);
-            ModelArtifact.AddStationActive(modelsRoot, "dry_window", compositeKey3h, versionName);
-            ModelArtifact.AddStationActive(modelsRoot, "dry_window", compositeKey4h, versionName);
+            // Promote 3e as a CHALLENGER alongside the 3b champion: replaces
+            // any prior 3e entry in Active with this one (idempotent on
+            // re-train) and leaves Current = the 3b champion untouched.
+            ModelArtifact.PromoteStationVersionAsChallenger(
+                modelsRoot, "dry_window", compositeKey3h, versionName,
+                newPhase: DryWindow3eFeatureBuilder.Phase3e);
+            ModelArtifact.PromoteStationVersionAsChallenger(
+                modelsRoot, "dry_window", compositeKey4h, versionName,
+                newPhase: DryWindow3eFeatureBuilder.Phase3e);
 
             _log.LogInformation("Saved 3e artefacts → {D3h} + {D4h}", versionDir3h, versionDir4h);
         }
