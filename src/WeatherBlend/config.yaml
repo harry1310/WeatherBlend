@@ -311,6 +311,11 @@ blenders:
           optionalModels: [ecmwf_aifs025_single]
 
     # Cloud: UKMO restored everywhere; MF dropped at 48/72h. AIFS optional.
+    # 2026-05-04: tested dropping GEM (bias −23) + MF (bias +9.4) outright,
+    # cloud MAE regressed +1.2% / 0% / +1.3% per lead. Heavily-biased inputs
+    # function as bracketing correctors — the blender uses GEM's systematic
+    # under-prediction as a regime signal rather than a value to read off.
+    # Conclusion: leave GEM + lead-24h MF in. Don't repeat this experiment.
     - target: cloud
       featureSet: default
       requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, ukmo_seamless, gem_seamless]
