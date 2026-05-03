@@ -157,6 +157,7 @@ public static class Program
                 // ElementBakeoffCommand removed in Phase 5 of unify-model-membership refactor.
                 services.AddTransient<FeelsLikePredictCommand>();
                 services.AddTransient<StartHourPredictCommand>();
+                services.AddTransient<StartHourBakeoffCommand>();
                 // Met Office Global / UKV (raw AWS S3 backfill via Python) removed
                 // 2026-04-29 — bake-off rejected as blender inputs (negative result)
                 // and their parquet writer was the sole source of TIMESTAMPTZ schema
@@ -504,6 +505,28 @@ public static class Program
         // The `bakeoff` command was removed in Phase 5 of the unify-model-membership refactor.
         // It diagnosed UKMO inclusion vs exclusion on a shared UKMO-present test set; the
         // resulting per-element decisions are now baked into config.yaml's blenders section.
+
+        // ---- start-hour bake-off (Phase 1 scaffolding for option C / B comparison) ----
+        var bakeoffActionOpt = new Option<string>(
+            name: "--action",
+            description: "prepare | score | compare",
+            getDefaultValue: () => "compare");
+        var bakeoffMethodOpt = new Option<string?>(
+            name: "--method",
+            description: "Method name when --action score: current | C | B",
+            getDefaultValue: () => null);
+        var startHourBakeoff = new Command(
+            "start-hour-bakeoff",
+            "Phase 1+: shared start-hour comparison harness for current vs option C vs option B")
+        {
+            bakeoffActionOpt, bakeoffMethodOpt,
+        };
+        startHourBakeoff.SetHandler(async (action, method) =>
+        {
+            var cmd = host.Services.GetRequiredService<StartHourBakeoffCommand>();
+            Environment.ExitCode = await cmd.RunAsync(action, method, CancellationToken.None);
+        }, bakeoffActionOpt, bakeoffMethodOpt);
+        root.AddCommand(startHourBakeoff);
 
         var dryWindowAblate = new Command(
             "dry-window-ablate",

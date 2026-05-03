@@ -79,6 +79,63 @@ public static class DryWindow3gPredictor
     }
 
     /// <summary>
+    /// Start-hour distribution for a single window length under independence
+    /// MC. Per sample, mark every candidate start hour s where hours
+    /// s..s+windowLength-1 are all dry; aggregate per s across samples;
+    /// normalise to a distribution that sums to 1.
+    ///
+    /// This is the MC analogue of <see cref="WeatherBlend.Predict.StartHour.StartHourCurveDerivation"/>'s
+    /// analytical product π_s = (1-q_s)(1-q_{s+1})...(1-q_{s+N-1}) /
+    /// Σ same. Under independence the two MUST agree to within MC noise —
+    /// MC is just numerical estimation of the same expectation. The point
+    /// of having C alongside current is to make the architecture explicit
+    /// (so option B can swap correlated copula sampling in for the
+    /// independent Bernoullis without changing the rest of the pipeline).
+    ///
+    /// An earlier "first occurrence" framing was a definitional mistake:
+    /// the truth set in <see cref="StartHourTruth.ValidStartsFor"/> is
+    /// every-start-where-a-block-begins, not earliest-start, so a "first
+    /// only" π fits a biased distribution.
+    ///
+    /// Returns null if no candidate start hour ever materialised across all
+    /// samples — caller falls back to uniform.
+    /// </summary>
+    public static double[]? StartHourConditional(
+        double[] qHourly, int windowLength, Random rng, int nSamples = DefaultMcSamples)
+    {
+        if (qHourly.Length < windowLength) return null;
+        var nStarts = qHourly.Length - windowLength + 1;
+        var counts = new long[nStarts];
+
+        for (int s = 0; s < nSamples; s++)
+        {
+            // Build the dry/wet vector for this sample, then check each
+            // candidate start. Cheap because windowLength is small (3..6)
+            // and nStarts is small (≤7 for a 9h daytime window).
+            Span<bool> dry = stackalloc bool[qHourly.Length];
+            for (int h = 0; h < qHourly.Length; h++)
+                dry[h] = rng.NextDouble() >= qHourly[h];
+
+            for (int i = 0; i < nStarts; i++)
+            {
+                bool allDry = true;
+                for (int j = 0; j < windowLength; j++)
+                {
+                    if (!dry[i + j]) { allDry = false; break; }
+                }
+                if (allDry) counts[i]++;
+            }
+        }
+
+        long total = 0;
+        for (int i = 0; i < nStarts; i++) total += counts[i];
+        if (total == 0) return null;
+        var pi = new double[nStarts];
+        for (int i = 0; i < nStarts; i++) pi[i] = (double)counts[i] / total;
+        return pi;
+    }
+
+    /// <summary>
     /// Convenience for the single-window case used by the predict command.
     /// </summary>
     public static double ProbDryWindow(
