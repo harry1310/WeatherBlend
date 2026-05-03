@@ -551,10 +551,51 @@ public sealed class StartHourBakeoffCommand
         return (await ParquetSerializer.DeserializeAsync<TruthRow>(p, cancellationToken: ct)).ToList();
     }
 
-    private async Task<List<PredictionRow>> LoadPredictionsAsync(string path, CancellationToken ct)
+    /// <summary>
+    /// Read predictions via DuckDB rather than ParquetSerializer because the
+    /// PyArrow-written option-B parquet uses extension types Parquet.Net's
+    /// thrift reader can't introspect ("don't know how to skip type Set").
+    /// DuckDB normalises both flavours (PyArrow + Parquet.Net) to plain
+    /// columns. Async-deferred for signature compatibility with the rest
+    /// of the harness; the actual call is synchronous.
+    /// </summary>
+    private Task<List<PredictionRow>> LoadPredictionsAsync(string path, CancellationToken ct)
     {
-        if (!File.Exists(path)) return new();
-        return (await ParquetSerializer.DeserializeAsync<PredictionRow>(path, cancellationToken: ct)).ToList();
+        if (!File.Exists(path)) return Task.FromResult(new List<PredictionRow>());
+        // hive_partitioning=false because the path includes 'method=<m>' as a
+        // partition segment AND the file carries a 'Method' column; DuckDB's
+        // case-insensitive auto-detection treats them as duplicates.
+        // CAST to fixed widths so option B (PyArrow → BIGINT) and current /
+        // C (Parquet.Net → INTEGER) round-trip through the same C# reader.
+        var sql = $@"
+            SELECT Method, StationSlug,
+                   CAST(WindowHours AS INTEGER) AS WindowHours,
+                   CAST(LeadHours AS INTEGER) AS LeadHours,
+                   TargetDateUtc,
+                   CAST(StartHourUtc AS INTEGER) AS StartHourUtc,
+                   ProbDryBlockStarting
+            FROM read_parquet('{path.Replace('\\', '/')}', hive_partitioning=false)";
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        var rows = new List<PredictionRow>();
+        using var rdr = cmd.ExecuteReader();
+        while (rdr.Read())
+        {
+            ct.ThrowIfCancellationRequested();
+            rows.Add(new PredictionRow
+            {
+                Method = rdr.GetString(0),
+                StationSlug = rdr.GetString(1),
+                WindowHours = rdr.GetInt32(2),
+                LeadHours = rdr.GetInt32(3),
+                TargetDateUtc = DateTime.SpecifyKind(rdr.GetDateTime(4), DateTimeKind.Utc),
+                StartHourUtc = rdr.GetInt32(5),
+                ProbDryBlockStarting = rdr.GetDouble(6),
+            });
+        }
+        return Task.FromResult(rows);
     }
 
     /// Pull the hourly mm dictionary for a target date's daytime window from
