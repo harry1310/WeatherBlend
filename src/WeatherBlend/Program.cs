@@ -515,17 +515,35 @@ public static class Program
             name: "--method",
             description: "Method name when --action score: current | C | B",
             getDefaultValue: () => null);
+        var bakeoffWindowsOpt = new Option<string?>(
+            name: "--windows",
+            description: "Comma-separated window lengths to include in the test set (default: 3,4,6).",
+            getDefaultValue: () => null);
+        var bakeoffDaytimeStartOpt = new Option<int?>(
+            name: "--daytime-start-utc",
+            description: "Override daytime start hour UTC (default: from config DryWindow daytime range).",
+            getDefaultValue: () => null);
+        var bakeoffDaytimeEndOpt = new Option<int?>(
+            name: "--daytime-end-utc",
+            description: "Override daytime end hour UTC, exclusive (default: from config DryWindow daytime range).",
+            getDefaultValue: () => null);
         var startHourBakeoff = new Command(
             "start-hour-bakeoff",
             "Phase 1+: shared start-hour comparison harness for current vs option C vs option B")
         {
-            bakeoffActionOpt, bakeoffMethodOpt,
+            bakeoffActionOpt, bakeoffMethodOpt, bakeoffWindowsOpt,
+            bakeoffDaytimeStartOpt, bakeoffDaytimeEndOpt,
         };
-        startHourBakeoff.SetHandler(async (action, method) =>
+        startHourBakeoff.SetHandler(async ctx =>
         {
+            var action = ctx.ParseResult.GetValueForOption(bakeoffActionOpt)!;
+            var method = ctx.ParseResult.GetValueForOption(bakeoffMethodOpt);
+            var windows = ctx.ParseResult.GetValueForOption(bakeoffWindowsOpt);
+            var daytimeStart = ctx.ParseResult.GetValueForOption(bakeoffDaytimeStartOpt);
+            var daytimeEnd = ctx.ParseResult.GetValueForOption(bakeoffDaytimeEndOpt);
             var cmd = host.Services.GetRequiredService<StartHourBakeoffCommand>();
-            Environment.ExitCode = await cmd.RunAsync(action, method, CancellationToken.None);
-        }, bakeoffActionOpt, bakeoffMethodOpt);
+            ctx.ExitCode = await cmd.RunAsync(action, method, windows, daytimeStart, daytimeEnd, ctx.GetCancellationToken());
+        });
         root.AddCommand(startHourBakeoff);
 
         var dryWindowAblate = new Command(

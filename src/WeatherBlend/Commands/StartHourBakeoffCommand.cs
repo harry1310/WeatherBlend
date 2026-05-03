@@ -66,15 +66,30 @@ public sealed class StartHourBakeoffCommand
         _cfg = cfg;
     }
 
-    public async Task<int> RunAsync(string action, string? method, CancellationToken ct)
+    public async Task<int> RunAsync(
+        string action, string? method, string? windowsArg,
+        int? daytimeStartUtc, int? daytimeEndUtc,
+        CancellationToken ct)
     {
         return action.ToLowerInvariant() switch
         {
-            "prepare" => await PrepareAsync(ct),
+            "prepare" => await PrepareAsync(ParseWindows(windowsArg), daytimeStartUtc, daytimeEndUtc, ct),
             "score"   => await ScoreAsync(method ?? Methods.Current, ct),
             "compare" => await CompareAsync(ct),
             _         => InvalidAction(action),
         };
+    }
+
+    /// <summary>
+    /// Parse --windows "2,3,4,6" → [2,3,4,6]. Defaults to {3,4,6} (the dry-
+    /// window blender's window list) when null/empty.
+    /// </summary>
+    private static int[] ParseWindows(string? arg)
+    {
+        if (string.IsNullOrWhiteSpace(arg)) return new[] { 3, 4, 6 };
+        return arg.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(s => int.Parse(s, CultureInfo.InvariantCulture))
+            .ToArray();
     }
 
     private int InvalidAction(string action)
@@ -85,12 +100,18 @@ public sealed class StartHourBakeoffCommand
 
     // ---- prepare: build test set + truth labels --------------------------------
 
-    private async Task<int> PrepareAsync(CancellationToken ct)
+    private async Task<int> PrepareAsync(
+        int[] windows, int? daytimeStartOverride, int? daytimeEndOverride, CancellationToken ct)
     {
         var stations = _cfg.Location.Rainfall.Stations.Select(s => s.Name).ToArray();
-        var windows = new[] { 3, 4, 6 };
         var leads = Leads.Short;
         var daytime = _cfg.DryWindow.BuildDaytimeWindow();
+        // Override daytime range if provided — used to test "10am-6pm UTC"
+        // (8-18) variants vs the production 9-hour 09-18 BST default.
+        // The override applies the SAME UTC range to every target_date,
+        // bypassing DST handling — fine for bake-off comparison since we
+        // re-fit ρ on the same range.
+        var useOverride = daytimeStartOverride.HasValue && daytimeEndOverride.HasValue;
 
         _log.LogInformation(
             "Phase 1 prepare — stations=[{S}] windows=[{W}] leads=[{L}]",
@@ -130,7 +151,9 @@ public sealed class StartHourBakeoffCommand
                     foreach (var r in ds.Test)
                     {
                         var date = DateOnly.FromDateTime(r.TargetDateUtc);
-                        var (startUtc, endUtc) = daytime.UtcHourRangeFor(date);
+                        var (startUtc, endUtc) = useOverride
+                            ? (daytimeStartOverride!.Value, daytimeEndOverride!.Value)
+                            : daytime.UtcHourRangeFor(date);
                         var dayHourly = ExtractDailyHourly(hourlyMm, date, startUtc, endUtc);
                         var validStarts = dayHourly is null
                             ? null
