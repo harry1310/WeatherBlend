@@ -34,11 +34,14 @@ public static class ActivePhasePolicy
         {
             ["temperature"]   = new[] { "2b", "2c" },
             ["precipitation"] = new[] { "3a", "3c" },
-            // 3e (B2 conditional decomposition for windows 3 + 4) added
-            // 2026-05-03 as a challenger to 3b. 6h stays 3b-only because the
-            // conditional subset for a 6|4 stage is too sparse to be reliable.
+            // 3g (parameter-free MC over Phase 3a hourly P(wet) marginals)
+            // added 2026-05-03 as a challenger to 3b across all 9 (station,
+            // window) cells; bake-off won 21/27 cells with mean −6.4% Brier.
+            // 3e (B2 cascade) was dropped the same day — 3g supersedes it
+            // structurally (cross-window monotonicity holds for all of 3h/4h/6h
+            // by construction, not just the 3h↔4h pair 3e covered).
             // 3d-shape was dropped 2026-04-29 (no Brier gain on the daytime label).
-            ["dry_window"]    = new[] { "3b", "3e" },
+            ["dry_window"]    = new[] { "3b", "3g" },
         };
 
     /// <summary>

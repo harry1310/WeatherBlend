@@ -149,6 +149,18 @@ public sealed class DryWindowPredictCommand
         _log.LogInformation("{Key}: version {V} (phase {P}), window {W}h",
             compositeKey, metadata.Version, metadata.Phase, windowHours);
 
+        // Phase 3g — parameter-free MC over Phase 3a's hourly P(wet). Skips
+        // the entire blender-feature → LightGBM pipeline below; reads 3a's
+        // live prediction parquet for the anchor cycle and runs MC per
+        // target_date. Bypasses ComposeRow / spec / model loading entirely
+        // since 3g has no model.zip files.
+        if (string.Equals(metadata.Phase, DryWindow3gPredictor.Phase3g, StringComparison.Ordinal))
+        {
+            return await RunPhase3gAsync(
+                stationSlug, windowHours, versionName, metadata, climatology,
+                targets, anchorDate, predictionMadeAt, ct);
+        }
+
         // Per-lead BlenderSpec lives in feature_schema.json; covers both 3b and 3d-shape.
         var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
         var canonOrder = WeatherBlend.Train.TempFeatureBuilder.CanonicalModelOrder.ToList();
@@ -283,6 +295,126 @@ public sealed class DryWindowPredictCommand
         }
 
         await WritePredictionsAsync(predictions, stationSlug, windowHours, anchorDate, metadata.Version, ct);
+        return true;
+    }
+
+    /// <summary>
+    /// Phase 3g predict path. No model.zip files; instead, read the bound 3a
+    /// champion's hourly prediction parquet for the anchor cycle, extract the
+    /// daytime hour vector for each target_date, run MC, and write a
+    /// dry-window prediction row whose <c>ModelVersion</c> is the 3g version
+    /// name (the rolling-Brier renderer keys off this for phase grouping).
+    /// </summary>
+    private async Task<bool> RunPhase3gAsync(
+        string stationSlug, int windowHours, string versionName,
+        ModelArtifact.TrainingMetadata metadata, DryWindowClimatology climatology,
+        IReadOnlyList<(int Lead, DateTime Date)> targets,
+        DateTime anchorDate, DateTime predictionMadeAt, CancellationToken ct)
+    {
+        // 3a champion bound at training time lives in metadata.Hyperparameters.
+        // Values round-trip as JsonElement after deserialisation since the
+        // dictionary value type is `object`.
+        if (metadata.Hyperparameters is null
+            || !metadata.Hyperparameters.TryGetValue("precip_3a_version", out var precip3aRaw)
+            || precip3aRaw is null)
+        {
+            _log.LogWarning(
+                "{S}/window_{W}h 3g {V}: missing 'precip_3a_version' in training_metadata.Hyperparameters; skipping.",
+                stationSlug, windowHours, versionName);
+            return false;
+        }
+        var precip3aVersion = HpString(precip3aRaw)!;
+
+        // Load 3a's live prediction parquet for the anchor cycle. One file
+        // per (station, model_version, anchor_date) covering ~120h of
+        // forecasts.
+        Dictionary<DateTime, double> hourly;
+        try
+        {
+            hourly = DryWindow3gPredictor.LoadLivePredictionsHourly(
+                _cfg.Storage.PredictionsPath, stationSlug, precip3aVersion, anchorDate);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex,
+                "{S}/window_{W}h 3g {V}: failed to load 3a live predictions for anchor {A:yyyy-MM-dd} (3a version {Pv}); skipping.",
+                stationSlug, windowHours, versionName, anchorDate, precip3aVersion);
+            return false;
+        }
+        if (hourly.Count == 0)
+        {
+            _log.LogWarning(
+                "{S}/window_{W}h 3g {V}: 3a parquet for anchor {A:yyyy-MM-dd} ({Pv}) is empty; skipping.",
+                stationSlug, windowHours, versionName, anchorDate, precip3aVersion);
+            return false;
+        }
+
+        var mcSamples = metadata.Hyperparameters.TryGetValue("mc_samples", out var mcs)
+            ? HpInt(mcs) ?? DryWindow3gPredictor.DefaultMcSamples
+            : DryWindow3gPredictor.DefaultMcSamples;
+        var seed = metadata.Hyperparameters.TryGetValue("seed", out var sd)
+            ? HpInt(sd) ?? 42
+            : 42;
+
+        var daytime = _cfg.DryWindow.BuildDaytimeWindow();
+        var rng = new Random(seed);
+        var predictions = new List<DryWindowPredictionRow>();
+
+        foreach (var (lead, targetDate) in targets)
+        {
+            ct.ThrowIfCancellationRequested();
+            var (startHour, endHour) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(targetDate));
+            var qDaytime = DryWindow3gPredictor.ExtractDaytimeQ(
+                hourly, targetDate, startHour, endHour);
+            if (qDaytime is null)
+            {
+                _log.LogWarning(
+                    "  {S}/window_{W}h lead {L}h ({D:yyyy-MM-dd}): 3a missing one or more daytime hours; skipping.",
+                    stationSlug, windowHours, lead, targetDate);
+                continue;
+            }
+
+            var prob = DryWindow3gPredictor.ProbDryWindow(qDaytime, windowHours, rng, mcSamples);
+            var climProb = climatology.Predict(targetDate);
+
+            // Hash the qDaytime vector — gives a stable feature-vector
+            // identity per row, mirroring what the LightGBM-based phases write.
+            // Cast double[] to float[] for the existing hash helper.
+            var qFloats = new float[qDaytime.Length];
+            for (int i = 0; i < qDaytime.Length; i++) qFloats[i] = (float)qDaytime[i];
+
+            predictions.Add(new DryWindowPredictionRow
+            {
+                LocationName = _cfg.Location.Name,
+                TruthStation = stationSlug,
+                WindowHours = windowHours,
+                ModelVersion = versionName,
+                PredictionMadeAtUtc = predictionMadeAt,
+                TargetDateUtc = targetDate,
+                LeadHours = lead,
+                ProbHasDryWindow = prob,
+                ClimatologyProbHasDryWindow = climProb,
+                // 3g doesn't use the per-model day-aggregate features. Leave
+                // all model-feature fields null — verify + render handle null.
+                AgreementHasDryWindow = null,
+                PrecipSumMean = null, LongestDryRunMean = null, WetHourCountMean = null,
+                HasDryWindowGfs = null, HasDryWindowEcmwf = null, HasDryWindowIcon = null,
+                HasDryWindowMf = null, HasDryWindowUkmo = null, HasDryWindowGem = null,
+                HasDryWindowAifs = null, HasDryWindowJma = null,
+                PrecipSumGfs = null, PrecipSumEcmwf = null, PrecipSumIcon = null,
+                PrecipSumMf = null, PrecipSumUkmo = null, PrecipSumGem = null,
+                PrecipSumAifs = null, PrecipSumJma = null,
+                FeatureVectorHash = FeatureHashing.HashFloats(qFloats),
+            });
+
+            _log.LogInformation(
+                "  3g lead {L}h ({D:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (clim {C:0.000}, hourly q∈[{Min:0.00}..{Max:0.00}])",
+                lead, targetDate, windowHours, prob, climProb,
+                qDaytime.Min(), qDaytime.Max());
+        }
+
+        if (predictions.Count == 0) return false;
+        await WritePredictionsAsync(predictions, stationSlug, windowHours, anchorDate, versionName, ct);
         return true;
     }
 
@@ -447,4 +579,28 @@ ORDER BY ValidTimeUtc, Model;";
     private static double? NanToNull(float v) => float.IsNaN(v) ? null : v;
     private static double? NanToNullDouble(float v) => float.IsNaN(v) ? null : (double)v;
 
+    /// <summary>
+    /// Pull a string out of a Hyperparameters value. After System.Text.Json
+    /// round-trips, primitive dictionary values come back as JsonElement,
+    /// not their original type — Convert.To* throws InvalidCastException on
+    /// JsonElement, so we unwrap explicitly.
+    /// </summary>
+    private static string? HpString(object? v) => v switch
+    {
+        null => null,
+        string s => s,
+        System.Text.Json.JsonElement je when je.ValueKind == System.Text.Json.JsonValueKind.String
+            => je.GetString(),
+        _ => v.ToString(),
+    };
+
+    private static int? HpInt(object? v) => v switch
+    {
+        null => null,
+        int i => i,
+        long l => (int)l,
+        System.Text.Json.JsonElement je when je.ValueKind == System.Text.Json.JsonValueKind.Number
+            => je.GetInt32(),
+        _ => int.TryParse(v.ToString(), out var x) ? x : null,
+    };
 }

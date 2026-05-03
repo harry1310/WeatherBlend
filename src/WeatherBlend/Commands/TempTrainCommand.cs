@@ -72,18 +72,18 @@ public sealed class TempTrainCommand
         }
 
         var fs = (featureSet ?? "lean").ToLowerInvariant();
-        if (fs is not ("lean" or "rich" or "cascade"))
+        if (fs is not ("lean" or "rich" or "cascade" or "independence-mc"))
         {
-            _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich | cascade.", featureSet);
+            _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich | cascade | independence-mc.", featureSet);
             return 2;
         }
-        // "cascade" = Phase 3e conditional decomposition; only meaningful for
-        // dry-window (B2 trains M_base + M_extend4 jointly for windows 3 + 4).
-        if (fs == "cascade" && t != "dry-window")
+        // "cascade" = Phase 3e (B2 conditional decomposition);
+        // "independence-mc" = Phase 3g (parameter-free MC over 3a marginals).
+        // Both are dry-window-only.
+        if ((fs == "cascade" || fs == "independence-mc") && t != "dry-window")
         {
             _log.LogError(
-                "--feature-set cascade is only supported for target dry-window " +
-                "(it identifies the Phase 3e conditional decomposition).");
+                "--feature-set {Fs} is only supported for target dry-window.", fs);
             return 2;
         }
         if (elementTarget is not null && fs != "lean")
@@ -120,14 +120,16 @@ public sealed class TempTrainCommand
                                   : await RunPhase3aAsync(leads, station, ct),
             // dry-window: lean → Phase 3b (53 features),
             //             rich → Phase 3d-shape (3b + 7 within-day shape features),
-            //             cascade → Phase 3e conditional decomposition (windows 3 + 4 jointly).
+            //             cascade → Phase 3e conditional decomposition (windows 3 + 4 jointly),
+            //             independence-mc → Phase 3g (parameter-free MC over 3a marginals).
             "dry-window"    => await _dryWindow.RunAsync(
                                    station ?? "all", window ?? "all", leads,
                                    fs switch
                                    {
-                                       "rich"    => Train.DryWindow.DryWindowFeatureBuilder.Phase3dShape,
-                                       "cascade" => Train.DryWindow.DryWindow3eFeatureBuilder.Phase3e,
-                                       _         => Train.DryWindow.DryWindowFeatureBuilder.Phase3b,
+                                       "rich"            => Train.DryWindow.DryWindowFeatureBuilder.Phase3dShape,
+                                       "cascade"         => Train.DryWindow.DryWindow3eFeatureBuilder.Phase3e,
+                                       "independence-mc" => Train.DryWindow.DryWindow3gPredictor.Phase3g,
+                                       _                 => Train.DryWindow.DryWindowFeatureBuilder.Phase3b,
                                    },
                                    ct),
             // Per-variable element blenders: one dispatcher routes wind / humidity /

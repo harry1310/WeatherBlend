@@ -56,6 +56,14 @@ public static class DryWindowPhases
         ChampionVsChallengerLabel: "Phase 3e (cascade)",
         Color: "#26a69a");
 
+    public static readonly DryWindowPhase Phase3g = new(
+        Key: "3g",
+        LongTitle: "Phase 3g — Monte Carlo over Phase 3a hourly P(wet) marginals",
+        ShortTitle: "Phase 3g (MC)",
+        Description: "Parameter-free. For each daytime hour, sample 10,000 Bernoullis using Phase 3a's hourly P(wet); count the fraction of samples whose longest dry run reaches the target window length. No LightGBM, no learned weights — the prediction is purely 3a's per-hour view + the structural rule that longer windows are rarer. Cross-window monotonicity P(N=3) ≥ P(N=4) ≥ P(N=6) holds by construction (single MC pass, three indicators read off the same Bernoulli sequence).",
+        ChampionVsChallengerLabel: "Phase 3g (MC)",
+        Color: "#43a047");
+
     /// <summary>
     /// Display-metadata records keyed by phase string. Source of truth for
     /// "if this phase ever ships, here's what its card / heading looks like";
@@ -68,6 +76,7 @@ public static class DryWindowPhases
             [Phase3b.Key]      = Phase3b,
             [Phase3dShape.Key] = Phase3dShape,
             [Phase3e.Key]      = Phase3e,
+            [Phase3g.Key]      = Phase3g,
         };
 
     /// <summary>
