@@ -185,6 +185,20 @@ public static partial class SitePages
                     // is a singleton, "Ambiguous" when both classes are in
                     // the 90% set. We pick the smallest available lead's tag;
                     // if no row has a fitted conformal calibrator, "—".
+                    //
+                    // Tag-to-label INVERSION vs precip: ConformalSetTag stores
+                    // the calibrator's "positive class" semantics — for
+                    // dry-window the positive class IS "dry block exists"
+                    // (matches DryWindowTrainingRow.Label), so a "Wet" tag
+                    // (high P(positive)) means "confident a dry block
+                    // exists" → confident DRY DAY. Conversely a "Dry" tag
+                    // (low P(positive)) means "confident NO dry block" →
+                    // confident WET DAY. Precip uses the same enum but the
+                    // positive class there IS wet, so its labels stay
+                    // "Wet"→"confident wet" / "Dry"→"confident dry". A
+                    // future cleanup could rename the enum to
+                    // {HighProb, LowProb, Ambiguous} to remove this
+                    // per-page rendering subtlety.
                     string conformalCell = "—";
                     foreach (var lead in leadOrder)
                     {
@@ -193,8 +207,8 @@ public static partial class SitePages
                         var (label, cls) = d.ConformalSetTag switch
                         {
                             "Ambiguous" => ("ambiguous", "low"),
-                            "Wet"       => ("confident wet", "high"),
-                            "Dry"       => ("confident dry", "high"),
+                            "Wet"       => ("confident dry day", "high"),
+                            "Dry"       => ("confident wet day", "high"),
                             _           => (d.ConformalSetTag.ToLowerInvariant(), "unknown"),
                         };
                         conformalCell = $"<span class=\"conf conf-{cls}\">{label}</span>";

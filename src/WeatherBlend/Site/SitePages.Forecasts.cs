@@ -239,10 +239,102 @@ public static partial class SitePages
             }));
             s.Append("</div>");
 
+            s.Append(RenderPrecipDailySummaryTable(latestPerValid));
             s.Append(RenderPrecipHourlyConfidenceTable(latestPerValid));
         }
 
         return s.ToString();
+    }
+
+    /// <summary>
+    /// Per-date summary table: for each UTC day in the forward window, show
+    /// max/mean P(wet), the wettest hour of the day, and counts of hours
+    /// the conformal calibrator flagged as confident-wet / ambiguous /
+    /// confident-dry. Sits between the chart and the collapsible hourly
+    /// detail so a glance gives "is today / tomorrow / day-after wet?"
+    /// without expanding rows.
+    ///
+    /// Rendered inline (not collapsible) — this IS the at-a-glance view.
+    /// Skipped if no rows have agreement OR conformal data (legacy parquets).
+    /// </summary>
+    private static string RenderPrecipDailySummaryTable(
+        IReadOnlyList<PrecipForecastPoint> latestPerValid)
+    {
+        if (latestPerValid.Count == 0) return "";
+
+        var anyConformal = latestPerValid.Any(r => !string.IsNullOrEmpty(r.ConformalSetTag));
+        var byDay = latestPerValid
+            .GroupBy(r => r.ValidTimeUtc.Date)
+            .OrderBy(g => g.Key)
+            .ToList();
+
+        var rows = new StringBuilder();
+        foreach (var day in byDay)
+        {
+            var dayRows = day.OrderBy(r => r.ValidTimeUtc).ToList();
+            var meanP = dayRows.Average(r => r.ProbWet);
+            var maxR  = dayRows.MaxBy(r => r.ProbWet)!;
+            // Conformal vote tally — counts of hours in each set when the
+            // calibrator's tagged this row. "Wet" = confident wet for precip
+            // (positive class is wet here, no inversion vs dry-window page).
+            int wet = 0, dry = 0, amb = 0, untagged = 0;
+            foreach (var r in dayRows)
+            {
+                switch (r.ConformalSetTag)
+                {
+                    case "Wet":       wet++; break;
+                    case "Dry":       dry++; break;
+                    case "Ambiguous": amb++; break;
+                    default:          untagged++; break;
+                }
+            }
+            var conformalCells = anyConformal
+                ? $"""
+                    <td class="num"><span class="conf conf-high">{wet}</span></td>
+                    <td class="num"><span class="conf conf-low">{amb}</span></td>
+                    <td class="num"><span class="conf conf-high">{dry}</span></td>
+                  """
+                : "";
+            // Tint mean-P(wet) cell so the "wet day vs dry day" reads at a glance.
+            var meanColor = meanP >= 0.5 ? "#c62828"
+                          : meanP >= 0.3 ? "#ef6c00"
+                          : meanP >= 0.15 ? "#f9a825"
+                          : "#2e7d32";
+            rows.Append(Ci, $"""
+                <tr>
+                  <td><time datetime="{day.Key:yyyy-MM-dd}">{day.Key:ddd dd MMM}</time></td>
+                  <td class="num" style="color: {meanColor}; font-weight: 600">{(meanP * 100).ToString("0", Ci)}%</td>
+                  <td class="num">{(maxR.ProbWet * 100).ToString("0", Ci)}% <small>at {maxR.ValidTimeUtc:HH'Z'}</small></td>
+                  <td class="num">{dayRows.Count}</td>
+                  {conformalCells}
+                </tr>
+                """);
+        }
+
+        var conformalHeader = anyConformal
+            ? """
+              <th class="num" title="Hours the calibrator says are confidently wet at the 90% set">conf wet h</th>
+              <th class="num" title="Hours the calibrator can't commit at the 90% set">amb h</th>
+              <th class="num" title="Hours the calibrator says are confidently dry at the 90% set">conf dry h</th>
+              """
+            : "";
+        return $"""
+            <figure>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date (UTC)</th>
+                    <th class="num">Mean P(wet)</th>
+                    <th class="num">Wettest hour</th>
+                    <th class="num">n_h</th>
+                    {conformalHeader}
+                  </tr>
+                </thead>
+                <tbody>
+            {rows}    </tbody>
+              </table>
+            </figure>
+            """;
     }
 
     /// <summary>

@@ -60,28 +60,53 @@ public sealed class TempPredictCommand
         var predictionMadeAt = DateTime.UtcNow;
         var anchor = PredictAnchor.Compute(predictionMadeAt, forDate);
 
-        var targets = DefaultLeads.Select(L => (Lead: L, Valid: anchor.AddHours(L))).ToArray();
+        // 24 hourly targets per lead bucket — mirrors PrecipPredictCommand
+        // so each predict cycle emits a full hourly trajectory (anchor+L .. anchor+L+23h)
+        // for every lead, not just one snapshot value at lead L exactly. Downstream
+        // per-(lead, valid) loop is unchanged.
+        var anchorDayUtc = new DateTime(anchor.Year, anchor.Month, anchor.Day, 0, 0, 0, DateTimeKind.Utc);
+        var targets = DefaultLeads
+            .SelectMany(L =>
+            {
+                var dayStart = anchorDayUtc.AddDays(L / 24);
+                return Enumerable.Range(0, 24).Select(h => (Lead: L, Valid: dayStart.AddHours(h)));
+            })
+            .ToArray();
 
-        _log.LogInformation("Anchor {Anchor:yyyy-MM-dd HH:mm}Z (for-date={ForDate}) — targets: {Targets}",
+        _log.LogInformation("Anchor {Anchor:yyyy-MM-dd HH:mm}Z (for-date={ForDate}) — {N} hourly targets across leads {Leads}",
             anchor,
             forDate?.ToString("yyyy-MM-dd") ?? "live",
-            string.Join(", ", targets.Select(t => $"{t.Lead}h→{t.Valid:yyyy-MM-dd HH:mm}Z")));
+            targets.Length,
+            string.Join(",", DefaultLeads));
 
-        // One forecast pull covers every version — they all read from the same tree.
-        var perValid = QueryLatestForecastRows(
-            _cfg.Storage.ForecastsPath,
-            _cfg.Location.Name,
-            targets.Min(t => t.Valid),
-            targets.Max(t => t.Valid),
-            asOfRunTime: anchor,
-            ct);
+        // Per-lead forecast pull — each lead bucket pulls rows under the
+        // matching lead-bucket constraint (RunTime <= Valid - L), so the
+        // lead-L model receives rows in the [L, L+24h) actual-lead band it
+        // was trained on (Open-Meteo's previous_day_(L/24) aggregation).
+        // Without per-lead bucketing, "latest cycle wins" would feed the
+        // lead-24 model rows at actual lead < 24h once we predict for valid
+        // times within 24h of anchor. Same shape as PrecipPredictCommand.
+        var perLeadValid = new Dictionary<int, IReadOnlyDictionary<DateTime, PivotedRow>>();
+        foreach (var lead in DefaultLeads)
+        {
+            var leadTargets = targets.Where(t => t.Lead == lead).ToArray();
+            if (leadTargets.Length == 0) continue;
+            perLeadValid[lead] = QueryLatestForecastRows(
+                _cfg.Storage.ForecastsPath,
+                _cfg.Location.Name,
+                leadTargets.Min(t => t.Valid),
+                leadTargets.Max(t => t.Valid),
+                asOfRunTime: anchor,
+                leadHoursLowerBound: lead,
+                ct);
+        }
 
         var anyOutput = false;
         var failures = 0;
         foreach (var version in versions)
         {
             ct.ThrowIfCancellationRequested();
-            var ok = await PredictForVersionAsync(modelsRoot, version, perValid, targets, predictionMadeAt, anchor, ct);
+            var ok = await PredictForVersionAsync(modelsRoot, version, perLeadValid, targets, predictionMadeAt, anchor, ct);
             if (ok) anyOutput = true; else failures++;
         }
 
@@ -106,7 +131,7 @@ public sealed class TempPredictCommand
     private async Task<bool> PredictForVersionAsync(
         string modelsRoot,
         string version,
-        IReadOnlyDictionary<DateTime, PivotedRow> perValid,
+        IReadOnlyDictionary<int, IReadOnlyDictionary<DateTime, PivotedRow>> perLeadValid,
         (int Lead, DateTime Valid)[] targets,
         DateTime predictionMadeAt,
         DateTime anchor,
@@ -146,7 +171,8 @@ public sealed class TempPredictCommand
 
         foreach (var (lead, valid) in targets)
         {
-            if (!perValid.TryGetValue(valid, out var pivot))
+            if (!perLeadValid.TryGetValue(lead, out var perValid)
+                || !perValid.TryGetValue(valid, out var pivot))
             {
                 _log.LogWarning("  Lead {Lead}h: no forecast rows for valid={Valid:yyyy-MM-dd HH:mm}Z; skipping.",
                     lead, valid);
@@ -354,13 +380,14 @@ public sealed class TempPredictCommand
         DateTime earliestValid,
         DateTime latestValid,
         DateTime asOfRunTime,
+        int? leadHoursLowerBound,
         CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
         var fcGlob = Path.Combine(forecastsPath, "**", "*.parquet").Replace('\\', '/').Replace("'", "''");
         var liveCycleFilter = PredictForecastFilters.LiveCycleAsOf(
-            locationName, asOfRunTime, earliestValid, latestValid);
+            locationName, asOfRunTime, earliestValid, latestValid, leadHoursLowerBound);
 
         // Pull every variable a rich-feature build might want; lean predict simply ignores
         // the extras. Per-row latest-cycle resolution uses the same window function the
