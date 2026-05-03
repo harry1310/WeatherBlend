@@ -198,6 +198,9 @@ ORDER BY TruthStation, ModelVersion, LeadHours, ValidTimeUtc";
                 "'" + ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath, "dry_window", c.Station, $"window_{c.WindowHours}h", "**", "*.parquet")) + "'"))
                 + "], hive_partitioning = false, union_by_name = true)";
 
+        // McMean/P10/P50/P90LongestDryRunHours: persisted only by Phase 3g
+        // since 2026-05-03. Older parquets lack the columns; union_by_name
+        // already on the read silently fills them as NULL for those rows.
         var sql = $@"
 SELECT LocationName, TruthStation, WindowHours, ModelVersion,
        PredictionMadeAtUtc, TargetDateUtc, LeadHours,
@@ -207,7 +210,9 @@ SELECT LocationName, TruthStation, WindowHours, ModelVersion,
        HasDryWindowMf,  HasDryWindowUkmo,  HasDryWindowGem,  HasDryWindowAifs,  HasDryWindowJma,
        PrecipSumGfs, PrecipSumEcmwf, PrecipSumIcon, PrecipSumMf, PrecipSumUkmo, PrecipSumGem,
        PrecipSumAifs, PrecipSumJma,
-       FeatureVectorHash
+       FeatureVectorHash,
+       McMeanLongestDryRunHours, McP10LongestDryRunHours,
+       McP50LongestDryRunHours,  McP90LongestDryRunHours
 FROM {fromClause}
 WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
   AND TargetDateUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
@@ -250,6 +255,10 @@ ORDER BY TruthStation, WindowHours, ModelVersion, LeadHours, TargetDateUtc";
         PrecipSumAifs       = NullableDouble(r, 27),
         PrecipSumJma        = NullableDouble(r, 28),
         FeatureVectorHash   = r.IsDBNull(29) ? "" : r.GetString(29),
+        McMeanLongestDryRunHours = NullableDouble(r, 30),
+        McP10LongestDryRunHours  = NullableDouble(r, 31),
+        McP50LongestDryRunHours  = NullableDouble(r, 32),
+        McP90LongestDryRunHours  = NullableDouble(r, 33),
     };
 
     // -----------------------------------------------------------------

@@ -107,12 +107,14 @@ public static class DryWindow3gPredictor
         var nStarts = qHourly.Length - windowLength + 1;
         var counts = new long[nStarts];
 
+        // Allocate once, reuse across samples — qHourly.Length is small
+        // (≤24) but stackalloc inside a 10k-iter loop trips CA2014.
+        Span<bool> dry = stackalloc bool[qHourly.Length];
         for (int s = 0; s < nSamples; s++)
         {
             // Build the dry/wet vector for this sample, then check each
             // candidate start. Cheap because windowLength is small (3..6)
             // and nStarts is small (≤7 for a 9h daytime window).
-            Span<bool> dry = stackalloc bool[qHourly.Length];
             for (int h = 0; h < qHourly.Length; h++)
                 dry[h] = rng.NextDouble() >= qHourly[h];
 
@@ -136,12 +138,44 @@ public static class DryWindow3gPredictor
     }
 
     /// <summary>
-    /// Convenience for the single-window case used by the predict command.
+    /// Single-window predict path. Returns just the probability — for the
+    /// richer summary including longest-dry-run quantiles, use
+    /// <see cref="SampleStats"/>.
     /// </summary>
     public static double ProbDryWindow(
         double[] qHourly, int windowLength, Random rng, int nSamples = DefaultMcSamples)
+        => SampleStats(qHourly, windowLength, rng, nSamples).ProbAtLeast;
+
+    /// <summary>
+    /// Aleatoric-uncertainty summary from one MC pass. ProbAtLeast is the
+    /// "would the day satisfy a length-N dry block?" headline; the four
+    /// LongestRun stats characterise the per-sample distribution of the
+    /// longest contiguous dry stretch (in hours) under independence with
+    /// 3a's per-hour q. Useful as a confidence signal: a narrow P10–P90
+    /// band (e.g. 4–6h) means even unlikely realisations land near the
+    /// mean; a wide band (e.g. 1–8h) means the headline number is more
+    /// fragile.
+    ///
+    /// Longest-run distribution is independent of windowLength (it's a
+    /// property of the sample sequences, not the threshold check), so a
+    /// caller scoring multiple windows on the same q can call this once
+    /// per (station, lead, target_date) and reuse the LongestRun fields
+    /// across rows. ProbAtLeast varies per windowLength.
+    /// </summary>
+    public readonly record struct DryWindowMcStats(
+        double ProbAtLeast,
+        double MeanLongestRun,
+        double P10LongestRun,
+        double P50LongestRun,
+        double P90LongestRun);
+
+    public static DryWindowMcStats SampleStats(
+        double[] qHourly, int windowLength, Random rng, int nSamples = DefaultMcSamples)
     {
-        if (qHourly.Length < windowLength) return 0.0;
+        if (qHourly.Length == 0)
+            return new DryWindowMcStats(0.0, 0.0, 0.0, 0.0, 0.0);
+
+        var longestRuns = new int[nSamples];
         int hits = 0;
         for (int s = 0; s < nSamples; s++)
         {
@@ -152,9 +186,29 @@ public static class DryWindow3gPredictor
                 run = dry ? run + 1 : 0;
                 if (run > longest) longest = run;
             }
-            if (longest >= windowLength) hits++;
+            longestRuns[s] = longest;
+            if (windowLength <= qHourly.Length && longest >= windowLength) hits++;
         }
-        return (double)hits / nSamples;
+
+        Array.Sort(longestRuns);
+        return new DryWindowMcStats(
+            ProbAtLeast: (double)hits / nSamples,
+            MeanLongestRun: longestRuns.Average(),
+            P10LongestRun: Percentile(longestRuns, 0.10),
+            P50LongestRun: Percentile(longestRuns, 0.50),
+            P90LongestRun: Percentile(longestRuns, 0.90));
+    }
+
+    /// <summary>Linear-interpolated percentile of a pre-sorted ascending int
+    /// array, returned as a double so half-integer percentiles read
+    /// naturally on a continuous "expected hours" scale.</summary>
+    private static double Percentile(int[] sortedAsc, double p)
+    {
+        if (sortedAsc.Length == 0) return 0.0;
+        var rank = p * (sortedAsc.Length - 1);
+        int lo = (int)Math.Floor(rank), hi = (int)Math.Ceiling(rank);
+        if (lo == hi) return sortedAsc[lo];
+        return sortedAsc[lo] + (rank - lo) * (sortedAsc[hi] - sortedAsc[lo]);
     }
 
     /// <summary>

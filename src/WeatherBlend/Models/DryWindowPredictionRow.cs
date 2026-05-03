@@ -74,4 +74,20 @@ public sealed class DryWindowPredictionRow
 
     /// <summary>SHA-256 hex of the 53 feature floats in schema order.</summary>
     public required string FeatureVectorHash { get; init; }
+
+    // ---- 3g aleatoric uncertainty (nullable; populated only by Phase 3g) ----
+    //
+    // Summary of the per-MC-sample longest-dry-run distribution under
+    // independence with 3a's per-hour q. ProbHasDryWindow above is the
+    // headline P(longest >= windowHours); these four fields characterise
+    // the spread of the underlying continuous quantity (longest dry run
+    // in hours), which is what 3g actually computes during the same MC
+    // pass. Useful as a confidence signal: narrow P10–P90 band → headline
+    // robust; wide band → headline fragile. Null on 3b/3e/3c rows since
+    // those phases don't run MC and the field has no analogue.
+
+    public double? McMeanLongestDryRunHours { get; init; }
+    public double? McP10LongestDryRunHours { get; init; }
+    public double? McP50LongestDryRunHours { get; init; }
+    public double? McP90LongestDryRunHours { get; init; }
 }

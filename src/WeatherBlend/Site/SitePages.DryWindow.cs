@@ -162,6 +162,25 @@ public static partial class SitePages
                         ? (agreementCell.Value * 100).ToString("0", Ci) + "%"
                         : "—";
 
+                    // MC interval column — populated only for Phase 3g rows
+                    // (the parameter-free MC predictor that captures longest-
+                    // dry-run quantiles in the same pass as the headline).
+                    // Read off the SMALLEST available lead so the user sees
+                    // the freshest forecast; "—" if no 3g row exists for this
+                    // (station, window, date) cell.
+                    string mcCell = "—";
+                    foreach (var lead in leadOrder)
+                    {
+                        if (!byLead.TryGetValue(lead, out var d)) continue;
+                        if (!d.McP50LongestDryRunHours.HasValue) continue;
+                        var p50 = d.McP50LongestDryRunHours.Value;
+                        var p10 = d.McP10LongestDryRunHours ?? 0;
+                        var p90 = d.McP90LongestDryRunHours ?? 0;
+                        // "median 5h, 80%CI 2-8h" — short to fit inline.
+                        mcCell = $"med {p50:0}h <small>(80%: {p10:0}-{p90:0}h)</small>";
+                        break;
+                    }
+
                     // Best-start cell: argmax of the curve at the smallest
                     // available lead bucket for this (station, window, date).
                     // Falls back to "—" when no curve, when the daily P(any) is
@@ -192,6 +211,7 @@ public static partial class SitePages
                           <td><time datetime="{date:yyyy-MM-dd}">{date:ddd} {date:yyyy-MM-dd}</time></td>
                           {leadCells}
                           <td class="num">{agreement}</td>
+                          <td>{mcCell}</td>
                           {bestStartTd}
                         </tr>
                         """);
@@ -221,6 +241,7 @@ public static partial class SitePages
                             <th class="num">+48h</th>
                             <th class="num">+72h</th>
                             <th class="num">Model agreement</th>
+                            <th>MC longest dry run <small>(3g only)</small></th>
                             {bestStartHeader}
                           </tr>
                         </thead>

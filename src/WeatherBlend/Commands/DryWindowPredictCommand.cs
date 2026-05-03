@@ -374,7 +374,11 @@ public sealed class DryWindowPredictCommand
                 continue;
             }
 
-            var prob = DryWindow3gPredictor.ProbDryWindow(qDaytime, windowHours, rng, mcSamples);
+            // SampleStats does the same MC pass as ProbDryWindow but also
+            // tracks the per-sample longest-dry-run distribution. Free
+            // confidence signal — see DryWindow3gPredictor.DryWindowMcStats.
+            var stats = DryWindow3gPredictor.SampleStats(qDaytime, windowHours, rng, mcSamples);
+            var prob = stats.ProbAtLeast;
             var climProb = climatology.Predict(targetDate);
 
             // Hash the qDaytime vector — gives a stable feature-vector
@@ -405,12 +409,16 @@ public sealed class DryWindowPredictCommand
                 PrecipSumMf = null, PrecipSumUkmo = null, PrecipSumGem = null,
                 PrecipSumAifs = null, PrecipSumJma = null,
                 FeatureVectorHash = FeatureHashing.HashFloats(qFloats),
+                McMeanLongestDryRunHours = stats.MeanLongestRun,
+                McP10LongestDryRunHours = stats.P10LongestRun,
+                McP50LongestDryRunHours = stats.P50LongestRun,
+                McP90LongestDryRunHours = stats.P90LongestRun,
             });
 
             _log.LogInformation(
-                "  3g lead {L}h ({D:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (clim {C:0.000}, hourly q∈[{Min:0.00}..{Max:0.00}])",
+                "  3g lead {L}h ({D:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (clim {C:0.000}, MC longest p10/50/90={P10:0.0}/{P50:0.0}/{P90:0.0}h)",
                 lead, targetDate, windowHours, prob, climProb,
-                qDaytime.Min(), qDaytime.Max());
+                stats.P10LongestRun, stats.P50LongestRun, stats.P90LongestRun);
         }
 
         if (predictions.Count == 0) return false;

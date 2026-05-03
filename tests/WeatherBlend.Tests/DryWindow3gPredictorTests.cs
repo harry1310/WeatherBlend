@@ -75,6 +75,58 @@ public class DryWindow3gPredictorTests
         run1.Should().Be(run2);
     }
 
+    // ---- SampleStats: aleatoric uncertainty fields ----
+
+    [Fact]
+    public void SampleStats_returns_consistent_ProbAtLeast_with_ProbDryWindow()
+    {
+        var q = new[] { 0.3, 0.4, 0.5, 0.2, 0.7, 0.1, 0.6, 0.4, 0.3 };
+        // Same seed → identical RNG stream → identical underlying samples.
+        var prob = DryWindow3gPredictor.ProbDryWindow(q, 4, new System.Random(99), 2000);
+        var stats = DryWindow3gPredictor.SampleStats(q, 4, new System.Random(99), 2000);
+        stats.ProbAtLeast.Should().Be(prob);
+    }
+
+    [Fact]
+    public void SampleStats_LongestRun_ordering_holds_for_dry_day()
+    {
+        // Very dry day — most samples should produce a long dry run.
+        var qDry = Enumerable.Repeat(0.05, 9).ToArray();
+        var stats = DryWindow3gPredictor.SampleStats(qDry, 3, new System.Random(7), 5000);
+
+        // P10 ≤ P50 ≤ P90 by construction. Mean within the range too
+        // (mean lies between min and max of any sample's longest run).
+        stats.P10LongestRun.Should().BeLessThanOrEqualTo(stats.P50LongestRun);
+        stats.P50LongestRun.Should().BeLessThanOrEqualTo(stats.P90LongestRun);
+        stats.MeanLongestRun.Should().BeGreaterThanOrEqualTo(stats.P10LongestRun);
+        stats.MeanLongestRun.Should().BeLessThanOrEqualTo(stats.P90LongestRun);
+
+        // P50 should be near the daytime length (8-9h) on a near-certain-dry day.
+        stats.P50LongestRun.Should().BeGreaterThan(6);
+    }
+
+    [Fact]
+    public void SampleStats_LongestRun_ordering_holds_for_wet_day()
+    {
+        // Very wet day — most samples should have short or no dry runs.
+        var qWet = Enumerable.Repeat(0.95, 9).ToArray();
+        var stats = DryWindow3gPredictor.SampleStats(qWet, 3, new System.Random(7), 5000);
+
+        stats.P10LongestRun.Should().BeLessThanOrEqualTo(stats.P50LongestRun);
+        stats.P50LongestRun.Should().BeLessThanOrEqualTo(stats.P90LongestRun);
+        // Wet day: median longest dry run should be 0 or 1h — extremely small.
+        stats.P50LongestRun.Should().BeLessThanOrEqualTo(1);
+    }
+
+    [Fact]
+    public void SampleStats_is_deterministic_with_fixed_seed()
+    {
+        var q = new[] { 0.2, 0.5, 0.3, 0.4, 0.6, 0.1, 0.7, 0.3, 0.2 };
+        var run1 = DryWindow3gPredictor.SampleStats(q, 3, new System.Random(13), 2000);
+        var run2 = DryWindow3gPredictor.SampleStats(q, 3, new System.Random(13), 2000);
+        run1.Should().Be(run2);
+    }
+
     [Fact]
     public void ProbDryWindow_multi_run_matches_single_run_for_same_window()
     {

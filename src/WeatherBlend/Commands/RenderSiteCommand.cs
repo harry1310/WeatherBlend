@@ -81,7 +81,8 @@ public sealed class RenderSiteCommand
             PrecipUkmo:      r.PrecipUkmo,
             PrecipGem:       r.PrecipGem,
             PrecipAifs:      r.PrecipAifs,
-            PrecipJma:       r.PrecipJma)).ToList();
+            PrecipJma:       r.PrecipJma,
+            AgreementWet01:  r.PrecipAgreementWet01)).ToList();
         _log.LogInformation("Loaded {N} precipitation prediction rows.", precip.Count);
 
         var feelsLike = QueryFeelsLikePredictions(windowStart, predictionEnd, ct);
@@ -97,7 +98,11 @@ public sealed class RenderSiteCommand
             LeadHours:                   r.LeadHours,
             ProbHasDryWindow:            r.ProbHasDryWindow,
             ClimatologyProbHasDryWindow: r.ClimatologyProbHasDryWindow,
-            AgreementHasDryWindow:       r.AgreementHasDryWindow)).ToList();
+            AgreementHasDryWindow:       r.AgreementHasDryWindow,
+            McMeanLongestDryRunHours:    r.McMeanLongestDryRunHours,
+            McP10LongestDryRunHours:     r.McP10LongestDryRunHours,
+            McP50LongestDryRunHours:     r.McP50LongestDryRunHours,
+            McP90LongestDryRunHours:     r.McP90LongestDryRunHours)).ToList();
         _log.LogInformation("Loaded {N} dry-window prediction rows.", dryWindow.Count);
 
         var startHour = QueryStartHourPredictions(windowStart, predictionEnd, ct);

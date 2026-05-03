@@ -238,8 +238,101 @@ public static partial class SitePages
                 FormatY = v => v.ToString("0.0", Ci),
             }));
             s.Append("</div>");
+
+            s.Append(RenderPrecipHourlyConfidenceTable(latestPerValid));
         }
 
         return s.ToString();
+    }
+
+    /// <summary>
+    /// Compact hourly-detail table under each precip chart showing P(wet) +
+    /// a confidence chip per upcoming hour. Confidence comes from the
+    /// per-NWP wet-vote spread already persisted on
+    /// <see cref="PrecipForecastPoint.AgreementWet01"/>: high = ensemble
+    /// near-unanimous; low = NWPs split. Read this as "the headline P(wet)
+    /// could be 30% but if the NWPs are 50/50 split, treat that as a
+    /// genuinely uncertain forecast, not a confident '70% chance dry'."
+    ///
+    /// Skipped silently when the agreement column is missing on every row
+    /// (older parquets pre-dating PrecipPredictionRow.PrecipAgreementWet01,
+    /// or 3g-only outputs where the per-NWP features aren't computed).
+    /// </summary>
+    private static string RenderPrecipHourlyConfidenceTable(
+        IReadOnlyList<PrecipForecastPoint> latestPerValid)
+    {
+        if (latestPerValid.Count == 0) return "";
+        if (!latestPerValid.Any(r => r.AgreementWet01.HasValue)) return "";
+
+        var rows = new StringBuilder();
+        foreach (var r in latestPerValid)
+        {
+            // Agreement is in [0, 1] = fraction of NWPs voting wet that hour.
+            // Confidence (= "unanimity") is high when agreement is near 0 or 1.
+            // Map to {high, medium, low} so the chip reads at a glance.
+            var (label, cls) = ConfidenceFromAgreement(r.AgreementWet01);
+            var agreementCell = r.AgreementWet01.HasValue
+                ? (r.AgreementWet01.Value * 100).ToString("0", Ci) + "%"
+                : "—";
+            // Tint the P(wet) cell by confidence: greyer when low-confidence,
+            // bolder when high. Cheaper than chart annotations and reads at
+            // table-scan speed.
+            var pwetStyle = label switch
+            {
+                "high"   => "color: #4527a0; font-weight: 600",
+                "medium" => "color: #7c4dff",
+                "low"    => "color: #9e9e9e; font-style: italic",
+                _        => "",
+            };
+            rows.Append(Ci, $"""
+                <tr>
+                  <td><time datetime="{r.ValidTimeUtc:yyyy-MM-ddTHH:mm}Z">{r.ValidTimeUtc:MM-dd HH'Z'}</time></td>
+                  <td class="num" style="{pwetStyle}">{(r.ProbWet * 100).ToString("0", Ci)}%</td>
+                  <td class="num">{agreementCell}</td>
+                  <td><span class="conf conf-{cls}">{label}</span></td>
+                </tr>
+                """);
+        }
+
+        return $"""
+            <details class="hourly-detail">
+              <summary>Hourly P(wet) + NWP agreement</summary>
+              <figure>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Valid time</th>
+                      <th class="num">P(wet)</th>
+                      <th class="num">NWPs wet</th>
+                      <th>Confidence</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+            {rows}      </tbody>
+                </table>
+              </figure>
+            </details>
+            """;
+    }
+
+    /// <summary>
+    /// Bucket per-NWP wet-vote agreement into a 3-tier confidence label.
+    /// Unanimity = 2 * |agreement - 0.5| — distance from the 0.5 split,
+    /// so 0% wet (all dry) and 100% wet (all wet) both score 1.0
+    /// (everyone unanimous), 50% wet scores 0 (worst split).
+    /// ≥0.6 → high, ≥0.2 → medium, rest → low.
+    /// Returns (label-text, css-class). Null agreement → "—" / "unknown"
+    /// so the renderer degrades gracefully on legacy rows.
+    /// </summary>
+    private static (string Label, string Cls) ConfidenceFromAgreement(double? agreement)
+    {
+        if (!agreement.HasValue) return ("—", "unknown");
+        var unanimity = 2.0 * Math.Abs(agreement.Value - 0.5);
+        return unanimity switch
+        {
+            >= 0.6 => ("high", "high"),
+            >= 0.2 => ("medium", "medium"),
+            _      => ("low", "low"),
+        };
     }
 }

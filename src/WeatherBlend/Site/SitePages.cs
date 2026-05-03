@@ -307,7 +307,14 @@ public static partial class SitePages
         double? PrecipUkmo,
         double? PrecipGem,
         double? PrecipAifs,
-        double? PrecipJma);
+        double? PrecipJma,
+        // Per-NWP wet-vote fraction at training-time hourly resolution (0..1).
+        // Confidence signal: when all NWPs agree, this saturates at 0 or 1;
+        // when they're split, it sits near 0.5. Free byproduct of 3a's
+        // training feature row, persisted on PrecipPredictionRow. Defaulted
+        // to null so existing positional construction sites compile unchanged
+        // — the renderer treats null as "legacy row, hide the chip".
+        double? AgreementWet01 = null);
 
     public sealed record FeelsLikeForecastPoint(
         string Version,
@@ -327,7 +334,16 @@ public static partial class SitePages
         int LeadHours,
         double ProbHasDryWindow,
         double ClimatologyProbHasDryWindow,
-        double? AgreementHasDryWindow);
+        double? AgreementHasDryWindow,
+        // Phase 3g aleatoric uncertainty (null on 3b/3e/3c rows). Summary of
+        // the per-MC-sample longest-dry-run distribution; narrow P10–P90 →
+        // headline P(any block) is robust across MC realisations under
+        // independence; wide → fragile. Defaulted to null so existing
+        // positional construction sites compile unchanged.
+        double? McMeanLongestDryRunHours = null,
+        double? McP10LongestDryRunHours = null,
+        double? McP50LongestDryRunHours = null,
+        double? McP90LongestDryRunHours = null);
 
     /// <summary>Per-NWP precipitation probability (Open-Meteo's
     /// <c>precipitation_probability</c> field, percent 0..100) for one
@@ -405,6 +421,21 @@ public static partial class SitePages
         nav.lead-nav a.active { background: var(--brand); color: white; font-weight: 600; }
 
         .skill-line { font-style: italic; color: var(--pico-muted-color); }
+
+        /* Confidence chip used on hourly precip detail tables — reads as a
+           glance-able classifier of "do all the NWPs agree on this hour?". */
+        .conf { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px;
+                font-size: 0.75rem; font-weight: 600; letter-spacing: 0.02em; }
+        .conf-high    { background: #e8f5e9; color: #2e7d32; }
+        .conf-medium  { background: #fff8e1; color: #ef6c00; }
+        .conf-low     { background: #ffebee; color: #c62828; }
+        .conf-unknown { background: #f5f5f5; color: #757575; }
+        details.hourly-detail { margin: -0.5rem 0 1.5rem; padding: 0; }
+        details.hourly-detail summary { font-size: 0.85rem; color: var(--pico-muted-color);
+                                        cursor: pointer; padding: 0.25rem 0; }
+        details.hourly-detail figure { margin: 0.25rem 0 0.5rem; }
+        details.hourly-detail table { margin: 0; }
+        details.hourly-detail table th, details.hourly-detail table td { padding: 0.25rem 0.6rem; font-size: 0.85rem; }
 
         table td.num, table th.num { text-align: right; font-variant-numeric: tabular-nums; }
         table td.num.strong { font-weight: 700; color: var(--brand); }
