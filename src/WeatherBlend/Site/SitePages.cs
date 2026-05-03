@@ -343,7 +343,13 @@ public static partial class SitePages
         double? McMeanLongestDryRunHours = null,
         double? McP10LongestDryRunHours = null,
         double? McP50LongestDryRunHours = null,
-        double? McP90LongestDryRunHours = null);
+        double? McP90LongestDryRunHours = null,
+        // Conformal-prediction set tag {"Dry", "Wet", "Ambiguous"} from
+        // the per-(version, lead) ConformalCalibrator if one was fitted
+        // (dry-window-conformal-fit). "Ambiguous" flags rows where the model
+        // can't commit to a single class with the requested coverage
+        // guarantee — a calibrated alternative to NWP-agreement confidence.
+        string? ConformalSetTag = null);
 
     /// <summary>Per-NWP precipitation probability (Open-Meteo's
     /// <c>precipitation_probability</c> field, percent 0..100) for one

@@ -232,6 +232,29 @@ public static class ModelArtifact
         return WeatherBlend.Train.Common.IsotonicCalibrator.FromJson(File.ReadAllText(path));
     }
 
+    /// <summary>Filename for the conformal calibrator at one lead. Distinct
+    /// from the isotonic calibrator (which scales the probability) — conformal
+    /// emits set-membership tags for the same probability without changing it.
+    /// Both can coexist in one version dir.</summary>
+    public static string LeadConformalCalibratorFileName(int leadHours)
+        => $"conformal_calibrator_{leadHours}h.json";
+
+    public static void SaveLeadConformalCalibrator(
+        WeatherBlend.Train.Common.ConformalCalibrator cal, string versionDir, int leadHours)
+    {
+        Directory.CreateDirectory(versionDir);
+        var path = Path.Combine(versionDir, LeadConformalCalibratorFileName(leadHours));
+        File.WriteAllText(path, cal.ToJson());
+    }
+
+    public static WeatherBlend.Train.Common.ConformalCalibrator? TryLoadLeadConformalCalibrator(
+        string versionDir, int leadHours)
+    {
+        var path = Path.Combine(versionDir, LeadConformalCalibratorFileName(leadHours));
+        if (!File.Exists(path)) return null;
+        return WeatherBlend.Train.Common.ConformalCalibrator.FromJson(File.ReadAllText(path));
+    }
+
     /// <summary>
     /// Legacy flat-list schema writer. Used by builders that haven't been migrated
     /// to <see cref="SaveBlenderSpecs"/> yet. Removed after Phase 5 of the

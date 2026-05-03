@@ -102,7 +102,8 @@ public sealed class RenderSiteCommand
             McMeanLongestDryRunHours:    r.McMeanLongestDryRunHours,
             McP10LongestDryRunHours:     r.McP10LongestDryRunHours,
             McP50LongestDryRunHours:     r.McP50LongestDryRunHours,
-            McP90LongestDryRunHours:     r.McP90LongestDryRunHours)).ToList();
+            McP90LongestDryRunHours:     r.McP90LongestDryRunHours,
+            ConformalSetTag:             r.ConformalSetTag)).ToList();
         _log.LogInformation("Loaded {N} dry-window prediction rows.", dryWindow.Count);
 
         var startHour = QueryStartHourPredictions(windowStart, predictionEnd, ct);

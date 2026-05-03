@@ -181,6 +181,26 @@ public static partial class SitePages
                         break;
                     }
 
+                    // Conformal-set chip: "Confident" when the prediction set
+                    // is a singleton, "Ambiguous" when both classes are in
+                    // the 90% set. We pick the smallest available lead's tag;
+                    // if no row has a fitted conformal calibrator, "—".
+                    string conformalCell = "—";
+                    foreach (var lead in leadOrder)
+                    {
+                        if (!byLead.TryGetValue(lead, out var d)) continue;
+                        if (string.IsNullOrEmpty(d.ConformalSetTag)) continue;
+                        var (label, cls) = d.ConformalSetTag switch
+                        {
+                            "Ambiguous" => ("ambiguous", "low"),
+                            "Wet"       => ("confident wet", "high"),
+                            "Dry"       => ("confident dry", "high"),
+                            _           => (d.ConformalSetTag.ToLowerInvariant(), "unknown"),
+                        };
+                        conformalCell = $"<span class=\"conf conf-{cls}\">{label}</span>";
+                        break;
+                    }
+
                     // Best-start cell: argmax of the curve at the smallest
                     // available lead bucket for this (station, window, date).
                     // Falls back to "—" when no curve, when the daily P(any) is
@@ -212,6 +232,7 @@ public static partial class SitePages
                           {leadCells}
                           <td class="num">{agreement}</td>
                           <td>{mcCell}</td>
+                          <td>{conformalCell}</td>
                           {bestStartTd}
                         </tr>
                         """);
@@ -242,6 +263,7 @@ public static partial class SitePages
                             <th class="num">+72h</th>
                             <th class="num">Model agreement</th>
                             <th>MC longest dry run <small>(3g only)</small></th>
+                            <th>Conformal <small>(90% set)</small></th>
                             {bestStartHeader}
                           </tr>
                         </thead>

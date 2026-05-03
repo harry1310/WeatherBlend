@@ -90,4 +90,16 @@ public sealed class DryWindowPredictionRow
     public double? McP10LongestDryRunHours { get; init; }
     public double? McP50LongestDryRunHours { get; init; }
     public double? McP90LongestDryRunHours { get; init; }
+
+    // ---- Conformal-prediction set tag (nullable; populated when the
+    // version dir has a fitted conformal calibrator) ----
+    //
+    // One of "Dry", "Wet", "Ambiguous" — the prediction set under split
+    // conformal at the calibrator's α (typically 0.10 = 90% coverage).
+    // "Ambiguous" flags rows where the model can't commit to a single
+    // class with the requested coverage guarantee — the user-facing
+    // confidence signal. Null when no conformal calibrator is present
+    // (legacy versions or when --action skip was used).
+
+    public string? ConformalSetTag { get; init; }
 }

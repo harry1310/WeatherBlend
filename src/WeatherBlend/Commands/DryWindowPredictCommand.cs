@@ -157,7 +157,7 @@ public sealed class DryWindowPredictCommand
         if (string.Equals(metadata.Phase, DryWindow3gPredictor.Phase3g, StringComparison.Ordinal))
         {
             return await RunPhase3gAsync(
-                stationSlug, windowHours, versionName, metadata, climatology,
+                versionDir, stationSlug, windowHours, versionName, metadata, climatology,
                 targets, anchorDate, predictionMadeAt, ct);
         }
 
@@ -280,6 +280,7 @@ public sealed class DryWindowPredictCommand
                 PrecipSumUkmo  = perModelSum[4], PrecipSumGem   = perModelSum[5],
                 PrecipSumAifs  = perModelSum[6], PrecipSumJma   = perModelSum[7],
                 FeatureVectorHash = FeatureHashing.HashFloats(row.Features),
+                ConformalSetTag = ApplyConformalIfPresent(versionDir, lead, prob),
             });
 
             _log.LogInformation(
@@ -306,7 +307,7 @@ public sealed class DryWindowPredictCommand
     /// name (the rolling-Brier renderer keys off this for phase grouping).
     /// </summary>
     private async Task<bool> RunPhase3gAsync(
-        string stationSlug, int windowHours, string versionName,
+        string versionDir, string stationSlug, int windowHours, string versionName,
         ModelArtifact.TrainingMetadata metadata, DryWindowClimatology climatology,
         IReadOnlyList<(int Lead, DateTime Date)> targets,
         DateTime anchorDate, DateTime predictionMadeAt, CancellationToken ct)
@@ -380,6 +381,7 @@ public sealed class DryWindowPredictCommand
             var stats = DryWindow3gPredictor.SampleStats(qDaytime, windowHours, rng, mcSamples);
             var prob = stats.ProbAtLeast;
             var climProb = climatology.Predict(targetDate);
+            var conformalTag = ApplyConformalIfPresent(versionDir, lead, prob);
 
             // Hash the qDaytime vector — gives a stable feature-vector
             // identity per row, mirroring what the LightGBM-based phases write.
@@ -413,6 +415,7 @@ public sealed class DryWindowPredictCommand
                 McP10LongestDryRunHours = stats.P10LongestRun,
                 McP50LongestDryRunHours = stats.P50LongestRun,
                 McP90LongestDryRunHours = stats.P90LongestRun,
+                ConformalSetTag = conformalTag,
             });
 
             _log.LogInformation(
@@ -611,4 +614,18 @@ ORDER BY ValidTimeUtc, Model;";
             => je.GetInt32(),
         _ => int.TryParse(v.ToString(), out var x) ? x : null,
     };
+
+    /// <summary>
+    /// Apply the conformal calibrator persisted next to the model, if any.
+    /// Returns the SetTag enum's name as a string ("Dry" / "Wet" /
+    /// "Ambiguous") so the parquet column reads naturally without an enum
+    /// roundtrip. Null when no conformal calibrator was fitted for this
+    /// (versionDir, lead) — keeps legacy behaviour for versions that
+    /// pre-date <c>dry-window-conformal-fit</c>.
+    /// </summary>
+    private static string? ApplyConformalIfPresent(string versionDir, int lead, double prob)
+    {
+        var cal = ModelArtifact.TryLoadLeadConformalCalibrator(versionDir, lead);
+        return cal?.Predict(prob).ToString();
+    }
 }

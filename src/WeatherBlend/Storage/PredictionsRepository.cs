@@ -212,7 +212,8 @@ SELECT LocationName, TruthStation, WindowHours, ModelVersion,
        PrecipSumAifs, PrecipSumJma,
        FeatureVectorHash,
        McMeanLongestDryRunHours, McP10LongestDryRunHours,
-       McP50LongestDryRunHours,  McP90LongestDryRunHours
+       McP50LongestDryRunHours,  McP90LongestDryRunHours,
+       ConformalSetTag
 FROM {fromClause}
 WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
   AND TargetDateUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
@@ -259,6 +260,7 @@ ORDER BY TruthStation, WindowHours, ModelVersion, LeadHours, TargetDateUtc";
         McP10LongestDryRunHours  = NullableDouble(r, 31),
         McP50LongestDryRunHours  = NullableDouble(r, 32),
         McP90LongestDryRunHours  = NullableDouble(r, 33),
+        ConformalSetTag          = r.IsDBNull(34) ? null : r.GetString(34),
     };
 
     // -----------------------------------------------------------------
