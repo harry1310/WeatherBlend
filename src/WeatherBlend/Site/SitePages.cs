@@ -142,6 +142,19 @@ public static partial class SitePages
         public required IReadOnlyList<(DateTime ObservedTimeUtc, double Temperature2m)> MetarByTime { get; init; }
 
         /// <summary>
+        /// Per-(version, lead) conformal threshold τ for the active dry-window
+        /// blenders. Surfaced in the dry-window table's conformal cell so the
+        /// reader can see the actual numbers (P + τ) behind a "confident wet
+        /// day" / "confident dry day" tag rather than the tag alone. Two
+        /// independently-fit values per (station, window, lead) — one for 3b's
+        /// LightGBM probability, one for 3g's MC probability — so the tag
+        /// arithmetic is fully transparent. Empty when conformal artefacts
+        /// haven't been fit yet.
+        /// </summary>
+        public IReadOnlyDictionary<(string Version, int LeadHours), double> DryWindowConformalTau { get; init; }
+            = new Dictionary<(string, int), double>();
+
+        /// <summary>
         /// Per-hour low-cloud / mist signal aggregated across NWP forecasts.
         /// Two independent counts: how many of the visibility-publishing
         /// NWPs are forecasting sub-1km vis (mist or fog), and how many of

@@ -122,6 +122,10 @@ public sealed class RenderSiteCommand
         var verifyHistory = LoadVerifyHistory(_cfg.Storage.ReportsPath);
         _log.LogInformation("Loaded {N} verify-history JSON sidecars.", verifyHistory.Count);
 
+        var dryWindowConformalTau = LoadDryWindowConformalTau();
+        _log.LogInformation("Loaded {N} dry-window conformal τ values across (version, lead).",
+            dryWindowConformalTau.Count);
+
         // ERA5 is gapless-for-past, but only past — query up to the clock time.
         // Persistence-lookback headroom (up to 72h before the earliest prediction)
         // keeps rolling-MAE truth pairs matchable at the start of the window.
@@ -189,6 +193,7 @@ public sealed class RenderSiteCommand
             RollingBrier = ComputeRollingBrier(precip, rainfall, phaseByVersion, precipRollingWindowDays),
             PrecipPredictions = precip,
             DryWindowPredictions = dryWindow,
+            DryWindowConformalTau = dryWindowConformalTau,
             PhaseByVersion = phaseByVersion,
             RainfallTruth = rainfall,
             CurrentVersion = currentVersion,
@@ -690,6 +695,48 @@ ORDER BY LeadHours, ValidTimeUtc";
     /// lets the hover-tooltip read "5 of 6 NWPs forecast mist" rather than
     /// just "warning".
     /// </summary>
+    /// <summary>
+    /// Load conformal τ values for every Active dry-window version × lead.
+    /// Walks the dry-window manifest, opens each version's per-lead
+    /// <c>conformal_calibrator_{L}h.json</c>, and dictionaries the resulting
+    /// τ by (version, lead). Surfaced on the dry-window page so tags read as
+    /// "P=62% · τ=30% · confident dry day" rather than just "confident dry
+    /// day". Missing JSONs (a fresh version that hasn't had auto-conformal
+    /// fit yet) silently drop — the cell falls back to the tag-only view.
+    /// </summary>
+    private IReadOnlyDictionary<(string Version, int LeadHours), double> LoadDryWindowConformalTau()
+    {
+        var dict = new Dictionary<(string, int), double>();
+        var manifest = _metadata.TryGetManifest("dry_window");
+        if (manifest?.Stations is null) return dict;
+        var modelsRoot = _cfg.Storage.ModelsPath;
+
+        foreach (var (compositeKey, entry) in manifest.Stations)
+        {
+            foreach (var versionName in entry.Active)
+            {
+                var versionDir = Path.Combine(modelsRoot, "dry_window", compositeKey, versionName);
+                if (!Directory.Exists(versionDir)) continue;
+                foreach (var lead in WeatherBlend.Train.Common.Leads.Short)
+                {
+                    var cal = ModelArtifact.TryLoadLeadConformalCalibrator(versionDir, lead);
+                    if (cal is null) continue;
+                    // Same versionName is shared across (station, window)
+                    // composites for 3b/3g — but conformal artefacts live
+                    // under each composite's version dir so the τ values
+                    // genuinely differ per (station, window). We key only on
+                    // (version, lead) here because the dry-window page already
+                    // resolved (station, window) before reading this dict. If
+                    // two composites collide on (version, lead) we keep the
+                    // first; in practice 3b/3g use suffixed version names per
+                    // composite + the suffixes only appear once per composite.
+                    dict.TryAdd((versionName, lead), cal.Tau);
+                }
+            }
+        }
+        return dict;
+    }
+
     private IReadOnlyDictionary<DateTime, SitePages.LowCloudSignal> QueryLowCloudSignals(
         DateTime start, DateTime end, CancellationToken ct)
     {

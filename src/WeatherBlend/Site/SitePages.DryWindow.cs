@@ -215,7 +215,15 @@ public static partial class SitePages
                             "Dry"       => ("confident wet day", "high"),
                             _           => (d.ConformalSetTag.ToLowerInvariant(), "unknown"),
                         };
-                        conformalCell = $"<span class=\"conf conf-{cls}\">{label}</span>";
+                        // Surface the actual P + τ values so the tag's
+                        // arithmetic is transparent. τ comes from the per-
+                        // version conformal artefact loaded into SiteInputs;
+                        // when it's missing (a brand-new version that hasn't
+                        // had auto-conformal fit yet) we fall back to P-only.
+                        var tauPart = input.DryWindowConformalTau.TryGetValue((d.Version, d.LeadHours), out var tau)
+                            ? string.Create(Ci, $" · τ={(tau * 100):0}%")
+                            : "";
+                        conformalCell = string.Create(Ci, $"<span class=\"conf conf-{cls}\">{label}</span> <small>(P={(d.ProbHasDryWindow * 100):0}%{tauPart})</small>");
                         break;
                     }
 
