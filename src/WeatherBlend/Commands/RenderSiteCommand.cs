@@ -159,7 +159,10 @@ public sealed class RenderSiteCommand
                 ? "(none)"
                 : string.Join(", ", precipCurrentByStation.Select(kv => $"{kv.Key}→{kv.Value}")));
 
-        var modelSummaries = LoadModelSummaries(predictions, precip, dryWindow);
+        var activeStationSlugs = new HashSet<string>(
+            _cfg.Location.Rainfall.Stations.Select(s => StationSlug.WithEaPrefix(s.Name)),
+            StringComparer.Ordinal);
+        var modelSummaries = LoadModelSummaries(predictions, precip, dryWindow, activeStationSlugs);
         _log.LogInformation("Loaded {N} model summaries for Models page.", modelSummaries.Count);
 
         var input = new SitePages.SiteInputs
@@ -182,9 +185,7 @@ public sealed class RenderSiteCommand
             RainfallTruth = rainfall,
             CurrentVersion = currentVersion,
             PrecipCurrentByStation = precipCurrentByStation,
-            ActiveStationSlugs = new HashSet<string>(
-                _cfg.Location.Rainfall.Stations.Select(s => StationSlug.WithEaPrefix(s.Name)),
-                StringComparer.Ordinal),
+            ActiveStationSlugs = activeStationSlugs,
             ModelSummaries = modelSummaries,
             FeelsLikePredictions = feelsLike,
             StartHourPredictions = startHour,
@@ -194,6 +195,14 @@ public sealed class RenderSiteCommand
         };
 
         Directory.CreateDirectory(outputDir);
+        // Clean every .html in outputDir before writing the fresh set. Stale
+        // per-station files (dry-window-princetown.html etc. left over from a
+        // station swap) would otherwise stick around forever — Cloudflare
+        // pages deploy is additive on what's in the source dir, not a wipe.
+        // Non-HTML files (chart.js, styles.css) are overwritten in place by
+        // the writers below; only the per-page HTML can become orphaned.
+        foreach (var stale in Directory.EnumerateFiles(outputDir, "*.html"))
+            File.Delete(stale);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "index.html"),         SitePages.RenderIndex(input),          ct);
         foreach (var lead in Leads.Full)
             await File.WriteAllTextAsync(Path.Combine(outputDir, $"forecasts-{lead}h.html"),
@@ -252,11 +261,16 @@ public sealed class RenderSiteCommand
     private IReadOnlyList<SitePages.ModelSummary> LoadModelSummaries(
         IReadOnlyList<TempPredictionRow> predictions,
         IReadOnlyList<SitePages.PrecipForecastPoint> precip,
-        IReadOnlyList<SitePages.DryWindowForecastPoint> dryWindow)
+        IReadOnlyList<SitePages.DryWindowForecastPoint> dryWindow,
+        IReadOnlySet<string> activeStationSlugs)
     {
         // Only load metadata for versions that actually emitted predictions in the
         // window. Anything else is stale / experimental / deleted and the Models page
         // would list it with no corresponding forecast activity.
+        // Per-station targets (precip + dry-window) are also filtered through
+        // activeStationSlugs so a demoted station (Princetown post 2026-05-04)
+        // doesn't get a Models card just because its historical predictions are
+        // still on disk.
         var modelsRoot = _cfg.Storage.ModelsPath;
         var summaries = new List<SitePages.ModelSummary>();
 
@@ -269,6 +283,7 @@ public sealed class RenderSiteCommand
 
         foreach (var (station, version) in precip.Select(p => (p.Station, p.Version)).Distinct())
         {
+            if (activeStationSlugs.Count > 0 && !activeStationSlugs.Contains(station)) continue;
             var dir = Path.Combine(modelsRoot, "precipitation", station, version);
             var composite = $"precipitation/{station}";
             var summary = TryLoadSummary(dir, composite, version, metricLabel: "Test Brier");
@@ -277,6 +292,7 @@ public sealed class RenderSiteCommand
 
         foreach (var (station, window, version) in dryWindow.Select(d => (d.Station, d.WindowHours, d.Version)).Distinct())
         {
+            if (activeStationSlugs.Count > 0 && !activeStationSlugs.Contains(station)) continue;
             var dir = Path.Combine(modelsRoot, "dry_window", station, $"window_{window}h", version);
             var composite = $"dry_window/{station}/{window}h";
             var summary = TryLoadSummary(dir, composite, version, metricLabel: "Test Brier");

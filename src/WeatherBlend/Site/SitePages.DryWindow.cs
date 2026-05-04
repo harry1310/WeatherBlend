@@ -71,7 +71,13 @@ public static partial class SitePages
             return WrapPage(input, "Dry window", "dry-window", content.ToString());
         }
 
-        var stations = input.DryWindowPredictions.Select(d => d.Station).Distinct().OrderBy(s => s, StringComparer.Ordinal).ToList();
+        // Filter station list to currently-active stations (from config) so a
+        // demoted station whose historical predictions are still on disk doesn't
+        // get a per-station tab. Empty ActiveStationSlugs preserves the legacy
+        // "render whatever's on disk" behaviour for tests that don't populate it.
+        var stations = input.DryWindowPredictions.Select(d => d.Station).Distinct()
+            .Where(s => input.ActiveStationSlugs.Count == 0 || input.ActiveStationSlugs.Contains(s))
+            .OrderBy(s => s, StringComparer.Ordinal).ToList();
         var currentStation = ResolveStationFromSlug(stations, stationSlug);
 
         if (currentStation is not null)

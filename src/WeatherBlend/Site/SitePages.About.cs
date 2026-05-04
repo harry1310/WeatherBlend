@@ -29,7 +29,7 @@ public static partial class SitePages
                 </li>
                 <li>
                   <strong>Precipitation occurrence</strong> P(wet ≥ 0.1 mm/h) — one classifier per
-                  EA gauge (Bellever, Princetown, Dartmoor near Hexworthy) at the same five
+                  EA gauge (Bellever, Bovey Tracey, Dartmoor near Hexworthy) at the same five
                   leads. Phase 3a (lean, 27 features) and Phase 3c (rich, 55 features — adds
                   per-NWP humidity, surface pressure, and EA trailing-rainfall persistence).
                   Truth from EA Hydrology 15-min tip readings, hourly-aggregated with a 4-of-4
@@ -55,7 +55,7 @@ public static partial class SitePages
               <ul>
                 <li><strong>Forecasts:</strong> Open-Meteo (live + historical-forecast API) — provides every NWP listed above through one consistent JSON interface.</li>
                 <li><strong>Training truth (temperature + element blenders):</strong> ERA5 reanalysis via Open-Meteo (gapless, quantitative, ~5–7 day publication lag).</li>
-                <li><strong>Training + verification truth (precipitation, dry window):</strong> Environment Agency Hydrology rainfall gauges (Bellever Dartmoor, Princetown, Dartmoor near Hexworthy), 15-min tips aggregated to hourly with a 4-of-4 reading gate.</li>
+                <li><strong>Training + verification truth (precipitation, dry window):</strong> Environment Agency Hydrology rainfall gauges (Bellever Dartmoor, Bovey Tracey, Dartmoor near Hexworthy), 15-min tips aggregated to hourly with a 4-of-4 reading gate.</li>
                 <li><strong>Verification truth (temperature):</strong> METAR from aviationweather.gov + OGIMET historical, used as a real-observation cross-check rather than primary truth (lowland stations have systematic biases vs the moorland tor).</li>
               </ul>
 

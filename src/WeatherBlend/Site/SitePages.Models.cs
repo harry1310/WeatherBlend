@@ -272,7 +272,7 @@ public static partial class SitePages
             leadHeaders.Append(Ci, $"""<th class="num">+{lead}h</th>""");
 
         return $"""
-            <details>
+            <details open>
               <summary><strong>Verify history</strong> <small>({matchingFiles.Count} run{(matchingFiles.Count == 1 ? "" : "s")})</small></summary>
               <p class="skill-line">Weekly Brier/MAE on the held-out rolling window — one row per verify run, drift flag in the last column. Metric: {Escape(metricLabel)}.</p>
               <table>

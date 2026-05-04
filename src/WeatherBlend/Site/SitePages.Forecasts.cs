@@ -122,8 +122,11 @@ public static partial class SitePages
         s.Append("<h3>Precipitation — P(wet ≥ 0.1 mm/h) vs NWP inputs</h3>");
         s.Append("<p class=\"skill-line\">Top: blender's hourly P(wet) plus climatology. Bottom: each NWP's raw precip rate (mm/h) at the same valid times. Stacked rather than overlaid because the units don't share an axis.</p>");
 
+        // Filter to active stations so a demoted-from-config station whose
+        // historical predictions are still on disk doesn't get a panel.
         var stations = input.PrecipPredictions
             .Select(p => p.Station).Distinct()
+            .Where(s => input.ActiveStationSlugs.Count == 0 || input.ActiveStationSlugs.Contains(s))
             .OrderBy(st => st, StringComparer.Ordinal).ToList();
 
         if (stations.Count == 0)
