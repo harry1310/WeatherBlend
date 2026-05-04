@@ -39,6 +39,12 @@ runs:
       #   data/truth/era5      — temperature truth for skill charts.
       #   data/truth/metar     — METAR comparison line for the temp skill page.
       #   data/truth/rainfall  — EA gauge truth for precip + rain-skill charts.
+      #   data/truth/met_office_obs — Met Office DataHub Land Obs (geohash gcj0z3
+      #                          ≈ Taw Green / North Wyke). Read by
+      #                          TruthRepository.GetMetOfficeObsTemperature for
+      #                          the second cross-check line on temp-skill.
+      #                          Missing this tree was the silent-empty bug on
+      #                          2026-05-04 (when the obs line first shipped).
       #   data/models          — training_metadata.json (Models page metrics +
       #                          phase labels) and MANIFEST.json (champion
       #                          filter for home-page forecast cards).
@@ -60,6 +66,7 @@ runs:
             data/truth/era5 \
             data/truth/metar \
             data/truth/rainfall \
+            data/truth/met_office_obs \
             data/models \
             data/reports \
             data/forecasts; do
