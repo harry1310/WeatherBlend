@@ -79,45 +79,54 @@ public static class DryWindow3gPredictor
     }
 
     /// <summary>
-    /// Start-hour distribution for a single window length under independence
-    /// MC. Per sample, mark every candidate start hour s where hours
-    /// s..s+windowLength-1 are all dry; aggregate per s across samples;
-    /// normalise to a distribution that sums to 1.
+    /// Start-hour curve from one MC pass over <paramref name="qHourly"/>.
+    /// Returned <see cref="StartHourCurve.ProbAtLeast"/> matches what
+    /// <see cref="ProbDryWindow"/> would return for the same inputs (it's
+    /// a free byproduct of the same loop). <see cref="StartHourCurve.MarginalByStart"/>
+    /// is <c>P(hours s..s+windowLength-1 are all dry)</c> per candidate
+    /// start hour s — the MC estimate of the analytical product
+    /// <c>(1-q_s)(1-q_{s+1})...(1-q_{s+windowLength-1})</c>. Under independence
+    /// the two are mathematically equivalent; MC's value is that the curve
+    /// is computed from the SAME samples that produce ProbAtLeast, so the
+    /// two numbers shipped on the same site row stay numerically consistent
+    /// (no risk of a drift between "P(any block today)" and "Σ start-hour
+    /// probs").
     ///
-    /// This is the MC analogue of <see cref="WeatherBlend.Predict.StartHour.StartHourCurveDerivation"/>'s
-    /// analytical product π_s = (1-q_s)(1-q_{s+1})...(1-q_{s+N-1}) /
-    /// Σ same. Under independence the two MUST agree to within MC noise —
-    /// MC is just numerical estimation of the same expectation. The point
-    /// of having C alongside current is to make the architecture explicit
-    /// (so option B can swap correlated copula sampling in for the
-    /// independent Bernoullis without changing the rest of the pipeline).
+    /// MarginalByStart sums to E[# valid starts per day], not 1 and not
+    /// ProbAtLeast — caller normalises to π_s = marginal_s / Σ marginal
+    /// for the conditional shape (which IS what the existing
+    /// StartHourPredictionRow.ConditionalProb field stores) and then
+    /// CalibratedProb_s = π_s × ProbAtLeast for the magnitude-scaled
+    /// quantity that sums to ProbAtLeast.
     ///
-    /// An earlier "first occurrence" framing was a definitional mistake:
-    /// the truth set in <see cref="StartHourTruth.ValidStartsFor"/> is
-    /// every-start-where-a-block-begins, not earliest-start, so a "first
-    /// only" π fits a biased distribution.
-    ///
-    /// Returns null if no candidate start hour ever materialised across all
-    /// samples — caller falls back to uniform.
+    /// Returns null if qHourly.Length &lt; windowLength (no candidate
+    /// starts at all, structurally impossible day).
     /// </summary>
-    public static double[]? StartHourConditional(
+    public readonly record struct StartHourCurve(
+        double ProbAtLeast,
+        double[] MarginalByStart);
+
+    public static StartHourCurve? SampleStartHourCurve(
         double[] qHourly, int windowLength, Random rng, int nSamples = DefaultMcSamples)
     {
         if (qHourly.Length < windowLength) return null;
         var nStarts = qHourly.Length - windowLength + 1;
         var counts = new long[nStarts];
+        long anyHits = 0;
 
         // Allocate once, reuse across samples — qHourly.Length is small
         // (≤24) but stackalloc inside a 10k-iter loop trips CA2014.
         Span<bool> dry = stackalloc bool[qHourly.Length];
         for (int s = 0; s < nSamples; s++)
         {
-            // Build the dry/wet vector for this sample, then check each
-            // candidate start. Cheap because windowLength is small (3..6)
-            // and nStarts is small (≤7 for a 9h daytime window).
             for (int h = 0; h < qHourly.Length; h++)
                 dry[h] = rng.NextDouble() >= qHourly[h];
 
+            // Track whether ANY length-N dry block exists this sample —
+            // ProbAtLeast = (any-hits / nSamples). Same expectation
+            // ProbDryWindow / SampleStats compute, but free since we're
+            // already iterating candidate starts below.
+            bool anyValidStart = false;
             for (int i = 0; i < nStarts; i++)
             {
                 bool allDry = true;
@@ -125,16 +134,20 @@ public static class DryWindow3gPredictor
                 {
                     if (!dry[i + j]) { allDry = false; break; }
                 }
-                if (allDry) counts[i]++;
+                if (allDry)
+                {
+                    counts[i]++;
+                    anyValidStart = true;
+                }
             }
+            if (anyValidStart) anyHits++;
         }
 
-        long total = 0;
-        for (int i = 0; i < nStarts; i++) total += counts[i];
-        if (total == 0) return null;
-        var pi = new double[nStarts];
-        for (int i = 0; i < nStarts; i++) pi[i] = (double)counts[i] / total;
-        return pi;
+        var marginal = new double[nStarts];
+        for (int i = 0; i < nStarts; i++) marginal[i] = (double)counts[i] / nSamples;
+        return new StartHourCurve(
+            ProbAtLeast: (double)anyHits / nSamples,
+            MarginalByStart: marginal);
     }
 
     /// <summary>

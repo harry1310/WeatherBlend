@@ -159,7 +159,6 @@ public static class Program
                 // ElementBakeoffCommand removed in Phase 5 of unify-model-membership refactor.
                 services.AddTransient<FeelsLikePredictCommand>();
                 services.AddTransient<StartHourPredictCommand>();
-                services.AddTransient<StartHourBakeoffCommand>();
                 // Met Office Global / UKV (raw AWS S3 backfill via Python) removed
                 // 2026-04-29 — bake-off rejected as blender inputs (negative result)
                 // and their parquet writer was the sole source of TIMESTAMPTZ schema
@@ -508,45 +507,13 @@ public static class Program
         // It diagnosed UKMO inclusion vs exclusion on a shared UKMO-present test set; the
         // resulting per-element decisions are now baked into config.yaml's blenders section.
 
-        // ---- start-hour bake-off (Phase 1 scaffolding for option C / B comparison) ----
-        var bakeoffActionOpt = new Option<string>(
-            name: "--action",
-            description: "prepare | score | compare",
-            getDefaultValue: () => "compare");
-        var bakeoffMethodOpt = new Option<string?>(
-            name: "--method",
-            description: "Method name when --action score: current | C | B",
-            getDefaultValue: () => null);
-        var bakeoffWindowsOpt = new Option<string?>(
-            name: "--windows",
-            description: "Comma-separated window lengths to include in the test set (default: 3,4,6).",
-            getDefaultValue: () => null);
-        var bakeoffDaytimeStartOpt = new Option<int?>(
-            name: "--daytime-start-utc",
-            description: "Override daytime start hour UTC (default: from config DryWindow daytime range).",
-            getDefaultValue: () => null);
-        var bakeoffDaytimeEndOpt = new Option<int?>(
-            name: "--daytime-end-utc",
-            description: "Override daytime end hour UTC, exclusive (default: from config DryWindow daytime range).",
-            getDefaultValue: () => null);
-        var startHourBakeoff = new Command(
-            "start-hour-bakeoff",
-            "Phase 1+: shared start-hour comparison harness for current vs option C vs option B")
-        {
-            bakeoffActionOpt, bakeoffMethodOpt, bakeoffWindowsOpt,
-            bakeoffDaytimeStartOpt, bakeoffDaytimeEndOpt,
-        };
-        startHourBakeoff.SetHandler(async ctx =>
-        {
-            var action = ctx.ParseResult.GetValueForOption(bakeoffActionOpt)!;
-            var method = ctx.ParseResult.GetValueForOption(bakeoffMethodOpt);
-            var windows = ctx.ParseResult.GetValueForOption(bakeoffWindowsOpt);
-            var daytimeStart = ctx.ParseResult.GetValueForOption(bakeoffDaytimeStartOpt);
-            var daytimeEnd = ctx.ParseResult.GetValueForOption(bakeoffDaytimeEndOpt);
-            var cmd = host.Services.GetRequiredService<StartHourBakeoffCommand>();
-            ctx.ExitCode = await cmd.RunAsync(action, method, windows, daytimeStart, daytimeEnd, ctx.GetCancellationToken());
-        });
-        root.AddCommand(startHourBakeoff);
+        // The `start-hour-bakeoff` command was removed 2026-05-04 alongside
+        // StartHourCurveDerivation. The bake-off was Phase-1 scaffolding for
+        // a never-run "current vs option C vs option B" comparison; option C
+        // (3g-style MC over 3a hourly q) shipped directly as production in
+        // StartHourPredictCommand v2 so "current" no longer exists and the
+        // framework would have nothing to compare against. Rebuild a fresh
+        // harness if/when option B (Bayesian copula) gets built.
 
         // ---- dry-window-conformal-fit (one-shot back-fit of conformal calibrators) ----
         var conformalAlphaOpt = new Option<double>(

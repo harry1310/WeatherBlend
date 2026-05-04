@@ -4,30 +4,50 @@ using Parquet.Serialization;
 using WeatherBlend.Config;
 using WeatherBlend.Models;
 using WeatherBlend.Predict;
-using WeatherBlend.Predict.StartHour;
 using WeatherBlend.Train;
+using WeatherBlend.Train.DryWindow;
 
 namespace WeatherBlend.Commands;
 
 /// <summary>
-/// Joins per-anchor predictions from the Phase-3a precipitation blender
-/// (hourly P(wet) at lead L) and the Phase-3b/3d dry-window blender (daily
-/// P(∃ N-hour dry block) at lead L) by (Station, WindowHours, LeadHours,
-/// TargetDate), then derives the per-start-hour curve via
-/// <see cref="StartHourCurveDerivation.Derive"/>. One parquet per
-/// (station, window) gets written under
-/// <c>data/predictions/dry_window_start_hour/{station}/window_{N}h/model_version=v1/date={anchor}/predictions.parquet</c>.
+/// Per-anchor "where in the daytime is the dry window?" curve, derived from
+/// the SAME MC samples Phase 3g uses for the dry-window daily probability.
+/// One parquet per (station, window) under
+/// <c>data/predictions/dry_window_start_hour/{station}/window_{N}h/model_version=v2/date={anchor}/predictions.parquet</c>.
+///
+/// Was previously the analytical product π_s = ∏(1-q_h) / Σ same scaled by
+/// the dry-window blender's daily marginal. Replaced 2026-05-04 with
+/// <see cref="DryWindow3gPredictor.SampleStartHourCurve"/>: the same MC
+/// pass that produces ProbHasDryWindow on the dry-window page also tallies
+/// per-start-hour marginals, so the start-hour curve sums to the daily
+/// probability shown alongside it on the site (no drift between
+/// "P(any block today) = X" and "Σ start-hour probs = Y" with Y ≠ X). Under
+/// independence the two methods are mathematically equivalent — this is a
+/// numerical-consistency / single-source-of-truth fix, not a model change.
 ///
 /// Pre-requisite: precip + dry-window predicts have already run for this
-/// anchor. The combined predict-and-render workflow runs them in order
-/// (precip → dry-window → start-hour) so the inputs land before this
-/// command reads them. Either upstream missing → that composite skipped
-/// for this anchor, exit code stays 0 unless every composite is empty.
+/// anchor — start-hour reads the live 3a champion's hourly P(wet) parquet
+/// for the daytime window (same parquet 3g consumes for dry-window
+/// predict). The combined predict-and-render workflow runs them in order
+/// so the inputs land before this command reads them. Either upstream
+/// missing → that composite skipped for this anchor, exit code stays 0
+/// unless every composite is empty.
 /// </summary>
 public sealed class StartHourPredictCommand
 {
     public const string PredictionsSubdir = "dry_window_start_hour";
-    public const string OutputModelVersion = "v1";
+    /// <summary>v1 was the analytical-product derivation (deleted 2026-05-04).
+    /// v2 is the 3g-MC derivation. Bumping the version on disk means old v1
+    /// rows + new v2 rows can coexist during the transition cycle.</summary>
+    public const string OutputModelVersion = "v2";
+    /// <summary>MC sample count — matches DryWindow3gPredictor's default so
+    /// the start-hour curve and the dry-window daily prob have identical
+    /// sampling noise floors.</summary>
+    public const int McSamples = DryWindow3gPredictor.DefaultMcSamples;
+    /// <summary>Deterministic seed; matches the seed convention used in
+    /// 3g predict + the dry-window train pipeline so results are
+    /// reproducible across runs.</summary>
+    public const int DefaultSeed = 42;
 
     private readonly ILogger<StartHourPredictCommand> _log;
     private readonly AppConfig _cfg;
@@ -57,6 +77,7 @@ public sealed class StartHourPredictCommand
         }
 
         var daytime = _cfg.DryWindow.BuildDaytimeWindow();
+        var rng = new Random(DefaultSeed);
 
         // (station, windowHours) → all curve rows for that composite.
         var rowsByComposite = new Dictionary<(string Station, int Window), List<StartHourPredictionRow>>();
@@ -75,6 +96,14 @@ public sealed class StartHourPredictCommand
                 skipped++; continue;
             }
 
+            // Demoted dry-window stations (Current="" — e.g. Princetown post
+            // 2026-05-04) skip silently; predict skipped them already.
+            var dryVersion = dryEntry.Current;
+            if (string.IsNullOrEmpty(dryVersion))
+            {
+                skipped++; continue;
+            }
+
             if (!precipManifest.Stations.TryGetValue(station, out var precipEntry)
                 || string.IsNullOrEmpty(precipEntry.Current))
             {
@@ -82,26 +111,28 @@ public sealed class StartHourPredictCommand
                     compositeKey, station);
                 skipped++; continue;
             }
-
-            var dryVersion = dryEntry.Current;
             var precipVersion = precipEntry.Current;
-            if (string.IsNullOrEmpty(dryVersion))
+
+            // Live precip prediction parquet for THIS anchor — same file 3g
+            // reads when computing ProbHasDryWindow. Reading from the same
+            // source guarantees the start-hour curve is consistent with
+            // 3g's daily output.
+            Dictionary<DateTime, double> hourly;
+            try
             {
-                _log.LogWarning("  {Composite}: no dry-window champion — skip.", compositeKey);
+                hourly = DryWindow3gPredictor.LoadLivePredictionsHourly(
+                    _cfg.Storage.PredictionsPath, station, precipVersion, anchorDate);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex,
+                    "  {Composite}: 3a prediction parquet missing for anchor {A:yyyy-MM-dd} (precip {V}); skip.",
+                    compositeKey, anchorDate, precipVersion);
                 skipped++; continue;
             }
-
-            var dryRows = await LoadDryWindowRowsAsync(station, windowHours, dryVersion, anchorDate, ct);
-            if (dryRows.Count == 0)
+            if (hourly.Count == 0)
             {
-                _log.LogInformation("  {Composite}: no dry-window prediction rows at this anchor; skip.", compositeKey);
-                skipped++; continue;
-            }
-
-            var precipRows = await LoadPrecipRowsAsync(station, precipVersion, anchorDate, ct);
-            if (precipRows.Count == 0)
-            {
-                _log.LogInformation("  {Composite}: no precipitation prediction rows at this anchor; skip.", compositeKey);
+                _log.LogInformation("  {Composite}: 3a parquet empty at this anchor; skip.", compositeKey);
                 skipped++; continue;
             }
 
@@ -112,27 +143,82 @@ public sealed class StartHourPredictCommand
                 rowsByComposite[composite] = bucket;
             }
 
-            foreach (var dry in dryRows)
+            // For each lead, the target date is anchor + L days. Iterate the
+            // standard 24/48/72h triple — matches what dry-window predict
+            // wrote so the per-day cards line up.
+            foreach (var lead in WeatherBlend.Train.Common.Leads.Short)
             {
-                var hourlyQ = BuildHourlyQ(precipRows, dry.LeadHours, dry.TargetDateUtc);
-                var (startUtc, endUtc) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(dry.TargetDateUtc));
+                var targetDate = anchorDate.AddDays(lead / 24);
+                var (startUtc, endUtc) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(targetDate));
+                var qDaytime = DryWindow3gPredictor.ExtractDaytimeQ(
+                    hourly, targetDate, startUtc, endUtc);
+                if (qDaytime is null)
+                {
+                    _log.LogWarning(
+                        "  {Composite} lead {L}h ({D:yyyy-MM-dd}): 3a missing one or more daytime hours; skip.",
+                        compositeKey, lead, targetDate);
+                    continue;
+                }
 
-                var derived = StartHourCurveDerivation.Derive(
-                    locationName: _cfg.Location.Name,
-                    truthStation: station,
-                    windowHours: windowHours,
-                    startHourVersion: OutputModelVersion,
-                    predictionMadeAtUtc: predictionMadeAt,
-                    leadHours: dry.LeadHours,
-                    targetDateUtc: DateTime.SpecifyKind(dry.TargetDateUtc, DateTimeKind.Utc),
-                    daytimeStartUtc: startUtc,
-                    daytimeEndUtc: endUtc,
-                    hourlyPWet: hourlyQ,
-                    dailyProbAnyBlock: dry.ProbHasDryWindow,
-                    precipVersion: precipVersion,
-                    dryWindowVersion: dryVersion);
+                var curve = DryWindow3gPredictor.SampleStartHourCurve(
+                    qDaytime, windowHours, rng, McSamples);
+                if (curve is null)
+                {
+                    // Window > daytime span — structurally impossible.
+                    continue;
+                }
 
-                bucket.AddRange(derived);
+                var marginal = curve.Value.MarginalByStart;
+                var probAny = curve.Value.ProbAtLeast;
+                var nStarts = marginal.Length;
+
+                // π_s = marginal_s / Σ marginal — the conditional shape.
+                // Falls back to uniform when Σ marginal ≈ 0 (every candidate
+                // window has a near-certain wet hour) so downstream consumers
+                // get a stable row count + ordering.
+                double sumMarginal = 0;
+                for (int i = 0; i < nStarts; i++) sumMarginal += marginal[i];
+                var conditional = new double[nStarts];
+                if (sumMarginal > 0)
+                    for (int i = 0; i < nStarts; i++) conditional[i] = marginal[i] / sumMarginal;
+                else
+                    for (int i = 0; i < nStarts; i++) conditional[i] = 1.0 / nStarts;
+
+                for (int i = 0; i < nStarts; i++)
+                {
+                    bucket.Add(new StartHourPredictionRow
+                    {
+                        LocationName = _cfg.Location.Name,
+                        TruthStation = station,
+                        WindowHours = windowHours,
+                        ModelVersion = OutputModelVersion,
+                        PredictionMadeAtUtc = predictionMadeAt,
+                        TargetDateUtc = DateTime.SpecifyKind(targetDate, DateTimeKind.Utc),
+                        LeadHours = lead,
+                        StartHourUtc = startUtc + i,
+                        // RawProduct: per-start-hour marginal (same units as
+                        // the analytical formula's p_s — kept for diagnostics
+                        // / audit trail). Sum across starts ≈ E[# valid
+                        // starts/day], not interpretable as a probability
+                        // directly.
+                        RawProduct = marginal[i],
+                        // ConditionalProb: shape over candidate start hours,
+                        // sums to 1. Same semantic the previous analytical
+                        // method shipped.
+                        ConditionalProb = conditional[i],
+                        // CalibratedProb: π_s × ProbHasDryWindow (the daily
+                        // prob 3g shows on the dry-window page). Sum across
+                        // starts equals ProbHasDryWindow exactly — no drift.
+                        CalibratedProb = conditional[i] * probAny,
+                        DailyProbAnyBlock = probAny,
+                        PrecipVersion = precipVersion,
+                        DryWindowVersion = dryVersion,
+                    });
+                }
+                _log.LogInformation(
+                    "  {Composite} lead {L}h ({D:yyyy-MM-dd}) → {N} starts, ProbAny={P:0.000} (Σ calibrated = {Sum:0.000})",
+                    compositeKey, lead, targetDate, nStarts, probAny,
+                    bucket.TakeLast(nStarts).Sum(r => r.CalibratedProb));
             }
         }
 
@@ -196,62 +282,6 @@ public sealed class StartHourPredictCommand
             .ThenBy(r => r.LeadHours)
             .ThenBy(r => r.StartHourUtc)
             .ToList();
-
-    /// <summary>
-    /// Per (lead, hour-of-day) on the target date, take the freshest precip
-    /// prediction's ProbWet. Returns a hour-of-day → q map for the
-    /// requested lead bucket on the requested target date. Empty when the
-    /// anchor's precip parquet has no rows for that (lead, target_date).
-    /// </summary>
-    internal static Dictionary<int, double> BuildHourlyQ(
-        IReadOnlyList<PrecipPredictionRow> precip,
-        int leadHours,
-        DateTime targetDateUtc)
-    {
-        var q = new Dictionary<int, double>();
-        var freshness = new Dictionary<int, DateTime>();
-        foreach (var row in precip)
-        {
-            if (row.LeadHours != leadHours) continue;
-            if (row.ValidTimeUtc.Date != targetDateUtc.Date) continue;
-            var hour = row.ValidTimeUtc.Hour;
-            if (freshness.TryGetValue(hour, out var prev) && prev >= row.PredictionMadeAtUtc) continue;
-            q[hour] = row.ProbWet;
-            freshness[hour] = row.PredictionMadeAtUtc;
-        }
-        return q;
-    }
-
-    private async Task<List<DryWindowPredictionRow>> LoadDryWindowRowsAsync(
-        string station, int windowHours, string version, DateTime anchorDate,
-        CancellationToken ct)
-    {
-        var path = Path.Combine(_cfg.Storage.PredictionsPath,
-            "dry_window", station, $"window_{windowHours}h",
-            $"model_version={version}",
-            $"date={anchorDate:yyyy-MM-dd}",
-            "predictions.parquet");
-        if (!File.Exists(path)) return new List<DryWindowPredictionRow>();
-        var raw = (await ParquetSerializer.DeserializeAsync<DryWindowPredictionRow>(path, cancellationToken: ct)).ToList();
-        // Latest PMT per (lead, target_date) — multiple cycles can land in this
-        // partition during a UTC day; pick the freshest per composite cell.
-        return raw
-            .GroupBy(r => (r.LeadHours, r.TargetDateUtc))
-            .Select(g => g.MaxBy(r => r.PredictionMadeAtUtc)!)
-            .ToList();
-    }
-
-    private async Task<List<PrecipPredictionRow>> LoadPrecipRowsAsync(
-        string station, string version, DateTime anchorDate, CancellationToken ct)
-    {
-        var path = Path.Combine(_cfg.Storage.PredictionsPath,
-            "precipitation", station,
-            $"model_version={version}",
-            $"date={anchorDate:yyyy-MM-dd}",
-            "predictions.parquet");
-        if (!File.Exists(path)) return new List<PrecipPredictionRow>();
-        return (await ParquetSerializer.DeserializeAsync<PrecipPredictionRow>(path, cancellationToken: ct)).ToList();
-    }
 
     private static ModelArtifact.Manifest? LoadManifest(string modelsRoot, string target)
     {
