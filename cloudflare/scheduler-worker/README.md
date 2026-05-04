@@ -14,7 +14,7 @@ Cloudflare crons                              Workflow dispatched
 30 2,8,14,20 * * *  (every 6h, :30)      →   collect.yml
 0 3,9,15,21 * * *   (every 6h, 30 after collect)  →   predict-and-render.yml
 0 12 * * *          (daily 12:00 UTC)    →   era5-refresh.yml
-30 9 * * 1          (Mon 09:30 UTC)      →   verify.yml
+30 9 * * 1,4        (Mon + Thu 09:30 UTC) →   verify.yml
         │
         ▼
 weatherblend-scheduler (this Worker)
@@ -37,7 +37,7 @@ cron has been fired in production for at least a couple of cycles.
 | `30 2,8,14,20 * * *` | `collect.yml` | Every 6h, offset `:30` past the hour. Was `:15` until 2026-05-04; shifted +15 to give Open-Meteo more ingestion headroom for late ECMWF cycles (06z sometimes finishes ingesting ~07:30 UTC, which an `08:15` collect would miss). Recent runs complete in 2.5–3.5 min so the 30-min gap to predict still has plenty of slack. |
 | `45 2,8,14,20 * * *` | `predict-and-render.yml` | Every 6h, offset `:45` past each collect's `:15`. The 30-min lag past collect lets the R2 push settle before predict reads. Was `45 */2 * * *` (every 2h) until 2026-05-04 — but the on-disk forecast tree only changes when collect runs (which is every 6h), so 8 of every 12 daily predicts were reading IDENTICAL inputs to the previous run and producing IDENTICAL outputs. Per-cycle output is rich enough to justify the 6h cadence: temp + precip emit 24 hourly forecasts per lead bucket, dry-window emits per-day. See `data/reports/schedule_proposal_2026-05-04.md` for the full reasoning. |
 | `0 12 * * *` | `era5-refresh.yml` | ECMWF publishes ERA5T daily around 09–10 UTC; Open-Meteo ingests within a few hours. 12:00 UTC is past both, so the daily refresh always lands on Open-Meteo's freshest data instead of catching ECMWF mid-publish (which writes null partitions). The refresh itself pulls a 14-day rolling window, so any null partitions left by older runs get backfilled as ECMWF catches up. |
-| `30 9 * * 1` | `verify.yml` | Weekly Monday 09:30 UTC. Historical timing — kept verbatim from the GitHub-side cron so weekly Brier reports continue to land on the same Monday-morning slot. |
+| `30 9 * * 1,4` | `verify.yml` | Twice-weekly Mon + Thu 09:30 UTC. Doubled from weekly-Mon on 2026-05-04: a freshly retrained champion was waiting up to 7 days for its first verify rows (cron) plus 5 days (ERA5 latency) before showing on the Models page; cutting cron lag in half cuts that to 3-4 days. Both runs in the morning UTC slot. |
 
 ## Adding a new schedule
 

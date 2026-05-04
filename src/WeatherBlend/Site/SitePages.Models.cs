@@ -226,7 +226,7 @@ public static partial class SitePages
             return $"""
                 <details open>
                   <summary><strong>Verify history</strong> <small>(no runs yet)</small></summary>
-                  <p class="skill-line">No verify rows on disk match this card's phase ({Escape(phase)}). Either the next weekly verify (Mon 09:30 UTC, then 5d ERA5 latency) hasn't yet scored predictions made by this version, or older verify files used a different phase tag for this lineage. Re-check after the next Monday cycle.</p>
+                  <p class="skill-line">No verify rows on disk match this card's phase ({Escape(phase)}). Either the next verify (twice-weekly Mon + Thu 09:30 UTC, then 5d ERA5 latency) hasn't yet scored predictions made by this version, or older verify files used a different phase tag for this lineage. Re-check after the next Mon/Thu cycle.</p>
                 </details>
                 """;
         }
