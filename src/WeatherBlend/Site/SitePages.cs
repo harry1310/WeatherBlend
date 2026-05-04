@@ -448,7 +448,11 @@ public static partial class SitePages
     public static string Stylesheet() => """
         :root { --brand: #7c4dff; --pwet: #0288d1; }
         body > main { padding-top: 1rem; padding-bottom: 3rem; }
-        nav.site-nav { padding: 0.5rem 0 1rem; border-bottom: 1px solid var(--pico-muted-border-color); margin-bottom: 1.5rem; }
+        nav.site-nav { padding: 0.5rem 0 0.5rem; border-bottom: 1px solid var(--pico-muted-border-color); margin-bottom: 0.5rem; }
+        /* Pico's default <section> has a top margin that combined with the
+           site-nav bottom margin to leave a big empty band between the main
+           and sub navs. Suppress it on the first section in main. */
+        main > section:first-of-type { margin-top: 0; padding-top: 0; }
         nav.site-nav ul { display: flex; gap: 1rem; list-style: none; padding: 0; margin: 0; }
         nav.site-nav a { text-decoration: none; }
         nav.site-nav a.active { font-weight: 600; color: var(--brand); }

@@ -5,16 +5,34 @@ namespace WeatherBlend.Site;
 public static partial class SitePages
 {
     /// <summary>
-    /// Home page: forward forecast grouped by UTC day for a 5-day window.
-    /// Each day gets a one-line summary header (min/max temp, mean P(wet),
-    /// driest hour) followed by per-hour tiles. Each tile carries a UTCI
-    /// info button that pops out the four element-blender values
-    /// (temperature / humidity / wind / shortwave / cloud) that fed UTCI
-    /// for that hour, so "why is UTCI this value?" is reachable without
-    /// leaving the page.
+    /// Home day-window: 0 = today's UTC date (offset 0), 1 = tomorrow, … up
+    /// to <see cref="MaxHomeDayOffset"/>. The home page now renders one file
+    /// per day with a sub-nav at the top to switch between them — the old
+    /// stacked-day layout meant scrolling past today before reaching tomorrow.
+    /// 5 forward days matches the temp + rain blender's 120h max lead; the
+    /// dry-window forecasts page covers per-day outlook beyond that scope.
     /// </summary>
-    public static string RenderIndex(SiteInputs input)
+    public const int MaxHomeDayOffset = 5;
+
+    /// <summary>
+    /// One forward-day's home page. Tiles are the champion-blender forecast
+    /// at the shortest lead, filtered to "outdoor" hours
+    /// <c>[<see cref="HomeFirstVisibleHourUtc"/>, <see cref="HomeLastVisibleHourUtcExclusive"/>)</c>
+    /// — 21:00-03:59 UTC are dropped because they're irrelevant for climbing
+    /// or walking trip planning. Each tile carries a UTCI ⓘ pop-out with the
+    /// element-blender values that fed it.
+    /// </summary>
+    public static string RenderIndex(SiteInputs input, int dayOffset)
     {
+        if (dayOffset < 0 || dayOffset > MaxHomeDayOffset)
+            throw new ArgumentOutOfRangeException(nameof(dayOffset),
+                $"Home dayOffset must be in [0, {MaxHomeDayOffset}].");
+
+        var todayUtc = input.GeneratedAtUtc.Date;
+        var dayUtc = todayUtc.AddDays(dayOffset);
+        var dayWindowStart = dayUtc.AddHours(HomeFirstVisibleHourUtc);
+        var dayWindowEnd   = dayUtc.AddHours(HomeLastVisibleHourUtcExclusive);
+
         // Champion-only filter (mirrors the Models page's "active phase" gate)
         // so a challenger version doesn't leak onto the headline cards. Empty
         // CurrentVersion = no manifest, fall back to "any".
@@ -23,14 +41,12 @@ public static partial class SitePages
             : input.Predictions.Where(p => p.ModelVersion == input.CurrentVersion);
 
         // For each future valid_time, take the smallest lead (most recent
-        // cycle); within ties, freshest PredictionMadeAt wins. Cap at 5 days
-        // forward so the page stays scannable — temp + rain max lead is 120h
-        // anyway, and the dry-window page covers the per-day outlook beyond
-        // that scope.
-        var horizonEnd = input.GeneratedAtUtc.AddDays(5);
-        var futurePredictions = cardSource
+        // cycle); within ties, freshest PredictionMadeAt wins. Restrict to
+        // this day's outdoor window and drop any past hour (today's tab only).
+        var dayPreds = cardSource
             .Where(p => p.ValidTimeUtc > input.GeneratedAtUtc
-                        && p.ValidTimeUtc <= horizonEnd)
+                        && p.ValidTimeUtc >= dayWindowStart
+                        && p.ValidTimeUtc <  dayWindowEnd)
             .GroupBy(p => p.ValidTimeUtc)
             .Select(g => g
                 .OrderBy(p => p.LeadHours)
@@ -62,39 +78,28 @@ public static partial class SitePages
                       .ThenByDescending(u => u.PredictedAtUtc)
                       .First());
 
-        var dayBlocks = new StringBuilder();
-        var byDay = futurePredictions
-            .GroupBy(p => p.ValidTimeUtc.Date)
-            .OrderBy(g => g.Key)
-            .ToList();
-
-        // Sequential popover ID — Pico's <details> is the simplest no-JS
-        // pop-out mechanism; each tile gets a unique id so a future feature
-        // can deep-link to a specific hour's panel.
-        int popoverId = 0;
-
-        foreach (var day in byDay)
+        // Day summary line above the tile grid: temp range + mean P(wet) +
+        // driest hour. Falls back to a temp-only line when no P(wet) is
+        // available for Bellever this day.
+        string daySummary, tilesHtml;
+        if (dayPreds.Count == 0)
         {
-            var dayPreds = day.OrderBy(p => p.ValidTimeUtc).ToList();
+            daySummary = "<p class=\"skill-line\"><em>No forward predictions in this day's outdoor window.</em></p>";
+            tilesHtml = "";
+        }
+        else
+        {
             var minT = dayPreds.Min(p => p.BlendTemperature);
             var maxT = dayPreds.Max(p => p.BlendTemperature);
-
-            // Day-level rain summary: mean of available P(wet), plus the
-            // hour with the lowest P(wet) ("best go-now hour"). Pulled from
-            // the same Bellever pwetByValid map; tolerate ±1h drift per
-            // tile.
             var dayPwets = dayPreds
                 .Select(p => TryNearest(pwetByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var pw) ? pw : null)
                 .Where(pw => pw is not null)
                 .Select(pw => pw!)
                 .ToList();
-            string daySummary;
             if (dayPwets.Count > 0)
             {
                 var meanP = dayPwets.Average(p => p.ProbWet);
                 var driest = dayPwets.OrderBy(p => p.ProbWet).First();
-                daySummary = Ci.ToString() == ""
-                    ? "" : ""; // (placeholder — formatted below)
                 daySummary = string.Create(Ci, $"""
                     <p class="skill-line">
                       <strong>{minT:0.0}°C → {maxT:0.0}°C</strong> ·
@@ -107,47 +112,62 @@ public static partial class SitePages
             {
                 daySummary = string.Create(Ci, $"""<p class="skill-line"><strong>{minT:0.0}°C → {maxT:0.0}°C</strong> · no P(wet) for Bellever this day</p>""");
             }
-
             var tiles = new StringBuilder();
+            int popoverId = 0;
             foreach (var p in dayPreds)
-            {
                 tiles.Append(RenderHourTile(p, feelsLikeByValid, pwetByValid, popoverId++));
-            }
-
-            // Day-of-week + date in the section heading; readers can scan
-            // "Mon 5 May" without doing UTC arithmetic. UTC label retained
-            // because every value on the page is still UTC.
-            dayBlocks.Append(Ci, $"""
-                <section class="day-block">
-                  <h3>{day.Key:dddd dd MMMM}</h3>
-                  {daySummary}
-                  <div class="forecast-grid">
-                {tiles}  </div>
-                </section>
-                """);
-        }
-
-        if (byDay.Count == 0)
-        {
-            dayBlocks.Append("""
-                <section class="day-block">
-                  <p><em>No forward predictions available</em></p>
-                </section>
-                """);
+            tilesHtml = string.Create(Ci, $"<div class=\"forecast-grid\">{tiles}</div>");
         }
 
         var body = new StringBuilder();
+        body.Append("<section>");
+        body.Append(RenderHomeDaySubNav(input.GeneratedAtUtc, dayOffset));
         body.Append(Ci, $"""
-            <section>
               <hgroup>
-                <h2>Forward forecast</h2>
-                <p>{Escape(input.LocationDisplay)} — {input.Latitude.ToString("0.0000", Ci)}°, {input.Longitude.ToString("0.0000", Ci)}°, {input.ElevationMeters.ToString("0", Ci)}m. Five days forward, grouped by UTC day. Each tile is the champion-blender forecast at the shortest available lead. Click the ⓘ on a tile to see the wind / humidity / cloud / radiation values that drove its UTCI.</p>
+                <h2>Forward forecast — {dayUtc:dddd dd MMMM}</h2>
+                <p>{Escape(input.LocationDisplay)} — {input.Latitude.ToString("0.0000", Ci)}°, {input.Longitude.ToString("0.0000", Ci)}°, {input.ElevationMeters.ToString("0", Ci)}m. Champion-blender forecast at the shortest available lead. Hours 04:00–20:59 UTC only — overnight tiles dropped as they're irrelevant for outdoor planning. Click the ⓘ on a tile to see the wind / humidity / cloud / radiation values that drove its UTCI.</p>
               </hgroup>
-              {dayBlocks}
-            </section>
             """);
+        body.Append(daySummary);
+        body.Append(tilesHtml);
+        body.Append("</section>");
 
-        return WrapPage(input, "Home", "index", body.ToString());
+        // Page filename convention: today is index.html (so the canonical
+        // home URL is unchanged), forward days are index-1.html / index-2.html
+        // / … / index-5.html.
+        var pageSlug = dayOffset == 0 ? "index" : $"index-{dayOffset}";
+        return WrapPage(input, "Home", pageSlug, body.ToString());
+    }
+
+    /// <summary>UTC hour at which the home tile grid starts. Tiles before
+    /// this time are filtered out per user feedback (overnight hours aren't
+    /// useful for planning a climbing trip).</summary>
+    public const int HomeFirstVisibleHourUtc = 4;
+
+    /// <summary>UTC hour at which the home tile grid ends, exclusive. Tiles
+    /// at or after this time are filtered out.</summary>
+    public const int HomeLastVisibleHourUtcExclusive = 21;
+
+    /// <summary>
+    /// Day sub-nav for the home page — six pill links labelled "Mon 4/5"
+    /// style (day-of-week short + day/month numeric, e.g. "Tue 5/5"). Today
+    /// is offset 0 (file index.html); each forward day gets index-{n}.html.
+    /// </summary>
+    private static string RenderHomeDaySubNav(DateTime nowUtc, int activeOffset)
+    {
+        var today = nowUtc.Date;
+        var s = new StringBuilder();
+        s.Append("<nav class=\"lead-nav\"><ul>");
+        for (int n = 0; n <= MaxHomeDayOffset; n++)
+        {
+            var date = today.AddDays(n);
+            var file = n == 0 ? "index.html" : $"index-{n}.html";
+            var label = n == 0 ? "Today" : $"{date:ddd} {date.Day}/{date.Month}";
+            var cls = n == activeOffset ? " class=\"active\"" : "";
+            s.Append(Ci, $"<li><a href=\"{file}\"{cls}>{Escape(label)}</a></li>");
+        }
+        s.Append("</ul></nav>");
+        return s.ToString();
     }
 
     /// <summary>
@@ -173,13 +193,18 @@ public static partial class SitePages
             // value is present (older parquets pre-dating the element-input
             // persistence have all five null and the panel would be empty).
             string toggle = "";
-            if (fl.TemperatureC is not null || fl.RelativeHumidityPct is not null
+            // Temperature deliberately excluded from the gate too — only show
+            // the toggle when at least one of the four "why is UTCI this value"
+            // element fields is present.
+            if (fl.RelativeHumidityPct is not null
                 || fl.WindSpeed10mMs is not null || fl.ShortwaveDownWm2 is not null
                 || fl.CloudCoverPct is not null)
             {
+                // Temperature row deliberately omitted — it's already the
+                // headline value on the tile, repeating it in the pop-out is
+                // noise. The other four are the "why is UTCI this value?"
+                // story the reader can't get elsewhere.
                 var rows = new StringBuilder();
-                if (fl.TemperatureC is double t)
-                    rows.Append(Ci, $"<tr><td>Temperature</td><td class=\"num\">{t:0.0} °C</td></tr>");
                 if (fl.RelativeHumidityPct is double rh)
                     rows.Append(Ci, $"<tr><td>Humidity</td><td class=\"num\">{rh:0} %</td></tr>");
                 if (fl.WindSpeed10mMs is double ws)

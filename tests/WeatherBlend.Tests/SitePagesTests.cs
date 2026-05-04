@@ -143,23 +143,58 @@ public class SitePagesTests
     }
 
     [Fact]
-    public void RenderIndex_tags_each_card_header_with_day_of_week()
+    public void RenderIndex_emits_day_sub_nav_with_day_of_week_labels()
     {
-        // Home cards now key off valid_time, not lead — each card's header is
-        // "{day} {HH:mm}Z". Readers should see the day name for each forward
-        // prediction without doing mental arithmetic on the UTC timestamp.
-        var generatedAt = new DateTime(2026, 4, 24, 0, 0, 0, DateTimeKind.Utc); // Fri
-        var preds = new[] { 24, 48, 72 }.Select(lead =>
-            new TempPredictionRow
-            {
-                LocationName = "Test",
-                ModelVersion = "v",
-                PredictionMadeAtUtc = generatedAt,
-                ValidTimeUtc = generatedAt.AddHours(lead),
-                LeadHours = lead,
-                BlendTemperature = 12.0,
-                FeatureVectorHash = "",
-            }).ToArray();
+        // Home is now per-day with a sub-nav at the top — one tab per day in
+        // the 6-day window (today + 5 forward) labelled "ddd d/M" so the
+        // reader can flip between days without doing UTC arithmetic. Today
+        // is the canonical "Today" tab; the others are dated.
+        var generatedAt = new DateTime(2026, 4, 24, 12, 0, 0, DateTimeKind.Utc); // Fri midday
+        var input = MakeEmptyForecastInput() with { GeneratedAtUtc = generatedAt };
+
+        var html = SitePages.RenderIndex(input, dayOffset: 0);
+
+        html.Should().Contain("Today");        // offset 0
+        html.Should().Contain("Sat 25/4");     // Fri + 1 day
+        html.Should().Contain("Sun 26/4");     // Fri + 2 days
+        html.Should().Contain("Mon 27/4");     // Fri + 3 days
+    }
+
+    [Fact]
+    public void RenderIndex_falls_back_to_empty_state_when_no_future_predictions()
+    {
+        // No forward predictions in window → per-day empty state rather than
+        // a blank page or a stale entry.
+        var generatedAt = new DateTime(2026, 4, 24, 12, 0, 0, DateTimeKind.Utc);
+        var input = MakeEmptyForecastInput() with { GeneratedAtUtc = generatedAt };
+
+        var html = SitePages.RenderIndex(input, dayOffset: 0);
+
+        html.Should().Contain("No forward predictions in this day");
+    }
+
+    [Fact]
+    public void RenderIndex_filters_overnight_hours_from_tile_grid()
+    {
+        // 21:00-03:59 UTC tiles are dropped — overnight isn't useful for
+        // outdoor planning. Predictions at 01:00 / 06:00 / 22:00 UTC: only
+        // the 06:00 one should land on the tomorrow tab.
+        var generatedAt = new DateTime(2026, 4, 24, 12, 0, 0, DateTimeKind.Utc);
+        var nextDay = generatedAt.Date.AddDays(1);  // Sat 04-25
+        var preds = new[]
+        {
+            (h: 1,  lead: 13),  // 01:00 — outside window
+            (h: 6,  lead: 18),  // 06:00 — inside window
+            (h: 22, lead: 34),  // 22:00 — outside window
+        }.Select(t => new TempPredictionRow
+        {
+            LocationName = "Test", ModelVersion = "v",
+            PredictionMadeAtUtc = generatedAt,
+            ValidTimeUtc = nextDay.AddHours(t.h),
+            LeadHours = t.lead,
+            BlendTemperature = 12.0,
+            FeatureVectorHash = "",
+        }).ToArray();
         var input = MakeEmptyForecastInput() with
         {
             GeneratedAtUtc = generatedAt,
@@ -167,24 +202,11 @@ public class SitePagesTests
             CurrentVersion = "v",
         };
 
-        var html = SitePages.RenderIndex(input);
+        var html = SitePages.RenderIndex(input, dayOffset: 1);
 
-        html.Should().Contain("Sat 00:00Z");   // Fri + 24h = Sat
-        html.Should().Contain("Sun 00:00Z");   // Fri + 48h = Sun
-        html.Should().Contain("Mon 00:00Z");   // Fri + 72h = Mon
-    }
-
-    [Fact]
-    public void RenderIndex_falls_back_to_empty_state_when_no_future_predictions()
-    {
-        // No forward predictions in window → grid shows the empty-state card
-        // rather than a blank page or a stale entry.
-        var generatedAt = new DateTime(2026, 4, 24, 0, 0, 0, DateTimeKind.Utc);
-        var input = MakeEmptyForecastInput() with { GeneratedAtUtc = generatedAt };
-
-        var html = SitePages.RenderIndex(input);
-
-        html.Should().Contain("No forward predictions available");
+        html.Should().Contain("06:00Z");       // visible
+        html.Should().NotContain("01:00Z");    // overnight, filtered
+        html.Should().NotContain("22:00Z");    // overnight, filtered
     }
 
     [Fact]
@@ -1348,8 +1370,9 @@ public class SitePagesTests
     {
         // UTCI prediction at the same (lead, valid_time) as the temp card → chip
         // shows both Steadman ("Feels like X") and UTCI bands. ApparentC is the
-        // Steadman value; UtciC is the Bröde polynomial output.
-        var generatedAt = new DateTime(2026, 4, 24, 0, 0, 0, DateTimeKind.Utc);
+        // Steadman value; UtciC is the Bröde polynomial output. Use a +24h
+        // valid time landing in tomorrow's outdoor window (12:00 UTC).
+        var generatedAt = new DateTime(2026, 4, 24, 12, 0, 0, DateTimeKind.Utc);
         var validTime = generatedAt.AddHours(24);
         var preds = new[]
         {
@@ -1383,7 +1406,7 @@ public class SitePagesTests
             FeelsLikePredictions = feelsLike,
         };
 
-        var html = SitePages.RenderIndex(input);
+        var html = SitePages.RenderIndex(input, dayOffset: 1);
 
         html.Should().Contain("Feels like");
         html.Should().Contain("6.7°C");           // Steadman value
@@ -1396,7 +1419,9 @@ public class SitePagesTests
     {
         // Card present but no UTCI row at this (lead, valid_time) — fall back
         // silently to no chip rather than rendering "Feels like NaN°C" or similar.
-        var generatedAt = new DateTime(2026, 4, 24, 0, 0, 0, DateTimeKind.Utc);
+        // Use a midday-anchor + tomorrow tab so the prediction lands in the
+        // outdoor visible window.
+        var generatedAt = new DateTime(2026, 4, 24, 12, 0, 0, DateTimeKind.Utc);
         var preds = new[]
         {
             new TempPredictionRow
@@ -1417,7 +1442,7 @@ public class SitePagesTests
             // FeelsLikePredictions left empty.
         };
 
-        var html = SitePages.RenderIndex(input);
+        var html = SitePages.RenderIndex(input, dayOffset: 1);
 
         html.Should().NotContain("Feels like");
     }
