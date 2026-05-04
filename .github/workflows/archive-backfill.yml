@@ -75,7 +75,11 @@ jobs:
         shell: bash -el {0}
         run: |
           which wgrib2
-          wgrib2 -version
+          # wgrib2 -version exits non-zero on some builds (it prints to stderr
+          # and returns 8 even on a successful version dump). bash -e treats
+          # that as fatal, so guard with `|| true` — `which` already proved
+          # the binary's there.
+          wgrib2 -version || true
           echo "WEATHERBLEND_WGRIB2=$(which wgrib2)" >> "$GITHUB_ENV"
 
       - name: Install rclone
