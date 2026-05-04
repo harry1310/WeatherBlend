@@ -120,7 +120,7 @@ public static partial class SitePages
     {
         var s = new StringBuilder();
         s.Append("<h3>Precipitation — P(wet ≥ 0.1 mm/h) vs NWP inputs</h3>");
-        s.Append("<p class=\"skill-line\">Top: blender's hourly P(wet) plus climatology. Bottom: each NWP's raw precip rate (mm/h) at the same valid times. Stacked rather than overlaid because the units don't share an axis.</p>");
+        s.Append("<p class=\"skill-line\">Per-station P(wet) on top, plus climatology and per-NWP PoP overlay. The NWP precip rate (mm/h) chart sits below — only once, because the per-NWP forecasts are point values for Bonehill that don't differ per gauge station.</p>");
 
         // Filter to active stations so a demoted-from-config station whose
         // historical predictions are still on disk doesn't get a panel.
@@ -139,6 +139,11 @@ public static partial class SitePages
         // (precip-only). Colours are matched so "ECMWF is blue" reads the same
         // up there and down here.
         var nwpSpecs = NwpsForPrecipitation();
+        // Cache the latest per-(station, valid) rows for each station so we
+        // build them once per render. The NWP precip rate chart hoisted below
+        // the loop reads this cache — it's identical across stations so any
+        // one entry will do.
+        var latestPerValidByStation = new Dictionary<string, IReadOnlyList<PrecipForecastPoint>>(StringComparer.Ordinal);
 
         foreach (var station in stations)
         {
@@ -154,6 +159,7 @@ public static partial class SitePages
                 .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
                 .OrderBy(r => r.ValidTimeUtc)
                 .ToList();
+            latestPerValidByStation[station] = latestPerValid;
 
             s.Append(Ci, $"<h4>{Escape(PrettyStation(station))}</h4>");
 
@@ -205,12 +211,32 @@ public static partial class SitePages
                     probSeries.Add(new LineSeries($"{label} PoP", colour, pts));
             }
 
-            // Bottom: per-NWP precip rate, mm/h axis. Skip series where every
-            // point is null so the legend stays clean.
+            s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
+            {
+                Title = $"P(wet) — {PrettyStation(station)} — +{lead}h",
+                XLabel = "Valid time (UTC)",
+                YLabel = "Probability",
+                Series = probSeries,
+                Height = 220,
+                FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
+                FormatY = v => v.ToString("0.00", Ci),
+            }));
+
+            s.Append(RenderPrecipDailySummaryTable(latestPerValid));
+            s.Append(RenderPrecipHourlyConfidenceTable(latestPerValid));
+        }
+
+        // Per-NWP precip rate (mm/h) — hoisted out of the per-station loop
+        // because PrecipGfs / PrecipEcmwf / etc. are point forecasts for
+        // Bonehill, not gauge-station-specific. Pick any non-empty station
+        // to source the rows from; values for the NWP columns are identical.
+        var sourceRows = latestPerValidByStation.Values.FirstOrDefault(r => r.Count > 0);
+        if (sourceRows is { Count: > 0 })
+        {
             var nwpSeries = new List<LineSeries>();
             foreach (var nwp in nwpSpecs)
             {
-                var pts = latestPerValid
+                var pts = sourceRows
                     .Select(r => (Valid: r.ValidTimeUtc, Val: nwp.Get(r)))
                     .Where(t => t.Val.HasValue)
                     .Select(t => (X: t.Valid.ToOADate(), Y: t.Val!.Value))
@@ -218,32 +244,20 @@ public static partial class SitePages
                 if (pts.Count > 0)
                     nwpSeries.Add(new LineSeries(nwp.Label, nwp.Color, pts));
             }
-
-            s.Append("<div class=\"chart-stack\">");
-            s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
+            if (nwpSeries.Count > 0)
             {
-                Title = $"P(wet) — {PrettyStation(station)} — +{lead}h",
-                XLabel = "",                               // X label only on the bottom chart
-                YLabel = "Probability",
-                Series = probSeries,
-                Height = 220,
-                FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
-                FormatY = v => v.ToString("0.00", Ci),
-            }));
-            s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
-            {
-                Title = "",                                // title only on the top chart
-                XLabel = "Valid time (UTC)",
-                YLabel = "Precip rate (mm/h)",
-                Series = nwpSeries,
-                Height = 220,
-                FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
-                FormatY = v => v.ToString("0.0", Ci),
-            }));
-            s.Append("</div>");
-
-            s.Append(RenderPrecipDailySummaryTable(latestPerValid));
-            s.Append(RenderPrecipHourlyConfidenceTable(latestPerValid));
+                s.Append("<h4>NWP precip rate (mm/h) — point forecast at Bonehill</h4>");
+                s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
+                {
+                    Title = $"NWP precip rate — Bonehill — +{lead}h",
+                    XLabel = "Valid time (UTC)",
+                    YLabel = "Precip rate (mm/h)",
+                    Series = nwpSeries,
+                    Height = 220,
+                    FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
+                    FormatY = v => v.ToString("0.0", Ci),
+                }));
+            }
         }
 
         return s.ToString();

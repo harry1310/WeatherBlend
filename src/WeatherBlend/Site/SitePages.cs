@@ -552,10 +552,14 @@ public static partial class SitePages
               borderColor: ds.color,
               backgroundColor: ds.color,
               borderWidth: 1.75,
-              // Smaller dots across the board — discrete-truth markers stay just
-              // visible, short-series points are barely-there, dense series stay
-              // line-only. Hover keeps the same target so the picker is still easy.
-              pointRadius: ds.discrete ? 1.5 : (ds.points.length <= 30 ? 1.5 : 0),
+              // No markers on continuous series regardless of point count —
+              // the previous "show markers if ≤30 points" branch was creating
+              // visual asymmetry across stations (Bovey + rolling MAE / Brier
+              // panels are sparser, landed in the marker branch; Bellever + denser
+              // series didn't). Discrete-truth dots stay tiny so the 0/1 indicators
+              // are still readable. Hover radius stays at 4 so the picker still
+              // works on bare lines.
+              pointRadius: ds.discrete ? 1.5 : 0,
               pointHoverRadius: 4,
               showLine: !ds.discrete,
               tension: 0,
