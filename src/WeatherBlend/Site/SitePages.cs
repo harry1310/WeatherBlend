@@ -365,7 +365,16 @@ public static partial class SitePages
         int LeadHours,
         double UtciC,
         string Band,
-        double ApparentC);
+        double ApparentC,
+        // Element-blender inputs that fed UTCI for this hour. Surfaced in the
+        // home-page per-tile pop-out so the reader can see "why is UTCI this
+        // value?" without leaving the home page. All defaulted so existing
+        // positional construction sites compile unchanged.
+        double? TemperatureC = null,
+        double? RelativeHumidityPct = null,
+        double? WindSpeed10mMs = null,
+        double? ShortwaveDownWm2 = null,
+        double? CloudCoverPct = null);
 
     public sealed record DryWindowForecastPoint(
         string Station,
@@ -462,6 +471,26 @@ public static partial class SitePages
         .forecast-card .feels small { margin-left: 0.35rem; }
         .forecast-card footer { margin-top: auto; padding-top: 0.4rem; border-top: 1px solid var(--pico-muted-border-color); }
         .forecast-card footer small { color: var(--pico-muted-color); font-size: 0.75rem; }
+        .forecast-card h4 { margin: 0; font-size: 1rem; font-variant-numeric: tabular-nums; }
+
+        /* Day-grouped home layout — one block per UTC day with a summary line
+           above the per-hour tile grid. Top + bottom margin so days read as
+           visually separated blocks; the overall page still scrolls naturally. */
+        .day-block { margin: 0 0 1.5rem; padding: 0; border: 0; }
+        .day-block h3 { margin: 0.75rem 0 0.25rem; }
+        .day-block .skill-line { margin: 0 0 0.5rem; }
+
+        /* UTCI per-hour pop-out — Pico's <details> styled inline so the ⓘ
+           summary sits next to the band tag instead of stacking on its own
+           line. The panel itself opens below the tile contents (Pico handles
+           the toggle) and shows a tight 2-column table of the element-blender
+           values that fed UTCI. */
+        details.utci-pop { display: inline; margin-left: 0.25rem; }
+        details.utci-pop summary { cursor: pointer; color: var(--pico-muted-color); font-size: 0.85rem; list-style: none; display: inline; }
+        details.utci-pop summary::-webkit-details-marker { display: none; }
+        details.utci-pop[open] summary { color: var(--brand); }
+        .utci-pop-table { margin: 0.4rem 0 0.1rem; font-size: 0.78rem; width: 100%; }
+        .utci-pop-table td { padding: 0.1rem 0.25rem; border: 0; }
 
         nav.lead-nav { margin: 0 0 1.25rem; padding: 0; }
         nav.lead-nav ul { display: flex; gap: 0.75rem; list-style: none; padding: 0; margin: 0; }

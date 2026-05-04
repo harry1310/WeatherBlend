@@ -590,9 +590,14 @@ public sealed class RenderSiteCommand
             return Array.Empty<SitePages.FeelsLikeForecastPoint>();
         }
 
+        // Pull element inputs alongside UTCI + Apparent so the home-page tile
+        // pop-out can surface "why is UTCI this value?" without a second read.
+        // All five are required-non-null at write time so no NULL defending.
         var sql = $@"
 SELECT ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours, UtciC, Band,
-       ApparentTemperatureC
+       ApparentTemperatureC,
+       TemperatureC, RelativeHumidityPct, WindSpeed10mMs,
+       ShortwaveDownWm2, CloudCoverPct
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
 WHERE LocationName = '{_cfg.Location.Name}'
   AND UtciC IS NOT NULL
@@ -602,13 +607,18 @@ WHERE LocationName = '{_cfg.Location.Name}'
 ORDER BY LeadHours, ValidTimeUtc";
 
         return ParquetReader.Query(conn, sql, r => new SitePages.FeelsLikeForecastPoint(
-            Version:        r.GetString(0),
-            PredictedAtUtc: r.GetDateTime(1),
-            ValidTimeUtc:   r.GetDateTime(2),
-            LeadHours:      r.GetInt32(3),
-            UtciC:          r.GetDouble(4),
-            Band:           r.IsDBNull(5) ? "" : r.GetString(5),
-            ApparentC:      r.GetDouble(6)),
+            Version:             r.GetString(0),
+            PredictedAtUtc:      r.GetDateTime(1),
+            ValidTimeUtc:        r.GetDateTime(2),
+            LeadHours:           r.GetInt32(3),
+            UtciC:               r.GetDouble(4),
+            Band:                r.IsDBNull(5) ? "" : r.GetString(5),
+            ApparentC:           r.GetDouble(6),
+            TemperatureC:        r.IsDBNull(7)  ? null : (double?)r.GetDouble(7),
+            RelativeHumidityPct: r.IsDBNull(8)  ? null : (double?)r.GetDouble(8),
+            WindSpeed10mMs:      r.IsDBNull(9)  ? null : (double?)r.GetDouble(9),
+            ShortwaveDownWm2:    r.IsDBNull(10) ? null : (double?)r.GetDouble(10),
+            CloudCoverPct:       r.IsDBNull(11) ? null : (double?)r.GetDouble(11)),
             _log, "Feels-like predictions tree empty — chip will be absent on home cards.", ct);
     }
 
