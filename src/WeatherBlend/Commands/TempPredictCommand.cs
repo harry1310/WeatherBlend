@@ -344,8 +344,12 @@ public sealed class TempPredictCommand
         // Dedupe on (PredictionMadeAtUtc, LeadHours) — newest row for the key wins.
         // MaxBy(PredictionMadeAtUtc) is explicit about "latest"; don't rely on concat
         // order so a retry that pulls existing-file rows in any order still converges.
+        // Merge key includes ValidTimeUtc so the 24 hourly predictions per
+        // lead bucket each get their own row. Pre-hourly (one prediction per
+        // lead bucket) the key was just (PredictionMadeAtUtc, LeadHours)
+        // which silently collapsed the new hourly outputs to 1-row-per-lead.
         var merged = existing.Concat(predictions)
-            .GroupBy(r => (r.PredictionMadeAtUtc, r.LeadHours))
+            .GroupBy(r => (r.PredictionMadeAtUtc, r.LeadHours, r.ValidTimeUtc))
             .Select(g => g.MaxBy(r => r.PredictionMadeAtUtc)!)
             .OrderBy(r => r.ValidTimeUtc)
             .ThenBy(r => r.LeadHours)

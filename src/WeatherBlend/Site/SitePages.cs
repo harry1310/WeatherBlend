@@ -164,6 +164,18 @@ public static partial class SitePages
             = new Dictionary<string, IReadOnlyDictionary<DateTime, double>>();
 
         /// <summary>
+        /// Currently-active EA station slugs from config (rainfall.stations →
+        /// ea-prefixed slugs). The renderer filters per-station tabs +
+        /// pages to this set so a station demoted from the rotation
+        /// (e.g. Princetown after the 2026-05-04 Bovey swap) doesn't render
+        /// just because its historical parquets are still on disk. Empty
+        /// set falls back to "render everything seen in the predictions"
+        /// for backward-compat with older drives.
+        /// </summary>
+        public IReadOnlyCollection<string> ActiveStationSlugs { get; init; }
+            = new HashSet<string>(StringComparer.Ordinal);
+
+        /// <summary>
         /// Temperature <c>Manifest.Current</c> — the official champion. When set, the home
         /// page filters its forecast cards to this version so results are deterministic
         /// even while a challenger is also active. Empty string → no filter (fall back to
@@ -724,8 +736,9 @@ public static partial class SitePages
     internal static string StationSlug(string station) => station switch
     {
         "ea_bellever_dartmoor" => "bellever",
-        "ea_princetown" => "princetown",
+        "ea_princetown" => "princetown",     // legacy — Princetown is no longer in active config (2026-05-04)
         "ea_dartmoor_nr_hexworthy" => "hexworthy",
+        "ea_bovey_tracey" => "bovey",
         _ => station,
     };
 

@@ -182,6 +182,9 @@ public sealed class RenderSiteCommand
             RainfallTruth = rainfall,
             CurrentVersion = currentVersion,
             PrecipCurrentByStation = precipCurrentByStation,
+            ActiveStationSlugs = new HashSet<string>(
+                _cfg.Location.Rainfall.Stations.Select(s => StationSlug.WithEaPrefix(s.Name)),
+                StringComparer.Ordinal),
             ModelSummaries = modelSummaries,
             FeelsLikePredictions = feelsLike,
             StartHourPredictions = startHour,
@@ -218,9 +221,17 @@ public sealed class RenderSiteCommand
                 SitePages.RenderRainSkill(input, slug), ct);
         }
 
-        // Dry-window page is per-station too. Dry-window-only stations are a subset
-        // of rain-skill stations (it's currently Bellever + Princetown, no Hexworthy).
-        var dryStations = input.DryWindowPredictions.Select(d => d.Station).Distinct().OrderBy(s => s, StringComparer.Ordinal).ToList();
+        // Dry-window page is per-station too. Same active-station filter as
+        // rain-skill — a station that was demoted from config (Princetown
+        // post 2026-05-04) shouldn't render just because its historical
+        // dry-window predictions are still on disk.
+        var activeSet = input.ActiveStationSlugs;
+        var dryStations = input.DryWindowPredictions
+            .Select(d => d.Station)
+            .Where(s => activeSet.Count == 0 || activeSet.Contains(s))
+            .Distinct()
+            .OrderBy(s => s, StringComparer.Ordinal)
+            .ToList();
         await File.WriteAllTextAsync(Path.Combine(outputDir, "dry-window.html"), SitePages.RenderDryWindow(input, null), ct);
         for (int i = 1; i < dryStations.Count; i++)
         {

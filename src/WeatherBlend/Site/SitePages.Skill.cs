@@ -93,6 +93,11 @@ public static partial class SitePages
         var set = new HashSet<string>(StringComparer.Ordinal);
         foreach (var p in input.PrecipPredictions) set.Add(p.Station);
         foreach (var d in input.DryWindowPredictions) set.Add(d.Station);
+        // Filter to currently-active stations from config (post-swap behaviour).
+        // Empty ActiveStationSlugs preserves old "render whatever's on disk"
+        // behaviour for legacy callers / tests that don't populate it.
+        if (input.ActiveStationSlugs.Count > 0)
+            set.IntersectWith(input.ActiveStationSlugs);
         return set.OrderBy(s => s, StringComparer.Ordinal).ToList();
     }
 

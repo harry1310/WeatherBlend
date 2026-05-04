@@ -20,18 +20,26 @@ location:
     primary: "EGTE"    # Exeter Airport
     fallback: "EGDY"   # RNAS Yeovilton
 
-  # Environment Agency rainfall stations within ~15km of Bonehill Rocks, via the
+  # Environment Agency rainfall stations within ~10km of Bonehill Rocks, via the
   # EA Hydrology API (https://environment.data.gov.uk/hydrology). OGL v3, no auth.
-  # 15-min tip totals; aggregate 4× for hourly. Bellever is closest moorland match;
-  # Princetown is higher/wetter (orographic crosscheck); the one near Hexworthy
-  # (EA labels it simply "Dartmoor") is the WSW fallback. `id` is the EA measure
-  # prefix — for versioned stations it includes the wiskiID suffix (e.g. `_363307`).
+  # 15-min tip totals; aggregate 4× for hourly. Bellever (7.5km W) and the gauge
+  # near Hexworthy (9.6km SW, EA labels simply "Dartmoor") are the moorland
+  # matches; Bovey Tracey (5.5km E, ~80m elevation) is the eastern valley
+  # complement. `id` is the EA measure prefix — for versioned stations it
+  # includes the wiskiID suffix (e.g. `_363307`).
+  #
+  # 2026-05-04: Princetown (14.6km WSW, 414m elevation) dropped in favour of
+  # Bovey Tracey. Princetown was 2× the distance of the other moor stations
+  # and skewed all 3 stations to the western flank of Dartmoor. Bovey gives
+  # Bonehill near-equilateral triangulation (~5-10km radius). Princetown
+  # historical parquets + predictions remain on disk for archival reference;
+  # not loaded by config so live train/predict/verify ignore them.
   rainfall:
     stations:
       - id: "723a8fc4-908b-4430-91c7-9990be86540a_363307"
         name: "Bellever Dartmoor"
-      - id: "f0676423-f697-4dec-8958-440f335cce9a"
-        name: "Princetown"
+      - id: "de3285a5-0abf-4c5b-8ee2-63187f9124ae"
+        name: "Bovey Tracey"
       - id: "b69ee00c-aa73-49d0-bc62-ff4673094553"
         name: "Dartmoor nr Hexworthy"
 
