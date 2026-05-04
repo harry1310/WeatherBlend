@@ -115,7 +115,7 @@ public static partial class SitePages
             var tiles = new StringBuilder();
             int popoverId = 0;
             foreach (var p in dayPreds)
-                tiles.Append(RenderHourTile(p, feelsLikeByValid, pwetByValid, popoverId++));
+                tiles.Append(RenderHourTile(p, feelsLikeByValid, pwetByValid, input.LowCloudByValid, popoverId++));
             tilesHtml = string.Create(Ci, $"<div class=\"forecast-grid\">{tiles}</div>");
         }
 
@@ -175,12 +175,47 @@ public static partial class SitePages
     /// UTCI / P(wet) chips, and a Pico-styled <c>&lt;details&gt;</c> pop-out
     /// listing the four element-blender values that fed UTCI for this hour.
     /// </summary>
+    /// <summary>Visibility-signal firing threshold — number of vis-publishing
+    /// NWPs (out of 6) that must forecast sub-1km vis for the badge to fire
+    /// on visibility alone.</summary>
+    private const int LowCloudVisFireThreshold = 3;
+
+    /// <summary>Cloud-base-signal firing threshold — number of NWPs (out of
+    /// up to 11) that must forecast T-Td &lt; 1.5°C for the badge to fire
+    /// on cloud-base alone. Higher absolute count than vis because the
+    /// denominator is much larger.</summary>
+    private const int LowCloudBaseFireThreshold = 6;
+
     private static string RenderHourTile(
         Models.TempPredictionRow p,
         IReadOnlyDictionary<DateTime, FeelsLikeForecastPoint> feelsLikeByValid,
         IReadOnlyDictionary<DateTime, PrecipForecastPoint> pwetByValid,
+        IReadOnlyDictionary<DateTime, LowCloudSignal> lowCloudByValid,
         int popoverId)
     {
+        // Low-cloud / mist warning — fires when EITHER signal hits its
+        // threshold. The badge sits in the tile header so it's visible
+        // without scrolling past the temp + feels-like content.
+        string lowCloudBadge = "";
+        if (lowCloudByValid.TryGetValue(p.ValidTimeUtc, out var lc))
+        {
+            var visFired = lc.VisFiredCount >= LowCloudVisFireThreshold;
+            var cbFired  = lc.CloudBaseFiredCount >= LowCloudBaseFireThreshold;
+            if (visFired || cbFired)
+            {
+                // Tooltip names which signal(s) tripped + the agreement count
+                // — a "1/6 vis fog, 11/11 cloud at tor height" hover reads
+                // very differently from "5/6 vis fog, 7/11 cloud at tor".
+                var parts = new List<string>(2);
+                if (visFired)
+                    parts.Add(string.Create(Ci, $"{lc.VisFiredCount}/{lc.VisTotalCount} NWPs forecast mist (vis < 1 km)"));
+                if (cbFired)
+                    parts.Add(string.Create(Ci, $"{lc.CloudBaseFiredCount}/{lc.CloudBaseTotalCount} NWPs forecast cloud base below the tor (T−Td < 1.5°C)"));
+                var tooltip = string.Join(" · ", parts);
+                lowCloudBadge = $"<span class=\"low-cloud-badge\" title=\"{Escape(tooltip)}\">☁ low cloud</span>";
+            }
+        }
+
         // Feels-like and P(wet) tolerate ±1h drift — predict cycles can land
         // an hour off, and we'd rather show a chip than a gap.
         string feelsCell = "";
@@ -240,7 +275,7 @@ public static partial class SitePages
         var tempColor = TemperatureColor(p.BlendTemperature);
         return string.Create(Ci, $"""
             <article class="forecast-card">
-              <header><h4>{p.ValidTimeUtc:HH:mm}Z</h4></header>
+              <header><h4>{p.ValidTimeUtc:HH:mm}Z</h4>{lowCloudBadge}</header>
               <div class="temp" style="--temp-color: {tempColor}">{p.BlendTemperature:0.0}°C</div>
               {feelsCell}
               {pwetCell}

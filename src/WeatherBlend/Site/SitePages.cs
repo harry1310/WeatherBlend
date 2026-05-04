@@ -141,6 +141,18 @@ public static partial class SitePages
         /// <summary>METAR observations (time-sorted) from the primary station over the window.</summary>
         public required IReadOnlyList<(DateTime ObservedTimeUtc, double Temperature2m)> MetarByTime { get; init; }
 
+        /// <summary>
+        /// Per-hour low-cloud / mist signal aggregated across NWP forecasts.
+        /// Two independent counts: how many of the visibility-publishing
+        /// NWPs are forecasting sub-1km vis (mist or fog), and how many of
+        /// all NWPs are forecasting saturated air (T-Td &lt; 1.5°C, an Espy
+        /// proxy for cloud base below the 393m tor). Either threshold met
+        /// → home tile renders a warning badge with hover-tooltip naming
+        /// the firing signal(s).
+        /// </summary>
+        public IReadOnlyDictionary<DateTime, LowCloudSignal> LowCloudByValid { get; init; }
+            = new Dictionary<DateTime, LowCloudSignal>();
+
         /// <summary>Met Office DataHub Land Observations temperature
         /// (time-sorted) for the configured geohash. Closer to Bonehill
         /// than EGTE METAR (~22 km vs ~30 km) with smaller elevation gap
@@ -358,6 +370,25 @@ public static partial class SitePages
         // hourly-detail table. Null on legacy rows pre-conformal-fit.
         string? ConformalSetTag = null);
 
+    /// <summary>
+    /// Per-valid-hour aggregate of NWP fog / low-cloud forecasts. Counts
+    /// how many models passed each independent threshold:
+    ///   <see cref="VisFiredCount"/> / <see cref="VisTotalCount"/> — sub-1km
+    ///     surface visibility (mist / fog). Only the 6 NWPs that publish
+    ///     visibility through Open-Meteo can fire this (UKMO + GFS + ICON +
+    ///     two HARMONIE variants + MO Spot).
+    ///   <see cref="CloudBaseFiredCount"/> / <see cref="CloudBaseTotalCount"/>
+    ///     — temperature within 1.5°C of dew point (Espy proxy: cloud base
+    ///     plausibly below 393m AMSL). All 11 NWPs publish T + Td so the
+    ///     denominator is much larger.
+    /// Render the badge when EITHER hits its threshold (3/6 vis or 6/11
+    /// cloud-base) — they're complementary signals so a single trigger is
+    /// enough.
+    /// </summary>
+    public sealed record LowCloudSignal(
+        int VisFiredCount, int VisTotalCount,
+        int CloudBaseFiredCount, int CloudBaseTotalCount);
+
     public sealed record FeelsLikeForecastPoint(
         string Version,
         DateTime PredictedAtUtc,
@@ -476,6 +507,12 @@ public static partial class SitePages
         .forecast-card footer { margin-top: auto; padding-top: 0.4rem; border-top: 1px solid var(--pico-muted-border-color); }
         .forecast-card footer small { color: var(--pico-muted-color); font-size: 0.75rem; }
         .forecast-card h4 { margin: 0; font-size: 1rem; font-variant-numeric: tabular-nums; }
+        .forecast-card header { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+        /* Low-cloud / mist badge — slate background, white text, sits in
+           the tile header next to the time. Hover tooltip says which signal
+           fired (vis < 1 km mist, T-Td < 1.5°C cloud-base, or both) and the
+           per-NWP agreement count. */
+        .low-cloud-badge { background: #455a64; color: #fff; font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 999px; cursor: help; white-space: nowrap; }
 
         /* Day-grouped home layout — one block per UTC day with a summary line
            above the per-hour tile grid. Top + bottom margin so days read as

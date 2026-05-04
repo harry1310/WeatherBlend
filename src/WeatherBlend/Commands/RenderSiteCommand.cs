@@ -114,6 +114,8 @@ public sealed class RenderSiteCommand
         _log.LogInformation("Loaded {N} Met Office Spot forecast rows.", metOfficeSpot.Count);
 
         var nwpPop = QueryNwpPrecipProbabilities(windowStart, predictionEnd, ct);
+        var lowCloudByValid = QueryLowCloudSignals(windowStart, predictionEnd, ct);
+        _log.LogInformation("Loaded low-cloud / mist signal for {N} valid hours.", lowCloudByValid.Count);
         _log.LogInformation("Loaded {N} per-NWP precipitation-probability rows ({M} models).",
             nwpPop.Count, nwpPop.Select(p => p.Model).Distinct().Count());
 
@@ -182,6 +184,7 @@ public sealed class RenderSiteCommand
             TruthByTime = truth,
             MetarByTime = metar,
             MetOfficeObsByTime = moObs,
+            LowCloudByValid = lowCloudByValid,
             RollingMae = rolling,
             RollingBrier = ComputeRollingBrier(precip, rainfall, phaseByVersion, precipRollingWindowDays),
             PrecipPredictions = precip,
@@ -673,6 +676,74 @@ ORDER BY LeadHours, ValidTimeUtc";
     /// Only ~4 of those publish PoP via Open-Meteo (GFS / ECMWF / ICON / GEM);
     /// the others return zero rows and silently drop out of the chart.
     /// </summary>
+    /// <summary>
+    /// Per-valid-hour low-cloud / mist signal aggregated across NWP forecasts.
+    /// For each valid hour in [start, end], take each model's most-recent
+    /// (smallest-lead) forecast and count: how many publish vis &lt; 1km
+    /// (mist / fog signal — only 6 NWPs publish Visibility), and how many
+    /// have T-Td &lt; 1.5°C (Espy proxy for cloud base below 393m at the
+    /// typical SW Devon NWP grid elevation of 50-200m).
+    ///
+    /// Both counts persist on the row regardless of whether they fired; the
+    /// renderer applies the firing thresholds (3 of 6 vis, 6 of 11 cloud-
+    /// base) and decides whether to draw the badge. Keeping the raw counts
+    /// lets the hover-tooltip read "5 of 6 NWPs forecast mist" rather than
+    /// just "warning".
+    /// </summary>
+    private IReadOnlyDictionary<DateTime, SitePages.LowCloudSignal> QueryLowCloudSignals(
+        DateTime start, DateTime end, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.ForecastsPath, "**", "*.parquet"));
+
+        // Two thresholds:
+        //   Vis < 1000 m → mist (Met Office definition: vis 1-5km = mist;
+        //     <1km = fog; we lump <1km as the badge-firing threshold so a
+        //     thin mist day where vis stays 1.5-2km doesn't pop a warning).
+        //   T - Td < 1.5°C → near-saturated air, Espy cloud base below ~190m
+        //     AGL — at typical Open-Meteo grid elevations of 50-200m for SW
+        //     Devon that puts cloud base AMSL below Bonehill's 393m on most
+        //     NWPs. Conservative single threshold pending an Elevation column
+        //     on ForecastRow that would let us thread per-model grid elev.
+        const double VisFireThresholdM = 1000.0;
+        const double TmTdFireThresholdC = 1.5;
+
+        var sql = $@"
+WITH latest AS (
+  SELECT Model, ValidTimeUtc,
+         Visibility, Temperature2m, DewPoint2m,
+         row_number() OVER (PARTITION BY Model, ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn
+  FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+  WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
+    AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
+    AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+)
+SELECT ValidTimeUtc,
+       SUM(CASE WHEN Visibility IS NOT NULL AND Visibility < {VisFireThresholdM.ToString(System.Globalization.CultureInfo.InvariantCulture)} THEN 1 ELSE 0 END)::INTEGER AS vis_fired,
+       SUM(CASE WHEN Visibility IS NOT NULL THEN 1 ELSE 0 END)::INTEGER AS vis_total,
+       SUM(CASE WHEN Temperature2m IS NOT NULL AND DewPoint2m IS NOT NULL
+                     AND (Temperature2m - DewPoint2m) < {TmTdFireThresholdC.ToString(System.Globalization.CultureInfo.InvariantCulture)}
+                THEN 1 ELSE 0 END)::INTEGER AS tdspread_fired,
+       SUM(CASE WHEN Temperature2m IS NOT NULL AND DewPoint2m IS NOT NULL THEN 1 ELSE 0 END)::INTEGER AS tdspread_total
+FROM latest
+WHERE rn = 1
+GROUP BY ValidTimeUtc";
+
+        var rows = ParquetReader.Query(sql, r => (
+            Time: r.GetDateTime(0),
+            VisFired: r.GetInt32(1),
+            VisTotal: r.GetInt32(2),
+            TdFired: r.GetInt32(3),
+            TdTotal: r.GetInt32(4)),
+            _log, "Forecast tree empty — low-cloud / mist warning will be absent.", ct);
+
+        return rows.ToDictionary(
+            x => x.Time,
+            x => new SitePages.LowCloudSignal(
+                VisFiredCount: x.VisFired, VisTotalCount: x.VisTotal,
+                CloudBaseFiredCount: x.TdFired, CloudBaseTotalCount: x.TdTotal));
+    }
+
     private IReadOnlyList<SitePages.NwpPrecipProbForecastPoint> QueryNwpPrecipProbabilities(
         DateTime start, DateTime end, CancellationToken ct)
     {
