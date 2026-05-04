@@ -213,7 +213,23 @@ public static partial class SitePages
             .OrderByDescending(x => x.File.AsOfUtc)
             .ToList();
 
-        if (matchingFiles.Count == 0) return "";
+        if (matchingFiles.Count == 0)
+        {
+            // Empty-state explanation rather than silently omitting the section.
+            // Two ways a card lands here:
+            //   1. The phase is genuinely brand-new and verify hasn't run since
+            //      training (will populate at the next weekly cycle + 5d ERA5 lag).
+            //   2. The phase tag drifted between trainings (e.g. an old "2b_redo"
+            //      version's verify rows can't match a current "2b" card). The
+            //      message names the phase being filtered for so the cause is
+            //      visible without diff'ing JSON files.
+            return $"""
+                <details open>
+                  <summary><strong>Verify history</strong> <small>(no runs yet)</small></summary>
+                  <p class="skill-line">No verify rows on disk match this card's phase ({Escape(phase)}). Either the next weekly verify (Mon 09:30 UTC, then 5d ERA5 latency) hasn't yet scored predictions made by this version, or older verify files used a different phase tag for this lineage. Re-check after the next Monday cycle.</p>
+                </details>
+                """;
+        }
 
         // Lead set for the columns: union across every matching run, sorted
         // ascending. Different runs may have different leads (a target's
@@ -240,6 +256,21 @@ public static partial class SitePages
                     g => g.OrderByDescending(r => r.ModelVersion, StringComparer.Ordinal).First());
             var driftAny = byLead.Values.Any(r => r.DriftFlag);
 
+            // Distinct versions scored across all leads in this run. Usually
+            // one (the active version of this phase at verify-time), but a
+            // recent retrain leaves the predict tree carrying both old + new
+            // for a few days so verify scores both. Showing them all keeps
+            // the reader honest about which version the row's numbers came
+            // from — matters when the row's drift is on the OLD version.
+            var versionsScored = byLead.Values
+                .Select(r => r.ModelVersion)
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(v => v, StringComparer.Ordinal)
+                .ToList();
+            var versionCellHtml = string.Join(
+                "<br>",
+                versionsScored.Select(v => $"<code>{Escape(v)}</code>"));
+
             var leadCells = new StringBuilder();
             foreach (var lead in allLeads)
             {
@@ -261,6 +292,7 @@ public static partial class SitePages
             tbody.Append(Ci, $"""
                 <tr>
                   <td><time datetime="{file.AsOfUtc:yyyy-MM-dd}">{file.AsOfUtc:ddd yyyy-MM-dd}</time></td>
+                  <td><small>{versionCellHtml}</small></td>
                   {leadCells}
                   {driftCell}
                 </tr>
@@ -274,11 +306,12 @@ public static partial class SitePages
         return $"""
             <details open>
               <summary><strong>Verify history</strong> <small>({matchingFiles.Count} run{(matchingFiles.Count == 1 ? "" : "s")})</small></summary>
-              <p class="skill-line">Weekly Brier/MAE on the held-out rolling window — one row per verify run, drift flag in the last column. Metric: {Escape(metricLabel)}.</p>
+              <p class="skill-line">Weekly Brier/MAE on the held-out rolling window — one row per verify run, drift flag in the last column. Metric: {Escape(metricLabel)}. Version column names which trained model the row's numbers came from — a freshly retrained champion shows zero rows here for ~14d (one verify cycle plus 5d ERA5 latency), so a row labelled with an older version is the previous lineage's history under the same phase.</p>
               <table>
                 <thead>
                   <tr>
                     <th>Run (UTC)</th>
+                    <th>Version</th>
                     {leadHeaders}
                     <th class="num">Drift</th>
                   </tr>
