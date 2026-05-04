@@ -3,12 +3,11 @@ using WeatherBlend.Models;
 namespace WeatherBlend.Site;
 
 /// <summary>
-/// One dry-window training phase ("3b" or "3d-shape"). Mirrors
+/// One dry-window training phase ("3b" or "3g"). Mirrors
 /// <see cref="PrecipPhase"/> for the dry-window champion/challenger group:
-/// 3b is the production champion, 3d-shape adds 7 within-day shape features.
-///
-/// Phase 3d-calibrated was removed 2026-04-29 — PAV calibration didn't move
-/// test Brier vs raw 3b, so the bucket no longer renders.
+/// 3b is the production champion, 3g is the parameter-free MC challenger.
+/// 3d-shape / 3d-calibrated / 3e / 3f were retired 2026-05-04 — see
+/// <see cref="Models.ActivePhasePolicy"/> for the shipping list.
 /// </summary>
 /// <param name="Key">Stable identifier matching <c>training_metadata.Phase</c> exactly.</param>
 /// <param name="LongTitle">Heading used on the dry-window page where space allows the full feature-count gloss.</param>
@@ -40,22 +39,6 @@ public static class DryWindowPhases
         ChampionVsChallengerLabel: "Phase 3b (champion)",
         Color: "#90a4ae");
 
-    public static readonly DryWindowPhase Phase3dShape = new(
-        Key: "3d-shape",
-        LongTitle: "Phase 3d-shape — lean + 7 within-day shape features (60 features)",
-        ShortTitle: "Phase 3d-shape (rich)",
-        Description: "3b features plus first/last wet hour, longest forecast dry/wet run, n rain events, and morning/afternoon precip sums — derived from the ensemble-mean hourly precip vector. Lets the model condition on whether a wet day is 'wet morning, dry afternoon' vs constant drizzle.",
-        ChampionVsChallengerLabel: "Phase 3d-shape (challenger)",
-        Color: "#7c4dff");
-
-    public static readonly DryWindowPhase Phase3e = new(
-        Key: "3e",
-        LongTitle: "Phase 3e — conditional cascade for 3h + 4h windows",
-        ShortTitle: "Phase 3e (cascade)",
-        Description: "B2 decomposition. Trains a base classifier for P(3h dry block) and a conditional classifier for P(extends to 4h | has 3h block). At predict time, P(3h) = M_base, P(4h) = M_base × M_extend4. Monotonicity P(4h) ≤ P(3h) holds by construction. 6h stays on 3b because the conditional subset is too sparse to be reliable.",
-        ChampionVsChallengerLabel: "Phase 3e (cascade)",
-        Color: "#26a69a");
-
     public static readonly DryWindowPhase Phase3g = new(
         Key: "3g",
         LongTitle: "Phase 3g — Monte Carlo over Phase 3a hourly P(wet) marginals",
@@ -73,10 +56,8 @@ public static class DryWindowPhases
     private static readonly IReadOnlyDictionary<string, DryWindowPhase> _byKey =
         new Dictionary<string, DryWindowPhase>(StringComparer.OrdinalIgnoreCase)
         {
-            [Phase3b.Key]      = Phase3b,
-            [Phase3dShape.Key] = Phase3dShape,
-            [Phase3e.Key]      = Phase3e,
-            [Phase3g.Key]      = Phase3g,
+            [Phase3b.Key] = Phase3b,
+            [Phase3g.Key] = Phase3g,
         };
 
     /// <summary>
@@ -89,9 +70,7 @@ public static class DryWindowPhases
     /// that anyone adding a phase to the policy will also add its display
     /// metadata here in the same change).
     ///
-    /// As of 2026-04-29 the policy lists only "3b"; <see cref="Phase3dShape"/>
-    /// stays in <see cref="_byKey"/> as a ready-to-render record so a future
-    /// re-promotion is a one-line policy edit.
+    /// As of 2026-05-04 the policy lists "3b" + "3g".
     /// </summary>
     public static IReadOnlyList<DryWindowPhase> All =>
         ActivePhasePolicy.ByTarget["dry_window"]

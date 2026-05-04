@@ -1471,7 +1471,7 @@ public class SitePagesTests
             new SitePages.ModelSummary("temperature", "v_lean", "2b", "era5", trainedLean,  "Test MAE (°C)", perLead),
             new SitePages.ModelSummary("precipitation/ea_bellever_dartmoor", "v_rich_p", "3c", "ea", trainedRich, "Brier", perLead),
             new SitePages.ModelSummary("precipitation/ea_bellever_dartmoor", "v_lean_p", "3a", "ea", trainedLean, "Brier", perLead),
-            new SitePages.ModelSummary("dry_window/ea_bellever_dartmoor/3h", "v_shape", "3d-shape", "ea", trainedRich, "Brier", perLead),
+            new SitePages.ModelSummary("dry_window/ea_bellever_dartmoor/3h", "v_retired", "3d-shape", "ea", trainedRich, "Brier", perLead),
             new SitePages.ModelSummary("dry_window/ea_bellever_dartmoor/3h", "v_lean_dw", "3b", "ea", trainedLean, "Brier", perLead),
         };
         var input = MakeEmptyForecastInput() with { ModelSummaries = summaries };
@@ -1481,12 +1481,12 @@ public class SitePagesTests
         // Lean version code appears before rich version code for each target.
         html.IndexOf("v_lean").Should().BeLessThan(html.IndexOf("v_rich"));
         html.IndexOf("v_lean_p").Should().BeLessThan(html.IndexOf("v_rich_p"));
-        // Dry-window: 3b is the only allowlisted phase (2026-04-29, see
-        // ActivePhasesByTarget). 3d-shape ("v_shape") is filtered out
-        // entirely, so v_lean_dw renders alone with no rich card to order
-        // against. Pin both: lean renders, shape doesn't.
+        // Dry-window: 3b + 3g are the allowlisted phases (2026-05-04, see
+        // ActivePhasePolicy). A retired-phase summary ("3d-shape", here as
+        // "v_retired") is filtered out entirely so v_lean_dw renders alone.
+        // Pin both: 3b lean renders, the retired phase doesn't.
         html.Should().Contain("v_lean_dw");
-        html.Should().NotContain("v_shape");
+        html.Should().NotContain("v_retired");
     }
 
     [Fact]

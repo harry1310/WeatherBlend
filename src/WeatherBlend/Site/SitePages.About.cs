@@ -37,11 +37,10 @@ public static partial class SitePages
                 </li>
                 <li>
                   <strong>Dry-window probability</strong> per UTC day — P(∃ contiguous N-hour
-                  dry block in target day) for N ∈ &#123;3, 4, 6&#125; hours at leads 24 / 48 / 72 h,
-                  per station (Bellever, Princetown). Phase 3b (53-feature champion) and Phase
-                  3d-shape (60-feature challenger) — the latter adds within-day shape
-                  descriptors (first/last wet hour, longest contiguous dry run, morning vs
-                  afternoon precip totals).
+                  dry block in 09:00–18:00 local time) for N ∈ &#123;3, 4, 6&#125; hours at
+                  leads 24 / 48 / 72 h, per station. Phase 3b (53-feature LightGBM champion)
+                  and Phase 3g (parameter-free MC over the Phase 3a hourly P(wet) marginals)
+                  ship side-by-side; 3g guarantees cross-window monotonicity by construction.
                 </li>
                 <li>
                   <strong>Feels-like</strong> — Bröde 2012 UTCI <em>and</em> Steadman 1994

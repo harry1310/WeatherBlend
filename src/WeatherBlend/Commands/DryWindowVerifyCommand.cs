@@ -141,7 +141,7 @@ public sealed class DryWindowVerifyCommand
 
             // Drift baseline: blend Brier on the training test partition, stored
             // in PerLeadStats.BlendTestMae (reused field — see training metadata).
-            // Phase tag from the same metadata so the headline can group 3b vs 3d-shape.
+            // Phase tag from the same metadata so the headline can group 3b vs 3g.
             double? trainingBrier = null;
             string phase = "";
             var metadata = _metadata.TryGetDryWindowTrainingMetadata(
@@ -348,7 +348,7 @@ public sealed class DryWindowVerifyCommand
     }
 
     /// <summary>
-    /// Side-by-side Brier comparison across phases (3b vs 3d-shape) for every
+    /// Side-by-side Brier comparison across phases (3b vs 3g) for every
     /// (station, window, lead) slice that has more than one phase represented
     /// in the verification window. Champion/challenger pattern: only phases
     /// present at the slice are shown.

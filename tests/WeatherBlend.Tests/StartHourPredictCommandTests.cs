@@ -2,6 +2,9 @@ using FluentAssertions;
 using WeatherBlend.Commands;
 using WeatherBlend.Models;
 using Xunit;
+// BuildHourlyQ tests retired 2026-05-04 alongside the analytical-product
+// derivation; the 3g-MC predict path reads through DryWindow3gPredictor's
+// helpers, which have their own dedicated tests.
 
 namespace WeatherBlend.Tests;
 
@@ -40,63 +43,6 @@ public class StartHourPredictCommandTests
     {
         var (station, _) = StartHourPredictCommand.ParseDryComposite(key);
         station.Should().BeNull();
-    }
-
-    // ---- BuildHourlyQ ------------------------------------------------------
-
-    private static PrecipPredictionRow Precip(int leadHours, DateTime validTime,
-                                              DateTime predictionMadeAt, double pWet)
-        => new()
-        {
-            LocationName = "bonehill_rocks",
-            TruthStation = "ea_bellever_dartmoor",
-            ModelVersion = "v1",
-            PredictionMadeAtUtc = predictionMadeAt,
-            ValidTimeUtc = validTime,
-            LeadHours = leadHours,
-            ProbWet = pWet,
-            ClimatologyPWet = 0.5,
-            FeatureVectorHash = "h",
-        };
-
-    [Fact]
-    public void BuildHourlyQ_keeps_only_rows_at_the_requested_lead_and_target_date()
-    {
-        var t = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
-        var made = new DateTime(2026, 4, 30, 10, 0, 0, DateTimeKind.Utc);
-        var rows = new[]
-        {
-            Precip(24, t.AddHours(8),  made, 0.10),  // keep
-            Precip(24, t.AddHours(12), made, 0.20),  // keep
-            Precip(48, t.AddHours(8),  made, 0.30),  // wrong lead — drop
-            Precip(24, t.AddDays(1).AddHours(8), made, 0.40), // wrong date — drop
-        };
-
-        var q = StartHourPredictCommand.BuildHourlyQ(rows, leadHours: 24, targetDateUtc: t);
-
-        q.Should().HaveCount(2);
-        q[8].Should().Be(0.10);
-        q[12].Should().Be(0.20);
-    }
-
-    [Fact]
-    public void BuildHourlyQ_picks_freshest_PMT_per_target_hour()
-    {
-        // The precip parquet accumulates multiple cycles' rows. For one hour
-        // we want the latest forecast — analogous to the home P(wet) chip's
-        // smallest-lead-then-latest-PMT pick on the precip predictions side.
-        var t = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
-        var older = new DateTime(2026, 4, 30, 5, 45, 0, DateTimeKind.Utc);
-        var newer = new DateTime(2026, 4, 30, 10, 35, 0, DateTimeKind.Utc);
-        var rows = new[]
-        {
-            Precip(24, t.AddHours(10), older, 0.20),
-            Precip(24, t.AddHours(10), newer, 0.05),  // freshest — wins
-        };
-
-        var q = StartHourPredictCommand.BuildHourlyQ(rows, 24, t);
-
-        q[10].Should().Be(0.05);
     }
 
     // ---- MergeRows ---------------------------------------------------------

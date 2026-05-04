@@ -91,9 +91,8 @@ public sealed class DryWindowPredictCommand
             }
             var (stationSlug, windowHours) = parsed.Value;
 
-            // Active versions for this composite — typically 3b champion plus
-            // any 3d-shape / 3d-calibrated challengers. When the user pins
-            // --model-version we honour it and skip the manifest list.
+            // Active versions for this composite — 3b champion plus 3g challenger.
+            // When the user pins --model-version we honour it and skip the manifest list.
             var activeVersions = string.Equals(modelVersion, "current", StringComparison.OrdinalIgnoreCase)
                 ? ModelArtifact.ResolveStationActive(modelsRoot, "dry_window", compositeKey)
                 : new[] { modelVersion };
@@ -161,7 +160,7 @@ public sealed class DryWindowPredictCommand
                 targets, anchorDate, predictionMadeAt, ct);
         }
 
-        // Per-lead BlenderSpec lives in feature_schema.json; covers both 3b and 3d-shape.
+        // Per-lead BlenderSpec lives in feature_schema.json.
         var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
         var canonOrder = WeatherBlend.Train.TempFeatureBuilder.CanonicalModelOrder.ToList();
 
@@ -210,23 +209,7 @@ public sealed class DryWindowPredictCommand
                 startHour: startHour,
                 endHour: endHour);
 
-            // Phase 3e at window_4h is a CASCADE: load both M_base and
-            // M_extend4 from this version dir and emit their product. At
-            // window_3h the same Phase 3e artefact emits M_base directly
-            // (same shape as 3b — no extend file present, fall through to
-            // the standard single-model path).
-            var extendPath = Path.Combine(versionDir, DryWindow3eCascadeArtefact.ExtendModelFileName(lead));
             double rawProb;
-            if (metadata.Phase == DryWindow3eFeatureBuilder.Phase3e
-                && windowHours == 4 && File.Exists(extendPath))
-            {
-                var baseModel   = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
-                var extendModel = ml.Model.Load(extendPath, out _);
-                var product = DryWindow3eCascadeArtefact.PredictRawProductForExtend(
-                    ml, baseModel, extendModel, spec, new[] { row });
-                rawProb = product[0];
-            }
-            else
             {
                 var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
                 var probs = DryWindowTrainer.PredictVectorProbability(ml, loadedModel, spec, new[] { row });

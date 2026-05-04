@@ -28,23 +28,12 @@ namespace WeatherBlend.Train.DryWindow;
 /// </summary>
 public static class DryWindowFeatureBuilder
 {
-    /// <summary>
-    /// Phase 3d-shape adds 7 within-day rain-structure features derived from the
-    /// ensemble-mean hourly precip vector. Appended to the base layout when
-    /// <see cref="BlenderSpec.FeatureSet"/> = "shape".
-    /// </summary>
-    public static readonly IReadOnlyList<string> ShapeFeatureNames = new[]
-    {
-        "first_wet_hour", "last_wet_hour",
-        "longest_forecast_dry_run_hours", "longest_forecast_wet_run_hours",
-        "n_rain_events",
-        "morning_precip_sum", "afternoon_precip_sum",
-    };
-
     /// <summary>Phase identifier strings persisted in <c>training_metadata.Phase</c>.</summary>
     public const string Phase3b = "3b";
-    public const string Phase3dShape = "3d-shape";
-    // Phase3dCalibrated removed 2026-04-29 along with the calibration command.
+    // Phase3dShape / Phase3dCalibrated / Phase3e / Phase3f all retired 2026-05-04.
+    // 3g supersedes 3d-shape (no Brier gain on the daytime label) and 3e
+    // (cross-window monotonicity holds for all of 3h/4h/6h by construction,
+    // not just the 3h↔4h pair the cascade covered).
 
     public const double WetThresholdMm = PrecipFeatureBuilder.WetThresholdMm;
 
@@ -247,99 +236,6 @@ ORDER BY 1";
             WindMax:  double.IsNegativeInfinity(windMax) ? double.NaN : windMax);
     }
 
-    internal readonly record struct ShapeResult(
-        double FirstWetHour, double LastWetHour,
-        double LongestDryRun, double LongestWetRun,
-        double NRainEvents,
-        double MorningPrecipSum, double AfternoonPrecipSum);
-
-    /// <summary>
-    /// Phase 3d shape features computed within the daytime window
-    /// <c>[startHour, endHour)</c>. Builds an ensemble-mean hourly precip
-    /// vector (NaN-skip across models per hour, treating "no model supplied
-    /// this hour" as zero — same convention as per-model walks in
-    /// <see cref="ComposeRow"/>), then derives within-window rain-structure
-    /// summaries:
-    ///   first/last wet hour (UTC; sentinels endHour/(startHour-1) when fully dry),
-    ///   longest contiguous dry/wet runs in hours,
-    ///   number of rain events (maximal wet runs separated by ≥1 dry hour),
-    ///   first-half / second-half precip totals (window split at midpoint).
-    /// Returns NaN for every feature if no model contributed any hour.
-    /// </summary>
-    internal static ShapeResult ShapeFeatures(
-        IReadOnlyList<ForecastDay?> modelDays, int startHour, int endHour)
-    {
-        var meanPrecip = new double[24];
-        bool any = false;
-        for (int h = startHour; h < endHour; h++)
-        {
-            double sum = 0;
-            int n = 0;
-            foreach (var day in modelDays)
-            {
-                if (day is null) continue;
-                if (day.Precip[h].HasValue) { sum += day.Precip[h]!.Value; n++; }
-            }
-            if (n > 0)
-            {
-                meanPrecip[h] = sum / n;
-                any = true;
-            }
-            else
-            {
-                meanPrecip[h] = 0.0; // matches per-model "p ?? 0.0" convention
-            }
-        }
-
-        if (!any)
-        {
-            var nan = double.NaN;
-            return new ShapeResult(nan, nan, nan, nan, nan, nan, nan);
-        }
-
-        int firstWet = -1, lastWet = -1;
-        int dryRun = 0, wetRun = 0, longestDry = 0, longestWet = 0;
-        int nEvents = 0;
-        bool inWet = false;
-        for (int h = startHour; h < endHour; h++)
-        {
-            bool wet = meanPrecip[h] >= WetThresholdMm;
-            if (wet)
-            {
-                if (firstWet < 0) firstWet = h;
-                lastWet = h;
-                wetRun++;
-                if (wetRun > longestWet) longestWet = wetRun;
-                dryRun = 0;
-                if (!inWet) { nEvents++; inWet = true; }
-            }
-            else
-            {
-                dryRun++;
-                if (dryRun > longestDry) longestDry = dryRun;
-                wetRun = 0;
-                inWet = false;
-            }
-        }
-
-        // Split the window in half for the first-half/second-half precip totals.
-        // Replaces the legacy fixed 06–11 / 12–17 split — now the split scales
-        // with whatever daytime window is configured.
-        var midHour = startHour + (endHour - startHour) / 2;
-        double firstHalf = 0, secondHalf = 0;
-        for (int h = startHour; h < midHour;  h++) firstHalf  += meanPrecip[h];
-        for (int h = midHour;   h < endHour;  h++) secondHalf += meanPrecip[h];
-
-        return new ShapeResult(
-            FirstWetHour: firstWet < 0 ? endHour : firstWet,
-            LastWetHour:  lastWet < 0 ? startHour - 1 : lastWet,
-            LongestDryRun: longestDry,
-            LongestWetRun: longestWet,
-            NRainEvents: nEvents,
-            MorningPrecipSum: firstHalf,
-            AfternoonPrecipSum: secondHalf);
-    }
-
     private static string NormaliseGlob(string path)
         => path.Replace('\\', '/').Replace("'", "''");
 
@@ -352,21 +248,20 @@ ORDER BY 1";
 
     /// <summary>
     /// Resolve the runtime <see cref="BlenderSpec"/> for dry-window at a given lead.
-    /// <paramref name="phase"/> selects between the 53-feature base layout
-    /// (<see cref="Phase3b"/>, mapped to <c>featureSet="base"</c>) and the
-    /// 60-feature shape layout (<see cref="Phase3dShape"/>, mapped to
-    /// <c>featureSet="shape"</c>).
+    /// Phase argument is retained for API compatibility but only the 53-feature
+    /// base layout (<see cref="Phase3b"/>, <c>featureSet="base"</c>) is supported
+    /// after the 2026-05-04 retirement of 3d-shape / 3e / 3f.
     ///
     /// Layout per active model count N:
     ///   6 per-model variables × N (sum, max_hour, wet_count, longest_dry, has_dry, prob_max)
     ///   6 ensemble summaries
     ///   9 covariates
     ///   2 calendar (doy_sin, doy_cos — no hour features at day granularity)
-    /// → 6N + 17 (base). Add 7 within-day shape features for 3d-shape → 6N + 24.
+    /// → 6N + 17.
     /// </summary>
     public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours, string phase)
     {
-        var featureSet = phase == Phase3dShape ? "shape" : "base";
+        var featureSet = "base";
         var blender = blendersCfg.Get(SpecTarget, featureSet);
         var requiredSet = blender.RequiredForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var optionalSet = blender.OptionalForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -403,8 +298,6 @@ ORDER BY 1";
             "cape_max", "wind_mean", "wind_max",
         });
         names.AddRange(new[] { "doy_sin", "doy_cos" });
-        if (phase == Phase3dShape)
-            names.AddRange(ShapeFeatureNames);
 
         return new BlenderSpec
         {
@@ -497,9 +390,8 @@ ORDER BY 1";
     /// <summary>
     /// Pack the dry-window feature vector. Layout matches <see cref="BuildSpec"/>'s
     /// <c>FeatureNames</c>: 6 per-model groups × N + 6 ensemble summaries + 9 covariates
-    /// + 2 calendar [+ 7 shape features when spec.FeatureSet == "shape"]. All
-    /// per-model and ensemble aggregates are restricted to the daytime hour
-    /// range <c>[startHour, endHour)</c>.
+    /// + 2 calendar. All per-model and ensemble aggregates are restricted to the
+    /// daytime hour range <c>[startHour, endHour)</c>.
     /// </summary>
     internal static CommonRow ComposeRow(
         BlenderSpec spec,
@@ -569,10 +461,8 @@ ORDER BY 1";
         var agreement    = NaNMean(perModelHasDry);
 
         var env = EnvelopeCovariates(modelDays, startHour, endHour);
-        var shape = ShapeFeatures(modelDays, startHour, endHour);
 
         var doyAngle = 2.0 * Math.PI * (targetDate.DayOfYear - 1) / 365.0;
-        var includeShape = spec.FeatureSet == "shape";
 
         var features = new float[spec.FeatureCount];
         int idx = 0;
@@ -599,16 +489,6 @@ ORDER BY 1";
         features[idx++] = (float)env.WindMax;
         features[idx++] = (float)Math.Sin(doyAngle);
         features[idx++] = (float)Math.Cos(doyAngle);
-        if (includeShape)
-        {
-            features[idx++] = (float)shape.FirstWetHour;
-            features[idx++] = (float)shape.LastWetHour;
-            features[idx++] = (float)shape.LongestDryRun;
-            features[idx++] = (float)shape.LongestWetRun;
-            features[idx++] = (float)shape.NRainEvents;
-            features[idx++] = (float)shape.MorningPrecipSum;
-            features[idx++] = (float)shape.AfternoonPrecipSum;
-        }
         if (idx != spec.FeatureCount)
             throw new InvalidOperationException(
                 $"Dry-window feature pack mismatch: wrote {idx}, expected {spec.FeatureCount}");

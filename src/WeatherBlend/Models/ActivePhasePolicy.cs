@@ -11,9 +11,9 @@ namespace WeatherBlend.Models;
 ///     under (the card's phase must be in the active list).
 ///
 /// Phases NOT in this list (e.g. <c>"2b_redo"</c>, <c>"3a_isotonic"</c>,
-/// <c>"3d_shape"</c>, <c>"3d_calibrated"</c>) still have parquet rows on disk
-/// because their predict trees aged into the rolling window before being
-/// retired. The renderer drops them — they're reference-only.
+/// <c>"3d_shape"</c>, <c>"3d_calibrated"</c>, <c>"3e"</c>, <c>"3f"</c>) still
+/// have parquet rows on disk because their predict trees aged into the rolling
+/// window before being retired. The renderer drops them — they're reference-only.
 ///
 /// Keys are the values that <c>training_metadata.Phase</c> stores
 /// (case-sensitive, ordinal compare). Add a phase here when shipping it;
@@ -35,12 +35,11 @@ public static class ActivePhasePolicy
             ["temperature"]   = new[] { "2b", "2c" },
             ["precipitation"] = new[] { "3a", "3c" },
             // 3g (parameter-free MC over Phase 3a hourly P(wet) marginals)
-            // added 2026-05-03 as a challenger to 3b across all 9 (station,
-            // window) cells; bake-off won 21/27 cells with mean −6.4% Brier.
-            // 3e (B2 cascade) was dropped the same day — 3g supersedes it
-            // structurally (cross-window monotonicity holds for all of 3h/4h/6h
-            // by construction, not just the 3h↔4h pair 3e covered).
-            // 3d-shape was dropped 2026-04-29 (no Brier gain on the daytime label).
+            // is the 3b challenger; cross-window monotonicity P(N=3) ≥ P(N=4)
+            // ≥ P(N=6) holds by construction. 3d-shape (no Brier gain), 3e
+            // (B2 cascade — 3g supersedes structurally for all windows, not
+            // just the 3h↔4h pair), and 3f (62-feature failed attempt) were
+            // all retired 2026-05-04 along with their training paths.
             ["dry_window"]    = new[] { "3b", "3g" },
         };
 

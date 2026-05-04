@@ -329,10 +329,8 @@ public static partial class SitePages
                 => "Rich P(wet) classifier — adds per-NWP cloud, humidity, CAPE, dew-point depression with feature-importance pruning (~55 features).",
             ("dry_window", "3b")
                 => "Per-(station, window) classifier for whether at least one N-hour dry block occurs in the target UTC day.",
-            ("dry_window", "3d-shape")
-                => "Phase 3b features plus seven within-day shape descriptors (precip distribution moments).",
-            ("dry_window", "3e")
-                => "Conditional cascade. Trains M_base for P(3h block) and M_extend4 for P(extends to 4h | has 3h). At predict time the 3h card shows M_base; the 4h card shows M_base · M_extend4. Guarantees P(4h) ≤ P(3h) by construction. 6h stays on 3b.",
+            ("dry_window", "3g")
+                => "Parameter-free MC — 10,000 Bernoulli draws over Phase 3a's hourly P(wet); the prediction is the fraction whose longest dry run reaches the window length. Cross-window monotonicity holds by construction.",
             _ => $"Phase {phase} blender.",
         };
     }

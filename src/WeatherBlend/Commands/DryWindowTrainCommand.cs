@@ -57,30 +57,14 @@ public sealed class DryWindowTrainCommand
     public async Task<int> RunAsync(string stationArg, string windowArg, int[] leads, string phase, CancellationToken ct)
     {
         if (phase != DryWindowFeatureBuilder.Phase3b
-            && phase != DryWindowFeatureBuilder.Phase3dShape
-            && phase != DryWindow3eFeatureBuilder.Phase3e
             && phase != DryWindow3gPredictor.Phase3g)
         {
-            _log.LogError("Unsupported dry-window training phase '{Phase}'. Expected '3b', '3d-shape', '3e', or '3g'.", phase);
+            _log.LogError("Unsupported dry-window training phase '{Phase}'. Expected '3b' or '3g'.", phase);
             return 2;
         }
 
         var stations = ResolveStations(stationArg);
         if (stations is null) return 2;
-
-        // Phase 3e is a station-level cascade — windowArg is ignored because
-        // 3e ALWAYS produces both 3h and 4h artefacts in one training run
-        // (that's the whole point of the conditional decomposition). Dispatch
-        // to the dedicated 3e codepath; the existing per-window loop below
-        // doesn't apply.
-        if (phase == DryWindow3eFeatureBuilder.Phase3e)
-        {
-            if (!string.Equals(windowArg, "all", StringComparison.OrdinalIgnoreCase))
-                _log.LogInformation(
-                    "Phase 3e ignores --window '{W}': cascade always trains for windows 3 + 4 jointly.",
-                    windowArg);
-            return await RunPhase3eAsync(stations, leads, ct);
-        }
 
         // Phase 3g — parameter-free MC over Phase 3a's hourly P(wet) marginals.
         // No LightGBM, no model artefacts: each "version" is just metadata +
@@ -129,14 +113,10 @@ public sealed class DryWindowTrainCommand
                 ct.ThrowIfCancellationRequested();
                 var compositeKey = $"{StationSlug.WithEaPrefix(stationName)}/window_{window}h";
                 var now = DateTime.UtcNow;
-                // 3b → v{ts} (champion, no suffix). Challenger phases get a
-                // _phaseXX suffix so MANIFEST.Active visually distinguishes them.
-                var suffix = phase switch
-                {
-                    DryWindowFeatureBuilder.Phase3dShape => "phase3d_shape",
-                    _ => null,
-                };
-                var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "dry_window", compositeKey, now, suffix);
+                // 3b → v{ts} (champion, no suffix). 3g uses its own RunPhase3gAsync
+                // which sets the _phase3g suffix; the 3d-shape / 3e suffix branches
+                // were retired 2026-05-04.
+                var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "dry_window", compositeKey, now);
                 var versionName = Path.GetFileName(versionDir);
 
                 _log.LogInformation("=== Station '{Station}', window {W}h → {Key} ===",
@@ -301,30 +281,16 @@ public sealed class DryWindowTrainCommand
                     },
                 };
                 ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
-                if (phase == DryWindowFeatureBuilder.Phase3b)
-                {
-                    // Promote the new 3b version: replace any prior 3b entry in
-                    // Active with this one and set Current = newVersion. Any
-                    // OTHER active phases (3g challengers today) survive.
-                    ModelArtifact.PromoteStationVersionAsChampion(
-                        modelsRoot, "dry_window", compositeKey, versionName,
-                        newPhase: DryWindowFeatureBuilder.Phase3b);
-                    var (cf, cs) = await _conformal.FitOneAsync(
-                        compositeKey, versionName, DryWindowConformalFitCommand.DefaultAlpha, ct);
-                    _log.LogInformation("Auto-conformal: fitted {F} leads ({S} skipped) for {K}/{V}",
-                        cf, cs, compositeKey, versionName);
-                }
-                else
-                {
-                    // 3d-shape can still be trained ad-hoc via --feature-set rich for
-                    // experimentation, but it does not enter the Active rotation — predict
-                    // and the site filter for 3b only. Append the artefact so its version dir
-                    // is reachable manually if needed, but leave Active unchanged.
-                    ModelArtifact.AppendStationVersion(modelsRoot, "dry_window", compositeKey, versionName);
-                    _log.LogInformation(
-                        "{Key}: 3d-shape artefact saved but NOT added to Active list — predict/render skip it by design.",
-                        compositeKey);
-                }
+                // Promote the new 3b version: replace any prior 3b entry in
+                // Active with this one and set Current = newVersion. Any
+                // OTHER active phases (3g challengers today) survive.
+                ModelArtifact.PromoteStationVersionAsChampion(
+                    modelsRoot, "dry_window", compositeKey, versionName,
+                    newPhase: DryWindowFeatureBuilder.Phase3b);
+                var (cf, cs) = await _conformal.FitOneAsync(
+                    compositeKey, versionName, DryWindowConformalFitCommand.DefaultAlpha, ct);
+                _log.LogInformation("Auto-conformal: fitted {F} leads ({S} skipped) for {K}/{V}",
+                    cf, cs, compositeKey, versionName);
 
                 _log.LogInformation("Saved artefacts → {Dir}", versionDir);
             }
@@ -338,335 +304,6 @@ public sealed class DryWindowTrainCommand
         return modelsTrained == 0 ? 3 : 0;
     }
 
-    /// <summary>
-    /// Phase 3e training loop. For each station, builds one multi-label
-    /// dataset per lead (rows carry both 3h and 4h labels), trains M_base
-    /// against the 3h label and M_extend4 against the 4h label on the
-    /// subset where 3h holds, then writes TWO artefact dirs sharing the
-    /// same timestamp under <c>window_3h/v{ts}_phase3e/</c> and
-    /// <c>window_4h/v{ts}_phase3e/</c>. Each is registered as a challenger
-    /// to 3b in the existing per-(station, window) manifest's Active list,
-    /// so verify scores both phases independently and the bake-off reads
-    /// from the existing verify-history sidecars.
-    /// </summary>
-    private async Task<int> RunPhase3eAsync(string[] stations, int[] leads, CancellationToken ct)
-    {
-        var modelsRoot = _cfg.Storage.ModelsPath;
-        var hp = new DryWindowTrainer.Hyperparameters();
-        var daytime = _cfg.DryWindow.BuildDaytimeWindow();
-
-        _log.LogInformation(
-            "Phase 3e — stations=[{S}] leads=[{L}] (cascade trains windows 3+4 jointly)",
-            string.Join(", ", stations), string.Join(",", leads));
-        _log.LogInformation("Hyperparameters: iter={I} lr={Lr} leaves={Lv} esr={E} seed={Sd}",
-            hp.NumberOfIterations, hp.LearningRate, hp.NumberOfLeaves,
-            hp.EarlyStoppingRound, hp.Seed);
-
-        int trained = 0, skipped = 0;
-
-        foreach (var stationName in stations)
-        {
-            ct.ThrowIfCancellationRequested();
-            var slug = StationSlug.WithEaPrefix(stationName);
-            var compositeKey3h = $"{slug}/window_3h";
-            var compositeKey4h = $"{slug}/window_4h";
-
-            // ONE shared timestamp per training run so the (3h, 4h) artefacts
-            // form a coherent pair the user can match by name.
-            var now = DateTime.UtcNow;
-            var versionDir3h = ModelArtifact.BuildStationVersionDir(
-                modelsRoot, "dry_window", compositeKey3h, now,
-                DryWindow3eCascadeArtefact.VersionSuffix);
-            var versionDir4h = ModelArtifact.BuildStationVersionDir(
-                modelsRoot, "dry_window", compositeKey4h, now,
-                DryWindow3eCascadeArtefact.VersionSuffix);
-            var versionName = Path.GetFileName(versionDir3h);   // identical for both
-
-            _log.LogInformation("=== Station '{Station}' → 3e cascade {V} ===", stationName, versionName);
-
-            var perLead3h = new Dictionary<string, ModelArtifact.PerLeadStats>();
-            var perLead4h = new Dictionary<string, ModelArtifact.PerLeadStats>();
-            var importance3h = new Dictionary<int, IEnumerable<(string, double)>>();
-            var importance4h = new Dictionary<int, IEnumerable<(string, double)>>();
-            var specsPerLead = new Dictionary<int, BlenderSpec>();
-            DryWindowClimatology? clim3h = null;
-            DryWindowClimatology? clim4h = null;
-            bool anyLeadTrained = false;
-
-            foreach (var lead in leads)
-            {
-                ct.ThrowIfCancellationRequested();
-                _log.LogInformation("--- Lead {L}h ---", lead);
-
-                // Spec is identical to 3b's — same 53 features, same model membership.
-                // 3e is a different way to USE the same features, not a feature change.
-                var spec = DryWindowFeatureBuilder.BuildSpec(_cfg.Blenders, lead, DryWindowFeatureBuilder.Phase3b);
-                specsPerLead[lead] = spec;
-
-                var multiRows = DryWindow3eFeatureBuilder.BuildForLead(
-                    _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
-                    _cfg.Location.Name, stationName, spec, daytime, ct);
-                _log.LogInformation(
-                    "  loaded {N} multi-label rows (label_3h positives={P3}, label_4h positives={P4})",
-                    multiRows.Count,
-                    multiRows.Count(r => r.Label3h),
-                    multiRows.Count(r => r.Label4h));
-
-                if (multiRows.Count < 100)
-                {
-                    _log.LogWarning("  too few rows ({N}) for ({Station}, lead {L}h); skipping.",
-                        multiRows.Count, stationName, lead);
-                    skipped++;
-                    continue;
-                }
-
-                // Project to vanilla CommonRow per stage. M_base trains on the
-                // FULL set with the 3h label. M_extend4 trains on the SUBSET
-                // where Label3h=true, with the 4h label.
-                var baseRows = multiRows
-                    .Select(r => DryWindow3eFeatureBuilder.ToCommonRow(r, r.Label3h, outputWindowHours: 3))
-                    .ToList();
-                var extendRows = multiRows
-                    .Where(r => r.Label3h)
-                    .Select(r => DryWindow3eFeatureBuilder.ToCommonRow(r, r.Label4h, outputWindowHours: 4))
-                    .ToList();
-
-                if (extendRows.Count < 30)
-                {
-                    _log.LogWarning(
-                        "  M_extend4 subset ({N} rows where 3h-block exists) too small for ({Station}, lead {L}h); skipping.",
-                        extendRows.Count, stationName, lead);
-                    skipped++;
-                    continue;
-                }
-
-                // Same chronological split rule as 3b — date-ordered, no shuffle.
-                var dsBase = DryWindowDataset.Split(baseRows);
-                var dsExt  = DryWindowDataset.Split(extendRows);
-                clim3h ??= BuildClimatologyFromVectorRows(dsBase.Train, 3);
-                clim4h ??= BuildClimatologyFromVectorRows(dsExt.Train, 4);
-
-                _log.LogInformation(
-                    "  M_base: train {Tn} (pos {Tp}), val {Vn} (pos {Vp}), test {En} (pos {Ep})",
-                    dsBase.Train.Count, dsBase.TrainPositives,
-                    dsBase.Val.Count,   dsBase.ValPositives,
-                    dsBase.Test.Count,  dsBase.TestPositives);
-                _log.LogInformation(
-                    "  M_extend4: train {Tn} (pos {Tp}), val {Vn} (pos {Vp}), test {En} (pos {Ep})",
-                    dsExt.Train.Count, dsExt.TrainPositives,
-                    dsExt.Val.Count,   dsExt.ValPositives,
-                    dsExt.Test.Count,  dsExt.TestPositives);
-
-                // Stage 1: M_base.
-                var trainedBase = DryWindowTrainer.TrainVector(dsBase.Train, dsBase.Val, spec, hp);
-                // Stage 2: M_extend4 — same trainer, different (subset) data + label.
-                var trainedExt  = DryWindowTrainer.TrainVector(dsExt.Train,  dsExt.Val,  spec, hp);
-
-                // Per-output-window scoring on each stage's own test slice.
-                // window_3h artefact emits raw M_base; window_4h emits the product.
-                var truthBase = dsBase.Test.Select(r => r.Label ? 1.0 : 0.0).ToArray();
-                var probBase  = DryWindowTrainer.PredictVectorProbability(trainedBase.Ml, trainedBase.Model, spec, dsBase.Test);
-                var brierBase = PrecipMetrics.Brier(probBase, truthBase);
-
-                // For 4h scoring we need the cascade product on the FULL multi-label
-                // test slice (rows where Label3h might be false too — those rows
-                // also have a 4h label, definitionally false). Build the test set
-                // from multi-label rows, restricted to the same date range as
-                // dsBase.Test to keep the chronological split consistent.
-                var dsBaseTestStart = dsBase.Test[0].TargetDateUtc;
-                var dsBaseTestEnd   = dsBase.Test[^1].TargetDateUtc;
-                var fullTestMulti = multiRows
-                    .Where(r => r.TargetDateUtc >= dsBaseTestStart && r.TargetDateUtc <= dsBaseTestEnd)
-                    .ToList();
-                var fullTestRows = fullTestMulti
-                    .Select(r => DryWindow3eFeatureBuilder.ToCommonRow(r, r.Label3h, 3))
-                    .ToList();
-                var truth4h = fullTestMulti.Select(r => r.Label4h ? 1.0 : 0.0).ToArray();
-                var prod4h  = DryWindow3eCascadeArtefact.PredictRawProductForExtend(
-                    trainedBase.Ml, trainedBase.Model, trainedExt.Model, spec, fullTestRows);
-                var brier4hRaw = PrecipMetrics.Brier(prod4h, truth4h);
-
-                // PAV-on-product against 4h truth on the val slice — fits the
-                // calibrator to the SHIPPED quantity rather than to the
-                // intermediate factors. Validation rows analogous to fullTestMulti.
-                var dsBaseValStart = dsBase.Val[0].TargetDateUtc;
-                var dsBaseValEnd   = dsBase.Val[^1].TargetDateUtc;
-                var fullValMulti = multiRows
-                    .Where(r => r.TargetDateUtc >= dsBaseValStart && r.TargetDateUtc <= dsBaseValEnd)
-                    .ToList();
-                var fullValRows = fullValMulti
-                    .Select(r => DryWindow3eFeatureBuilder.ToCommonRow(r, r.Label3h, 3))
-                    .ToList();
-                var prod4hVal = DryWindow3eCascadeArtefact.PredictRawProductForExtend(
-                    trainedBase.Ml, trainedBase.Model, trainedExt.Model, spec, fullValRows);
-                var truth4hVal = fullValMulti.Select(r => r.Label4h).ToArray();
-                var calibrator4h = IsotonicCalibrator.Fit(prod4hVal, truth4hVal);
-                var prod4hCal = calibrator4h.PredictMany(prod4h);
-                var brier4hCal = PrecipMetrics.Brier(prod4hCal, truth4h);
-
-                // Shipping calibration: Bellever PAV-cals the 3h-direct output too,
-                // mirroring 3b's per-station policy. Other stations ship raw.
-                var calibrationEnabled = _cfg.DryWindow.ShouldCalibrate(stationName);
-
-                // Persist M_base under both window_3h and window_4h dirs (4h needs
-                // it for the cascade). Save M_extend4 only under window_4h. Save
-                // calibrators per artefact.
-                ModelArtifact.SaveLeadModel(trainedBase.Ml, trainedBase.Model, trainedBase.InputSchema, versionDir3h, lead);
-                ModelArtifact.SaveLeadModel(trainedBase.Ml, trainedBase.Model, trainedBase.InputSchema, versionDir4h, lead);
-                // M_extend4 — distinct filename so window_4h's dir contains both.
-                var extendPath = Path.Combine(versionDir4h, DryWindow3eCascadeArtefact.ExtendModelFileName(lead));
-                Directory.CreateDirectory(versionDir4h);
-                trainedExt.Ml.Model.Save(trainedExt.Model, trainedExt.InputSchema, extendPath);
-
-                if (calibrationEnabled)
-                {
-                    // 3h artefact: PAV M_base raw against 3h truth — same as 3b.
-                    ModelArtifact.SaveLeadCalibrator(trainedBase.Calibrator, versionDir3h, lead);
-                    // 4h artefact: PAV the PRODUCT against 4h truth (fitted above).
-                    ModelArtifact.SaveLeadCalibrator(calibrator4h, versionDir4h, lead);
-                }
-
-                importance3h[lead] = trainedBase.FeatureImportance;
-                importance4h[lead] = trainedExt.FeatureImportance;
-
-                var brierBaseShipped = calibrationEnabled
-                    ? PrecipMetrics.Brier(trainedBase.Calibrator.PredictMany(probBase), truthBase)
-                    : brierBase;
-                var brier4hShipped = calibrationEnabled ? brier4hCal : brier4hRaw;
-
-                var climPredBase = DryWindowBaselines.Climatology(dsBase.Train, dsBase.Test, 3);
-                var climBrierBase = PrecipMetrics.Brier(climPredBase, truthBase);
-                var clim4hPred = new double[truth4h.Length];
-                Array.Fill(clim4hPred, clim4h?.GlobalPositiveRate ?? 0.0);
-                var climBrier4h = PrecipMetrics.Brier(clim4hPred, truth4h);
-
-                var monthsBase = dsBase.Test
-                    .Select(r => new DateTime(r.TargetDateUtc.Year, r.TargetDateUtc.Month, 1))
-                    .Distinct().Count();
-                var months4h = fullTestMulti
-                    .Select(r => new DateTime(r.TargetDateUtc.Year, r.TargetDateUtc.Month, 1))
-                    .Distinct().Count();
-
-                perLead3h[lead.ToString()] = new ModelArtifact.PerLeadStats
-                {
-                    LeadHours = lead,
-                    DataRangeTrain = $"{dsBase.TrainStart:yyyy-MM-dd}Z → {dsBase.TrainEnd:yyyy-MM-dd}Z",
-                    DataRangeVal   = $"{dsBase.ValStart:yyyy-MM-dd}Z → {dsBase.ValEnd:yyyy-MM-dd}Z",
-                    DataRangeTest  = $"{dsBase.TestStart:yyyy-MM-dd}Z → {dsBase.TestEnd:yyyy-MM-dd}Z",
-                    TrainRows = dsBase.Train.Count,
-                    ValRows   = dsBase.Val.Count,
-                    TestRows  = dsBase.Test.Count,
-                    TestCalendarMonths = monthsBase,
-                    BlendTestMae = brierBaseShipped,
-                    BlendTestRmse = climBrierBase,
-                    BlendTestBias = 0.0,
-                    CalibratedBlendTestMae = calibrationEnabled
-                        ? brierBaseShipped
-                        : PrecipMetrics.Brier(trainedBase.Calibrator.PredictMany(probBase), truthBase),
-                };
-
-                perLead4h[lead.ToString()] = new ModelArtifact.PerLeadStats
-                {
-                    LeadHours = lead,
-                    DataRangeTrain = $"{dsBase.TrainStart:yyyy-MM-dd}Z → {dsBase.TrainEnd:yyyy-MM-dd}Z",
-                    DataRangeVal   = $"{dsBase.ValStart:yyyy-MM-dd}Z → {dsBase.ValEnd:yyyy-MM-dd}Z",
-                    DataRangeTest  = $"{dsBase.TestStart:yyyy-MM-dd}Z → {dsBase.TestEnd:yyyy-MM-dd}Z",
-                    TrainRows = dsBase.Train.Count,
-                    ValRows   = dsBase.Val.Count,
-                    TestRows  = fullTestMulti.Count,
-                    TestCalendarMonths = months4h,
-                    BlendTestMae = brier4hShipped,
-                    BlendTestRmse = climBrier4h,
-                    BlendTestBias = 0.0,
-                    CalibratedBlendTestMae = brier4hCal,
-                };
-
-                _log.LogInformation(
-                    "  Lead {L}h Brier — 3h={B3:0.0000} (clim {C3:0.0000}), 4h_raw={B4r:0.0000} cal={B4c:0.0000} (clim {C4:0.0000})",
-                    lead, brierBaseShipped, climBrierBase, brier4hRaw, brier4hCal, climBrier4h);
-                anyLeadTrained = true;
-                trained++;
-            }
-
-            if (!anyLeadTrained)
-            {
-                _log.LogWarning("  No leads trained for {Station} — skipping artefact save.", stationName);
-                continue;
-            }
-
-            // Save spec, importance, climatology, metadata for BOTH artefact dirs.
-            // 3e shares the same spec across both windows (same features) so the
-            // feature_schema.json is identical, but each dir gets its own copy
-            // so each is self-contained and the renderer reads only one path.
-            ModelArtifact.SaveBlenderSpecs(versionDir3h, specsPerLead);
-            ModelArtifact.SaveBlenderSpecs(versionDir4h, specsPerLead);
-            ModelArtifact.SavePerLeadFeatureImportance(versionDir3h, importance3h);
-            ModelArtifact.SavePerLeadFeatureImportance(versionDir4h, importance4h);
-            clim3h?.SaveTo(Path.Combine(versionDir3h, "dry_window_climatology.json"));
-            clim4h?.SaveTo(Path.Combine(versionDir4h, "dry_window_climatology.json"));
-
-            var metadata3h = new ModelArtifact.TrainingMetadata
-            {
-                Version = versionName,
-                Target = "dry_window",
-                Phase = DryWindow3eFeatureBuilder.Phase3e,
-                DataSource = "previous_runs_api+ea_rainfall",
-                TrainedAtUtc = now,
-                Hyperparameters = BuildHpDict(hp, 3),
-                TestMae = perLead3h.ToDictionary(kv => $"lead_{kv.Key}h_brier", kv => kv.Value.BlendTestMae),
-                PerLead = perLead3h,
-                DeviationsFromBrief = new List<string>
-                {
-                    "Phase 3e cascade — window_3h artefact emits M_base raw (P(3h)).",
-                    "PerLeadStats fields reused (3b convention): BlendTestMae=blend Brier, BlendTestRmse=climatology Brier.",
-                },
-            };
-            var metadata4h = new ModelArtifact.TrainingMetadata
-            {
-                Version = versionName,
-                Target = "dry_window",
-                Phase = DryWindow3eFeatureBuilder.Phase3e,
-                DataSource = "previous_runs_api+ea_rainfall",
-                TrainedAtUtc = now,
-                Hyperparameters = BuildHpDict(hp, 4),
-                TestMae = perLead4h.ToDictionary(kv => $"lead_{kv.Key}h_brier", kv => kv.Value.BlendTestMae),
-                PerLead = perLead4h,
-                DeviationsFromBrief = new List<string>
-                {
-                    "Phase 3e cascade — window_4h artefact emits the conditional product M_base × M_extend4.",
-                    "M_base copy stored alongside M_extend4 in this dir for self-containment; both bytes-identical to the M_base in the sibling window_3h artefact.",
-                    "PAV calibrator (when station opts in) is fitted to the PRODUCT against 4h truth, not to the intermediate factors.",
-                    "Monotonicity P(4h) ≤ P(3h) holds by construction (product of two probabilities both ≤ 1).",
-                },
-            };
-            ModelArtifact.SaveTrainingMetadata(versionDir3h, metadata3h);
-            ModelArtifact.SaveTrainingMetadata(versionDir4h, metadata4h);
-
-            // Promote 3e as a CHALLENGER alongside the 3b champion: replaces
-            // any prior 3e entry in Active with this one (idempotent on
-            // re-train) and leaves Current = the 3b champion untouched.
-            ModelArtifact.PromoteStationVersionAsChallenger(
-                modelsRoot, "dry_window", compositeKey3h, versionName,
-                newPhase: DryWindow3eFeatureBuilder.Phase3e);
-            ModelArtifact.PromoteStationVersionAsChallenger(
-                modelsRoot, "dry_window", compositeKey4h, versionName,
-                newPhase: DryWindow3eFeatureBuilder.Phase3e);
-
-            // Auto-conformal for both legs of the cascade pair.
-            foreach (var key in new[] { compositeKey3h, compositeKey4h })
-            {
-                var (cf, cs) = await _conformal.FitOneAsync(
-                    key, versionName, DryWindowConformalFitCommand.DefaultAlpha, ct);
-                _log.LogInformation("Auto-conformal: fitted {F} leads ({S} skipped) for {K}/{V}",
-                    cf, cs, key, versionName);
-            }
-
-            _log.LogInformation("Saved 3e artefacts → {D3h} + {D4h}", versionDir3h, versionDir4h);
-        }
-
-        _log.LogInformation("Phase 3e training complete. Trained={T} Skipped={S}", trained, skipped);
-        return trained == 0 ? 3 : 0;
-    }
 
     /// <summary>
     /// Phase 3g training loop. There's no LightGBM training to do — 3g is

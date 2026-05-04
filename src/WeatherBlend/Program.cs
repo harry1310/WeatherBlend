@@ -149,7 +149,6 @@ public static class Program
                 services.AddTransient<DryWindowConformalFitCommand>();
                 services.AddTransient<PrecipConformalFitCommand>();
                 services.AddTransient<DryWindowTrainCommand>();
-                services.AddTransient<DryWindowAblateCommand>();
                 services.AddTransient<DryWindowPredictCommand>();
                 services.AddTransient<DryWindowVerifyCommand>();
                 services.AddTransient<StartHourVerifyCommand>();
@@ -551,15 +550,9 @@ public static class Program
         }, precipConformalAlphaOpt);
         root.AddCommand(precipConformalFit);
 
-        var dryWindowAblate = new Command(
-            "dry-window-ablate",
-            "Phase 3d diagnostic: tabulate 3b vs 3d-shape test-set Brier/BSS/freq-bias + shape-feature gain importance");
-        dryWindowAblate.SetHandler(async ctx =>
-        {
-            var cmd = host.Services.GetRequiredService<DryWindowAblateCommand>();
-            ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
-        });
-        root.AddCommand(dryWindowAblate);
+        // dry-window-ablate (Phase 3d 3b-vs-3d-shape diagnostic) was retired
+        // 2026-05-04 alongside the 3d-shape training path. 3b vs 3g comparison
+        // is covered by the standard verify command's per-phase grouping.
 
         var globOpt = new Option<string>("--glob", "Parquet glob across models for one run") { IsRequired = true };
         var compare = new Command("compare", "Cross-model agreement summary for a run") { globOpt };
