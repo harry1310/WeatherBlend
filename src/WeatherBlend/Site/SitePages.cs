@@ -508,11 +508,13 @@ public static partial class SitePages
         .forecast-card footer small { color: var(--pico-muted-color); font-size: 0.75rem; }
         .forecast-card h4 { margin: 0; font-size: 1rem; font-variant-numeric: tabular-nums; }
         .forecast-card header { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
-        /* Low-cloud / mist badge — slate background, white text, sits in
-           the tile header next to the time. Hover tooltip says which signal
-           fired (vis < 1 km mist, T-Td < 1.5°C cloud-base, or both) and the
-           per-NWP agreement count. */
-        .low-cloud-badge { background: #455a64; color: #fff; font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 999px; cursor: help; white-space: nowrap; }
+        /* Low-cloud / mist badge — slate pill in the tile header. Click to
+           expand details (Pico <details>) listing which signal(s) fired and
+           the per-NWP agreement count. Tap-friendly on mobile, no hover needed. */
+        details.low-cloud-pop { display: inline; }
+        details.low-cloud-pop > summary.low-cloud-badge { background: #455a64; color: #fff; font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 999px; cursor: pointer; white-space: nowrap; list-style: none; display: inline-block; }
+        details.low-cloud-pop > summary.low-cloud-badge::-webkit-details-marker { display: none; }
+        details.low-cloud-pop > ul { margin: 0.4rem 0 0; padding-left: 1.1rem; font-size: 0.78rem; color: var(--pico-muted-color); }
 
         /* Day-grouped home layout — one block per UTC day with a summary line
            above the per-hour tile grid. Top + bottom margin so days read as

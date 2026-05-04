@@ -25,10 +25,8 @@ public static partial class SitePages
 
         body.Append(Ci, $"""
               <hgroup>
-                <h2>Temperature forecast +{lead}h</h2>
-                <p>Per-NWP temperatures plus the blend lines (Phase 2b champion in
-                   deep purple, Phase 2c challenger in lighter purple). Hover a line
-                   for exact values.</p>
+                <h2>Temperature +{lead}h</h2>
+                <p>Per-NWP lines plus blend (2b solid, 2c lighter).</p>
               </hgroup>
             """);
 
@@ -47,12 +45,8 @@ public static partial class SitePages
 
         body.Append(Ci, $"""
               <hgroup>
-                <h2>Rain forecast +{lead}h</h2>
-                <p>Per-station P(wet ≥ 0.1 mm/h) on top with the per-NWP PoP overlay
-                   (Phase 3a champion in deep purple, Phase 3c challenger in lighter
-                   purple), then the per-NWP precip rate (mm/h) at the Bonehill
-                   point — only once because the NWP forecasts don't differ between
-                   gauge stations.</p>
+                <h2>Rain +{lead}h</h2>
+                <p>Per-station P(wet ≥ 0.1 mm/h) — 3a solid, 3c lighter — plus per-NWP precip rate (one chart, point forecast for Bonehill).</p>
               </hgroup>
             """);
 
@@ -192,8 +186,7 @@ public static partial class SitePages
     private static string RenderPrecipSection(SiteInputs input, int lead)
     {
         var s = new StringBuilder();
-        s.Append("<h3>Precipitation — P(wet ≥ 0.1 mm/h) vs NWP inputs</h3>");
-        s.Append("<p class=\"skill-line\">Per-station P(wet) on top, plus climatology and per-NWP PoP overlay. The NWP precip rate (mm/h) chart sits below — only once, because the per-NWP forecasts are point values for Bonehill that don't differ per gauge station.</p>");
+        s.Append("<h3>Precipitation — P(wet ≥ 0.1 mm/h)</h3>");
 
         // Filter to active stations so a demoted-from-config station whose
         // historical predictions are still on disk doesn't get a panel.

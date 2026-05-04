@@ -125,7 +125,7 @@ public static partial class SitePages
         body.Append(Ci, $"""
               <hgroup>
                 <h2>Forward forecast — {dayUtc:dddd dd MMMM}</h2>
-                <p>{Escape(input.LocationDisplay)} — {input.Latitude.ToString("0.0000", Ci)}°, {input.Longitude.ToString("0.0000", Ci)}°, {input.ElevationMeters.ToString("0", Ci)}m. Champion-blender forecast at the shortest available lead. Hours 04:00–20:59 UTC only — overnight tiles dropped as they're irrelevant for outdoor planning. Click the ⓘ on a tile to see the wind / humidity / cloud / radiation values that drove its UTCI.</p>
+                <p>{Escape(input.LocationDisplay)} — {input.Latitude.ToString("0.0000", Ci)}°, {input.Longitude.ToString("0.0000", Ci)}°, {input.ElevationMeters.ToString("0", Ci)}m.</p>
               </hgroup>
             """);
         body.Append(daySummary);
@@ -194,8 +194,9 @@ public static partial class SitePages
         int popoverId)
     {
         // Low-cloud / mist warning — fires when EITHER signal hits its
-        // threshold. The badge sits in the tile header so it's visible
-        // without scrolling past the temp + feels-like content.
+        // threshold. Sits in the tile header as a Pico <details>/<summary>
+        // pop-out so the trigger details work on touch devices (the earlier
+        // title="..." tooltip was unreachable from mobile).
         string lowCloudBadge = "";
         if (lowCloudByValid.TryGetValue(p.ValidTimeUtc, out var lc))
         {
@@ -203,16 +204,17 @@ public static partial class SitePages
             var cbFired  = lc.CloudBaseFiredCount >= LowCloudBaseFireThreshold;
             if (visFired || cbFired)
             {
-                // Tooltip names which signal(s) tripped + the agreement count
-                // — a "1/6 vis fog, 11/11 cloud at tor height" hover reads
-                // very differently from "5/6 vis fog, 7/11 cloud at tor".
-                var parts = new List<string>(2);
+                var rows = new StringBuilder();
                 if (visFired)
-                    parts.Add(string.Create(Ci, $"{lc.VisFiredCount}/{lc.VisTotalCount} NWPs forecast mist (vis < 1 km)"));
+                    rows.Append(Ci, $"<li>{lc.VisFiredCount}/{lc.VisTotalCount} NWPs: mist (vis &lt; 1 km)</li>");
                 if (cbFired)
-                    parts.Add(string.Create(Ci, $"{lc.CloudBaseFiredCount}/{lc.CloudBaseTotalCount} NWPs forecast cloud base below the tor (T−Td < 1.5°C)"));
-                var tooltip = string.Join(" · ", parts);
-                lowCloudBadge = $"<span class=\"low-cloud-badge\" title=\"{Escape(tooltip)}\">☁ low cloud</span>";
+                    rows.Append(Ci, $"<li>{lc.CloudBaseFiredCount}/{lc.CloudBaseTotalCount} NWPs: cloud base below tor (T−Td &lt; 1.5°C)</li>");
+                lowCloudBadge = $"""
+                    <details class="low-cloud-pop">
+                      <summary class="low-cloud-badge">☁ low cloud</summary>
+                      <ul>{rows}</ul>
+                    </details>
+                    """;
             }
         }
 

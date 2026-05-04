@@ -35,7 +35,7 @@ public static class DryWindowPhases
         Key: "3b",
         LongTitle: "Phase 3b — lean (53 features)",
         ShortTitle: "Phase 3b (lean)",
-        Description: "Day-aggregate per-model precip totals, wet-hour counts, run-length stats, EA persistence, climatology, calendar encodings. Production champion.",
+        Description: "53-feature LightGBM. Champion.",
         ChampionVsChallengerLabel: "Phase 3b (champion)",
         Color: "#90a4ae");
 
@@ -43,7 +43,7 @@ public static class DryWindowPhases
         Key: "3g",
         LongTitle: "Phase 3g — Monte Carlo over Phase 3a hourly P(wet) marginals",
         ShortTitle: "Phase 3g (MC)",
-        Description: "Parameter-free. For each daytime hour, sample 10,000 Bernoullis using Phase 3a's hourly P(wet); count the fraction of samples whose longest dry run reaches the target window length. No LightGBM, no learned weights — the prediction is purely 3a's per-hour view + the structural rule that longer windows are rarer. Cross-window monotonicity P(N=3) ≥ P(N=4) ≥ P(N=6) holds by construction (single MC pass, three indicators read off the same Bernoulli sequence).",
+        Description: "Parameter-free MC over 3a hourly P(wet). Monotonic by construction.",
         ChampionVsChallengerLabel: "Phase 3g (MC)",
         Color: "#43a047");
 

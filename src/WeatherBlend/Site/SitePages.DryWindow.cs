@@ -56,13 +56,7 @@ public static partial class SitePages
         content.Append("""
               <hgroup>
                 <h2>Dry-window forecast</h2>
-                <p>Per-station, per-window blender. The label asks "is there a contiguous
-                   N-hour dry block somewhere within 09:00–18:00 local time?" — the
-                   realistic outdoor-walking window at Bonehill year-round (DST handled
-                   per target day). Phase 3b (53-feature LightGBM) ships as champion;
-                   Phase 3g (parameter-free MC over Phase 3a hourly P(wet)) ships
-                   alongside as challenger and guarantees cross-window monotonicity by
-                   construction. Cards show today and the next 4 forecast days.</p>
+                <p>P(at least one N-hour dry block in 09:00–18:00 local). 3b champion + 3g challenger.</p>
               </hgroup>
             """);
 
@@ -305,7 +299,7 @@ public static partial class SitePages
         }
 
         content.Append("""
-            <p class="skill-line">A dry "hour" requires all four 15-min EA gauge readings to be ≤ 0.1 mm. Search is bounded to 09:00–18:00 local time (Europe/London, DST-aware) — overnight dry stretches don't count, and a dry block that bridges 18:00 into the evening isn't credited. Cross-midnight dry stretches are not credited (UTC-day boundary).</p>
+            <p class="skill-line">Dry hour = all four 15-min readings ≤ 0.1 mm. Search bounded to 09:00–18:00 local.</p>
             </section>
             """);
         return WrapPage(input, "Dry window", "dry-window", content.ToString());

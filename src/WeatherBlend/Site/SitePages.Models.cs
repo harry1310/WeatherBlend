@@ -33,13 +33,13 @@ public static partial class SitePages
         {
             "temperature" => ("temp",
                 "Temperature models",
-                "Phase 2b (lean, 13 features) and Phase 2c (rich, 88 features). Trained against ERA5 reanalysis, scored as MAE in °C — lower is better."),
+                "2b (lean) + 2c (rich). MAE °C, lower better."),
             "precipitation" => ("rain",
                 "Rain models",
-                "Per-station P(wet ≥ 0.1 mm/h) classifiers — Phase 3a (lean, 27 features) and Phase 3c (rich, 55 features). Trained against EA Hydrology gauges, scored as Brier — lower is better."),
+                "Per-station P(wet ≥ 0.1 mm/h). 3a (lean) + 3c (rich). Brier, lower better."),
             "dry_window" => ("dry-window",
                 "Dry-window models",
-                "Per-(station, window) P(at least one N-hour dry block in 09–18 local time). Phase 3b (53-feature LightGBM champion) and Phase 3g (parameter-free MC over 3a's hourly P(wet) — guarantees cross-window monotonicity by construction). Brier — lower is better."),
+                "Per-(station, window) P(N-hour dry block in 09–18 local). 3b LightGBM + 3g MC. Brier, lower better."),
             _ => throw new ArgumentException($"Unknown target '{target}'.", nameof(target)),
         };
 
@@ -52,7 +52,7 @@ public static partial class SitePages
         content.Append(Ci, $"""
               <hgroup>
                 <h2>{Escape(prettyTitle)}</h2>
-                <p>{Escape(intro)} The Δ column compares the blend to the best single NWP <em>on the same test slice</em>; negative means the blend wins.</p>
+                <p>{Escape(intro)} Δ vs best single NWP — negative = blend wins.</p>
               </hgroup>
             """);
 
@@ -278,7 +278,7 @@ public static partial class SitePages
             return $"""
                 <div class="verify-history">
                   <h5>Verify history <small>(no runs yet)</small></h5>
-                  <p class="skill-line">No verify rows on disk match this card's phase ({Escape(phase)}). Either the next verify (twice-weekly Mon + Thu 09:30 UTC, then 5d ERA5 latency) hasn't yet scored predictions made by this version, or older verify files used a different phase tag for this lineage. Re-check after the next Mon/Thu cycle.</p>
+                  <p class="skill-line">No verify rows yet for phase <code>{Escape(phase)}</code>. Next cycle: Mon/Thu 09:30 UTC, then 5d ERA5 latency.</p>
                 </div>
                 """;
         }
@@ -358,7 +358,7 @@ public static partial class SitePages
         return $"""
             <div class="verify-history">
               <h5>Verify history <small>({matchingFiles.Count} run{(matchingFiles.Count == 1 ? "" : "s")})</small></h5>
-              <p class="skill-line">Twice-weekly Brier/MAE on the held-out rolling window — one row per verify run, drift flag in the last column. Metric: {Escape(metricLabel)}. Version column names which trained model the row's numbers came from — a freshly retrained champion shows zero rows here for ~5-9d (one verify cycle plus 5d ERA5 latency), so a row labelled with an older version is the previous lineage's history under the same phase.</p>
+              <p class="skill-line">Mon + Thu rolling {Escape(metricLabel)}, drift flag in last column. Version column names the trained model — a fresh champion takes ~5-9d to show.</p>
               <table>
                 <thead>
                   <tr>
@@ -404,18 +404,12 @@ public static partial class SitePages
         var target = composite.Split('/')[0];
         return (target, phase) switch
         {
-            ("temperature", "2b")
-                => "Lean blender — six per-NWP temperatures, their mean/std/range, and cyclical hour/day-of-year encodings (~13 features).",
-            ("temperature", "2c")
-                => "Rich blender — adds per-NWP dew point, RH, cloud {total/low/mid/high}, wind speed/direction/gusts, surface pressure, plus cross-model aggregates (~88 features).",
-            ("precipitation", "3a")
-                => "Lean P(wet ≥ 0.1 mm/h) classifier — six per-NWP precipitation rates and ensemble agreement.",
-            ("precipitation", "3c")
-                => "Rich P(wet) classifier — adds per-NWP cloud, humidity, CAPE, dew-point depression with feature-importance pruning (~55 features).",
-            ("dry_window", "3b")
-                => "Per-(station, window) classifier for whether at least one N-hour dry block occurs in the target UTC day.",
-            ("dry_window", "3g")
-                => "Parameter-free MC — 10,000 Bernoulli draws over Phase 3a's hourly P(wet); the prediction is the fraction whose longest dry run reaches the window length. Cross-window monotonicity holds by construction.",
+            ("temperature", "2b")  => "Lean blender, 13 features.",
+            ("temperature", "2c")  => "Rich blender, 88 features (adds dew/RH/cloud/wind/pressure).",
+            ("precipitation", "3a") => "Lean P(wet) classifier, 27 features.",
+            ("precipitation", "3c") => "Rich P(wet) classifier, 55 features.",
+            ("dry_window", "3b")   => "53-feature LightGBM per-(station, window).",
+            ("dry_window", "3g")   => "Parameter-free MC over 3a hourly P(wet). Monotonic by construction.",
             _ => $"Phase {phase} blender.",
         };
     }

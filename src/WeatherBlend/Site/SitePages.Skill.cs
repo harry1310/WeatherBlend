@@ -23,12 +23,7 @@ public static partial class SitePages
         content.Append("""
               <hgroup>
                 <h2>Skill — temperature</h2>
-                <p>Eyeball comparison first — each active blender's temperature trajectory plotted against
-                   ERA5 reanalysis (training truth) plus two surface cross-checks: METAR at Exeter Airport
-                   (~30 km E, 31 m elevation) and Met Office DataHub obs near Taw Green on the NE flank
-                   of Dartmoor (~22 km NNW, ~120-150 m elevation). Both sit lower than Bonehill's 393 m, so
-                   expect a few-degree warm bias relative to the blender — Taw Green's bias is smaller because
-                   it's closer in altitude. Rolling quantitative MAE by lead follows.</p>
+                <p>Blenders vs ERA5 truth + EGTE METAR and Taw Green obs (both lower than the 393 m tor → expect a warm bias).</p>
               </hgroup>
             """);
 
@@ -86,9 +81,7 @@ public static partial class SitePages
         content.Append("""
               <hgroup>
                 <h2>Skill — dry window</h2>
-                <p>One row per target UTC day × window length. Both prediction and observed verdict
-                   are scoped to the 09–18 local-time daytime window (Europe/London, DST-aware).
-                   The "observed" column is blank for dates beyond the last full rainfall day.</p>
+                <p>Predicted vs observed dry-block verdict per (day × window). Observed blank for dates past the last full gauge day.</p>
               </hgroup>
             """);
 
@@ -123,10 +116,7 @@ public static partial class SitePages
         content.Append("""
               <hgroup>
                 <h2>Skill — rain</h2>
-                <p>Eyeball first: P(wet) trajectories against a 0/1 wet-hour indicator from the same
-                   ≥ 0.1 mm threshold the blender was trained on, then rolling Brier per phase.
-                   Stations sit on separate EA gauges, so flip between them via the per-station sub-nav.
-                   The dry-window predicted-vs-observed table moved to its own page (Skill → Dry window).</p>
+                <p>P(wet) vs observed wet hours, then rolling Brier per phase.</p>
               </hgroup>
             """);
 
@@ -379,7 +369,7 @@ public static partial class SitePages
         double? xMin = xMax is { } m ? m - 30.0 : null;
 
         var content = new StringBuilder();
-        content.Append(Ci, $"<p class=\"skill-line\">{Escape(PrettyStation(currentStation))} — lower is better. Brier = mean squared error of P(wet) against the gauge's 0/1 wet-hour indicator over the prior 30 days. Per-(version, lead) line; partial-window points emit at the start of the data, the per-point pair count drives stability.</p>");
+        content.Append(Ci, $"<p class=\"skill-line\">{Escape(PrettyStation(currentStation))} — 30-day rolling Brier per (version, lead). Lower better.</p>");
 
         foreach (var lead in Leads.Short)
         {
@@ -497,13 +487,7 @@ public static partial class SitePages
     {
         var content = new StringBuilder();
         content.Append("""
-            <p class="skill-line">P(wet) is the blender's probability that the next hour sees ≥ 0.1 mm. Light-blue vertical bands
-               behind the lines mark hours where the gauge actually recorded ≥ 0.1 mm — so reading the chart is "during the
-               blue stripe, did our P(wet) lines climb?". A dashed vertical line marks today; everything to the right is
-               forecast-only. Hours with fewer than 4 of 4 15-min readings are dropped to avoid flipping wet↔dry at the
-               boundary. The dark-navy "Met Office Spot PoP" line, when present, is the Met Office DataHub Spot product's
-               own probability for the Bonehill point — its threshold is "any measurable precip", a slightly looser bound
-               than our 0.1 mm/h, so read it as direction-of-effect alongside our blender rather than a like-for-like overlay.</p>
+            <p class="skill-line">Blue bands = observed wet hours (≥ 0.1 mm). MO Spot PoP uses a looser "any precip" threshold — read it as direction-of-effect.</p>
             """);
 
         if (currentStation is null)

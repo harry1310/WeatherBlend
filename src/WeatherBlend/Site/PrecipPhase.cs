@@ -35,7 +35,7 @@ public static class PrecipPhases
         Key: "3a",
         LongTitle: "Phase 3a — lean (27 features)",
         ShortTitle: "Phase 3a (lean)",
-        Description: "Per-model precip + precip-prob, spread stats, covariate means, calendar encodings. Original champion.",
+        Description: "27-feature lean. Champion.",
         ChampionVsChallengerLabel: "Phase 3a (champion)",
         Color: "#90a4ae");
 
@@ -43,7 +43,7 @@ public static class PrecipPhases
         Key: "3c",
         LongTitle: "Phase 3c — rich (55 features)",
         ShortTitle: "Phase 3c (rich)",
-        Description: "Lean + 18 per-model humidity (dew/RH/depression) + 6 per-model surface pressure + 4 EA trailing-rainfall persistence features. Challenger.",
+        Description: "55-feature rich (adds humidity, pressure, EA persistence). Challenger.",
         ChampionVsChallengerLabel: "Phase 3c (challenger)",
         Color: "#7c4dff");
 
