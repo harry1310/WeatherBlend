@@ -167,13 +167,15 @@ public static partial class SitePages
     }
 
     /// <summary>
-    /// 30-day rolling window ending at the latest prediction valid_time across
+    /// 14-day rolling window ending at the latest prediction valid_time across
     /// the section. Anchoring on the data's right edge instead of the input
     /// rolling-window-start keeps the chart visually consistent across renders
     /// (a sparse-data day doesn't widen the window) and tracks the forward
     /// forecast horizon — when predictions extend +120h the window slides
     /// with them. Falls back to truth extent when no predictions exist; both
     /// nulls → caller passes through to Chart.js auto-scaling.
+    /// Tightened from 30 → 14 days 2026-05-04 (user feedback: a month was too
+    /// much to scan visually; weeks read better).
     /// </summary>
     private static (double? Min, double? Max) TempSectionRange(SiteInputs input)
     {
@@ -192,7 +194,7 @@ public static partial class SitePages
             }
         }
         if (max is null) return (null, null);
-        return (max - 30.0, max);
+        return (max - 14.0, max);
     }
 
     private static string RenderTempVsTruthChart(
@@ -264,7 +266,7 @@ public static partial class SitePages
             YLabel = "Temperature (°C)",
             Series = series,
             Height = 360,
-            FormatX = v => DateTime.FromOADate(v).ToString("MM-dd", Ci),
+            FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
             FormatY = v => v.ToString("0.#", Ci) + "°",
             TodayLineX = input.GeneratedAtUtc.ToOADate(),
             XMin = xMin,
@@ -450,13 +452,15 @@ public static partial class SitePages
             ? ComputeWetBands(truth, input.WindowStartUtc)
             : new List<(double, double)>();
 
-        // 30-day rolling window ending at the latest prediction valid_time for
+        // 14-day rolling window ending at the latest prediction valid_time for
         // this station. Per-phase charts plus the champion-vs-challenger
         // overlay all share the same time axis and stack as one panel.
+        // Tightened from 30 → 14 days 2026-05-04 (user feedback: a month was
+        // too much to scan visually; weeks read better).
         double? xMax = stationPredictions.Count > 0
             ? stationPredictions.Max(p => p.ValidTimeUtc).ToOADate()
             : null;
-        double? xMin = xMax is { } m ? m - 30.0 : null;
+        double? xMin = xMax is { } m ? m - 14.0 : null;
 
         (int lead, string color)[] leadSpecs =
         {

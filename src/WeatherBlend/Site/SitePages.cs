@@ -579,15 +579,10 @@ public static partial class SitePages
                   borderColor: 'rgba(102,102,102,0.7)',
                   borderWidth: 1.25,
                   borderDash: [4, 4],
-                  label: {
-                    display: true,
-                    content: 'today',
-                    position: 'start',
-                    backgroundColor: 'rgba(102,102,102,0.7)',
-                    color: '#fff',
-                    font: { family: 'ui-monospace, monospace', size: 10 },
-                    padding: { x: 4, y: 2 },
-                  },
+                  // Label removed 2026-05-04 — the dashed line is self-explanatory
+                  // ("everything past it is forecast-only" is repeated in the
+                  // skill-line copy above each chart) and the floating tag
+                  // sat on top of the freshest data points.
                 };
               }
             }
