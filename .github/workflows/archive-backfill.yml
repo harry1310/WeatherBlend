@@ -1,0 +1,145 @@
+name: archive-backfill
+
+# Manual-dispatch workflow for the rigorous-runtime archive backfills:
+# GFS from NOAA S3, ECMWF IFS/AIFS from AWS Open Data. Each row stamped
+# RunTimeSource = "exact" — exact cycle init time + lead from the file
+# path, no API approximation. Lives separately from `backfill.yml` (which
+# pulls Open-Meteo Previous Runs at "offset_day" granularity) because the
+# wgrib2 install + per-cycle GRIB Range-fetch shape is different enough
+# to keep the two workflows from sharing steps cleanly.
+#
+# Use cases:
+#   * Sample run to verify a fresh parser (small date range, one cycle).
+#   * Full historical backfill (multi-year, all cycles) — chunk by year
+#     to keep individual runs under the 6h max-runtime cap.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "Archive source"
+        required: true
+        default: "ecmwf-ifs"
+        type: choice
+        options: [gfs, ecmwf-ifs, ecmwf-aifs]
+      start:
+        description: "Start cycle date (yyyy-MM-dd, UTC)"
+        required: true
+      end:
+        description: "End cycle date (yyyy-MM-dd, UTC) — leave blank for yesterday"
+        required: false
+        default: ""
+      cycles:
+        description: "Comma-separated cycle hours (default 0,6,12,18 — all four)"
+        required: false
+        default: "0,6,12,18"
+
+concurrency:
+  # Share the lock with collect / predict / verify so simultaneous writes
+  # to R2 stay serialised.
+  group: weatherblend-data
+  cancel-in-progress: false
+
+jobs:
+  archive-backfill:
+    runs-on: ubuntu-latest
+    # 6h cap. Sample runs (one week, one stream) finish in <30 min on a
+    # standard runner; multi-year full backfills should be chunked across
+    # multiple invocations.
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+          dotnet-quality: preview
+
+      - name: Install wgrib2 + libnetcdf
+        # wgrib2 from Ubuntu's package repo is ancient (~2.0.x) but still
+        # decodes everything we need — point extraction via lon=… lat=…
+        # has been stable for years. libnetcdf is its peer dep.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y wgrib2 libnetcdf-dev
+          wgrib2 -version
+          # Wgrib2 wrapper takes the exe path via $WEATHERBLEND_WGRIB2 or
+          # falls back to a Windows default. Set the env var to /usr/bin/wgrib2
+          # for the rest of the job so the C# code finds it.
+          echo "WEATHERBLEND_WGRIB2=$(which wgrib2)" >> "$GITHUB_ENV"
+
+      - name: Install rclone
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          rclone version
+
+      - name: Configure rclone for R2
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf <<EOF
+          [r2]
+          type = s3
+          provider = Cloudflare
+          access_key_id = ${R2_ACCESS_KEY_ID}
+          secret_access_key = ${R2_SECRET_ACCESS_KEY}
+          endpoint = ${R2_ENDPOINT}
+          acl = private
+          EOF
+
+      - name: Build
+        run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
+
+      - name: Run backfill
+        run: |
+          END_ARG=""
+          if [ -n "${{ inputs.end }}" ]; then
+            END_ARG="--end ${{ inputs.end }}"
+          fi
+
+          case "${{ inputs.source }}" in
+            gfs)
+              dotnet run --project src/WeatherBlend --no-build -c Release -- \
+                gfs-backfill --start ${{ inputs.start }} $END_ARG \
+                --cycles ${{ inputs.cycles }}
+              ;;
+            ecmwf-ifs)
+              dotnet run --project src/WeatherBlend --no-build -c Release -- \
+                ecmwf-backfill --stream ifs --start ${{ inputs.start }} $END_ARG \
+                --cycles ${{ inputs.cycles }}
+              ;;
+            ecmwf-aifs)
+              dotnet run --project src/WeatherBlend --no-build -c Release -- \
+                ecmwf-backfill --stream aifs --start ${{ inputs.start }} $END_ARG \
+                --cycles ${{ inputs.cycles }}
+              ;;
+            *)
+              echo "::error::Unknown source: ${{ inputs.source }}"
+              exit 2
+              ;;
+          esac
+
+      - name: Push parquet to R2
+        # copy (not sync) — additive only. Each cycle goes to its own date+run
+        # partition so we never overwrite existing rows with this run.
+        if: always()
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          if [ -d ./data/forecasts ]; then
+            rclone copy ./data/forecasts "r2:${R2_BUCKET}/data/forecasts" --fast-list --transfers 16 --checkers 32 --progress
+          else
+            echo "::warning::No data/forecasts directory — backfill produced no rows"
+          fi
+
+      - name: Upload logs as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: archive-backfill-${{ inputs.source }}-${{ github.run_id }}
+          path: logs/
+          retention-days: 30
+          if-no-files-found: ignore
