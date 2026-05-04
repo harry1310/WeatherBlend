@@ -32,12 +32,15 @@ public sealed class GfsBackfillCommand
         DateOnly start,
         DateOnly end,
         IReadOnlyList<int>? cycles,
+        IReadOnlyList<int>? leads,
         CancellationToken ct)
     {
         cycles ??= GfsClient.CycleHours;
-        var leadHours = _cfg.LeadHours.Count > 0
-            ? _cfg.LeadHours
-            : new List<int> { 1, 3, 6, 12, 24, 36, 48, 72, 96, 120, 144, 168 };
+        var leadHours = (leads is { Count: > 0 } l)
+            ? l
+            : (_cfg.LeadHours.Count > 0
+                ? _cfg.LeadHours
+                : new List<int> { 1, 3, 6, 12, 24, 36, 48, 72, 96, 120, 144, 168 });
 
         var scratchDir = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "tmp", "gfs");
         scratchDir = Path.GetFullPath(scratchDir);

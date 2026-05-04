@@ -33,11 +33,17 @@ on:
         description: "Comma-separated cycle hours (default 0,6,12,18 — all four)"
         required: false
         default: "0,6,12,18"
+      leads:
+        description: "Comma-separated lead hours (blank = per-source full set: GFS 1..240, ECMWF 6..240 on a 6h grid)"
+        required: false
+        default: ""
 
 concurrency:
-  # Share the lock with collect / predict / verify so simultaneous writes
-  # to R2 stay serialised.
-  group: weatherblend-data
+  # Own group — long multi-month backfills shouldn't block the 3-hourly
+  # collect or the daily predict/verify (those share `weatherblend-data`).
+  # Multiple archive-backfill dispatches still queue against each other so
+  # we never have two `rclone copy` jobs racing into the same R2 prefix.
+  group: archive-backfill
   cancel-in-progress: false
 
 jobs:
@@ -114,21 +120,38 @@ jobs:
             END_ARG="--end ${{ inputs.end }}"
           fi
 
+          # Per-source default lead set when the workflow input is blank.
+          # GFS has 1h-step archives so we keep the short-range 1h/3h leads
+          # in addition to the common 6h-grid set. IFS oper / AIFS oper are
+          # both on a 6h-grid (IFS to 240h native, AIFS to 360h — capped at
+          # 240h here for parity; extend per-dispatch via the `leads` input
+          # if longer-range AIFS rows are wanted later).
+          LEADS_ARG=""
+          if [ -n "${{ inputs.leads }}" ]; then
+            LEADS_ARG="--leads ${{ inputs.leads }}"
+          else
+            case "${{ inputs.source }}" in
+              gfs)        LEADS_ARG="--leads 1,3,6,12,24,36,48,72,96,120,144,168,192,216,240" ;;
+              ecmwf-ifs)  LEADS_ARG="--leads 6,12,24,36,48,72,96,120,144,168,192,216,240" ;;
+              ecmwf-aifs) LEADS_ARG="--leads 6,12,24,36,48,72,96,120,144,168,192,216,240" ;;
+            esac
+          fi
+
           case "${{ inputs.source }}" in
             gfs)
               dotnet run --project src/WeatherBlend --no-build -c Release -- \
                 gfs-backfill --start ${{ inputs.start }} $END_ARG \
-                --cycles ${{ inputs.cycles }}
+                --cycles ${{ inputs.cycles }} $LEADS_ARG
               ;;
             ecmwf-ifs)
               dotnet run --project src/WeatherBlend --no-build -c Release -- \
                 ecmwf-backfill --stream ifs --start ${{ inputs.start }} $END_ARG \
-                --cycles ${{ inputs.cycles }}
+                --cycles ${{ inputs.cycles }} $LEADS_ARG
               ;;
             ecmwf-aifs)
               dotnet run --project src/WeatherBlend --no-build -c Release -- \
                 ecmwf-backfill --stream aifs --start ${{ inputs.start }} $END_ARG \
-                --cycles ${{ inputs.cycles }}
+                --cycles ${{ inputs.cycles }} $LEADS_ARG
               ;;
             *)
               echo "::error::Unknown source: ${{ inputs.source }}"

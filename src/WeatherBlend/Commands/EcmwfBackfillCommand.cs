@@ -41,6 +41,7 @@ public sealed class EcmwfBackfillCommand
         DateOnly start,
         DateOnly end,
         IReadOnlyList<int>? cycles,
+        IReadOnlyList<int>? leads,
         CancellationToken ct)
     {
         if (stream != EcmwfClient.Streams.IfsOper && stream != EcmwfClient.Streams.AifsOper)
@@ -49,9 +50,11 @@ public sealed class EcmwfBackfillCommand
             return 2;
         }
         cycles ??= EcmwfClient.CycleHours;
-        var leadHours = _cfg.LeadHours.Count > 0
-            ? _cfg.LeadHours
-            : new List<int> { 6, 12, 24, 36, 48, 72, 96, 120, 144 };
+        var leadHours = (leads is { Count: > 0 } l)
+            ? l
+            : (_cfg.LeadHours.Count > 0
+                ? _cfg.LeadHours
+                : new List<int> { 6, 12, 24, 36, 48, 72, 96, 120, 144 });
 
         var scratchDir = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "tmp", $"ecmwf_{stream}");
         scratchDir = Path.GetFullPath(scratchDir);
