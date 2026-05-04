@@ -48,8 +48,12 @@ public static partial class SitePages
     public static string RenderDryWindow(SiteInputs input, string? stationSlug = null)
     {
         var content = new StringBuilder();
+        content.Append("<section>");
+        // Forecasts variable sub-nav at the very top so its Y position is
+        // fixed across all three forecasts pages (Temperature / Rain / Dry
+        // window). Header copy below.
+        content.Append(RenderForecastsSubNav("dry-window"));
         content.Append("""
-            <section>
               <hgroup>
                 <h2>Dry-window forecast</h2>
                 <p>Per-station, per-window blender. The label asks "is there a contiguous
@@ -61,10 +65,6 @@ public static partial class SitePages
                    construction. Cards show today and the next 4 forecast days.</p>
               </hgroup>
             """);
-
-        // Forecasts variable sub-nav at the top — same shape across the three
-        // forecasts pages (Temperature / Rain / Dry window).
-        content.Append(RenderForecastsSubNav("dry-window"));
 
         if (input.DryWindowPredictions.Count == 0)
         {

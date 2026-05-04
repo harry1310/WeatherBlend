@@ -44,16 +44,17 @@ public static partial class SitePages
         };
 
         var content = new StringBuilder();
+        content.Append("<section>");
+        // Sub-nav goes first so its vertical position is fixed across the
+        // three Models pages — flicking between Temp / Rain / Dry-window
+        // doesn't make the tab bar jump around as content height varies.
+        content.Append(RenderModelsSubNav(subNavSlug));
         content.Append(Ci, $"""
-            <section>
               <hgroup>
-                <h2>Models</h2>
-                <p>The Δ column compares the blend to the best single NWP <em>on the same test slice</em>; negative means the blend wins.</p>
+                <h2>{Escape(prettyTitle)}</h2>
+                <p>{Escape(intro)} The Δ column compares the blend to the best single NWP <em>on the same test slice</em>; negative means the blend wins.</p>
               </hgroup>
             """);
-        content.Append(RenderModelsSubNav(subNavSlug));
-        content.Append(Ci, $"<h3>{Escape(prettyTitle)}</h3>");
-        content.Append(Ci, $"<p class=\"skill-line\">{Escape(intro)}</p>");
 
         if (input.ModelSummaries.Count == 0)
         {

@@ -65,6 +65,14 @@ public static partial class SitePages
         /// overlay charts. Not for any NWP.</summary>
         public const string Blend = "#7c4dff";
 
+        /// <summary>Lighter shade of <see cref="Blend"/> for the challenger
+        /// phase's line on champion+challenger overlay charts. Same hue family
+        /// so the eye reads them as paired ("same prediction, two methods").
+        /// Was a dashed-style variant of <see cref="Blend"/> until 2026-05-04;
+        /// dashed lines were noisier than a saturation difference at the chart
+        /// densities we render. Material deep-purple 200.</summary>
+        public const string BlendChallenger = "#b39ddb";
+
         /// <summary>Met Office DataHub Spot product line colour on the
         /// skill charts. Was navy <c>#262261</c> originally — readable on
         /// paper but too close to the blend's purple family on dark-mode

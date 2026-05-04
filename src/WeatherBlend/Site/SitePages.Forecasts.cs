@@ -16,15 +16,19 @@ public static partial class SitePages
     public static string RenderForecastsTemp(SiteInputs input, int lead)
     {
         var body = new StringBuilder();
+        body.Append("<section>");
+        // Sub-navs first so their Y positions are fixed across all sub-tabs
+        // and lead choices — flicking between them doesn't jolt the page as
+        // chart heights vary.
         body.Append(RenderForecastsSubNav("temp"));
         body.Append(RenderLeadSubNav("forecasts-temp", lead));
 
         body.Append(Ci, $"""
-            <section>
               <hgroup>
                 <h2>Temperature forecast +{lead}h</h2>
-                <p>Per-NWP temperatures plus the blend lines (Phase 2b champion solid,
-                   Phase 2c challenger dashed). Hover a line for exact values.</p>
+                <p>Per-NWP temperatures plus the blend lines (Phase 2b champion in
+                   deep purple, Phase 2c challenger in lighter purple). Hover a line
+                   for exact values.</p>
               </hgroup>
             """);
 
@@ -37,18 +41,18 @@ public static partial class SitePages
     public static string RenderForecastsRain(SiteInputs input, int lead)
     {
         var body = new StringBuilder();
+        body.Append("<section>");
         body.Append(RenderForecastsSubNav("rain"));
         body.Append(RenderLeadSubNav("forecasts-rain", lead));
 
         body.Append(Ci, $"""
-            <section>
               <hgroup>
                 <h2>Rain forecast +{lead}h</h2>
                 <p>Per-station P(wet ≥ 0.1 mm/h) on top with the per-NWP PoP overlay
-                   (Phase 3a champion solid, Phase 3c challenger dashed in the same
-                   per-station hue), then the per-NWP precip rate (mm/h) at the
-                   Bonehill point — only once because the NWP forecasts don't differ
-                   between gauge stations.</p>
+                   (Phase 3a champion in deep purple, Phase 3c challenger in lighter
+                   purple), then the per-NWP precip rate (mm/h) at the Bonehill
+                   point — only once because the NWP forecasts don't differ between
+                   gauge stations.</p>
               </hgroup>
             """);
 
@@ -156,16 +160,20 @@ public static partial class SitePages
                                             .Select(gv => gv.OrderByDescending(r => r.PredictionMadeAtUtc).First())
                                             .OrderBy(r => r.ValidTimeUtc)
                                             .ToList());
+        // Champion solid in deep purple, challenger solid in lighter purple —
+        // same hue family so the eye reads them as paired ("same prediction,
+        // two methods"), but distinguishable by saturation. Dashed-line
+        // challenger was tried 2026-05-04 and reverted on user feedback.
         for (int i = 0; i < orderedActivePhases.Count; i++)
         {
             var phase = orderedActivePhases[i];
             if (!blendByPhase.TryGetValue(phase, out var phaseRows) || phaseRows.Count == 0) continue;
-            var dashed = i > 0;   // first = champion (solid), rest = challengers (dashed)
+            var color = i == 0 ? NwpPalette.Blend : NwpPalette.BlendChallenger;
             var label = i == 0 ? $"Blend ({phase} champion)" : $"Blend ({phase} challenger)";
             var pts = phaseRows
                 .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.BlendTemperature))
                 .ToList();
-            series.Add(new LineSeries(label, NwpPalette.Blend, pts, Dashed: dashed));
+            series.Add(new LineSeries(label, color, pts));
         }
 
         s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
@@ -263,16 +271,18 @@ public static partial class SitePages
                                                  .Select(gv => gv.OrderByDescending(r => r.PredictedAtUtc).First())
                                                  .OrderBy(r => r.ValidTimeUtc)
                                                  .ToList());
+            // Champion solid in deep purple, challenger solid in lighter
+            // purple — same hue family, distinguishable by saturation.
             for (int i = 0; i < orderedPrecipPhases.Count; i++)
             {
                 var phase = orderedPrecipPhases[i];
                 if (!precipByPhase.TryGetValue(phase, out var phaseRows) || phaseRows.Count == 0) continue;
-                var dashed = i > 0;
+                var color = i == 0 ? NwpPalette.Blend : NwpPalette.BlendChallenger;
                 var label = i == 0 ? $"P(wet) ({phase} champion)" : $"P(wet) ({phase} challenger)";
                 var pts = phaseRows
                     .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet))
                     .ToList();
-                probSeries.Add(new LineSeries(label, "#7c4dff", pts, Dashed: dashed));
+                probSeries.Add(new LineSeries(label, color, pts));
             }
             // Climatology stays a single line — it's a station property, not
             // a blender output. Read off the champion-pooled rows above.

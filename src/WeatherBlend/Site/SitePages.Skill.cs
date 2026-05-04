@@ -15,8 +15,12 @@ public static partial class SitePages
     public static string RenderTempSkill(SiteInputs input)
     {
         var content = new StringBuilder();
+        content.Append("<section>");
+        // Sub-nav first so the tab bar's Y position is fixed across the
+        // three Skill pages — flicking between sub-tabs doesn't jolt the
+        // page as content height varies.
+        content.Append(RenderSkillSubNav("temp"));
         content.Append("""
-            <section>
               <hgroup>
                 <h2>Skill — temperature</h2>
                 <p>Eyeball comparison first — each active blender's temperature trajectory plotted against
@@ -28,7 +32,6 @@ public static partial class SitePages
               </hgroup>
             """);
 
-        content.Append(RenderSkillSubNav("temp"));
         content.Append("<h3>Vs truth</h3>");
         content.Append(RenderTempVsTruthBlock(input));
 
@@ -78,8 +81,9 @@ public static partial class SitePages
         var currentStation = ResolveStationFromSlug(stations, stationSlug);
 
         var content = new StringBuilder();
+        content.Append("<section>");
+        content.Append(RenderSkillSubNav("dry-window"));
         content.Append("""
-            <section>
               <hgroup>
                 <h2>Skill — dry window</h2>
                 <p>One row per target UTC day × window length. Both prediction and observed verdict
@@ -88,7 +92,6 @@ public static partial class SitePages
               </hgroup>
             """);
 
-        content.Append(RenderSkillSubNav("dry-window"));
         if (currentStation is not null)
             content.Append(RenderStationSubNav("skill-dry-window", stations, currentStation));
 
@@ -115,8 +118,9 @@ public static partial class SitePages
         var currentStation = ResolveStationFromSlug(stations, stationSlug);
 
         var content = new StringBuilder();
+        content.Append("<section>");
+        content.Append(RenderSkillSubNav("rain"));
         content.Append("""
-            <section>
               <hgroup>
                 <h2>Skill — rain</h2>
                 <p>Eyeball first: P(wet) trajectories against a 0/1 wet-hour indicator from the same
@@ -126,7 +130,6 @@ public static partial class SitePages
               </hgroup>
             """);
 
-        content.Append(RenderSkillSubNav("rain"));
         if (currentStation is not null)
             content.Append(RenderStationSubNav("skill-rainfall", stations, currentStation));
 
@@ -292,8 +295,13 @@ public static partial class SitePages
             .OrderBy(m => m.ObservedTimeUtc)
             .Select(m => (X: m.ObservedTimeUtc.ToOADate(), Y: m.Temperature2m))
             .ToList();
+        // Brown 600 for MO obs — was deep orange #fb8c00 originally but it
+        // sat too close to METAR's orange #ffa726 on the chart, so the eye
+        // read them as one colour family. Brown is well off-axis from every
+        // other temp-skill series (red ERA5, orange METAR, purples Blend,
+        // green MO Spot) so it stays visually distinct.
         if (moObsPts.Count > 0)
-            series.Add(new LineSeries("Met Office obs (Taw Green)", "#fb8c00", moObsPts));
+            series.Add(new LineSeries("Met Office obs (Taw Green)", "#6d4c41", moObsPts));
 
         (int lead, string color)[] leadSpecs =
         {
