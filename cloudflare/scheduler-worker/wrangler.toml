@@ -15,8 +15,8 @@ compatibility_date = "2025-04-01"
 # match a key in WORKFLOW_FOR_CRON in src/index.ts exactly; the worker uses
 # event.cron to look up which workflow to dispatch.
 #
-#   "15 2,8,14,20 * * *"  → collect.yml             every 6h, offset :15
-#   "45 2,8,14,20 * * *"  → predict-and-render.yml  every 6h, offset :45
+#   "30 2,8,14,20 * * *"  → collect.yml             every 6h, offset :30
+#   "0 3,9,15,21 * * *"   → predict-and-render.yml  every 6h, 30min after collect
 #   "0 12 * * *"          → era5-refresh.yml        daily at 12:00 UTC
 #   "30 9 * * 1"          → verify.yml              weekly Monday 09:30 UTC
 #
@@ -39,8 +39,8 @@ compatibility_date = "2025-04-01"
 # predict reads.
 [triggers]
 crons = [
-  "15 2,8,14,20 * * *",
-  "45 2,8,14,20 * * *",
+  "30 2,8,14,20 * * *",
+  "0 3,9,15,21 * * *",
   "0 12 * * *",
   "30 9 * * 1",
 ]
