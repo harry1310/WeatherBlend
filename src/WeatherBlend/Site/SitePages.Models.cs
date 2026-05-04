@@ -18,58 +18,84 @@ public static partial class SitePages
     /// can scan it. Older versions still live on disk; visit the artefact files
     /// directly if you need the history.
     /// </summary>
-    public static string RenderModels(SiteInputs input)
+    /// <summary>
+    /// Per-target Models page: one of "temperature" / "precipitation" /
+    /// "dry_window". Filters <see cref="SiteInputs.ModelSummaries"/> to
+    /// composites whose target prefix matches and renders the same per-phase
+    /// blender cards. Emitted to <c>models-temp.html</c> /
+    /// <c>models-rain.html</c> / <c>models-dry-window.html</c> by
+    /// <see cref="WeatherBlend.Commands.RenderSiteCommand"/>; the legacy
+    /// <c>models.html</c> route was retired with the 2026-05-04 site rework.
+    /// </summary>
+    public static string RenderModels(SiteInputs input, string target)
     {
+        var (subNavSlug, prettyTitle, intro) = target switch
+        {
+            "temperature" => ("temp",
+                "Temperature models",
+                "Phase 2b (lean, 13 features) and Phase 2c (rich, 88 features). Trained against ERA5 reanalysis, scored as MAE in °C — lower is better."),
+            "precipitation" => ("rain",
+                "Rain models",
+                "Per-station P(wet ≥ 0.1 mm/h) classifiers — Phase 3a (lean, 27 features) and Phase 3c (rich, 55 features). Trained against EA Hydrology gauges, scored as Brier — lower is better."),
+            "dry_window" => ("dry-window",
+                "Dry-window models",
+                "Per-(station, window) P(at least one N-hour dry block in 09–18 local time). Phase 3b (53-feature LightGBM champion) and Phase 3g (parameter-free MC over 3a's hourly P(wet) — guarantees cross-window monotonicity by construction). Brier — lower is better."),
+            _ => throw new ArgumentException($"Unknown target '{target}'.", nameof(target)),
+        };
+
         var content = new StringBuilder();
-        content.Append("""
+        content.Append(Ci, $"""
             <section>
               <hgroup>
                 <h2>Models</h2>
-                <p>Held-out test performance for the latest active blender per phase, against ERA5 (temperature) or EA rainfall (precipitation, dry window).
-                   Temperature scores are MAE in °C; precipitation and dry-window scores are Brier — lower is better in both cases.
-                   The Δ column compares the blend to the best single NWP <em>on the same test slice</em>; negative means the blend wins.</p>
+                <p>The Δ column compares the blend to the best single NWP <em>on the same test slice</em>; negative means the blend wins.</p>
               </hgroup>
             """);
+        content.Append(RenderModelsSubNav(subNavSlug));
+        content.Append(Ci, $"<h3>{Escape(prettyTitle)}</h3>");
+        content.Append(Ci, $"<p class=\"skill-line\">{Escape(intro)}</p>");
 
         if (input.ModelSummaries.Count == 0)
         {
             content.Append("<p><em>No training metadata on disk. Run <code>train</code> for each target, then rclone <code>data/models</code> from R2.</em></p>");
             content.Append("</section>");
-            return WrapPage(input, "Models", "models", content.ToString());
+            return WrapPage(input, prettyTitle, "models", content.ToString());
         }
 
-        // Order: temperature → precipitation → dry window, then alphabetical within each.
-        // Matches the roadmap and the reader's mental model of "phase 2 → 3a → 3b".
-        static int TargetOrder(string composite) => composite.Split('/')[0] switch
+        // Filter to this target's composites only. Composite keys: "temperature",
+        // "precipitation/{station}", "dry_window/{station}/{N}h" — match by
+        // target prefix.
+        var targetSummaries = input.ModelSummaries
+            .Where(m => m.Composite == target || m.Composite.StartsWith(target + "/", StringComparison.Ordinal))
+            .Where(m => IsActivePhase(m.Composite, m.Phase))
+            .ToList();
+
+        if (targetSummaries.Count == 0)
         {
-            "temperature" => 0,
-            "precipitation" => 1,
-            "dry_window" => 2,
-            _ => 3,
-        };
+            content.Append("<p><em>No active blenders for this target in the current manifest.</em></p>");
+            content.Append("</section>");
+            return WrapPage(input, prettyTitle, "models", content.ToString());
+        }
 
         // Latest-only per (composite, phase), filtered to phases that are
         // currently shipping. Demoted phases (3a_isotonic + 3d-calibrated were
-        // retired 2026-04-29 after PAV calibration didn't move test Brier; the
-        // one-off temperature 2b_redo retrain is also reference-only) still
-        // have prediction rows in the rolling window so they leak into
-        // ModelSummaries — explicit allowlist keeps the Models page focused on
-        // "what's actually being used right now".
-        var latestPerFamily = input.ModelSummaries
-            .Where(m => IsActivePhase(m.Composite, m.Phase))
+        // retired 2026-04-29 after PAV calibration didn't move test Brier;
+        // the one-off temperature 2b_redo retrain is also reference-only)
+        // still have prediction rows in the rolling window so they leak into
+        // ModelSummaries — IsActivePhase keeps the page focused on "what's
+        // actually being used right now".
+        var latestPerFamily = targetSummaries
             .GroupBy(m => (m.Composite, m.Phase), comparer: null!)
             .Select(g => g.OrderByDescending(m => m.TrainedAtUtc).First())
             .GroupBy(m => m.Composite, StringComparer.Ordinal)
-            .OrderBy(g => TargetOrder(g.Key))
-            .ThenBy(g => g.Key, StringComparer.Ordinal);
+            .OrderBy(g => g.Key, StringComparer.Ordinal);
 
         foreach (var group in latestPerFamily)
         {
             content.Append(Ci, $"""<h3>{Escape(PrettyComposite(group.Key))}</h3>""");
             // Within a composite (e.g. one temperature block), order phase-cards
             // by champion → challenger so a glance at the page reads "lean first,
-            // rich underneath". TrainedAt-descending was deterministic but ordered
-            // by training-cycle accident; readers expect the lean champion on top.
+            // rich underneath".
             var ordered = group
                 .OrderBy(m => PhasePriority(group.Key, m.Phase))
                 .ThenByDescending(m => m.TrainedAtUtc)
@@ -79,7 +105,32 @@ public static partial class SitePages
         }
 
         content.Append("</section>");
-        return WrapPage(input, "Models", "models", content.ToString());
+        return WrapPage(input, prettyTitle, "models", content.ToString());
+    }
+
+    /// <summary>
+    /// Per-target sub-nav for the Models page. Same shape as the per-station
+    /// sub-nav on Dry-window / Skill-rainfall: three pill links sitting under
+    /// the page heading. The active variant is plain (not a link) so the
+    /// reader's eye lands on it.
+    /// </summary>
+    private static string RenderModelsSubNav(string activeSlug)
+    {
+        var entries = new (string Slug, string File, string Label)[]
+        {
+            ("temp",       "models-temp.html",       "Temperature"),
+            ("rain",       "models-rain.html",       "Rain"),
+            ("dry-window", "models-dry-window.html", "Dry window"),
+        };
+        var s = new StringBuilder();
+        s.Append("<nav class=\"lead-nav\"><ul>");
+        foreach (var (slug, file, label) in entries)
+        {
+            var cls = slug == activeSlug ? " class=\"active\"" : "";
+            s.Append(Ci, $"<li><a href=\"{file}\"{cls}>{Escape(label)}</a></li>");
+        }
+        s.Append("</ul></nav>");
+        return s.ToString();
     }
 
     /// <summary>
@@ -224,10 +275,10 @@ public static partial class SitePages
             //      message names the phase being filtered for so the cause is
             //      visible without diff'ing JSON files.
             return $"""
-                <details open>
-                  <summary><strong>Verify history</strong> <small>(no runs yet)</small></summary>
+                <div class="verify-history">
+                  <h5>Verify history <small>(no runs yet)</small></h5>
                   <p class="skill-line">No verify rows on disk match this card's phase ({Escape(phase)}). Either the next verify (twice-weekly Mon + Thu 09:30 UTC, then 5d ERA5 latency) hasn't yet scored predictions made by this version, or older verify files used a different phase tag for this lineage. Re-check after the next Mon/Thu cycle.</p>
-                </details>
+                </div>
                 """;
         }
 
@@ -304,9 +355,9 @@ public static partial class SitePages
             leadHeaders.Append(Ci, $"""<th class="num">+{lead}h</th>""");
 
         return $"""
-            <details open>
-              <summary><strong>Verify history</strong> <small>({matchingFiles.Count} run{(matchingFiles.Count == 1 ? "" : "s")})</small></summary>
-              <p class="skill-line">Weekly Brier/MAE on the held-out rolling window — one row per verify run, drift flag in the last column. Metric: {Escape(metricLabel)}. Version column names which trained model the row's numbers came from — a freshly retrained champion shows zero rows here for ~14d (one verify cycle plus 5d ERA5 latency), so a row labelled with an older version is the previous lineage's history under the same phase.</p>
+            <div class="verify-history">
+              <h5>Verify history <small>({matchingFiles.Count} run{(matchingFiles.Count == 1 ? "" : "s")})</small></h5>
+              <p class="skill-line">Twice-weekly Brier/MAE on the held-out rolling window — one row per verify run, drift flag in the last column. Metric: {Escape(metricLabel)}. Version column names which trained model the row's numbers came from — a freshly retrained champion shows zero rows here for ~5-9d (one verify cycle plus 5d ERA5 latency), so a row labelled with an older version is the previous lineage's history under the same phase.</p>
               <table>
                 <thead>
                   <tr>
@@ -319,7 +370,7 @@ public static partial class SitePages
                 <tbody>
             {tbody}    </tbody>
               </table>
-            </details>
+            </div>
             """;
     }
 

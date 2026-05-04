@@ -221,7 +221,7 @@ public class SitePagesTests
         // Page should prompt the reader to run train, not crash on an empty list.
         var input = MakeEmptyForecastInput();
 
-        var html = SitePages.RenderModels(input);
+        var html = SitePages.RenderModels(input, "temperature");
 
         html.Should().Contain("No training metadata on disk");
     }
@@ -277,7 +277,7 @@ public class SitePagesTests
             VerifyHistory = new[] { historyFile },
         };
 
-        var html = SitePages.RenderModels(input);
+        var html = SitePages.RenderModels(input, "temperature");
 
         // Section header + "(1 run)" count.
         html.Should().Contain("Verify history");
@@ -289,12 +289,12 @@ public class SitePagesTests
     }
 
     [Fact]
-    public void RenderModels_omits_verify_history_section_when_no_matching_phase()
+    public void RenderModels_renders_no_runs_yet_state_when_no_matching_phase()
     {
-        // Different phase / different target → no rows match → no
-        // history table renders. Card stays clean for fresh-deploy state
-        // and for the (rare) case where verify only ever scored a different
-        // phase's lineage.
+        // Different phase / different target → no rows match. Renderer used
+        // to omit the section silently; that hid the "no verify yet" state
+        // from the reader. Now it renders an explicit "(no runs yet)" panel
+        // that names the phase being filtered for so the cause is visible.
         var trained = new DateTime(2026, 4, 20, 12, 0, 0, DateTimeKind.Utc);
         var perLead = new Dictionary<int, SitePages.PerLeadMetric>
         {
@@ -328,16 +328,18 @@ public class SitePagesTests
             VerifyHistory = new[] { historyFile },
         };
 
-        var html = SitePages.RenderModels(input);
-        html.Should().NotContain("Verify history");
+        var html = SitePages.RenderModels(input, "temperature");
+        html.Should().Contain("(no runs yet)");
+        html.Should().NotContain("(1 run)");  // shouldn't pretend a row landed
     }
 
     [Fact]
     public void RenderModels_groups_rows_under_pretty_composite_headings()
     {
-        // Two composites, one temperature and one precip-per-station. Pretty-printed
-        // headings must disambiguate them so a reader scanning the page can find the
-        // table they want.
+        // Two composites — one temperature, one precip-per-station — now land
+        // on different per-target pages after the 2026-05-04 split. Each page
+        // must carry its own composite heading and the per-station composite
+        // key must be pretty-printed (not raw "precipitation/ea_bellever").
         var trained = new DateTime(2026, 4, 20, 12, 0, 0, DateTimeKind.Utc);
         var perLead = new Dictionary<int, SitePages.PerLeadMetric>
         {
@@ -364,13 +366,17 @@ public class SitePagesTests
         };
         var input = MakeEmptyForecastInput() with { ModelSummaries = summaries };
 
-        var html = SitePages.RenderModels(input);
+        var tempHtml  = SitePages.RenderModels(input, "temperature");
+        var rainHtml  = SitePages.RenderModels(input, "precipitation");
 
-        html.Should().Contain("Temperature");
-        html.Should().Contain("Precipitation — Bellever Dartmoor")
+        // Each per-target page carries only its own composite heading + version.
+        tempHtml.Should().Contain("temp_v2b");
+        tempHtml.Should().NotContain("precip_v3a");
+
+        rainHtml.Should().Contain("Precipitation — Bellever Dartmoor")
             .And.NotContain("precipitation/ea_bellever_dartmoor");
-        html.Should().Contain("temp_v2b");
-        html.Should().Contain("precip_v3a");
+        rainHtml.Should().Contain("precip_v3a");
+        rainHtml.Should().NotContain("temp_v2b");
     }
 
     [Theory]
@@ -587,10 +593,12 @@ public class SitePagesTests
         html.Should().Contain("ICON PoP");
         html.Should().Contain("GEM PoP");
         // Brand colours from NwpsForPrecipitation reach the chart payload.
+        // GEM moved from teal #26a69a to cyan 800 #00838f on 2026-05-04 to
+        // separate it from ECMWF blue.
         html.Should().Contain("#ef5350");   // GFS red
         html.Should().Contain("#42a5f5");   // ECMWF blue
         html.Should().Contain("#66bb6a");   // ICON green
-        html.Should().Contain("#26a69a");   // GEM teal
+        html.Should().Contain("#00838f");   // GEM cyan 800
     }
 
     [Fact]
@@ -1439,7 +1447,7 @@ public class SitePagesTests
         };
         var input = MakeEmptyForecastInput() with { ModelSummaries = summaries };
 
-        var html = SitePages.RenderModels(input);
+        var html = SitePages.RenderModels(input, "temperature");
 
         html.Should().Contain("blender-card");
         html.Should().Contain("Lean blender");                  // Phase 2b prose
@@ -1476,17 +1484,20 @@ public class SitePagesTests
         };
         var input = MakeEmptyForecastInput() with { ModelSummaries = summaries };
 
-        var html = SitePages.RenderModels(input);
+        // After 2026-05-04 split, ordering must hold WITHIN each per-target
+        // page rather than across one big concatenated page.
+        var tempHtml = SitePages.RenderModels(input, "temperature");
+        var rainHtml = SitePages.RenderModels(input, "precipitation");
+        var dryHtml  = SitePages.RenderModels(input, "dry_window");
 
-        // Lean version code appears before rich version code for each target.
-        html.IndexOf("v_lean").Should().BeLessThan(html.IndexOf("v_rich"));
-        html.IndexOf("v_lean_p").Should().BeLessThan(html.IndexOf("v_rich_p"));
+        tempHtml.IndexOf("v_lean").Should().BeLessThan(tempHtml.IndexOf("v_rich"));
+        rainHtml.IndexOf("v_lean_p").Should().BeLessThan(rainHtml.IndexOf("v_rich_p"));
         // Dry-window: 3b + 3g are the allowlisted phases (2026-05-04, see
         // ActivePhasePolicy). A retired-phase summary ("3d-shape", here as
         // "v_retired") is filtered out entirely so v_lean_dw renders alone.
         // Pin both: 3b lean renders, the retired phase doesn't.
-        html.Should().Contain("v_lean_dw");
-        html.Should().NotContain("v_retired");
+        dryHtml.Should().Contain("v_lean_dw");
+        dryHtml.Should().NotContain("v_retired");
     }
 
     [Fact]
@@ -1508,7 +1519,7 @@ public class SitePagesTests
             },
         };
 
-        var html = SitePages.RenderModels(input);
+        var html = SitePages.RenderModels(input, "temperature");
 
         html.Should().Contain("delta-good");
         html.Should().NotContain("delta-bad");
@@ -1532,7 +1543,7 @@ public class SitePagesTests
             },
         };
 
-        var html = SitePages.RenderModels(input);
+        var html = SitePages.RenderModels(input, "temperature");
 
         html.Should().Contain("delta-bad");
         html.Should().NotContain("delta-good");

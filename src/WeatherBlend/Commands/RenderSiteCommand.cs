@@ -212,7 +212,13 @@ public sealed class RenderSiteCommand
         foreach (var lead in Leads.Full)
             await File.WriteAllTextAsync(Path.Combine(outputDir, $"forecasts-{lead}h.html"),
                 SitePages.RenderForecasts(input, lead), ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "models.html"),        SitePages.RenderModels(input),         ct);
+        // Models page split into 3 (per target) on 2026-05-04 — see
+        // SitePages.RenderModels for the per-target intro copy. The legacy
+        // models.html route was retired in the same change; the nav points
+        // at models-temp.html as the canonical landing for "Models".
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "models-temp.html"),       SitePages.RenderModels(input, "temperature"),   ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "models-rain.html"),       SitePages.RenderModels(input, "precipitation"), ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "models-dry-window.html"), SitePages.RenderModels(input, "dry_window"),    ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "about.html"),         SitePages.RenderAbout(input),          ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "styles.css"),         SitePages.Stylesheet(),                ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "chart.js"),           SitePages.ChartScript(),               ct);
@@ -255,9 +261,9 @@ public sealed class RenderSiteCommand
                 SitePages.RenderDryWindow(input, slug), ct);
         }
 
-        // index + per-lead forecasts + models + about + styles + chart.js
+        // index + per-lead forecasts + models × 3 + about + styles + chart.js
         // + skill-temperature + skill-rainfall × stations + dry-window × stations.
-        var totalFiles = 6 + Leads.Full.Length
+        var totalFiles = 8 + Leads.Full.Length
             + Math.Max(1, rainStations.Count) + Math.Max(1, dryStations.Count);
         _log.LogInformation("Site rendered → {Dir} ({Files} files)", outputDir, totalFiles);
         return 0;
