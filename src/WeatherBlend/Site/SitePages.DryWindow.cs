@@ -128,6 +128,22 @@ public static partial class SitePages
                 if (phaseRows.Count == 0) continue;
                 anyRendered = true;
 
+                // Per-phase column policy. Each phase contributes the columns
+                // its model actually generates — sharing one mega-table forced
+                // 3b rows to display an empty MC column and 3g rows to display
+                // a "Model agreement" that's the 3b ensemble's, not 3g's.
+                //   3b — LightGBM marginal blender. Carries cross-NWP
+                //        agreement (the BSS-weighted vote of its component
+                //        models) and a conformal calibrator τ on the marginal.
+                //   3g — Monte Carlo over Phase 3a hourly P(wet). Doesn't have
+                //        cross-NWP agreement (single MC ensemble); does have
+                //        the longest-dry-run quantile band and the start-hour
+                //        curves that PickBestStart consumes. Conformal τ is a
+                //        separate fit against the MC marginal.
+                bool showAgreement  = phase.Key == DryWindowPhases.Phase3b.Key;
+                bool showMcBand     = phase.Key == DryWindowPhases.Phase3g.Key;
+                bool showBestStart  = phase.Key == DryWindowPhases.Phase3g.Key && hasCurves;
+
                 // Latest prediction per (target_date, lead) within this phase bucket.
                 var latest = phaseRows
                     .GroupBy(d => (d.TargetDateUtc, d.LeadHours))
@@ -159,50 +175,49 @@ public static partial class SitePages
                         }
                     }
 
-                    var agreementCell = byLead.Values
-                        .Select(d => d.AgreementHasDryWindow)
-                        .FirstOrDefault(a => a.HasValue);
-                    var agreement = agreementCell.HasValue
-                        ? (agreementCell.Value * 100).ToString("0", Ci) + "%"
-                        : "—";
-
-                    // MC interval column — populated only for Phase 3g rows
-                    // (the parameter-free MC predictor that captures longest-
-                    // dry-run quantiles in the same pass as the headline).
-                    // Read off the SMALLEST available lead so the user sees
-                    // the freshest forecast; "—" if no 3g row exists for this
-                    // (station, window, date) cell.
-                    string mcCell = "—";
-                    foreach (var lead in leadOrder)
+                    string agreementTd = "";
+                    if (showAgreement)
                     {
-                        if (!byLead.TryGetValue(lead, out var d)) continue;
-                        if (!d.McP50LongestDryRunHours.HasValue) continue;
-                        var p50 = d.McP50LongestDryRunHours.Value;
-                        var p10 = d.McP10LongestDryRunHours ?? 0;
-                        var p90 = d.McP90LongestDryRunHours ?? 0;
-                        // "median 5h, 80%CI 2-8h" — short to fit inline.
-                        mcCell = $"med {p50:0}h <small>(80%: {p10:0}-{p90:0}h)</small>";
-                        break;
+                        var agreementCell = byLead.Values
+                            .Select(d => d.AgreementHasDryWindow)
+                            .FirstOrDefault(a => a.HasValue);
+                        var agreement = agreementCell.HasValue
+                            ? (agreementCell.Value * 100).ToString("0", Ci) + "%"
+                            : "—";
+                        agreementTd = $"<td class=\"num\">{agreement}</td>";
+                    }
+
+                    string mcTd = "";
+                    if (showMcBand)
+                    {
+                        // Read off the smallest available lead so the user sees
+                        // the freshest forecast.
+                        string mcCell = "—";
+                        foreach (var lead in leadOrder)
+                        {
+                            if (!byLead.TryGetValue(lead, out var d)) continue;
+                            if (!d.McP50LongestDryRunHours.HasValue) continue;
+                            var p50 = d.McP50LongestDryRunHours.Value;
+                            var p10 = d.McP10LongestDryRunHours ?? 0;
+                            var p90 = d.McP90LongestDryRunHours ?? 0;
+                            // "median 5h, 80%CI 2-8h" — short to fit inline.
+                            mcCell = $"med {p50:0}h <small>(80%: {p10:0}-{p90:0}h)</small>";
+                            break;
+                        }
+                        mcTd = $"<td>{mcCell}</td>";
                     }
 
                     // Conformal-set chip: "Confident" when the prediction set
                     // is a singleton, "Ambiguous" when both classes are in
                     // the 90% set. We pick the smallest available lead's tag;
-                    // if no row has a fitted conformal calibrator, "—".
+                    // if no row has a fitted conformal calibrator, "—". τ is
+                    // looked up by (version, lead) so each phase reads its
+                    // own calibrator without cross-talk.
                     //
                     // Tag-to-label INVERSION vs precip: ConformalSetTag stores
                     // the calibrator's "positive class" semantics — for
-                    // dry-window the positive class IS "dry block exists"
-                    // (matches DryWindowTrainingRow.Label), so a "Wet" tag
-                    // (high P(positive)) means "confident a dry block
-                    // exists" → confident DRY DAY. Conversely a "Dry" tag
-                    // (low P(positive)) means "confident NO dry block" →
-                    // confident WET DAY. Precip uses the same enum but the
-                    // positive class there IS wet, so its labels stay
-                    // "Wet"→"confident wet" / "Dry"→"confident dry". A
-                    // future cleanup could rename the enum to
-                    // {HighProb, LowProb, Ambiguous} to remove this
-                    // per-page rendering subtlety.
+                    // dry-window the positive class IS "dry block exists",
+                    // so "Wet" → confident DRY day, "Dry" → confident WET day.
                     string conformalCell = "—";
                     foreach (var lead in leadOrder)
                     {
@@ -215,11 +230,6 @@ public static partial class SitePages
                             "Dry"       => ("confident wet day", "high"),
                             _           => (d.ConformalSetTag.ToLowerInvariant(), "unknown"),
                         };
-                        // Surface the actual P + τ values so the tag's
-                        // arithmetic is transparent. τ comes from the per-
-                        // version conformal artefact loaded into SiteInputs;
-                        // when it's missing (a brand-new version that hasn't
-                        // had auto-conformal fit yet) we fall back to P-only.
                         var tauPart = input.DryWindowConformalTau.TryGetValue((d.Version, d.LeadHours), out var tau)
                             ? string.Create(Ci, $" · τ={(tau * 100):0}%")
                             : "";
@@ -227,57 +237,55 @@ public static partial class SitePages
                         break;
                     }
 
-                    // Best-start cell: argmax of the curve at the smallest
-                    // available lead bucket for this (station, window, date).
-                    // Falls back to "—" when no curve, when the daily P(any) is
-                    // too low for a "best start" to mean anything, or when the
-                    // curve is too uniform to peak. See PickBestStart for the
-                    // suppression rules.
-                    string bestStartCell = "—";
-                    if (hasCurves)
+                    string bestStartTd = "";
+                    if (showBestStart)
                     {
+                        // Argmax of the curve at the smallest available lead.
+                        // "—" when no curve, when daily P(any) is too low to
+                        // bother, or when the curve is too uniform to peak —
+                        // see PickBestStart for the suppression rules.
+                        string bestStartCell = "—";
                         foreach (var lead in leadOrder)
                         {
                             if (!byLead.ContainsKey(lead)) continue;
                             if (!curvesByCell.TryGetValue((currentStation, window, lead, date), out var curve)) continue;
                             var best = PickBestStart(curve);
                             if (best is null) continue;
-                            // "10:00Z (32%)" — UTC start hour + the
-                            // calibrated marginal so the reader sees both
-                            // location and confidence.
+                            // "10:00Z (32%)" — UTC start hour + the calibrated
+                            // marginal so the reader sees both location and
+                            // confidence.
                             bestStartCell = $"{best.StartHourUtc:00}:00Z <small>({(best.CalibratedProb * 100).ToString("0", Ci)}%)</small>";
                             break;
                         }
+                        bestStartTd = $"<td>{bestStartCell}</td>";
                     }
-
-                    var bestStartTd = hasCurves ? $"<td>{bestStartCell}</td>" : "";
 
                     tbody.Append(Ci, $"""
                         <tr>
                           <td><time datetime="{date:yyyy-MM-dd}">{date:ddd} {date:yyyy-MM-dd}</time></td>
                           {leadCells}
-                          <td class="num">{agreement}</td>
-                          <td>{mcCell}</td>
+                          {agreementTd}
+                          {mcTd}
                           <td>{conformalCell}</td>
                           {bestStartTd}
                         </tr>
                         """);
                 }
 
-                // When only one phase is active, the per-phase header is just
-                // noise — the section already names the window. Skip it and let
-                // the table sit directly under the <h4>. The header returns
-                // automatically the moment a second phase joins All.
-                if (DryWindowPhases.All.Count > 1)
-                {
-                    content.Append(Ci, $"""
-                        <h5>{Escape(phase.LongTitle)}</h5>
-                        <p class="skill-line">{Escape(phase.Description)}</p>
-                        """);
-                }
-                var bestStartHeader = hasCurves
-                    ? "<th>Best start <small>(UTC, calibrated %)</small></th>"
-                    : "";
+                // Always emit the per-phase heading now that each phase has its
+                // own column shape — the table alone doesn't tell the reader
+                // which model produced the row. (Previously skipped when only
+                // one phase shipped, but with two distinct tables the heading
+                // is genuinely informative regardless.)
+                content.Append(Ci, $"""
+                    <h5>{Escape(phase.LongTitle)}</h5>
+                    <p class="skill-line">{Escape(phase.Description)}</p>
+                    """);
+
+                var agreementHeader = showAgreement ? "<th class=\"num\">Model agreement</th>" : "";
+                var mcHeader        = showMcBand    ? "<th>MC longest dry run</th>"           : "";
+                var bestStartHeader = showBestStart ? "<th>Best start <small>(UTC, calibrated %)</small></th>" : "";
+
                 content.Append(Ci, $"""
                     <figure>
                       <table>
@@ -287,8 +295,8 @@ public static partial class SitePages
                             <th class="num">+24h</th>
                             <th class="num">+48h</th>
                             <th class="num">+72h</th>
-                            <th class="num">Model agreement</th>
-                            <th>MC longest dry run <small>(3g only)</small></th>
+                            {agreementHeader}
+                            {mcHeader}
                             <th>Conformal <small>(90% set)</small></th>
                             {bestStartHeader}
                           </tr>

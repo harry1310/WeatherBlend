@@ -1142,12 +1142,14 @@ public class SitePagesTests
     public void RenderDryWindow_renders_best_start_column_when_curves_present()
     {
         // Couple a sharp curve (peak at 11Z, suppression rules pass) with a
-        // dry-window prediction at the same (station, window, lead, date).
-        // Renderer should add a "Best start" column with "11:00Z (32%)".
+        // 3g-tagged dry-window prediction at the same (station, window, lead,
+        // date). Best-start is a 3g-only column — it's the argmax of the
+        // start-hour MC curves which only 3g produces — so the row's phase
+        // matters here, not just the curve presence.
         var generatedAt = new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc);
         var target = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
         var dryRow = new SitePages.DryWindowForecastPoint(
-            "ea_bellever_dartmoor", 6, "v3b", generatedAt, target, 24, 0.7, 0.5, null);
+            "ea_bellever_dartmoor", 6, "v3g", generatedAt, target, 24, 0.7, 0.5, null);
         var curve = new[]
         {
             StartHour("ea_bellever_dartmoor", 6, 24, target, 8,  0.20, 0.7, 0.14),
@@ -1161,7 +1163,7 @@ public class SitePagesTests
             GeneratedAtUtc = generatedAt,
             DryWindowPredictions = new[] { dryRow },
             StartHourPredictions = curve,
-            PhaseByVersion = new Dictionary<string, string> { ["v3b"] = "3b" },
+            PhaseByVersion = new Dictionary<string, string> { ["v3g"] = "3g" },
         };
 
         var html = SitePages.RenderDryWindow(input, null);
@@ -1172,10 +1174,41 @@ public class SitePagesTests
     }
 
     [Fact]
+    public void RenderDryWindow_omits_best_start_column_for_3b_even_when_curves_present()
+    {
+        // 3b is the LightGBM marginal blender — it doesn't own the start-hour
+        // curves, so its table never carries a "Best start" column even when
+        // 3g curves happen to be on disk for the same (station, window, lead).
+        // (Old behaviour rendered best-start under whichever phase had a row;
+        // the user called this out as wrong since the column is 3g-derived.)
+        var generatedAt = new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc);
+        var target = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+        var dryRow = new SitePages.DryWindowForecastPoint(
+            "ea_bellever_dartmoor", 6, "v3b", generatedAt, target, 24, 0.7, 0.5, null);
+        var curve = new[]
+        {
+            StartHour("ea_bellever_dartmoor", 6, 24, target, 11, 0.45, 0.7, 0.315),
+        };
+
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            DryWindowPredictions = new[] { dryRow },
+            StartHourPredictions = curve,
+            PhaseByVersion = new Dictionary<string, string> { ["v3b"] = "3b" },
+        };
+
+        var html = SitePages.RenderDryWindow(input, null);
+
+        html.Should().NotContain("Best start");
+    }
+
+    [Fact]
     public void RenderDryWindow_omits_best_start_column_entirely_when_no_curves()
     {
-        // Pre-step-3 rendering path: empty StartHourPredictions → header
-        // doesn't appear, table layout matches the legacy four-column shape.
+        // 3g-tagged row, but no curves — Best-start can't render so the
+        // header should be absent. (3b row would've omitted it anyway under
+        // the new per-phase column policy.)
         var generatedAt = new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc);
         var target = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
         var input = MakeEmptyForecastInput() with
@@ -1184,10 +1217,10 @@ public class SitePagesTests
             DryWindowPredictions = new[]
             {
                 new SitePages.DryWindowForecastPoint(
-                    "ea_bellever_dartmoor", 6, "v3b", generatedAt, target, 24, 0.7, 0.5, null),
+                    "ea_bellever_dartmoor", 6, "v3g", generatedAt, target, 24, 0.7, 0.5, null),
             },
             StartHourPredictions = Array.Empty<SitePages.StartHourForecastPoint>(),
-            PhaseByVersion = new Dictionary<string, string> { ["v3b"] = "3b" },
+            PhaseByVersion = new Dictionary<string, string> { ["v3g"] = "3g" },
         };
 
         var html = SitePages.RenderDryWindow(input, null);
