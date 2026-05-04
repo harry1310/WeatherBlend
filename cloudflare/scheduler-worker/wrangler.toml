@@ -18,7 +18,10 @@ compatibility_date = "2025-04-01"
 #   "30 2,8,14,20 * * *"  → collect.yml             every 6h, offset :30
 #   "0 3,9,15,21 * * *"   → predict-and-render.yml  every 6h, 30min after collect
 #   "0 12 * * *"          → era5-refresh.yml        daily at 12:00 UTC
-#   "30 9 * * 1,4"        → verify.yml              twice-weekly Mon + Thu 09:30 UTC
+#   "30 9 * * MON,THU"    → verify.yml              twice-weekly Mon + Thu 09:30 UTC
+#                                                   (Cloudflare cron uses 1=Sunday,
+#                                                   not POSIX 0=Sunday — day names
+#                                                   avoid the off-by-one trap)
 #
 # era5-refresh moved from 06:00 → 12:00 because ECMWF ERA5T publishes around
 # 09–10 UTC and Open-Meteo's archive ingests within a few hours; 12:00 UTC
@@ -42,7 +45,7 @@ crons = [
   "30 2,8,14,20 * * *",
   "0 3,9,15,21 * * *",
   "0 12 * * *",
-  "30 9 * * 1,4",
+  "30 9 * * MON,THU",
 ]
 
 # Variables (non-secret). GH_REPO is intentionally a plain var rather than a

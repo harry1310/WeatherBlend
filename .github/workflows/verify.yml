@@ -6,11 +6,15 @@ name: verify
 #
 # Schedule moved to Cloudflare 2026-05-01 (cloudflare/scheduler-worker/);
 # GitHub's `schedule:` trigger removed at the same time. Twice-weekly
-# Mon + Thu 09:30 UTC (cron `30 9 * * 1,4`, doubled from weekly-Mon
+# Mon + Thu 09:30 UTC (cron `30 9 * * MON,THU`, doubled from weekly-Mon
 # 2026-05-04). The 3-4-3-4 cycle means a freshly retrained champion gets
 # its first verify rows within 3-4 days instead of 7. Both runs land in
-# the morning UTC slot when a human is most likely to read them. The
-# Cloudflare scheduler's lookup table maps the `30 9 * * 1,4` cron to
+# the morning UTC slot when a human is most likely to read them.
+#
+# NB: Cloudflare cron uses 1=Sunday (not POSIX 0=Sunday). Earlier
+# `* * 1,4` was firing Sun+Wed instead of Mon+Thu — fixed by using
+# day-name aliases (MON, THU) which are unambiguous. The Cloudflare
+# scheduler's lookup table maps the `30 9 * * MON,THU` cron to
 # verify.yml.
 #
 # `workflow_dispatch:` retained so manual dashboard runs and the
