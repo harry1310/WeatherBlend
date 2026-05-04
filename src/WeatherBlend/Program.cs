@@ -111,6 +111,20 @@ public static class Program
                     opts.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(240);
                 });
 
+                // ECMWF S3 archive — same Range-download shape as GFS, same
+                // resilience profile. Reuses Wgrib2 singleton below.
+                services.AddHttpClient<EcmwfClient>(c =>
+                {
+                    c.Timeout = TimeSpan.FromSeconds(120);
+                    c.DefaultRequestHeaders.UserAgent.ParseAdd(cfg.Http.UserAgent);
+                })
+                .AddStandardResilienceHandler(opts =>
+                {
+                    opts.AttemptTimeout.Timeout = TimeSpan.FromSeconds(60);
+                    opts.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(180);
+                    opts.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(240);
+                });
+
                 services.AddSingleton<Wgrib2>(sp =>
                 {
                     var exe = Environment.GetEnvironmentVariable("WEATHERBLEND_WGRIB2")
@@ -129,6 +143,7 @@ public static class Program
                 services.AddTransient<MetOfficeBootstrapCommand>();
                 services.AddTransient<BackfillCommand>();
                 services.AddTransient<GfsBackfillCommand>();
+                services.AddTransient<EcmwfBackfillCommand>();
                 services.AddTransient<StatusCommand>();
                 services.AddTransient<TempTrainCommand>();
                 services.AddTransient<InspectCommand>();
@@ -238,6 +253,26 @@ public static class Program
             await cmd.RunAsync(start, end, cycles, CancellationToken.None);
         }, gfsStartOpt, gfsEndOpt, gfsCyclesOpt);
         root.AddCommand(gfsBackfill);
+
+        // ECMWF backfill — IFS oper or AIFS oper. Reuses --start/--end/--cycles
+        // from the GFS shape; adds --stream {ifs|aifs}.
+        var ecmStreamOpt = new Option<string>(
+            name: "--stream",
+            description: "ECMWF stream: ifs (deterministic) | aifs (AI model)",
+            getDefaultValue: () => "ifs");
+        var ecmwfBackfill = new Command(
+            "ecmwf-backfill",
+            "Fetch ECMWF IFS/AIFS oper cycles from AWS Open Data archive with exact run-times/lead-hours")
+            { ecmStreamOpt, gfsStartOpt, gfsEndOpt, gfsCyclesOpt };
+        ecmwfBackfill.SetHandler(async (stream, start, end, cyclesStr) =>
+        {
+            var cycles = cyclesStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(s => int.Parse(s, System.Globalization.CultureInfo.InvariantCulture))
+                .ToArray();
+            var cmd = host.Services.GetRequiredService<EcmwfBackfillCommand>();
+            await cmd.RunAsync(stream, start, end, cycles, CancellationToken.None);
+        }, ecmStreamOpt, gfsStartOpt, gfsEndOpt, gfsCyclesOpt);
+        root.AddCommand(ecmwfBackfill);
 
         // The `met-office-archive-backfill` CLI command was removed 2026-04-29 along
         // with the Python S3 collector. See Program.cs DI block for the why.
