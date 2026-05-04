@@ -59,7 +59,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
+          # No `cache: pip` — needs a requirements.txt / pyproject.toml at
+          # repo root, neither of which we have (this repo's primary stack
+          # is .NET; the Met Office Python script is the only Python in CI).
 
       - name: Install Python deps
         # h5py is a peer dep of h5netcdf — installing it explicitly so the
