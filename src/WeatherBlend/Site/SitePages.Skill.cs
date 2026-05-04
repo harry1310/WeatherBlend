@@ -20,8 +20,11 @@ public static partial class SitePages
               <hgroup>
                 <h2>Temperature skill</h2>
                 <p>Eyeball comparison first — each active blender's temperature trajectory plotted against
-                   ERA5 + METAR truth. Rolling quantitative MAE by lead follows, so you can see whether the
-                   visual impression holds up under aggregation.</p>
+                   ERA5 reanalysis (training truth) plus two surface cross-checks: METAR at Exeter Airport
+                   (~30 km E, 31 m elevation) and Met Office DataHub obs near Taw Green on the NE flank
+                   of Dartmoor (~22 km NNW, ~120-150 m elevation). Both sit lower than Bonehill's 393 m, so
+                   expect a few-degree warm bias relative to the blender — Taw Green's bias is smaller because
+                   it's closer in altitude. Rolling quantitative MAE by lead follows.</p>
               </hgroup>
             """);
 
@@ -224,6 +227,19 @@ public static partial class SitePages
             var label = string.IsNullOrWhiteSpace(input.MetarStation) ? "METAR" : $"METAR {input.MetarStation}";
             series.Add(new LineSeries(label, "#ffa726", metarPts));
         }
+
+        // Met Office DataHub Land Obs at the configured geohash. Closer
+        // to Bonehill than EGTE METAR (~22 km NNW vs ~30 km E) and on
+        // the same prevailing-weather side of the moor; ~250m below
+        // Bonehill vs ~360m for EGTE so the systematic warm bias is
+        // smaller. Read it as a second cross-check, not truth.
+        var moObsPts = input.MetOfficeObsByTime
+            .Where(m => m.ObservedTimeUtc >= input.WindowStartUtc)
+            .OrderBy(m => m.ObservedTimeUtc)
+            .Select(m => (X: m.ObservedTimeUtc.ToOADate(), Y: m.Temperature2m))
+            .ToList();
+        if (moObsPts.Count > 0)
+            series.Add(new LineSeries("Met Office obs (Taw Green)", "#fb8c00", moObsPts));
 
         (int lead, string color)[] leadSpecs =
         {

@@ -208,6 +208,35 @@ ORDER BY ObservedTimeUtc";
     }
 
     /// <summary>
+    /// Met Office DataHub Land Observations temperature for the configured
+    /// geohash cell. Geohash gcj0z3 (~22 km NNW of Bonehill at Cocktree
+    /// Throat / Taw Green, north Devon, ~120-150m elevation) is closer and
+    /// less elevation-biased vs Bonehill's 393m than the EGTE METAR (~30 km
+    /// E, 31m), so it ships on the temp skill chart as a second cross-check
+    /// alongside METAR. List rather than dict — chart code wants the
+    /// time-sorted sequence, same shape as <see cref="GetMetarTemperature"/>.
+    /// Empty list when the obs tree hasn't landed for this location yet.
+    /// </summary>
+    public IReadOnlyList<(DateTime ObservedTimeUtc, double Temperature2m)> GetMetOfficeObsTemperature(
+        DateTime start, DateTime end, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.MetOfficeObsPath, "**", "*.parquet"));
+        var sql = $@"
+SELECT ObservedTimeUtc, AirTemperature
+FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
+  AND AirTemperature IS NOT NULL
+  AND ObservedTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
+  AND ObservedTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+ORDER BY ObservedTimeUtc";
+
+        return ParquetReader.Query(sql,
+            r => (r.GetDateTime(0), r.GetDouble(1)),
+            _log, "Met Office obs tree empty — observation list will be empty.", ct);
+    }
+
+    /// <summary>
     /// Defensive guard against SQL injection via <c>column</c> — the only repo
     /// input that's interpolated as a SQL identifier rather than a quoted
     /// string. Element verify is the only caller that passes anything other

@@ -130,6 +130,10 @@ public sealed class RenderSiteCommand
         _log.LogInformation("Loaded {N} METAR observations ({Station}).",
             metar.Count, string.IsNullOrWhiteSpace(_cfg.Location.Metar.Primary) ? "none" : _cfg.Location.Metar.Primary);
 
+        var moObs = _truth.GetMetOfficeObsTemperature(windowStart, now, ct);
+        _log.LogInformation("Loaded {N} Met Office obs (geohash {GH}).",
+            moObs.Count, _cfg.MetOffice.ObsGeohash);
+
         // PhaseByVersion has to be computed before the rolling functions so
         // they can group by phase rather than version (a retrain would
         // otherwise fragment the chart into stubs).
@@ -177,6 +181,7 @@ public sealed class RenderSiteCommand
             Predictions = predictions,
             TruthByTime = truth,
             MetarByTime = metar,
+            MetOfficeObsByTime = moObs,
             RollingMae = rolling,
             RollingBrier = ComputeRollingBrier(precip, rainfall, phaseByVersion, precipRollingWindowDays),
             PrecipPredictions = precip,

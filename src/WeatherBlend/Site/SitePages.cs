@@ -128,6 +128,16 @@ public static partial class SitePages
         /// <summary>METAR observations (time-sorted) from the primary station over the window.</summary>
         public required IReadOnlyList<(DateTime ObservedTimeUtc, double Temperature2m)> MetarByTime { get; init; }
 
+        /// <summary>Met Office DataHub Land Observations temperature
+        /// (time-sorted) for the configured geohash. Closer to Bonehill
+        /// than EGTE METAR (~22 km vs ~30 km) with smaller elevation gap
+        /// (~250 m vs ~360 m), so it doubles up on the temp skill chart
+        /// as an independent cross-check. Empty list when the obs tree
+        /// hasn't landed yet (capture started 2026-04-24). Defaults to
+        /// empty so test fixtures and legacy callers don't have to set it.</summary>
+        public IReadOnlyList<(DateTime ObservedTimeUtc, double Temperature2m)> MetOfficeObsByTime { get; init; }
+            = Array.Empty<(DateTime, double)>();
+
         /// <summary>Rolling MAE per (version, lead) for the verify chart.</summary>
         public required IReadOnlyList<RollingMaePoint> RollingMae { get; init; }
 
