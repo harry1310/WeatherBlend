@@ -251,11 +251,11 @@ public static partial class SitePages
 
     /// <summary>
     /// Per-date summary table: for each UTC day in the forward window, show
-    /// max/mean P(wet), the wettest hour of the day, and counts of hours
-    /// the conformal calibrator flagged as confident-wet / ambiguous /
-    /// confident-dry. Sits between the chart and the collapsible hourly
-    /// detail so a glance gives "is today / tomorrow / day-after wet?"
-    /// without expanding rows.
+    /// mean P(wet), the driest hour of the day (lowest P(wet) — the "go for
+    /// a walk" hour), and counts of hours the conformal calibrator flagged
+    /// as confident-wet / ambiguous / confident-dry. Sits between the chart
+    /// and the collapsible hourly detail so a glance gives "is today /
+    /// tomorrow / day-after wet?" without expanding rows.
     ///
     /// Rendered inline (not collapsible) — this IS the at-a-glance view.
     /// Skipped if no rows have agreement OR conformal data (legacy parquets).
@@ -276,7 +276,9 @@ public static partial class SitePages
         {
             var dayRows = day.OrderBy(r => r.ValidTimeUtc).ToList();
             var meanP = dayRows.Average(r => r.ProbWet);
-            var maxR  = dayRows.MaxBy(r => r.ProbWet)!;
+            // Driest = minimum P(wet) — the hour the blender thinks is least
+            // likely to be wet, i.e. the best "go now" hour for the day.
+            var driestR = dayRows.MinBy(r => r.ProbWet)!;
             // Conformal vote tally — counts of hours in each set when the
             // calibrator's tagged this row. "Wet" = confident wet for precip
             // (positive class is wet here, no inversion vs dry-window page).
@@ -307,7 +309,7 @@ public static partial class SitePages
                 <tr>
                   <td><time datetime="{day.Key:yyyy-MM-dd}">{day.Key:ddd dd MMM}</time></td>
                   <td class="num" style="color: {meanColor}; font-weight: 600">{(meanP * 100).ToString("0", Ci)}%</td>
-                  <td class="num">{(maxR.ProbWet * 100).ToString("0", Ci)}% <small>at {maxR.ValidTimeUtc:HH'Z'}</small></td>
+                  <td class="num">{(driestR.ProbWet * 100).ToString("0", Ci)}% <small>at {driestR.ValidTimeUtc:HH'Z'}</small></td>
                   <td class="num">{dayRows.Count}</td>
                   {conformalCells}
                 </tr>
@@ -328,7 +330,7 @@ public static partial class SitePages
                   <tr>
                     <th>Date (UTC)</th>
                     <th class="num">Mean P(wet)</th>
-                    <th class="num">Wettest hour</th>
+                    <th class="num" title="Lowest forecast P(wet) of the day — the best 'go now' hour">Driest hour</th>
                     <th class="num">n_h</th>
                     {conformalHeader}
                   </tr>
