@@ -7,65 +7,109 @@ namespace WeatherBlend.Site;
 public static partial class SitePages
 {
     /// <summary>
-    /// Renders <c>forecasts-{lead}h.html</c> — one page per POC lead (24/48/72/96/120) showing
-    /// what every active blender is saying for that single horizon. A sub-nav at the top
-    /// lets the reader switch between leads without hopping back to the main nav.
-    /// Composition per page:
-    ///   1. Temperature — per-NWP breakdown table. The champion blend value itself is
-    ///      on the home page; this page exists to show which NWPs drove the blend up
-    ///      or down at this horizon.
-    ///   2. Precipitation — one P(wet) chart + hourly-detail table per EA station.
-    /// Dry-window sits on its own tab because its display unit is the UTC day, not the
-    /// hourly valid-time used by temperature and P(wet).
+    /// Forecasts pages, split per variable per lead since the 2026-05-04 site
+    /// rework. The reader picks one of three variables in the variable sub-nav
+    /// (Temperature / Rain / Dry window), then for temp + rain a per-lead
+    /// inner sub-nav (24 / 48 / 72 / 96 / 120 h). Dry-window is per-day so
+    /// has no lead axis.
     /// </summary>
-    public static string RenderForecasts(SiteInputs input, int lead)
+    public static string RenderForecastsTemp(SiteInputs input, int lead)
     {
         var body = new StringBuilder();
-        body.Append(RenderLeadSubNav(lead));
+        body.Append(RenderForecastsSubNav("temp"));
+        body.Append(RenderLeadSubNav("forecasts-temp", lead));
 
         body.Append(Ci, $"""
             <section>
               <hgroup>
-                <h2>+{lead}h forecast</h2>
-                <p>Latest blender outputs valid around the {lead}-hour horizon from right now.
-                   Temperature is the champion model; precipitation is P(wet ≥ 0.1 mm/h)
-                   per EA Hydrology gauge.</p>
+                <h2>Temperature forecast +{lead}h</h2>
+                <p>Per-NWP temperatures plus the blend lines (Phase 2b champion solid,
+                   Phase 2c challenger dashed). Hover a line for exact values.</p>
               </hgroup>
             """);
 
         body.Append(RenderTempSection(input, lead));
-        body.Append("<hr/>");
+
+        body.Append("</section>");
+        return WrapPage(input, $"Temperature forecast +{lead}h", "forecasts", body.ToString());
+    }
+
+    public static string RenderForecastsRain(SiteInputs input, int lead)
+    {
+        var body = new StringBuilder();
+        body.Append(RenderForecastsSubNav("rain"));
+        body.Append(RenderLeadSubNav("forecasts-rain", lead));
+
+        body.Append(Ci, $"""
+            <section>
+              <hgroup>
+                <h2>Rain forecast +{lead}h</h2>
+                <p>Per-station P(wet ≥ 0.1 mm/h) on top with the per-NWP PoP overlay
+                   (Phase 3a champion solid, Phase 3c challenger dashed in the same
+                   per-station hue), then the per-NWP precip rate (mm/h) at the
+                   Bonehill point — only once because the NWP forecasts don't differ
+                   between gauge stations.</p>
+              </hgroup>
+            """);
+
         body.Append(RenderPrecipSection(input, lead));
 
         body.Append("</section>");
-        return WrapPage(input, $"Forecasts +{lead}h", "forecasts", body.ToString());
+        return WrapPage(input, $"Rain forecast +{lead}h", "forecasts", body.ToString());
     }
 
-    private static string RenderLeadSubNav(int current)
+    /// <summary>
+    /// Variable sub-nav across the Forecasts pages — three pill links (Temperature
+    /// / Rain / Dry window). Same shape as <see cref="RenderModelsSubNav"/> and
+    /// <see cref="RenderSkillSubNav"/>. Temperature + Rain link to their +24h
+    /// landing page; Dry window has no lead axis so links to the day-aggregate
+    /// page directly.
+    /// </summary>
+    internal static string RenderForecastsSubNav(string activeSlug)
+    {
+        var entries = new (string Slug, string File, string Label)[]
+        {
+            ("temp",       "forecasts-temp-24h.html",  "Temperature"),
+            ("rain",       "forecasts-rain-24h.html",  "Rain"),
+            ("dry-window", "forecasts-dry-window.html", "Dry window"),
+        };
+        var s = new StringBuilder();
+        s.Append("<nav class=\"lead-nav\"><ul>");
+        foreach (var (slug, file, label) in entries)
+        {
+            var cls = slug == activeSlug ? " class=\"active\"" : "";
+            s.Append(Ci, $"<li><a href=\"{file}\"{cls}>{Escape(label)}</a></li>");
+        }
+        s.Append("</ul></nav>");
+        return s.ToString();
+    }
+
+    private static string RenderLeadSubNav(string pageBase, int current)
     {
         var items = new StringBuilder();
         foreach (var lead in Leads.Full)
         {
             var cls = lead == current ? " class=\"active\"" : "";
-            items.Append(Ci, $"""<li><a href="forecasts-{lead}h.html"{cls}>+{lead}h</a></li>""");
+            items.Append(Ci, $"""<li><a href="{pageBase}-{lead}h.html"{cls}>+{lead}h</a></li>""");
         }
         return $"""<nav class="lead-nav"><ul>{items}</ul></nav>""";
     }
 
     private static string RenderTempSection(SiteInputs input, int lead)
     {
-        // Per-NWP overlay chart — Blend on top, the six NWP inputs underneath. The
-        // champion blend value itself is on the home page; this chart exists so the
-        // reader can see which NWPs the blender's leaning on at this horizon and
-        // where they disagree. Challenger blender lines at this lead live on Skill.
+        // Per-NWP overlay chart with champion + challenger blend lines on top.
+        // Champion (2b) draws solid in brand purple; challenger (2c), when
+        // present at this lead, draws dashed in the same colour so the eye
+        // reads them as paired ("same prediction, two methods").
         //
-        // Pool across all blender versions before picking the freshest per
-        // ValidTime: the champion only emits a few rows per anchor, so a strict
-        // version filter collapses the chart to a single point per lead. Pooling
-        // gives the X axis a real time spread without changing the per-NWP story
-        // (the NWP columns are identical across blender versions for the same
-        // valid hour).
-        var future = input.Predictions
+        // Two passes through input.Predictions:
+        //   - The per-NWP columns (TempGfs / TempEcmwf / …) are identical
+        //     across blender versions — pool by ValidTime regardless of
+        //     ModelVersion and pick the freshest PMT.
+        //   - For the blend line itself we partition by phase first so each
+        //     phase's BlendTemperature time series is built from rows of
+        //     the right version.
+        var poolFuture = input.Predictions
             .Where(p => p.LeadHours == lead
                         && p.ValidTimeUtc >= input.GeneratedAtUtc.AddHours(-1))
             .GroupBy(p => p.ValidTimeUtc)
@@ -75,22 +119,18 @@ public static partial class SitePages
 
         var s = new StringBuilder();
         s.Append("<h3>Temperature — blend vs per-model inputs</h3>");
-        s.Append("<p class=\"skill-line\">One series per NWP plus the champion blend, valid times at this lead. Hover for exact values.</p>");
 
-        if (future.Count == 0)
+        if (poolFuture.Count == 0)
         {
             s.Append("<p><em>No +").Append(lead).Append("h temperature forecast available.</em></p>");
             return s.ToString();
         }
 
         // NWPs first so the brand-purple Blend draws last and sits visually on top.
-        // The per-NWP label + colour table lives in SitePages.NwpsForTemperature();
-        // dropping it here means a colour change or model addition is one edit, not
-        // four-files-worth of grep-and-replace.
         var series = new List<LineSeries>();
         foreach (var nwp in NwpsForTemperature())
         {
-            var pts = future
+            var pts = poolFuture
                 .Select(p => (Valid: p.ValidTimeUtc, Val: nwp.Get(p)))
                 .Where(t => t.Val.HasValue)
                 .Select(t => (X: t.Valid.ToOADate(), Y: t.Val!.Value))
@@ -98,10 +138,35 @@ public static partial class SitePages
             if (pts.Count > 0)
                 series.Add(new LineSeries(nwp.Label, nwp.Color, pts));
         }
-        var blendPts = future
-            .Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.BlendTemperature))
-            .ToList();
-        series.Add(new LineSeries("Blend", NwpPalette.Blend, blendPts));
+
+        // Champion + challenger blend lines, ordered by ActivePhasePolicy
+        // priority so the FIRST entry (champion) draws solid and any
+        // subsequent entry (challenger) draws dashed in the same colour.
+        // Skip any phase that has zero rows in the forward window — common
+        // for fresh challengers whose predictions haven't reached this lead's
+        // valid-time band yet.
+        var orderedActivePhases = ActivePhasePolicy.ByTarget["temperature"];
+        var blendByPhase = input.Predictions
+            .Where(p => p.LeadHours == lead
+                        && p.ValidTimeUtc >= input.GeneratedAtUtc.AddHours(-1))
+            .Where(p => input.PhaseByVersion.TryGetValue(p.ModelVersion, out var ph)
+                        && orderedActivePhases.Contains(ph, StringComparer.Ordinal))
+            .GroupBy(p => input.PhaseByVersion[p.ModelVersion])
+            .ToDictionary(g => g.Key, g => g.GroupBy(r => r.ValidTimeUtc)
+                                            .Select(gv => gv.OrderByDescending(r => r.PredictionMadeAtUtc).First())
+                                            .OrderBy(r => r.ValidTimeUtc)
+                                            .ToList());
+        for (int i = 0; i < orderedActivePhases.Count; i++)
+        {
+            var phase = orderedActivePhases[i];
+            if (!blendByPhase.TryGetValue(phase, out var phaseRows) || phaseRows.Count == 0) continue;
+            var dashed = i > 0;   // first = champion (solid), rest = challengers (dashed)
+            var label = i == 0 ? $"Blend ({phase} champion)" : $"Blend ({phase} challenger)";
+            var pts = phaseRows
+                .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.BlendTemperature))
+                .ToList();
+            series.Add(new LineSeries(label, NwpPalette.Blend, pts, Dashed: dashed));
+        }
 
         s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
         {
@@ -179,15 +244,40 @@ public static partial class SitePages
             // no rows in NwpPrecipProbabilities and silently drop out of
             // the legend. Threshold each NWP uses for "any precip" varies
             // and isn't strictly our 0.1 mm/h training label, so the
-            // overlay is direction-of-effect, not like-for-like — the
-            // skill-line above the chart calls this out.
-            var probSeries = new List<LineSeries>
+            // overlay is direction-of-effect, not like-for-like.
+            //
+            // Champion + challenger P(wet) lines: P(wet) bucketed by
+            // ActivePhasePolicy priority so champion (3a) draws solid in
+            // brand purple, challenger (3c) draws dashed in the same colour.
+            // Climatology + NWP PoP overlay sit on top in their own colours.
+            var probSeries = new List<LineSeries>();
+            var orderedPrecipPhases = ActivePhasePolicy.ByTarget["precipitation"];
+            var precipByPhase = input.PrecipPredictions
+                .Where(r => r.Station == station
+                            && r.LeadHours == lead
+                            && r.ValidTimeUtc >= input.GeneratedAtUtc.AddHours(-1))
+                .Where(r => input.PhaseByVersion.TryGetValue(r.Version, out var ph)
+                            && orderedPrecipPhases.Contains(ph, StringComparer.Ordinal))
+                .GroupBy(r => input.PhaseByVersion[r.Version])
+                .ToDictionary(g => g.Key, g => g.GroupBy(r => r.ValidTimeUtc)
+                                                 .Select(gv => gv.OrderByDescending(r => r.PredictedAtUtc).First())
+                                                 .OrderBy(r => r.ValidTimeUtc)
+                                                 .ToList());
+            for (int i = 0; i < orderedPrecipPhases.Count; i++)
             {
-                new($"P(wet)", "#7c4dff",
-                    latestPerValid.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet)).ToList()),
-                new("Climatology", "#9e9e9e",
-                    latestPerValid.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ClimatologyPWet)).ToList()),
-            };
+                var phase = orderedPrecipPhases[i];
+                if (!precipByPhase.TryGetValue(phase, out var phaseRows) || phaseRows.Count == 0) continue;
+                var dashed = i > 0;
+                var label = i == 0 ? $"P(wet) ({phase} champion)" : $"P(wet) ({phase} challenger)";
+                var pts = phaseRows
+                    .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet))
+                    .ToList();
+                probSeries.Add(new LineSeries(label, "#7c4dff", pts, Dashed: dashed));
+            }
+            // Climatology stays a single line — it's a station property, not
+            // a blender output. Read off the champion-pooled rows above.
+            probSeries.Add(new LineSeries("Climatology", "#9e9e9e",
+                latestPerValid.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ClimatologyPWet)).ToList()));
 
             // Filter per-NWP PoP to the same valid-time range the blend
             // covers at this lead, so the chart's X axis stays aligned and

@@ -17,7 +17,8 @@ public sealed record LineSeries(
     string Name,
     string Color,
     IReadOnlyList<(double X, double Y)> Points,
-    bool PointsOnly = false);
+    bool PointsOnly = false,
+    bool Dashed = false);
 
 public sealed record LineChartSpec
 {
@@ -227,6 +228,7 @@ public static class LineChartRenderer
                 label = s.Name,
                 color = s.Color,
                 discrete = s.PointsOnly,
+                dashed = s.Dashed,
                 points = pts,
             });
         }

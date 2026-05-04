@@ -106,10 +106,11 @@ public class SitePagesTests
     }
 
     [Fact]
-    public void RenderForecasts_renders_only_the_requested_lead()
+    public void RenderForecastsRain_renders_only_the_requested_lead()
     {
-        // Predictions at every lead (24/48/72) for one station. RenderForecasts(input, 48)
-        // should surface +48h content only, not the other leads' headline.
+        // Predictions at every lead (24/48/72) for one station. The +48h page
+        // should render the +48h header only, not surface +24h or +72h
+        // headlines (those land on their own per-lead pages).
         var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
         var preds = new[] { 24, 48, 72 }.Select(lead =>
             new SitePages.PrecipForecastPoint(
@@ -134,12 +135,11 @@ public class SitePagesTests
             PrecipCurrentByStation = new Dictionary<string, string> { [Station] = "v_3a" },
         };
 
-        var html = SitePages.RenderForecasts(input, 48);
+        var html = SitePages.RenderForecastsRain(input, 48);
 
-        html.Should().Contain("+48h forecast");
-        // Sub-nav still links to other leads, but the page body doesn't render +24h's chart.
-        html.Should().NotContain("+24h forecast");
-        html.Should().NotContain("+72h forecast");
+        html.Should().Contain("Rain forecast +48h");
+        html.Should().NotContain("Rain forecast +24h");
+        html.Should().NotContain("Rain forecast +72h");
     }
 
     [Fact]
@@ -188,28 +188,29 @@ public class SitePagesTests
     }
 
     [Fact]
-    public void RenderForecasts_emits_lead_subnav_linking_to_every_lead()
+    public void RenderForecastsTemp_emits_lead_subnav_linking_to_every_lead()
     {
-        // Sub-nav is how readers hop between leads. Rendering any lead page should
-        // produce the full three-link nav, with the current lead marked active.
+        // Sub-nav is how readers hop between leads within a variable. Rendering
+        // any lead page should produce the full per-variable lead nav with the
+        // current lead marked active.
         var input = MakeEmptyForecastInput();
 
-        var html = SitePages.RenderForecasts(input, 48);
+        var html = SitePages.RenderForecastsTemp(input, 48);
 
-        html.Should().Contain("forecasts-24h.html");
-        html.Should().Contain("forecasts-48h.html");
-        html.Should().Contain("forecasts-72h.html");
+        html.Should().Contain("forecasts-temp-24h.html");
+        html.Should().Contain("forecasts-temp-48h.html");
+        html.Should().Contain("forecasts-temp-72h.html");
         html.Should().Contain("lead-nav");
     }
 
     [Fact]
-    public void RenderForecasts_shows_fallback_text_when_lead_has_no_temperature_forecast()
+    public void RenderForecastsTemp_shows_fallback_text_when_lead_has_no_temperature_forecast()
     {
         // No predictions at all — page should still render, with a clear "no forecast" message
         // rather than blowing up on an empty sequence.
         var input = MakeEmptyForecastInput();
 
-        var html = SitePages.RenderForecasts(input, 72);
+        var html = SitePages.RenderForecastsTemp(input, 72);
 
         html.Should().Contain("No +72h temperature forecast available");
     }
@@ -584,7 +585,7 @@ public class SitePagesTests
             PhaseByVersion = new Dictionary<string, string> { ["v3a"] = "3a" },
         };
 
-        var html = SitePages.RenderForecasts(input, lead: 24);
+        var html = SitePages.RenderForecastsRain(input, lead: 24);
 
         // Per-NWP line labels appear, suffixed " PoP" to distinguish from
         // the blend's "P(wet)" line.
@@ -997,8 +998,9 @@ public class SitePagesTests
 
         var html = SitePages.RenderDryWindow(input, null);
 
-        // Title: simple "Dry window", no "daytime" qualifier in headings.
-        html.Should().Contain("<h2>Dry window</h2>")
+        // Title: "Dry-window forecast" after the 2026-05-04 site rework
+        // (was "Dry window"), no "daytime" qualifier in headings.
+        html.Should().Contain("<h2>Dry-window forecast</h2>")
             .And.NotContain("Dry daytime window");
 
         // Probability cell: 0.62 → "62%", agreement 0.71 → "71%". No "0.62".

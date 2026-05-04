@@ -51,24 +51,26 @@ public static partial class SitePages
         content.Append("""
             <section>
               <hgroup>
-                <h2>Dry window</h2>
-                <p>Per-station, per-window blender. Truth from EA Hydrology gauges with a 4-of-4 hourly gate.
-                   The label asks "is there a contiguous N-hour dry block somewhere within 09:00–18:00 local time?" — the realistic
-                   outdoor-walking window at Bonehill year-round, in BST or GMT (DST handled per target day).
-                   Currently shipping <strong>Phase 3b (lean, 59 features)</strong>: per-NWP precip aggregates (sum, max-hour, wet-hour count, longest dry run, has-dry-window indicator, max prob),
-                   ensemble cross-NWP summaries, RH/dew-depression/cloud/CAPE/wind covariates, and DOY calendar encodings. Bellever's blender ships PAV-calibrated;
-                   the other stations ship raw (their raw outputs were already well-calibrated, PAV overfit the small validation slice).
-                   <strong>Phase 3g (MC)</strong> is shipping alongside 3b as a challenger across all three windows: 10,000 Bernoulli draws over Phase 3a's hourly P(wet),
-                   counting the fraction whose longest dry run reaches the target window length. Cross-window monotonicity P(N=3) ≥ P(N=4) ≥ P(N=6) holds by construction
-                   (single MC pass, three indicators read off the same Bernoulli sequence). No LightGBM, no learned weights.</p>
+                <h2>Dry-window forecast</h2>
+                <p>Per-station, per-window blender. The label asks "is there a contiguous
+                   N-hour dry block somewhere within 09:00–18:00 local time?" — the
+                   realistic outdoor-walking window at Bonehill year-round (DST handled
+                   per target day). Phase 3b (53-feature LightGBM) ships as champion;
+                   Phase 3g (parameter-free MC over Phase 3a hourly P(wet)) ships
+                   alongside as challenger and guarantees cross-window monotonicity by
+                   construction. Cards show today and the next 4 forecast days.</p>
               </hgroup>
             """);
+
+        // Forecasts variable sub-nav at the top — same shape across the three
+        // forecasts pages (Temperature / Rain / Dry window).
+        content.Append(RenderForecastsSubNav("dry-window"));
 
         if (input.DryWindowPredictions.Count == 0)
         {
             content.Append("<p><em>No dry-window predictions in window. Run <code>predict --target dry-window --truth-station all --window all</code>.</em></p>");
             content.Append("</section>");
-            return WrapPage(input, "Dry window", "dry-window", content.ToString());
+            return WrapPage(input, "Dry-window forecast", "forecasts", content.ToString());
         }
 
         // Filter station list to currently-active stations (from config) so a
@@ -81,18 +83,20 @@ public static partial class SitePages
         var currentStation = ResolveStationFromSlug(stations, stationSlug);
 
         if (currentStation is not null)
-            content.Append(RenderStationSubNav("dry-window", stations, currentStation));
+            content.Append(RenderStationSubNav("forecasts-dry-window", stations, currentStation));
 
         var windows = input.DryWindowPredictions.Select(d => d.WindowHours).Distinct().OrderBy(w => w).ToList();
         var leadOrder = Leads.Short;
-        // Forward of "yesterday" so stale rows can't dominate the view.
-        var cutoff = input.GeneratedAtUtc.Date.AddDays(-1);
+        // Today forward only (was yesterday-onward) — reading the page mid-
+        // morning, the "yesterday" tile was always already-known noise. Drop
+        // it so the view starts at "right now / today's outlook".
+        var cutoff = input.GeneratedAtUtc.Date;
 
         if (currentStation is null)
         {
             content.Append("<p><em>No dry-window predictions for the selected station.</em></p>");
             content.Append("</section>");
-            return WrapPage(input, "Dry window", "dry-window", content.ToString());
+            return WrapPage(input, "Dry-window forecast", "forecasts", content.ToString());
         }
 
         content.Append(Ci, $"<h3>{Escape(PrettyStation(currentStation))}</h3>");

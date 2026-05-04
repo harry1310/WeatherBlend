@@ -209,9 +209,16 @@ public sealed class RenderSiteCommand
         foreach (var stale in Directory.EnumerateFiles(outputDir, "*.html"))
             File.Delete(stale);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "index.html"),         SitePages.RenderIndex(input),          ct);
+        // Forecasts split per variable per lead on 2026-05-04. Temperature +
+        // rain are per-lead (24/48/72/96/120); dry-window is per-day so emits
+        // once + one per non-first station.
         foreach (var lead in Leads.Full)
-            await File.WriteAllTextAsync(Path.Combine(outputDir, $"forecasts-{lead}h.html"),
-                SitePages.RenderForecasts(input, lead), ct);
+        {
+            await File.WriteAllTextAsync(Path.Combine(outputDir, $"forecasts-temp-{lead}h.html"),
+                SitePages.RenderForecastsTemp(input, lead), ct);
+            await File.WriteAllTextAsync(Path.Combine(outputDir, $"forecasts-rain-{lead}h.html"),
+                SitePages.RenderForecastsRain(input, lead), ct);
+        }
         // Models page split into 3 (per target) on 2026-05-04 — see
         // SitePages.RenderModels for the per-target intro copy. The legacy
         // models.html route was retired in the same change; the nav points
@@ -264,22 +271,28 @@ public sealed class RenderSiteCommand
             .Distinct()
             .OrderBy(s => s, StringComparer.Ordinal)
             .ToList();
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "dry-window.html"), SitePages.RenderDryWindow(input, null), ct);
+        // Dry-window forecasts page is now part of the Forecasts family
+        // (filename forecasts-dry-window.html, sub-nav links to it from
+        // every Forecasts page). Per-station variants use the same
+        // station-loop shape as skill-rainfall.
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "forecasts-dry-window.html"),
+            SitePages.RenderDryWindow(input, null), ct);
         for (int i = 1; i < dryStations.Count; i++)
         {
             var slug = SitePages.StationSlug(dryStations[i]);
             await File.WriteAllTextAsync(
-                Path.Combine(outputDir, $"dry-window-{slug}.html"),
+                Path.Combine(outputDir, $"forecasts-dry-window-{slug}.html"),
                 SitePages.RenderDryWindow(input, slug), ct);
         }
 
-        // index + per-lead forecasts + models × 3 + about + styles + chart.js
-        // + skill-temperature + skill-rainfall × stations
-        // + skill-dry-window × stations + dry-window × stations.
-        var totalFiles = 8 + Leads.Full.Length
+        // index + (forecasts-temp × leads) + (forecasts-rain × leads) +
+        // models × 3 + about + styles + chart.js + skill-temperature +
+        // skill-rainfall × stations + skill-dry-window × stations +
+        // forecasts-dry-window × stations.
+        var totalFiles = 8 + (Leads.Full.Length * 2)
             + Math.Max(1, rainStations.Count)        // skill-rainfall variants
             + Math.Max(1, rainStations.Count)        // skill-dry-window variants
-            + Math.Max(1, dryStations.Count);        // dry-window forecast variants
+            + Math.Max(1, dryStations.Count);        // forecasts-dry-window variants
         _log.LogInformation("Site rendered → {Dir} ({Files} files)", outputDir, totalFiles);
         return 0;
     }

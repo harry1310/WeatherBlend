@@ -557,6 +557,12 @@ public static partial class SitePages
               borderColor: ds.color,
               backgroundColor: ds.color,
               borderWidth: 1.75,
+              // Dashed series — used to overlay a challenger-phase line on top
+              // of its champion in the same colour so the eye reads them as
+              // paired ("same prediction, two methods"). [6, 4] is a moderate
+              // dash that stays visually distinct from the solid champion at
+              // chart resolutions we render (220-360px tall).
+              borderDash: ds.dashed ? [6, 4] : [],
               // No markers on continuous series regardless of point count —
               // the previous "show markers if ≤30 points" branch was creating
               // visual asymmetry across stations (Bovey + rolling MAE / Brier
@@ -697,8 +703,7 @@ public static partial class SitePages
                   <nav class="site-nav">
                     <ul>
                       <li><a href="index.html"{{NavActive(pageId, "index")}}>Home</a></li>
-                      <li><a href="forecasts-24h.html"{{NavActive(pageId, "forecasts")}}>Forecasts</a></li>
-                      <li><a href="dry-window.html"{{NavActive(pageId, "dry-window")}}>Dry window</a></li>
+                      <li><a href="forecasts-temp-24h.html"{{NavActive(pageId, "forecasts")}}>Forecasts</a></li>
                       <li><a href="skill-temperature.html"{{NavActive(pageId, "skill")}}>Skill</a></li>
                       <li><a href="models-temp.html"{{NavActive(pageId, "models")}}>Models</a></li>
                       <li><a href="about.html"{{NavActive(pageId, "about")}}>About</a></li>
