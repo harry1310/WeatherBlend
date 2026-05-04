@@ -28,7 +28,8 @@ public static partial class SitePages
     // and the small "what NWPs participate in this target" lists. Without it,
     // every chart that draws a per-NWP line had to re-spell GFS=#ef5350,
     // ECMWF=#42a5f5, ... and they drifted the moment a new model landed
-    // (AIFS in #ec407a needed three edits, JMA #ffc107 needed four).
+    // (back when AIFS was #ec407a it took three edits per palette change,
+    // four for JMA — see NwpPalette docstring for the current values).
     //
     // Per-NWP getter is row-type-specific (TempPredictionRow.TempGfs vs
     // PrecipForecastPoint.PrecipGfs), so each call site composes its own
@@ -43,8 +44,12 @@ public static partial class SitePages
 
     /// <summary>Per-NWP colour constants. Hue-separated so seven (or eight) NWP
     /// lines on a single chart stay legible. UKMO is indigo rather than purple
-    /// to leave purple free for the brand-coloured Blend line. AIFS pink and
-    /// JMA amber tag the AI / late-arriving family members visually.</summary>
+    /// to leave purple free for the brand-coloured Blend line. The five
+    /// canonical models (GFS / ECMWF / ICON / MF / UKMO) keep Material 400-level
+    /// colours; the three later additions are pushed to non-overlapping hues:
+    /// GEM deep cyan (was teal — too close to ECMWF blue), AIFS pale pink
+    /// (was hot pink — too close to GFS red), JMA brown (was amber — too close
+    /// to MF orange). Updated 2026-05-04 after user-flagged clashes.</summary>
     internal static class NwpPalette
     {
         public const string Gfs   = "#ef5350";
@@ -52,9 +57,9 @@ public static partial class SitePages
         public const string Icon  = "#66bb6a";
         public const string Mf    = "#ffa726";
         public const string Ukmo  = "#5c6bc0";
-        public const string Gem   = "#26a69a";
-        public const string Aifs  = "#ec407a";
-        public const string Jma   = "#ffc107";
+        public const string Gem   = "#00838f";   // was #26a69a (teal-too-close-to-ECMWF) → cyan 800
+        public const string Aifs  = "#f48fb1";   // was #ec407a (pink-too-close-to-GFS) → pink 200
+        public const string Jma   = "#8d6e63";   // was #ffc107 (amber-too-close-to-MF) → brown 400
 
         /// <summary>Brand colour reserved for the blend's own line on per-NWP
         /// overlay charts. Not for any NWP.</summary>
