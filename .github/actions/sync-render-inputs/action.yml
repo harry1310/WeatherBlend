@@ -45,6 +45,15 @@ runs:
       #   data/reports         — verify_*.json sidecars feed the Models page's
       #                          per-card "Verify history" table. Missing this
       #                          tree was the silent-empty bug on 2026-05-01.
+      #   data/forecasts       — RenderSiteCommand.QueryNwpPrecipProbabilities
+      #                          + QueryMetOfficeSpotForecasts read raw NWP
+      #                          forecast rows for the per-NWP PoP overlay on
+      #                          rain-skill and the Met Office Spot temp / PoP
+      #                          comparison line on temp-skill. Missing this
+      #                          tree was the silent-empty bug on 2026-05-04
+      #                          (standalone render-site only — predict-and-
+      #                          render had it incidentally because predict
+      #                          step pulls forecasts directly).
       run: |
         for tree in \
             data/predictions \
@@ -52,7 +61,8 @@ runs:
             data/truth/metar \
             data/truth/rainfall \
             data/models \
-            data/reports; do
+            data/reports \
+            data/forecasts; do
           mkdir -p "${tree}"
           echo "::group::sync ${tree}"
           rclone copy "r2:${R2_BUCKET}/${tree}" "./${tree}" --fast-list --transfers 16 --checkers 32 --progress

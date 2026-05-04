@@ -1,15 +1,15 @@
 name: predict-and-render
 
-# Combined predict + site render, running every 2 hours so we don't pay the
-# checkout/setup/R2-pull/build cost twice per cycle. The original `predict.yml`
-# and `render-site.yml` workflows are kept for manual dispatch only and no
-# longer auto-trigger anything — see those files for per-step semantics. The
-# bodies below are merged with no behaviour changes other than:
+# Combined predict + site render, running every 6 hours paired with collect.
+# The original `predict.yml` and `render-site.yml` workflows are kept for
+# manual dispatch only and no longer auto-trigger anything — see those
+# files for per-step semantics. The bodies below are merged with no
+# behaviour changes other than:
 #   - one shared build + R2 sync
 #   - predictions pushed to R2 once between predict and render so the deployed
 #     site reads its own freshly-written outputs
 #
-# Schedule: :45 past every even hour (12 runs/day). 30 min after the :15
+# Schedule: :45 past 02/08/14/20 UTC (4 runs/day). 30 min after the :15
 # collect cron — same delay the original predict workflow used and proven
 # to leave time for collect's R2 push to settle. The `weatherblend-data`
 # concurrency group serialises against any in-flight collect / verify /
@@ -18,13 +18,17 @@ name: predict-and-render
 # mid-write to predictions.
 on:
   # Schedule moved to Cloudflare 2026-05-01 (cloudflare/scheduler-worker/);
-  # GitHub's `schedule:` trigger removed at the same time. Cron is unchanged
-  # — `45 */2 * * *` (every 2h, :45 past) — it just lives in
-  # cloudflare/scheduler-worker/wrangler.toml and gets dispatched to this
-  # workflow via the GitHub App. The Cloudflare scheduler's WORKFLOW_FOR_CRON
-  # table maps that cron expression to predict-and-render.yml. The 30-min
-  # lag past collect's `:15` cycle gives R2 time to settle the freshest
-  # forecast push before predict reads from it.
+  # GitHub's `schedule:` trigger removed at the same time. Cron updated
+  # 2026-05-04 from `45 */2 * * *` (every 2h, 12×/day) → `45 2,8,14,20 * * *`
+  # (every 6h, 4×/day, paired with collect) once temp predict moved to
+  # hourly-per-lead output. The on-disk forecast tree only changes when
+  # collect runs, so the previous 2h cadence wasted ~67% of its runs
+  # producing identical outputs to the prior cycle. See
+  # data/reports/schedule_proposal_2026-05-04.md for the full reasoning.
+  # The Cloudflare scheduler's WORKFLOW_FOR_CRON table maps the new cron
+  # expression to predict-and-render.yml. The 30-min lag past collect's
+  # `:15` cycle gives R2 time to settle the freshest forecast push before
+  # predict reads from it.
   #
   # `workflow_dispatch:` retained so manual dashboard runs and the
   # Cloudflare scheduler's API-driven dispatches still work.
@@ -61,24 +65,17 @@ jobs:
           dotnet-version: "10.0.x"
           dotnet-quality: preview
 
-      # Render-input trees come via the shared composite action — same list
-      # render-site.yml uses, no risk of drift between the two workflows.
+      # All R2 trees (incl. data/forecasts) come via the shared composite
+      # action so render-site.yml and this workflow can never drift on the
+      # dependency list. data/forecasts moved into the composite on
+      # 2026-05-04 — render needs it for the per-NWP PoP overlay on
+      # rain-skill and the Met Office Spot line on temp-skill.
       - uses: ./.github/actions/sync-render-inputs
         with:
           bucket: ${{ secrets.R2_BUCKET }}
           access_key_id: ${{ secrets.R2_ACCESS_KEY_ID }}
           secret_access_key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           endpoint: ${{ secrets.R2_ENDPOINT }}
-
-      - name: Pull predict-only forecasts tree from R2
-        env:
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-        # The predict step reads raw NWP forecasts that the render step does
-        # not — every other tree is in the shared sync above. rclone is
-        # already installed and configured by the composite action above.
-        run: |
-          mkdir -p data/forecasts
-          rclone copy "r2:${R2_BUCKET}/data/forecasts" ./data/forecasts --fast-list --transfers 16 --checkers 32 --progress
 
       - name: Build
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo

@@ -16,7 +16,7 @@ compatibility_date = "2025-04-01"
 # event.cron to look up which workflow to dispatch.
 #
 #   "15 2,8,14,20 * * *"  → collect.yml             every 6h, offset :15
-#   "45 */2 * * *"        → predict-and-render.yml  every 2h, offset :45
+#   "45 2,8,14,20 * * *"  → predict-and-render.yml  every 6h, offset :45
 #   "0 12 * * *"          → era5-refresh.yml        daily at 12:00 UTC
 #   "30 9 * * 1"          → verify.yml              weekly Monday 09:30 UTC
 #
@@ -25,19 +25,22 @@ compatibility_date = "2025-04-01"
 # is past both, so the daily refresh always lands on Open-Meteo's freshest
 # data instead of catching ECMWF mid-publish and writing null partitions.
 #
-# predict-and-render's `45 */2 * * *` is unchanged from when it lived on the
-# GitHub side. The 30-min offset past the collect (which runs at `:15` every
-# 6h) means each collect cycle's data has had time to settle in R2 before
-# predict reads from it. The intermediate fires at 04:45 / 06:45 / 10:45
-# etc. don't have a fresh collect behind them but still produce a fresh
-# prediction + render from whatever data IS on disk — useful because the
-# blender's NWP inputs update on each Open-Meteo cycle independently of our
-# collect cron, so re-predicting picks up forecast revisions even without
-# a new collect run.
+# predict-and-render moved from `45 */2 * * *` (every 2h, 12×/day) to
+# `45 2,8,14,20 * * *` (every 6h, 4×/day, paired with collect) on
+# 2026-05-04 — see data/reports/schedule_proposal_2026-05-04.md. The
+# earlier "every 2h" cadence was based on a wrong assumption that the
+# on-disk forecast tree updates between collects. It doesn't: collect is
+# the only thing that pulls from Open-Meteo, and we collect on a 6h
+# cycle, so 8 of every 12 daily predicts were reading IDENTICAL inputs
+# to the previous run and producing IDENTICAL outputs (the LightGBM
+# blenders are deterministic). Running once per collect cycle gets the
+# same site freshness for ~67% less compute. The 30-min offset past the
+# collect (which runs at `:15`) gives R2 enough time to settle before
+# predict reads.
 [triggers]
 crons = [
   "15 2,8,14,20 * * *",
-  "45 */2 * * *",
+  "45 2,8,14,20 * * *",
   "0 12 * * *",
   "30 9 * * 1",
 ]
