@@ -1,0 +1,124 @@
+name: Run all predict targets
+description: |
+  Runs every predict target in dependency order. Single source of truth so
+  predict.yml (manual / retroactive) and predict-and-render.yml (scheduled)
+  can never drift on which targets run, in what order, or which exit codes
+  are treated as soft-skip vs hard-fail.
+
+  Dependency order matters:
+    temp / precip / dry-window / elements run independently from forecasts.
+    feels-like joins temp + elements (same-anchor read).
+    start-hour joins precip hourly + dry-window daily (same-anchor read).
+
+  Soft-skip exit codes per target are documented inline below — typically:
+    2 = no model artefact yet (fresh deploy)
+    3 = no forecast rows for targets / no composites produced
+    4 = element-specific partial coverage
+
+  Caller is responsible for the prior R2 sync (data/models, data/forecasts,
+  data/predictions, data/truth/rainfall at minimum — the sync-render-inputs
+  composite covers all those plus the render extras) and the subsequent
+  push of data/predictions back to R2.
+
+inputs:
+  for_date:
+    description: |
+      Optional retroactive-fill anchor (yyyy-MM-dd). Empty for live runs;
+      passed verbatim to each predict target's --for-date flag.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Predict temperature
+      shell: bash
+      run: |
+        FOR_DATE="${{ inputs.for_date }}"
+        if [ -n "$FOR_DATE" ]; then
+          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature --for-date "$FOR_DATE"
+        else
+          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature
+        fi
+
+    - name: Predict precipitation
+      shell: bash
+      # Per-station P(wet). Soft-skip 2 (no precip blender yet) / 3 (no
+      # forecast rows for targets) — neither fatal for the overall predict.
+      run: |
+        FOR_DATE="${{ inputs.for_date }}"
+        code=0
+        if [ -n "$FOR_DATE" ]; then
+          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target precipitation --truth-station all --for-date "$FOR_DATE" || code=$?
+        else
+          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target precipitation --truth-station all || code=$?
+        fi
+        if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then exit "$code"; fi
+
+    - name: Predict dry-window
+      shell: bash
+      # P(∃ dry window ≥ N hours in target day) per (station, window). Same
+      # soft-skip semantics as precipitation.
+      run: |
+        FOR_DATE="${{ inputs.for_date }}"
+        code=0
+        if [ -n "$FOR_DATE" ]; then
+          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target dry-window --truth-station all --window all --for-date "$FOR_DATE" || code=$?
+        else
+          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target dry-window --truth-station all --window all || code=$?
+        fi
+        if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then exit "$code"; fi
+
+    - name: Predict element blenders (wind / humidity / shortwave-radiation / cloud-cover)
+      shell: bash
+      # Per-element lean blenders. Radiation is currently expected to return
+      # 3 because live forecasts don't include SW columns (known live-
+      # collector gap). Humidity + cloud may return partial coverage at
+      # 48/72h when MF is missing. Soft-skip 2/3/4.
+      run: |
+        FOR_DATE="${{ inputs.for_date }}"
+        for tgt in wind humidity shortwave-radiation cloud-cover; do
+          code=0
+          if [ -n "$FOR_DATE" ]; then
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target "$tgt" --for-date "$FOR_DATE" || code=$?
+          else
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target "$tgt" || code=$?
+          fi
+          if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ] && [ "$code" != "4" ]; then
+            echo "predict $tgt failed with exit $code"; exit "$code"
+          fi
+        done
+
+    - name: Predict feels-like (joins temperature + element outputs for the same anchor)
+      shell: bash
+      # MUST run AFTER temp + elements — it's a join, not an independent
+      # predict. Exit 3 = at least one input missing for the anchor; non-fatal.
+      run: |
+        FOR_DATE="${{ inputs.for_date }}"
+        code=0
+        if [ -n "$FOR_DATE" ]; then
+          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target feels-like --for-date "$FOR_DATE" || code=$?
+        else
+          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target feels-like || code=$?
+        fi
+        if [ "$code" != "0" ] && [ "$code" != "3" ]; then
+          echo "predict feels-like failed with exit $code"; exit "$code"
+        fi
+
+    - name: Predict dry-window start-hour curves (joins precip hourly + dry-window daily)
+      shell: bash
+      # MUST run AFTER precip + dry-window — joins their outputs to derive a
+      # per-start-hour conditional + calibrated curve. Exit 3 = no composites
+      # produced (typically every input incomplete on this anchor); non-fatal.
+      # Was previously missing from predict.yml (drift bug fixed 2026-05-04).
+      run: |
+        FOR_DATE="${{ inputs.for_date }}"
+        code=0
+        if [ -n "$FOR_DATE" ]; then
+          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target start-hour --for-date "$FOR_DATE" || code=$?
+        else
+          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target start-hour || code=$?
+        fi
+        if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then
+          echo "predict start-hour failed with exit $code"; exit "$code"
+        fi

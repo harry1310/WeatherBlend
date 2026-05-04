@@ -80,89 +80,13 @@ jobs:
       - name: Build
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
 
-      - name: Predict temperature
-        run: |
-          FOR_DATE="${{ github.event.inputs.for_date }}"
-          if [ -n "$FOR_DATE" ]; then
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature --for-date "$FOR_DATE"
-          else
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature
-          fi
-
-      - name: Predict precipitation
-        # Per-station P(wet). Exit 2 = no precip blender yet (fresh deploy);
-        # exit 3 = no forecast rows for targets. Neither fatal for this job.
-        run: |
-          FOR_DATE="${{ github.event.inputs.for_date }}"
-          if [ -n "$FOR_DATE" ]; then
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target precipitation --truth-station all --for-date "$FOR_DATE" || code=$?
-          else
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target precipitation --truth-station all || code=$?
-          fi
-          if [ -n "${code:-}" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then exit "$code"; fi
-
-      - name: Predict dry-window
-        # P(∃ dry window ≥ N hours in target day) for every (station, window).
-        # Same exit-code semantics as precipitation.
-        run: |
-          FOR_DATE="${{ github.event.inputs.for_date }}"
-          if [ -n "$FOR_DATE" ]; then
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target dry-window --truth-station all --window all --for-date "$FOR_DATE" || code=$?
-          else
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target dry-window --truth-station all --window all || code=$?
-          fi
-          if [ -n "${code:-}" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then exit "$code"; fi
-
-      - name: Predict element blenders (wind / humidity / shortwave-radiation / cloud-cover)
-        # Per-element lean blenders. Radiation is currently expected to return 3
-        # because live forecasts don't include SW columns (known live-collector
-        # gap). Humidity + cloud may return partial coverage at 48/72h when MF
-        # is missing. Exit 2/3/4 all non-fatal.
-        run: |
-          FOR_DATE="${{ github.event.inputs.for_date }}"
-          for tgt in wind humidity shortwave-radiation cloud-cover; do
-            code=0
-            if [ -n "$FOR_DATE" ]; then
-              dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target "$tgt" --for-date "$FOR_DATE" || code=$?
-            else
-              dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target "$tgt" || code=$?
-            fi
-            if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ] && [ "$code" != "4" ]; then
-              echo "predict $tgt failed with exit $code"; exit "$code"
-            fi
-          done
-
-      - name: Predict feels-like (joins temperature + element outputs for the same anchor)
-        # Must run AFTER the others — it's a join, not an independent predict.
-        # Exit 3 = at least one input is missing for the anchor; non-fatal.
-        run: |
-          FOR_DATE="${{ github.event.inputs.for_date }}"
-          code=0
-          if [ -n "$FOR_DATE" ]; then
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target feels-like --for-date "$FOR_DATE" || code=$?
-          else
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target feels-like || code=$?
-          fi
-          if [ "$code" != "0" ] && [ "$code" != "3" ]; then
-            echo "predict feels-like failed with exit $code"; exit "$code"
-          fi
-
-      - name: Predict dry-window start-hour curves (joins precip hourly + dry-window daily)
-        # Must run AFTER the precip and dry-window predicts — it joins their outputs
-        # to derive a per-start-hour conditional + calibrated curve. Exit 3 = no
-        # composites produced (typically every input incomplete on this anchor);
-        # non-fatal, mirrors feels-like's "soft skip" semantics.
-        run: |
-          FOR_DATE="${{ github.event.inputs.for_date }}"
-          code=0
-          if [ -n "$FOR_DATE" ]; then
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target start-hour --for-date "$FOR_DATE" || code=$?
-          else
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target start-hour || code=$?
-          fi
-          if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then
-            echo "predict start-hour failed with exit $code"; exit "$code"
-          fi
+      # Every predict target in dependency order — temp / precip / dry-window /
+      # elements / feels-like / start-hour. Soft-skip codes per target are
+      # documented in the composite. Shared verbatim with predict.yml so the
+      # two workflows can never drift on which targets run.
+      - uses: ./.github/actions/predict-all
+        with:
+          for_date: ${{ github.event.inputs.for_date }}
 
       - name: Push predictions to R2
         # Pushed BEFORE render so the deployed site is reading the same state

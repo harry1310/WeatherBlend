@@ -1,15 +1,18 @@
 name: predict
 
-# Manual-dispatch only. The scheduled predict cycle now runs as part of the
-# combined `predict-and-render.yml` workflow every 2 hours — running predict
-# on its own cron would double the work. This file is preserved for one-off
-# manual reruns (e.g. retroactive --for-date fills, or re-running predict
-# after a model artefact bump without immediately re-rendering the site).
+# Manual-dispatch only. The scheduled predict cycle runs as part of the
+# combined `predict-and-render.yml` workflow; running predict on its own
+# cron would double the work. This file is preserved for one-off manual
+# reruns (e.g. retroactive --for-date fills, or re-running predict after a
+# model artefact bump without immediately re-rendering the site).
 #
-# Note: this workflow no longer triggers `render-site` on completion (the
+# Note: this workflow no longer triggers `render-site` on completion — the
 # auto-trigger was scoped to predict's old scheduled cadence and is now
-# owned by predict-and-render). If you want the manual run to also refresh
+# owned by predict-and-render. If you want the manual run to also refresh
 # the site, dispatch render-site manually after this finishes.
+#
+# All predict targets + their order + their soft-skip codes live in
+# `.github/actions/predict-all`, shared verbatim with predict-and-render.
 on:
   workflow_dispatch:
     inputs:
@@ -34,142 +37,35 @@ jobs:
           dotnet-version: "10.0.x"
           dotnet-quality: preview
 
-      - name: Install rclone
-        run: |
-          curl -fsSL https://rclone.org/install.sh | sudo bash
-          rclone version
-
-      - name: Configure rclone for R2
-        env:
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-        run: |
-          mkdir -p ~/.config/rclone
-          cat > ~/.config/rclone/rclone.conf <<EOF
-          [r2]
-          type = s3
-          provider = Cloudflare
-          access_key_id = ${R2_ACCESS_KEY_ID}
-          secret_access_key = ${R2_SECRET_ACCESS_KEY}
-          endpoint = ${R2_ENDPOINT}
-          acl = private
-          EOF
-
-      - name: Pull model artefacts, forecasts + existing predictions from R2
-        env:
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-        run: |
-          # Blender artefacts — predict can't run without the per-lead zips + MANIFEST.
-          mkdir -p data/models
-          rclone copy "r2:${R2_BUCKET}/data/models" ./data/models --fast-list --transfers 16 --checkers 32 --progress
-
-          # Forecasts — produced by the `collect` workflow on its own cron (:15),
-          # consumed here 30 min later. Concurrency group `weatherblend-data` guarantees
-          # predict queues behind any still-running collect, so the pull sees the pushed
-          # state. We no longer re-run collect inside this workflow.
-          mkdir -p data/forecasts
-          rclone copy "r2:${R2_BUCKET}/data/forecasts" ./data/forecasts --fast-list --transfers 16 --checkers 32 --progress
-
-          # Existing predictions for today's partition (read-modify-write dedupe
-          # on TempPredictCommand side needs the current file if it exists). Pulling
-          # only the predictions subtree keeps the copy small.
-          mkdir -p data/predictions
-          rclone copy "r2:${R2_BUCKET}/data/predictions" ./data/predictions --fast-list --transfers 16 --checkers 32 --progress
-
-          # EA rainfall truth: Phase 3c precip predict reads the hourly observation
-          # series to compute persistence features anchored at run_time = valid - lead.
-          # Missing tree → DuckDB "No files found" crash, so this is required even
-          # though predict never writes to it.
-          mkdir -p data/truth/rainfall
-          rclone copy "r2:${R2_BUCKET}/data/truth/rainfall" ./data/truth/rainfall --fast-list --transfers 16 --checkers 32 --progress
+      # All R2 trees the predict targets read come via the shared composite
+      # — same list predict-and-render uses, no risk of drift. The composite
+      # also installs + configures rclone so a subsequent push back to R2
+      # works without re-setting credentials.
+      - uses: ./.github/actions/sync-render-inputs
+        with:
+          bucket: ${{ secrets.R2_BUCKET }}
+          access_key_id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          secret_access_key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          endpoint: ${{ secrets.R2_ENDPOINT }}
 
       - name: Build
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
 
-      - name: Predict temperature
-        run: |
-          FOR_DATE="${{ github.event.inputs.for_date }}"
-          if [ -n "$FOR_DATE" ]; then
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature --for-date "$FOR_DATE"
-          else
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature
-          fi
-
-      - name: Predict precipitation
-        # Runs per-station P(wet) for every station in the precipitation manifest.
-        # Skipped gracefully (exit 2) when no precipitation blender is present yet —
-        # e.g. on a fresh deployment before the first phase 3a train.
-        run: |
-          FOR_DATE="${{ github.event.inputs.for_date }}"
-          if [ -n "$FOR_DATE" ]; then
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target precipitation --truth-station all --for-date "$FOR_DATE" || code=$?
-          else
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target precipitation --truth-station all || code=$?
-          fi
-          # Exit 2 = no precip model yet; exit 3 = no forecast rows for targets.
-          # Neither is fatal for the overall predict job.
-          if [ -n "${code:-}" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then exit "$code"; fi
-
-      - name: Predict dry-window
-        # Runs P(∃ dry window ≥ N hours in target day) for every (station, window)
-        # in the dry_window manifest (3/4/6h × 24/48/72h leads × Bellever + Princetown).
-        # Same exit-code semantics as precipitation: 2 = no dry-window model yet,
-        # 3 = no forecast rows for targets — both non-fatal for the overall predict job.
-        run: |
-          FOR_DATE="${{ github.event.inputs.for_date }}"
-          if [ -n "$FOR_DATE" ]; then
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target dry-window --truth-station all --window all --for-date "$FOR_DATE" || code=$?
-          else
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target dry-window --truth-station all --window all || code=$?
-          fi
-          if [ -n "${code:-}" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then exit "$code"; fi
-
-      - name: Predict element blenders (wind / humidity / shortwave-radiation / cloud-cover)
-        # Per-element lean blenders. Same exit-code semantics as precipitation/dry-window:
-        # 2 = no blender for that target yet; 3 = no live forecast rows. Neither fatal.
-        # Radiation predict is currently expected to return 3 (live forecasts don't include
-        # SW columns; tracked as a known live-collector gap, see Element comparison report).
-        # Humidity + cloud may return partial coverage at 48/72h when MétéoFrance is missing.
-        run: |
-          FOR_DATE="${{ github.event.inputs.for_date }}"
-          for tgt in wind humidity shortwave-radiation cloud-cover; do
-            code=0
-            if [ -n "$FOR_DATE" ]; then
-              dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target "$tgt" --for-date "$FOR_DATE" || code=$?
-            else
-              dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target "$tgt" || code=$?
-            fi
-            if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ] && [ "$code" != "4" ]; then
-              echo "predict $tgt failed with exit $code"; exit "$code"
-            fi
-          done
-
-      - name: Predict feels-like (derived; reads temperature + element predictions for the same anchor)
-        # Joins the temperature lean blender + the four element blender outputs
-        # written by the steps above and runs deterministic Bröde 2012 (UTCI) +
-        # Steadman 1994 (apparent temperature) calculations into one parquet.
-        # Must run AFTER the others — it's a join, not an independent predict.
-        # Exit 3 = at least one input is missing for the anchor (e.g. radiation
-        # currently absent from the live forecast tree); non-fatal.
-        run: |
-          FOR_DATE="${{ github.event.inputs.for_date }}"
-          code=0
-          if [ -n "$FOR_DATE" ]; then
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target feels-like --for-date "$FOR_DATE" || code=$?
-          else
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target feels-like || code=$?
-          fi
-          if [ "$code" != "0" ] && [ "$code" != "3" ]; then
-            echo "predict feels-like failed with exit $code"; exit "$code"
-          fi
+      # Every predict target in dependency order — temp / precip / dry-window /
+      # elements / feels-like / start-hour. Soft-skip codes per target are
+      # documented in the composite. Was previously inlined here in 6+ duplicated
+      # steps that drifted (start-hour was missing) — now shared with the
+      # scheduled predict-and-render workflow.
+      - uses: ./.github/actions/predict-all
+        with:
+          for_date: ${{ github.event.inputs.for_date }}
 
       - name: Push predictions to R2
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        # copy (not sync) — additive only, never deletes remote files. Forecasts
+        # are no longer modified here (the collect workflow owns that subtree).
         run: |
-          # copy (not sync) — additive only, never deletes remote files. Forecasts
-          # are no longer modified here (the collect workflow owns that subtree).
           rclone copy ./data/predictions "r2:${R2_BUCKET}/data/predictions" --fast-list --transfers 16 --checkers 32 --progress
 
       - name: Upload logs as artifact
