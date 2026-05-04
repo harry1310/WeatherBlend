@@ -5,7 +5,6 @@ public sealed class AppConfig
     public LocationConfig Location { get; set; } = new();
     public List<ModelConfig> Models { get; set; } = new();
     public VariablesConfig Variables { get; set; } = new();
-    public List<int> LeadHours { get; set; } = new();
     public int ForecastDays { get; set; } = 7;
     public StorageConfig Storage { get; set; } = new();
     public HttpConfig Http { get; set; } = new();

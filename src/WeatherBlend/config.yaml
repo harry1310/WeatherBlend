@@ -128,10 +128,6 @@ variables:
     - direct_radiation
     - diffuse_radiation
 
-# Lead times (hours ahead) we care about for evaluation.
-# Collection pulls the full forecast; these are the horizons we train & score on.
-leadHours: [1, 3, 6, 12, 24, 36, 48, 72, 96, 120, 144, 168]
-
 # How far ahead to pull each run.
 forecastDays: 7
 
