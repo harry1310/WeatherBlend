@@ -35,14 +35,18 @@ on:
         default: "0,6,12,18"
 
 concurrency:
-  # Per-source group — long multi-month backfills shouldn't block the
-  # 3-hourly collect or the daily predict/verify (those share
-  # `weatherblend-data`), and the three streams can run in parallel since
-  # they write to disjoint R2 prefixes (`model=gfs_ncep` /
-  # `model=ecmwf_ifs_oper` / `model=ecmwf_aifs_oper`). Within a single
-  # stream chunks still queue so we never have two `rclone copy` jobs
-  # racing the same prefix.
-  group: archive-backfill-${{ inputs.source }}
+  # Per-(source, start-date) so every chunk is its own group → all chunks
+  # run in parallel without queueing.
+  #
+  # Why we don't queue per-source: GitHub's concurrency model only keeps
+  # ONE pending + ONE running per group; any third dispatch (or beyond)
+  # gets silently cancelled. Mass-dispatching 9 chunks in a per-source
+  # group meant chunks 2-8 vanished. Each chunk writes to disjoint
+  # R2 date partitions so parallel rclone copies are safe.
+  #
+  # Backfills are still off the shared `weatherblend-data` group so
+  # they don't block the 3-hourly collect or daily predict/verify.
+  group: archive-backfill-${{ inputs.source }}-${{ inputs.start }}
   cancel-in-progress: false
 
 jobs:

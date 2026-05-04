@@ -36,12 +36,12 @@ on:
         default: ""
 
 concurrency:
-  # Per-source group so UKV and Global can run in parallel — they write to
-  # disjoint R2 prefixes (`model=met_office_ukv` vs `model=met_office_global`).
-  # Within a stream chunks still queue so two `rclone copy` jobs don't race
-  # the same prefix. Separate from `archive-backfill-${source}` so the
-  # Met Office runs and the GFS/ECMWF runs don't block each other either.
-  group: metoffice-archive-backfill-${{ inputs.source }}
+  # Per-(source, start-date) so every chunk is its own group — see the
+  # archive-backfill.yml comment for the gory details. tl;dr: GitHub
+  # silently cancels everything beyond the first pending in a group, so
+  # batch dispatches need each chunk to be its own group. Disjoint date
+  # partitions make parallel rclone copies safe.
+  group: metoffice-archive-backfill-${{ inputs.source }}-${{ inputs.start }}
   cancel-in-progress: false
 
 jobs:
