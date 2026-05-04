@@ -117,16 +117,36 @@ public sealed class EcmwfClient
         LocationConfig loc, DateOnly date, int cycleHour, string stream, string modelId,
         int lead, DateTime runTime, string scratchDir, CancellationToken ct)
     {
-        // Path: {date}/{HH}z/{ifs|aifs}/0p25/oper/{date}{HH}0000-{lead}h-oper-fc.{grib2|index}
+        // Path: {date}/{HH}z/{streamSubpath}/0p25/oper/{date}{HH}0000-{lead}h-oper-fc.{grib2|index}
+        // ECMWF renamed AIFS's S3 subdir from `aifs/` → `aifs-single/` between
+        // 2025-02-01 and 2025-03-01. Try the modern path first (covers most of
+        // the live archive) and fall back to legacy on 404 so a long backfill
+        // crossing the cutover works without per-date dispatch.
         var dateStr = date.ToString("yyyyMMdd");
         var stem = $"{dateStr}{cycleHour:00}0000-{lead}h-oper-fc";
-        var baseUrl = $"{BaseUrl}/{dateStr}/{cycleHour:00}z/{stream}/0p25/oper/{stem}";
 
-        // 1) Fetch JSON-Lines .index. Each line is one message with _offset
-        //    and _length giving exact byte ranges — much cleaner than GFS's
-        //    "diff consecutive offsets" trick. ECMWF's _length is canonical.
-        var indexEntries = await FetchIndexAsync(baseUrl + ".index", ct);
-        if (indexEntries.Count == 0) return null;
+        var subpathCandidates = stream == Streams.AifsOper
+            ? new[] { "aifs-single", "aifs" }
+            : new[] { stream };
+
+        List<IndexEntry>? indexEntries = null;
+        string? baseUrl = null;
+        foreach (var subpath in subpathCandidates)
+        {
+            baseUrl = $"{BaseUrl}/{dateStr}/{cycleHour:00}z/{subpath}/0p25/oper/{stem}";
+            try
+            {
+                indexEntries = await FetchIndexAsync(baseUrl + ".index", ct);
+                break;  // got it
+            }
+            catch (HttpRequestException e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                // Try next candidate (only relevant for AIFS straddling the
+                // 2025-02→03 rename); rethrow to caller after all exhausted.
+                if (subpath == subpathCandidates[^1]) throw;
+            }
+        }
+        if (indexEntries is null || indexEntries.Count == 0) return null;
 
         // 2) For each variable we want, find the FIRST matching index entry
         //    by exact param match. ECMWF param codes ARE unique per (param,
