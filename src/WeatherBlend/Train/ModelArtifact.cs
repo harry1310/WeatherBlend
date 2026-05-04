@@ -848,12 +848,30 @@ public static class ModelArtifact
         return Path.Combine(stationDir, entry.Current);
     }
 
-    /// <summary>Stations currently recorded in the manifest for this target. Empty when the manifest is absent or flat-layout.</summary>
+    /// <summary>
+    /// Stations currently ACTIVE in the manifest for this target — i.e. those
+    /// with a non-empty <c>Current</c> pointer. Stations with empty
+    /// <c>Current</c> (demoted-to-archive entries kept around so their
+    /// historical parquets remain readable) are silently filtered out.
+    /// Returns empty when the manifest is absent or flat-layout.
+    ///
+    /// Was previously "every key in manifest.Stations" — that broke
+    /// PrecipPredictCommand on 2026-05-04 when the Princetown→Bovey swap
+    /// left a Princetown entry with <c>Current=""</c>: predict iterated all
+    /// stations, then ResolveStationVersionDir threw "no current pointer
+    /// for station 'ea_princetown'". Filter at the source so every caller
+    /// (predict / verify / ablate) gets the demoted-archive semantics
+    /// without each having to re-encode the rule.
+    /// </summary>
     public static IReadOnlyList<string> ListStations(string modelsRoot, string target)
     {
         var manifest = ReadJson<Manifest>(Path.Combine(modelsRoot, target, ManifestFileName));
         if (manifest is null) return Array.Empty<string>();
-        return manifest.Stations.Keys.OrderBy(s => s, StringComparer.Ordinal).ToArray();
+        return manifest.Stations
+            .Where(kv => !string.IsNullOrWhiteSpace(kv.Value.Current))
+            .Select(kv => kv.Key)
+            .OrderBy(s => s, StringComparer.Ordinal)
+            .ToArray();
     }
 
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
