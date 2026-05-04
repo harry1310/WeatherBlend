@@ -18,7 +18,7 @@ public static partial class SitePages
         content.Append("""
             <section>
               <hgroup>
-                <h2>Temperature skill</h2>
+                <h2>Skill — temperature</h2>
                 <p>Eyeball comparison first — each active blender's temperature trajectory plotted against
                    ERA5 reanalysis (training truth) plus two surface cross-checks: METAR at Exeter Airport
                    (~30 km E, 31 m elevation) and Met Office DataHub obs near Taw Green on the NE flank
@@ -28,6 +28,7 @@ public static partial class SitePages
               </hgroup>
             """);
 
+        content.Append(RenderSkillSubNav("temp"));
         content.Append("<h3>Vs truth</h3>");
         content.Append(RenderTempVsTruthBlock(input));
 
@@ -35,7 +36,66 @@ public static partial class SitePages
         content.Append(RenderRollingMaeBlock(input));
 
         content.Append("</section>");
-        return WrapPage(input, "Temperature skill", "skill-temperature", content.ToString());
+        return WrapPage(input, "Skill — temperature", "skill", content.ToString());
+    }
+
+    /// <summary>
+    /// Per-target sub-nav for the Skill pages. Same shape as
+    /// <see cref="RenderModelsSubNav"/>: three pill links sitting under the
+    /// page heading. The active variant is plain (not a link) so the eye lands
+    /// on it.
+    /// </summary>
+    private static string RenderSkillSubNav(string activeSlug)
+    {
+        var entries = new (string Slug, string File, string Label)[]
+        {
+            ("temp",       "skill-temperature.html", "Temperature"),
+            ("rain",       "skill-rainfall.html",    "Rain"),
+            ("dry-window", "skill-dry-window.html",  "Dry window"),
+        };
+        var s = new StringBuilder();
+        s.Append("<nav class=\"lead-nav\"><ul>");
+        foreach (var (slug, file, label) in entries)
+        {
+            var cls = slug == activeSlug ? " class=\"active\"" : "";
+            s.Append(Ci, $"<li><a href=\"{file}\"{cls}>{Escape(label)}</a></li>");
+        }
+        s.Append("</ul></nav>");
+        return s.ToString();
+    }
+
+    /// <summary>
+    /// Skill — Dry window. Per-station predicted-vs-observed tables for the
+    /// dry-window blenders (3b champion + 3g challenger). Was previously the
+    /// last section of the Rain skill page; lifted to its own page in the
+    /// 2026-05-04 site rework so each variable's skill content has a focused
+    /// home. Uses the same per-station sub-nav (station list union of precip
+    /// + dry-window stations, filtered to active) as Rain skill.
+    /// </summary>
+    public static string RenderDryWindowSkill(SiteInputs input, string? stationSlug = null)
+    {
+        var stations = GetRainSkillStations(input);
+        var currentStation = ResolveStationFromSlug(stations, stationSlug);
+
+        var content = new StringBuilder();
+        content.Append("""
+            <section>
+              <hgroup>
+                <h2>Skill — dry window</h2>
+                <p>One row per target UTC day × window length. Both prediction and observed verdict
+                   are scoped to the 09–18 local-time daytime window (Europe/London, DST-aware).
+                   The "observed" column is blank for dates beyond the last full rainfall day.</p>
+              </hgroup>
+            """);
+
+        content.Append(RenderSkillSubNav("dry-window"));
+        if (currentStation is not null)
+            content.Append(RenderStationSubNav("skill-dry-window", stations, currentStation));
+
+        content.Append(RenderDryWindowVsTruthTable(input, currentStation));
+
+        content.Append("</section>");
+        return WrapPage(input, "Skill — dry window", "skill", content.ToString());
     }
 
     /// <summary>
@@ -58,13 +118,15 @@ public static partial class SitePages
         content.Append("""
             <section>
               <hgroup>
-                <h2>Rainfall skill</h2>
+                <h2>Skill — rain</h2>
                 <p>Eyeball first: P(wet) trajectories against a 0/1 wet-hour indicator from the same
-                   ≥ 0.1 mm threshold the blender was trained on. Dry-window predicted vs observed verdict
-                   follows. Stations sit on separate EA gauges, so flip between them via the sub-nav.</p>
+                   ≥ 0.1 mm threshold the blender was trained on, then rolling Brier per phase.
+                   Stations sit on separate EA gauges, so flip between them via the per-station sub-nav.
+                   The dry-window predicted-vs-observed table moved to its own page (Skill → Dry window).</p>
               </hgroup>
             """);
 
+        content.Append(RenderSkillSubNav("rain"));
         if (currentStation is not null)
             content.Append(RenderStationSubNav("skill-rainfall", stations, currentStation));
 
@@ -74,16 +136,8 @@ public static partial class SitePages
         content.Append("<hr/><h3>Rolling Brier (P(wet))</h3>");
         content.Append(RenderRollingBrierBlock(input, currentStation));
 
-        content.Append("<hr/><h3>Dry window — predicted vs observed</h3>");
-        content.Append(Ci, $"""
-            <p class="skill-line">One row per target UTC day × window length. Both prediction and observed verdict are scoped
-               to the 09–18 local-time daytime window (Europe/London, DST-aware). The "observed" column is blank for dates
-               beyond the last full rainfall day.</p>
-            """);
-        content.Append(RenderDryWindowVsTruthTable(input, currentStation));
-
         content.Append("</section>");
-        return WrapPage(input, "Rainfall skill", "skill-rainfall", content.ToString());
+        return WrapPage(input, "Skill — rain", "skill", content.ToString());
     }
 
     /// <summary>

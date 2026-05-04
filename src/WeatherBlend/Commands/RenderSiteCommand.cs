@@ -241,6 +241,18 @@ public sealed class RenderSiteCommand
                 SitePages.RenderRainSkill(input, slug), ct);
         }
 
+        // Dry-window skill — split out from rain-skill on 2026-05-04 so each
+        // variable's skill content has its own page. Per-station like rain.
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "skill-dry-window.html"),
+            SitePages.RenderDryWindowSkill(input, null), ct);
+        for (int i = 1; i < rainStations.Count; i++)
+        {
+            var slug = SitePages.StationSlug(rainStations[i]);
+            await File.WriteAllTextAsync(
+                Path.Combine(outputDir, $"skill-dry-window-{slug}.html"),
+                SitePages.RenderDryWindowSkill(input, slug), ct);
+        }
+
         // Dry-window page is per-station too. Same active-station filter as
         // rain-skill — a station that was demoted from config (Princetown
         // post 2026-05-04) shouldn't render just because its historical
@@ -262,9 +274,12 @@ public sealed class RenderSiteCommand
         }
 
         // index + per-lead forecasts + models × 3 + about + styles + chart.js
-        // + skill-temperature + skill-rainfall × stations + dry-window × stations.
+        // + skill-temperature + skill-rainfall × stations
+        // + skill-dry-window × stations + dry-window × stations.
         var totalFiles = 8 + Leads.Full.Length
-            + Math.Max(1, rainStations.Count) + Math.Max(1, dryStations.Count);
+            + Math.Max(1, rainStations.Count)        // skill-rainfall variants
+            + Math.Max(1, rainStations.Count)        // skill-dry-window variants
+            + Math.Max(1, dryStations.Count);        // dry-window forecast variants
         _log.LogInformation("Site rendered → {Dir} ({Files} files)", outputDir, totalFiles);
         return 0;
     }

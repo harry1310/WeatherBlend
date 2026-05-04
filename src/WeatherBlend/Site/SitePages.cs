@@ -699,8 +699,7 @@ public static partial class SitePages
                       <li><a href="index.html"{{NavActive(pageId, "index")}}>Home</a></li>
                       <li><a href="forecasts-24h.html"{{NavActive(pageId, "forecasts")}}>Forecasts</a></li>
                       <li><a href="dry-window.html"{{NavActive(pageId, "dry-window")}}>Dry window</a></li>
-                      <li><a href="skill-temperature.html"{{NavActive(pageId, "skill-temperature")}}>Temp skill</a></li>
-                      <li><a href="skill-rainfall.html"{{NavActive(pageId, "skill-rainfall")}}>Rain skill</a></li>
+                      <li><a href="skill-temperature.html"{{NavActive(pageId, "skill")}}>Skill</a></li>
                       <li><a href="models-temp.html"{{NavActive(pageId, "models")}}>Models</a></li>
                       <li><a href="about.html"{{NavActive(pageId, "about")}}>About</a></li>
                     </ul>
