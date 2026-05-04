@@ -47,4 +47,16 @@ public sealed class ForecastRow
     public double? ShortwaveRadiation { get; init; }
     public double? DirectRadiation { get; init; }
     public double? DiffuseRadiation { get; init; }
+
+    /// <summary>
+    /// Modelled cloud base height in metres above ground at the forecast point.
+    /// Currently populated from the GFS S3 backfill (<c>HGT:cloud ceiling</c>);
+    /// nullable for back-compat with NWP rows that don't expose it. Compared
+    /// against the location's elevation to derive the "is the tor in cloud?"
+    /// signal directly, replacing the Espy (T-Td) proxy where available.
+    /// Sentinels at very large values (NCEP often emits ~20000m for "no cloud
+    /// detected") are stored as-is — callers should treat values above the
+    /// model top as "no cloud base" rather than literally that height.
+    /// </summary>
+    public double? CloudBaseHeightM { get; init; }
 }

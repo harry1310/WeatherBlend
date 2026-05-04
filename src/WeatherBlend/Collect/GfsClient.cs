@@ -38,6 +38,31 @@ public sealed class GfsClient
         new VarMap("PRES:surface",           (r, v) => r.SurfacePressure = v / 100.0),  // Pa→hPa
         new VarMap("TCDC:entire atmosphere", (r, v) => r.CloudCover = v),
         new VarMap("CAPE:surface",           (r, v) => r.Cape = v),
+        // ── Added 2026-05-04: variables that unlock new training surfaces ──
+        // VIS at surface in metres — direct mist/fog signal, replaces the
+        // Espy proxy in the home-page low-cloud badge once GFS rows exist
+        // alongside Open-Meteo's gfs_seamless rows.
+        new VarMap("VIS:surface",            (r, v) => r.Visibility = v),
+        // APCP is published as accumulations. The .idx orders the incremental
+        // (`(L-N)-L hour acc`) before the cumulative (`0-L hour acc`), so the
+        // substring matcher picks the incremental — typically 1h for f001-f005,
+        // 6h for f006-f120 in steps of 6, etc. Stored in mm (kg/m² ≡ mm at
+        // standard density). Downstream consumers needing per-hour rates can
+        // diff successive cumulative leads or divide by the interval.
+        new VarMap("APCP:surface:",          (r, v) => r.Precipitation = v),
+        // GFS cloud-ceiling height (m AGL) — the gold-standard "is the tor in
+        // cloud?" signal. NCEP emits ~20000m as a sentinel when no cloud base
+        // is detected; callers should treat values above the model top as
+        // "no cloud base" not "cloud at 20km".
+        new VarMap("HGT:cloud ceiling",      (r, v) => r.CloudBaseHeightM = v),
+        // Boundary-layer cloud cover (% over the prior averaging window) — a
+        // closer proxy for "low cloud at tor height" than total TCDC. Mapped
+        // to CloudCoverLow on ForecastRow so downstream queries that already
+        // read that column work unchanged on GFS rows.
+        new VarMap("TCDC:boundary layer cloud layer", (r, v) => r.CloudCoverLow = v),
+        // Downward shortwave radiation at surface in W/m² (averaged over the
+        // prior interval). Feeds the radiation element blender.
+        new VarMap("DSWRF:surface",          (r, v) => r.ShortwaveRadiation = v),
     };
 
     private readonly HttpClient _http;
@@ -167,7 +192,12 @@ public sealed class GfsClient
                 WindGusts10m = raw.WindGusts10m,
                 SurfacePressure = raw.SurfacePressure,
                 CloudCover = raw.CloudCover,
+                CloudCoverLow = raw.CloudCoverLow,
                 Cape = raw.Cape,
+                Visibility = raw.Visibility,
+                Precipitation = raw.Precipitation,
+                CloudBaseHeightM = raw.CloudBaseHeightM,
+                ShortwaveRadiation = raw.ShortwaveRadiation,
             };
         }
         finally
@@ -213,6 +243,11 @@ public sealed class GfsClient
         public double? WindGusts10m { get; set; }
         public double? SurfacePressure { get; set; }
         public double? CloudCover { get; set; }
+        public double? CloudCoverLow { get; set; }
         public double? Cape { get; set; }
+        public double? Visibility { get; set; }
+        public double? Precipitation { get; set; }
+        public double? CloudBaseHeightM { get; set; }
+        public double? ShortwaveRadiation { get; set; }
     }
 }
