@@ -49,15 +49,13 @@ public sealed class EcmwfBackfillCommand
             return 2;
         }
         cycles ??= EcmwfClient.CycleHours;
-        // Capture-everything default — see GfsBackfillCommand for rationale.
-        // Both IFS oper (3h step to 144, 6h step to 240) and AIFS oper
-        // (6h step to 360) align cleanly to a 6h grid, so the same set
-        // works for both streams. AIFS publishes leads beyond 240 but
-        // we cap there for parity with IFS — re-fetch the long-range AIFS
-        // tail later if needed, the rows are additive.
+        // Capture set capped at 120h (5 days) — see GfsBackfillCommand for
+        // rationale. Both IFS oper (3h step to 144, 6h step to 240) and AIFS
+        // oper (6h step to 360) align cleanly to a 6h grid, so the same set
+        // works for both streams.
         var leadHours = new[]
         {
-            6, 12, 24, 36, 48, 72, 96, 120, 144, 168, 192, 216, 240,
+            6, 12, 24, 36, 48, 72, 96, 120,
         };
 
         var scratchDir = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "tmp", $"ecmwf_{stream}");
