@@ -194,6 +194,7 @@ public sealed class RenderSiteCommand
             PrecipPredictions = precip,
             DryWindowPredictions = dryWindow,
             DryWindowConformalTau = dryWindowConformalTau,
+            DryWindowDaytime = _cfg.DryWindow.BuildDaytimeWindow(),
             PhaseByVersion = phaseByVersion,
             RainfallTruth = rainfall,
             CurrentVersion = currentVersion,

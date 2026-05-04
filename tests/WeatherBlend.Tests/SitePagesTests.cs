@@ -1,6 +1,7 @@
 using FluentAssertions;
 using WeatherBlend.Models;
 using WeatherBlend.Site;
+using WeatherBlend.Train.DryWindow;
 using Xunit;
 
 namespace WeatherBlend.Tests;
@@ -9,6 +10,10 @@ public class SitePagesTests
 {
     private const string Station = "ea_bellever_dartmoor";
     private static readonly DateTime Day = new(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);
+    // 09–18 Europe/London — same default the production renderer uses
+    // (see DryWindowConfig.AllowedWindow). Tests reach for it via
+    // UtcHourRangeFor when they want to be DST-correct.
+    private static readonly DaytimeWindow StandardDaytime = new(9, 18, "Europe/London");
 
     [Fact]
     public void ComputeObservedDryWindows_flags_day_with_long_enough_run_as_dry()
@@ -35,28 +40,47 @@ public class SitePagesTests
     }
 
     [Fact]
-    public void ComputeObservedDryWindows_treats_exactly_0_1_mm_as_dry()
+    public void ComputeObservedDryWindows_treats_exactly_0_1_mm_as_wet()
     {
-        // Boundary: the classifier uses ≤ 0.1 mm/h as "dry".
+        // Boundary: shares DryWindowLabelBuilder.HasDryWindow, which uses
+        // strict less-than (< 0.1 mm/h is dry). 0.1 itself is wet — so this
+        // 3-hour run of 0.1 mm doesn't satisfy the 3h dry-window.
         var hourly = BuildHourly(Day, h => h >= 10 && h <= 12 ? 0.1 : 5.0);
         var input = MakeInput(hourly, windowHours: 3);
 
         var result = SitePages.ComputeObservedDryWindows(input);
 
-        result[(Station, 3, Day)].Should().BeTrue();
+        result[(Station, 3, Day)].Should().BeFalse();
     }
 
     [Fact]
-    public void ComputeObservedDryWindows_skips_day_with_missing_hour()
+    public void ComputeObservedDryWindows_skips_day_with_missing_daytime_hour()
     {
-        // Drop hour 5 entirely — need full 24-hour coverage for a verdict.
+        // Drop hour 12 (inside the daytime window) — need every hour inside
+        // the daytime range populated for a verdict. Hours outside the range
+        // (e.g. 03Z) can be missing without triggering the skip.
         var hourly = BuildHourly(Day, h => 0.0);
-        hourly.Remove(Day.AddHours(5));
+        hourly.Remove(Day.AddHours(12));
         var input = MakeInput(hourly, windowHours: 3);
 
         var result = SitePages.ComputeObservedDryWindows(input);
 
         result.Should().NotContainKey((Station, 3, Day));
+    }
+
+    [Fact]
+    public void ComputeObservedDryWindows_ignores_overnight_dry_run_outside_daytime()
+    {
+        // Whole daytime soaked, but the whole overnight is bone dry. The old
+        // 24h scan would have given a false ✓ here — the labeller-aligned
+        // scan correctly says "no dry block in the daytime window".
+        var (startUtc, endUtcExclusive) = StandardDaytime.UtcHourRangeFor(DateOnly.FromDateTime(Day));
+        var hourly = BuildHourly(Day, h => h >= startUtc && h < endUtcExclusive ? 5.0 : 0.0);
+        var input = MakeInput(hourly, windowHours: 6);
+
+        var result = SitePages.ComputeObservedDryWindows(input);
+
+        result[(Station, 6, Day)].Should().BeFalse();
     }
 
     [Fact]
@@ -1660,6 +1684,7 @@ public class SitePagesTests
                 new SitePages.DryWindowForecastPoint(Station, windowHours, "v1", Day, Day, 24, 0.5, 0.4, null),
             },
             RainfallTruth = rainfall,
+            DryWindowDaytime = StandardDaytime,
         };
     }
 }

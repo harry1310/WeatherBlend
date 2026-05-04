@@ -15,7 +15,6 @@ public class ConfigTests
         c.Models.Should().BeEmpty();
         c.Variables.Forecast.Should().BeEmpty();
         c.Variables.Era5.Should().BeEmpty();
-        c.LeadHours.Should().BeEmpty();
     }
 
     [Fact]

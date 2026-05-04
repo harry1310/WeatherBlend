@@ -1,6 +1,7 @@
 using System.Text;
 using WeatherBlend.Models;
 using WeatherBlend.Train.Common;
+using WeatherBlend.Train.DryWindow;
 
 namespace WeatherBlend.Site;
 
@@ -807,10 +808,14 @@ public static partial class SitePages
     }
 
     /// <summary>
-    /// For every (station, window, target-date) triple referenced by a prediction, walk
-    /// that day's hourly rainfall and check whether at least <c>window</c> consecutive
-    /// hours are ≤ 0.1 mm within the UTC day. Returns no entry for days with incomplete
-    /// 24-hour coverage.
+    /// For every (station, window, target-date) triple referenced by a prediction,
+    /// delegate to <see cref="DryWindowLabelBuilder.HasDryWindow"/> using the same
+    /// daytime window the trainer's labels use (<see cref="SiteInputs.DryWindowDaytime"/>).
+    /// Days lacking a truth reading at any hour inside the daytime range are skipped
+    /// — they'd be dropped by the labeller too. Sharing the labeller's logic means
+    /// the "Observed" column can never disagree with the truth the model was scored
+    /// against (the 2026-05-04 bug had it scanning the full UTC day with the wrong
+    /// threshold, so wet daytimes with dry overnights got false ✓ ticks).
     /// </summary>
     internal static IReadOnlyDictionary<(string Station, int WindowHours, DateTime TargetDate), bool>
         ComputeObservedDryWindows(SiteInputs input)
@@ -825,24 +830,20 @@ public static partial class SitePages
             if (!input.RainfallTruth.TryGetValue(station, out var hourly) || hourly.Count == 0)
                 continue;
 
+            var (startHour, endHour) = input.DryWindowDaytime.UtcHourRangeFor(DateOnly.FromDateTime(date));
+            if (startHour >= endHour) continue;
+
             var hours = new double?[24];
             bool complete = true;
-            for (int h = 0; h < 24; h++)
+            for (int h = startHour; h < endHour; h++)
             {
-                var ts = date.AddHours(h);
-                if (hourly.TryGetValue(ts, out var mm)) hours[h] = mm;
+                if (hourly.TryGetValue(date.AddHours(h), out var mm)) hours[h] = mm;
                 else { complete = false; break; }
             }
             if (!complete) continue;
 
-            int run = 0;
-            bool found = false;
-            for (int h = 0; h < 24; h++)
-            {
-                if ((hours[h] ?? double.NaN) <= 0.1) { run++; if (run >= window) { found = true; break; } }
-                else run = 0;
-            }
-            result[(station, window, date)] = found;
+            result[(station, window, date)] =
+                DryWindowLabelBuilder.HasDryWindow(hours, window, startHour, endHour);
         }
         return result;
     }

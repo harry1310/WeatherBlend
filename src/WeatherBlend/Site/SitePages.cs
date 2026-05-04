@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using WeatherBlend.Models;
+using WeatherBlend.Train.DryWindow;
 
 namespace WeatherBlend.Site;
 
@@ -153,6 +154,17 @@ public static partial class SitePages
         /// </summary>
         public IReadOnlyDictionary<(string Version, int LeadHours), double> DryWindowConformalTau { get; init; }
             = new Dictionary<(string, int), double>();
+
+        /// <summary>
+        /// Same daytime window the dry-window labeller uses (default 09–18
+        /// Europe/London). Surfaced here so the verify table's "Observed"
+        /// column scans the same hours as the trainer's truth labels — a
+        /// 24h scan would happily report "yes there was a 6h dry block"
+        /// for a day that rained continuously through the daytime but was
+        /// dry overnight (real bug we hit 2026-05-04). Defaults to the
+        /// full UTC day for tests / standalone renders that don't supply it.
+        /// </summary>
+        public DaytimeWindow DryWindowDaytime { get; init; } = DryWindowLabelBuilder.FullUtcDay;
 
         /// <summary>
         /// Per-hour low-cloud / mist signal aggregated across NWP forecasts.
