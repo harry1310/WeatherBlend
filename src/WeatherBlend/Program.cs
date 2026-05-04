@@ -240,34 +240,21 @@ public static class Program
             name: "--cycles",
             description: "Comma-separated cycle hours, e.g. 0,6,12,18 (default: all four)",
             getDefaultValue: () => "0,6,12,18");
-        // Empty default → fall back to config.LeadHours, else the per-command
-        // built-in default. Pass an explicit comma list to override (CI does
-        // this so each archive backfill pulls every native lead the source
-        // exposes, not just the live-collect set).
-        var gfsLeadsOpt = new Option<string>(
-            name: "--leads",
-            description: "Comma-separated lead hours (default: config.LeadHours)",
-            getDefaultValue: () => "");
         var gfsBackfill = new Command(
             "gfs-backfill",
             "Phase 3: fetch GFS cycles from NOAA S3 archive with exact run-times/lead-hours")
-            { gfsStartOpt, gfsEndOpt, gfsCyclesOpt, gfsLeadsOpt };
-        gfsBackfill.SetHandler(async (start, end, cyclesStr, leadsStr) =>
+            { gfsStartOpt, gfsEndOpt, gfsCyclesOpt };
+        gfsBackfill.SetHandler(async (start, end, cyclesStr) =>
         {
             var cycles = cyclesStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Select(s => int.Parse(s, System.Globalization.CultureInfo.InvariantCulture))
                 .ToArray();
-            var leads = string.IsNullOrWhiteSpace(leadsStr)
-                ? null
-                : leadsStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                    .Select(s => int.Parse(s, System.Globalization.CultureInfo.InvariantCulture))
-                    .ToArray();
             var cmd = host.Services.GetRequiredService<GfsBackfillCommand>();
-            await cmd.RunAsync(start, end, cycles, leads, CancellationToken.None);
-        }, gfsStartOpt, gfsEndOpt, gfsCyclesOpt, gfsLeadsOpt);
+            await cmd.RunAsync(start, end, cycles, CancellationToken.None);
+        }, gfsStartOpt, gfsEndOpt, gfsCyclesOpt);
         root.AddCommand(gfsBackfill);
 
-        // ECMWF backfill — IFS oper or AIFS oper. Reuses --start/--end/--cycles/--leads
+        // ECMWF backfill — IFS oper or AIFS oper. Reuses --start/--end/--cycles
         // from the GFS shape; adds --stream {ifs|aifs}.
         var ecmStreamOpt = new Option<string>(
             name: "--stream",
@@ -276,20 +263,15 @@ public static class Program
         var ecmwfBackfill = new Command(
             "ecmwf-backfill",
             "Fetch ECMWF IFS/AIFS oper cycles from AWS Open Data archive with exact run-times/lead-hours")
-            { ecmStreamOpt, gfsStartOpt, gfsEndOpt, gfsCyclesOpt, gfsLeadsOpt };
-        ecmwfBackfill.SetHandler(async (stream, start, end, cyclesStr, leadsStr) =>
+            { ecmStreamOpt, gfsStartOpt, gfsEndOpt, gfsCyclesOpt };
+        ecmwfBackfill.SetHandler(async (stream, start, end, cyclesStr) =>
         {
             var cycles = cyclesStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Select(s => int.Parse(s, System.Globalization.CultureInfo.InvariantCulture))
                 .ToArray();
-            var leads = string.IsNullOrWhiteSpace(leadsStr)
-                ? null
-                : leadsStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                    .Select(s => int.Parse(s, System.Globalization.CultureInfo.InvariantCulture))
-                    .ToArray();
             var cmd = host.Services.GetRequiredService<EcmwfBackfillCommand>();
-            await cmd.RunAsync(stream, start, end, cycles, leads, CancellationToken.None);
-        }, ecmStreamOpt, gfsStartOpt, gfsEndOpt, gfsCyclesOpt, gfsLeadsOpt);
+            await cmd.RunAsync(stream, start, end, cycles, CancellationToken.None);
+        }, ecmStreamOpt, gfsStartOpt, gfsEndOpt, gfsCyclesOpt);
         root.AddCommand(ecmwfBackfill);
 
         // The `met-office-archive-backfill` CLI command was removed 2026-04-29 along

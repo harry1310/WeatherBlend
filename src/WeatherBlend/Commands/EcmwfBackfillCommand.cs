@@ -41,7 +41,6 @@ public sealed class EcmwfBackfillCommand
         DateOnly start,
         DateOnly end,
         IReadOnlyList<int>? cycles,
-        IReadOnlyList<int>? leads,
         CancellationToken ct)
     {
         if (stream != EcmwfClient.Streams.IfsOper && stream != EcmwfClient.Streams.AifsOper)
@@ -50,11 +49,16 @@ public sealed class EcmwfBackfillCommand
             return 2;
         }
         cycles ??= EcmwfClient.CycleHours;
-        var leadHours = (leads is { Count: > 0 } l)
-            ? l
-            : (_cfg.LeadHours.Count > 0
-                ? _cfg.LeadHours
-                : new List<int> { 6, 12, 24, 36, 48, 72, 96, 120, 144 });
+        // Capture-everything default — see GfsBackfillCommand for rationale.
+        // Both IFS oper (3h step to 144, 6h step to 240) and AIFS oper
+        // (6h step to 360) align cleanly to a 6h grid, so the same set
+        // works for both streams. AIFS publishes leads beyond 240 but
+        // we cap there for parity with IFS — re-fetch the long-range AIFS
+        // tail later if needed, the rows are additive.
+        var leadHours = new[]
+        {
+            6, 12, 24, 36, 48, 72, 96, 120, 144, 168, 192, 216, 240,
+        };
 
         var scratchDir = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "tmp", $"ecmwf_{stream}");
         scratchDir = Path.GetFullPath(scratchDir);

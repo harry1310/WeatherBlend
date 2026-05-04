@@ -32,15 +32,21 @@ public sealed class GfsBackfillCommand
         DateOnly start,
         DateOnly end,
         IReadOnlyList<int>? cycles,
-        IReadOnlyList<int>? leads,
         CancellationToken ct)
     {
         cycles ??= GfsClient.CycleHours;
-        var leadHours = (leads is { Count: > 0 } l)
-            ? l
-            : (_cfg.LeadHours.Count > 0
-                ? _cfg.LeadHours
-                : new List<int> { 1, 3, 6, 12, 24, 36, 48, 72, 96, 120, 144, 168 });
+        // Archive backfill always pulls the full native useful set, not
+        // config.LeadHours (which controls the live-collect wire size).
+        // The point of this command is "capture everything — we'll filter
+        // when we train". Each row carries RunTime + ValidTime + Lead so
+        // any future lead-bucket choice is a query, not a re-fetch.
+        // GFS native cadence: 1h step to f120, 3h step to f240, 6h step to
+        // f384. We cap at f240 — beyond 10 days deterministic NWP skill is
+        // marginal for blender purposes; AIFS picks up the medium-range slot.
+        var leadHours = new[]
+        {
+            1, 3, 6, 12, 24, 36, 48, 72, 96, 120, 144, 168, 192, 216, 240,
+        };
 
         var scratchDir = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "tmp", "gfs");
         scratchDir = Path.GetFullPath(scratchDir);
