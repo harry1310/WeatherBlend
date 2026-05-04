@@ -24,6 +24,12 @@ public sealed class DryWindowTrainCommand
     private readonly ILogger<DryWindowTrainCommand> _log;
     private readonly AppConfig _cfg;
     private readonly ModelMetadataRepository _metadata;
+    // Auto-refit conformal calibrators after every promote-to-(champion|challenger).
+    // Without this hook a fresh version ships with no calibrator; live predict
+    // would degrade to the raw model probability and the dry-window page's
+    // confidence tags would default to "ambiguous" until the next manual
+    // `dry-window-conformal-fit` ran.
+    private readonly DryWindowConformalFitCommand _conformal;
 
     private static readonly int[] DefaultLeads = Leads.Short;
     private static readonly int[] DefaultWindows = { 3, 4, 6 };
@@ -33,11 +39,16 @@ public sealed class DryWindowTrainCommand
     // updated, leaving the dry-window family with 2 stations while precip
     // had 3. Reading from config eliminates that drift root cause.
 
-    public DryWindowTrainCommand(ILogger<DryWindowTrainCommand> log, AppConfig cfg, ModelMetadataRepository metadata)
+    public DryWindowTrainCommand(
+        ILogger<DryWindowTrainCommand> log,
+        AppConfig cfg,
+        ModelMetadataRepository metadata,
+        DryWindowConformalFitCommand conformal)
     {
         _log = log;
         _cfg = cfg;
         _metadata = metadata;
+        _conformal = conformal;
     }
 
     public Task<int> RunAsync(string stationArg, string windowArg, int[] leads, CancellationToken ct)
@@ -298,6 +309,10 @@ public sealed class DryWindowTrainCommand
                     ModelArtifact.PromoteStationVersionAsChampion(
                         modelsRoot, "dry_window", compositeKey, versionName,
                         newPhase: DryWindowFeatureBuilder.Phase3b);
+                    var (cf, cs) = await _conformal.FitOneAsync(
+                        compositeKey, versionName, DryWindowConformalFitCommand.DefaultAlpha, ct);
+                    _log.LogInformation("Auto-conformal: fitted {F} leads ({S} skipped) for {K}/{V}",
+                        cf, cs, compositeKey, versionName);
                 }
                 else
                 {
@@ -637,6 +652,15 @@ public sealed class DryWindowTrainCommand
                 modelsRoot, "dry_window", compositeKey4h, versionName,
                 newPhase: DryWindow3eFeatureBuilder.Phase3e);
 
+            // Auto-conformal for both legs of the cascade pair.
+            foreach (var key in new[] { compositeKey3h, compositeKey4h })
+            {
+                var (cf, cs) = await _conformal.FitOneAsync(
+                    key, versionName, DryWindowConformalFitCommand.DefaultAlpha, ct);
+                _log.LogInformation("Auto-conformal: fitted {F} leads ({S} skipped) for {K}/{V}",
+                    cf, cs, key, versionName);
+            }
+
             _log.LogInformation("Saved 3e artefacts → {D3h} + {D4h}", versionDir3h, versionDir4h);
         }
 
@@ -850,6 +874,11 @@ public sealed class DryWindowTrainCommand
                 ModelArtifact.PromoteStationVersionAsChallenger(
                     modelsRoot, "dry_window", compositeKey, versionName,
                     newPhase: DryWindow3gPredictor.Phase3g);
+
+                var (cf, cs) = await _conformal.FitOneAsync(
+                    compositeKey, versionName, DryWindowConformalFitCommand.DefaultAlpha, ct);
+                _log.LogInformation("Auto-conformal: fitted {F} leads ({S} skipped) for {K}/{V}",
+                    cf, cs, compositeKey, versionName);
 
                 _log.LogInformation("Saved 3g artefacts → {Dir}", versionDir);
             }

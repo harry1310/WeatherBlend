@@ -28,6 +28,12 @@ public sealed class TempTrainCommand
     private readonly AppConfig _cfg;
     private readonly DryWindowTrainCommand _dryWindow;
     private readonly ElementTrainCommand _element;
+    // Auto-refit conformal calibrators after every promote-to-(champion|challenger).
+    // Without this hook a fresh version ships with no calibrator; live predict
+    // would degrade to the raw model probability and the dry-window page's
+    // confidence tags would default to "ambiguous" until the next manual
+    // `precip-conformal-fit` / `dry-window-conformal-fit` ran.
+    private readonly PrecipConformalFitCommand _precipConformal;
 
     // Default leads for temperature + precipitation. Dry-window and Element
     // train commands keep their own narrower {24,48,72} arrays internally.
@@ -40,12 +46,14 @@ public sealed class TempTrainCommand
         ILogger<TempTrainCommand> log,
         AppConfig cfg,
         DryWindowTrainCommand dryWindow,
-        ElementTrainCommand element)
+        ElementTrainCommand element,
+        PrecipConformalFitCommand precipConformal)
     {
         _log = log;
         _cfg = cfg;
         _dryWindow = dryWindow;
         _element = element;
+        _precipConformal = precipConformal;
     }
 
     public async Task<int> RunAsync(string target, string lead, string? station, string? window, string featureSet, CancellationToken ct)
@@ -614,7 +622,10 @@ public sealed class TempTrainCommand
             string.Join("; ", perLead.Select(kv =>
                 $"lead {kv.Key}h: blend Brier {kv.Value.BlendTestMae:0.000} vs climatology Brier {kv.Value.BlendTestRmse:0.000}")));
 
-        await Task.CompletedTask;
+        var (cf, cs) = await _precipConformal.FitOneAsync(
+            stationSlug, versionName, PrecipConformalFitCommand.DefaultAlpha, ct);
+        _log.LogInformation("Auto-conformal: fitted {F} leads ({S} skipped) for {S2}/{V}",
+            cf, cs, stationSlug, versionName);
         return 0;
     }
 
@@ -814,7 +825,10 @@ public sealed class TempTrainCommand
             string.Join("; ", perLead.Select(kv =>
                 $"lead {kv.Key}h: blend Brier {kv.Value.BlendTestMae:0.000} vs climatology Brier {kv.Value.BlendTestRmse:0.000}")));
 
-        await Task.CompletedTask;
+        var (cf, cs) = await _precipConformal.FitOneAsync(
+            stationSlug, versionName, PrecipConformalFitCommand.DefaultAlpha, ct);
+        _log.LogInformation("Auto-conformal: fitted {F} leads ({S} skipped) for {S2}/{V}",
+            cf, cs, stationSlug, versionName);
         return 0;
     }
 
