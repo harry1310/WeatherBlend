@@ -1,0 +1,146 @@
+name: metoffice-archive-backfill
+
+# Manual-dispatch workflow for the Met Office UKV 2km / Global 10km archive
+# backfills from the AWS Open Data NetCDF bucket. Sister workflow to
+# `archive-backfill.yml` (GFS / ECMWF) — kept separate because the file format
+# is NetCDF/HDF5 (not GRIB2), which means Python + xarray + h5netcdf instead
+# of wgrib2. AWS publishes from 2024-05-04 onwards (~12 month rolling window
+# verified 2026-05-05).
+#
+# Use cases:
+#   * Sample run to confirm the NetCDF parser still works after recovery.
+#   * Full historical backfill (1 year). Chunked because of the 6h CI cap;
+#     ~17 vars × 10 leads × 2 cycles × ~120 days/chunk works comfortably
+#     under the cap in our testing.
+#
+# Bake-off (2026-04-28) rejected raw UKV/Global as blender inputs because of
+# uncorrected elevation bias at Bonehill (+1°C warm vs ERA5). They're captured
+# here for raw-model comparisons + as the input to a future elevation-corrected
+# variant — NOT wired into any blender training right now.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "Met Office dataset"
+        required: true
+        default: "ukv"
+        type: choice
+        options: [ukv, global]
+      start:
+        description: "Start cycle date (yyyy-MM-dd, UTC). Earliest published is 2024-05-04."
+        required: true
+      end:
+        description: "End cycle date (yyyy-MM-dd, UTC) — leave blank for yesterday"
+        required: false
+        default: ""
+
+concurrency:
+  # Per-source group so UKV and Global can run in parallel — they write to
+  # disjoint R2 prefixes (`model=met_office_ukv` vs `model=met_office_global`).
+  # Within a stream chunks still queue so two `rclone copy` jobs don't race
+  # the same prefix. Separate from `archive-backfill-${source}` so the
+  # Met Office runs and the GFS/ECMWF runs don't block each other either.
+  group: metoffice-archive-backfill-${{ inputs.source }}
+  cancel-in-progress: false
+
+jobs:
+  metoffice-archive-backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+          dotnet-quality: preview
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python deps
+        # h5py is a peer dep of h5netcdf — installing it explicitly so the
+        # h5netcdf engine doesn't trip on its first xr.open_dataset call.
+        # pyproj for the UKV LAEA → lat/lon projection. requests + numpy +
+        # pyarrow + pandas all explicitly pinned to keep the install
+        # deterministic across re-runs.
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            xarray==2024.9.0 \
+            h5netcdf==1.4.0 \
+            h5py==3.12.1 \
+            pyproj==3.7.0 \
+            pyarrow==18.0.0 \
+            pandas==2.2.3 \
+            numpy==2.1.3 \
+            requests==2.32.3
+
+      - name: Install rclone
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          rclone version
+
+      - name: Configure rclone for R2
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf <<EOF
+          [r2]
+          type = s3
+          provider = Cloudflare
+          access_key_id = ${R2_ACCESS_KEY_ID}
+          secret_access_key = ${R2_SECRET_ACCESS_KEY}
+          endpoint = ${R2_ENDPOINT}
+          acl = private
+          EOF
+
+      - name: Build
+        # The Met Office command shells out to the Python script via the
+        # MetOfficeArchiveBackfillClient. Build the C# CLI so `dotnet run`
+        # picks it up without recompile noise on every cycle.
+        run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
+
+      - name: Run backfill
+        # Tell the wrapper which Python interpreter to use (setup-python puts
+        # `python` on PATH on the runner). The script itself walks the date
+        # range, fetches per-cycle NetCDFs, extracts the Bonehill point and
+        # writes per-cycle parquets under data/forecasts/.../model=met_office_*.
+        env:
+          WEATHERBLEND_PYTHON: python
+        run: |
+          END_ARG=""
+          if [ -n "${{ inputs.end }}" ]; then
+            END_ARG="--end ${{ inputs.end }}"
+          fi
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            metoffice-backfill --source ${{ inputs.source }} \
+            --start ${{ inputs.start }} $END_ARG
+
+      - name: Push parquet to R2
+        # copy (not sync) — additive only. Each cycle goes to its own date+run
+        # partition so we never overwrite existing rows with this run.
+        if: always()
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          if [ -d ./data/forecasts ]; then
+            rclone copy ./data/forecasts "r2:${R2_BUCKET}/data/forecasts" --fast-list --transfers 16 --checkers 32 --progress
+          else
+            echo "::warning::No data/forecasts directory — backfill produced no rows"
+          fi
+
+      - name: Upload logs as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metoffice-archive-backfill-${{ inputs.source }}-${{ github.run_id }}
+          path: logs/
+          retention-days: 30
+          if-no-files-found: ignore

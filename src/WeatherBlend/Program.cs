@@ -173,12 +173,14 @@ public static class Program
                 // ElementBakeoffCommand removed in Phase 5 of unify-model-membership refactor.
                 services.AddTransient<FeelsLikePredictCommand>();
                 services.AddTransient<StartHourPredictCommand>();
-                // Met Office Global / UKV (raw AWS S3 backfill via Python) removed
-                // 2026-04-29 — bake-off rejected as blender inputs (negative result)
-                // and their parquet writer was the sole source of TIMESTAMPTZ schema
-                // that mis-aligned forecast↔truth JOINs during BST. DataHub Spot +
-                // Land Observations C# clients (MetOfficeSpotClient,
-                // MetOfficeObservationsClient) are unrelated and stay.
+                // Met Office Global / UKV — raw AWS S3 backfill via Python.
+                // Reinstated 2026-05-05 with the parquet writer fixed to emit
+                // tz-NAIVE timestamps (the BST-skewed JOIN bug that drove the
+                // 2026-04-29 deletion). Bake-off still rejects them as blender
+                // inputs (uncorrected elevation bias at Bonehill); they're
+                // captured here for raw model comparisons + future work.
+                services.AddTransient<MetOfficeArchiveBackfillClient>();
+                services.AddTransient<MetOfficeArchiveBackfillCommand>();
                 services.AddTransient<IElementBlender, WindBlender>();
                 services.AddTransient<IElementBlender, HumidityBlender>();
                 services.AddTransient<IElementBlender, RadiationBlender>();
@@ -274,8 +276,53 @@ public static class Program
         }, ecmStreamOpt, gfsStartOpt, gfsEndOpt, gfsCyclesOpt);
         root.AddCommand(ecmwfBackfill);
 
-        // The `met-office-archive-backfill` CLI command was removed 2026-04-29 along
-        // with the Python S3 collector. See Program.cs DI block for the why.
+        // Met Office archive backfill — Global 10km or UKV 2km. Defaults to
+        // the source-native sensible cycles + leads (the script's own arg
+        // defaults), so the only required input from the workflow is the
+        // date range + source. Per-source defaults inside the Python:
+        //   global: cycles=0,12 (the long-range cycles to 168h)
+        //   ukv:    cycles=3,15 (the long-range cycles to 120h)
+        // Both default to leads=1,3,6,12,24,36,48,72,96,120 to match the
+        // GFS/ECMWF archive backfills.
+        var moSourceOpt = new Option<string>(
+            name: "--source",
+            description: "Met Office dataset: global (10km det) | ukv (2km det)",
+            getDefaultValue: () => "global");
+        var moCyclesOpt = new Option<string>(
+            name: "--cycles",
+            description: "Override cycle hours (blank = source-native defaults: global=0,12 / ukv=3,15)",
+            getDefaultValue: () => "");
+        var moLeadsOpt = new Option<string>(
+            name: "--leads",
+            description: "Override lead hours (blank = source-native default 1,3,6,12,24,36,48,72,96,120)",
+            getDefaultValue: () => "");
+        var moParallelismOpt = new Option<int>(
+            name: "--parallelism",
+            description: "Concurrent NetCDF downloads per cycle",
+            getDefaultValue: () => 8);
+        var metOfficeBackfill = new Command(
+            "metoffice-backfill",
+            "Fetch Met Office Global / UKV cycles from AWS Open Data NetCDF archive (Python subprocess)")
+            { moSourceOpt, gfsStartOpt, gfsEndOpt, moCyclesOpt, moLeadsOpt, moParallelismOpt };
+        metOfficeBackfill.SetHandler(async (source, start, end, cyclesStr, leadsStr, parallelism) =>
+        {
+            // Empty string → let the Python script use its own defaults (we pass
+            // an empty list, the wrapper sees zero items and forwards the script
+            // default). Non-empty → override per-dispatch.
+            var cycles = string.IsNullOrWhiteSpace(cyclesStr)
+                ? Array.Empty<int>()
+                : cyclesStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Select(s => int.Parse(s, System.Globalization.CultureInfo.InvariantCulture))
+                    .ToArray();
+            var leads = string.IsNullOrWhiteSpace(leadsStr)
+                ? Array.Empty<int>()
+                : leadsStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Select(s => int.Parse(s, System.Globalization.CultureInfo.InvariantCulture))
+                    .ToArray();
+            var cmd = host.Services.GetRequiredService<MetOfficeArchiveBackfillCommand>();
+            await cmd.RunAsync(source, start, end, cycles, leads, parallelism, CancellationToken.None);
+        }, moSourceOpt, gfsStartOpt, gfsEndOpt, moCyclesOpt, moLeadsOpt, moParallelismOpt);
+        root.AddCommand(metOfficeBackfill);
 
         var status = new Command("status", "Show what data is on disk");
         status.SetHandler(async ctx =>
