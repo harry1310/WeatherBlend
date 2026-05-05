@@ -488,7 +488,7 @@ public static partial class SitePages
     {
         var content = new StringBuilder();
         content.Append("""
-            <p class="skill-line">Blue bands = observed wet hours (≥ 0.1 mm). MO Spot PoP uses a looser "any precip" threshold — read it as direction-of-effect.</p>
+            <p class="skill-line">Blue bands = observed wet hours (≥ 0.1 mm). MO Spot PoP uses a looser "any measurable precip" threshold — read it as direction-of-effect.</p>
             """);
 
         if (currentStation is null)
