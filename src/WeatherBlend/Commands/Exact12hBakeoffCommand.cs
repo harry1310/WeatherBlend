@@ -58,6 +58,7 @@ public sealed class Exact12hBakeoffCommand
         bool maskNoncanonicalAtTest,
         IReadOnlyList<int>? evaluateAtLeads,
         bool hpSearch,
+        bool includeUkv,
         CancellationToken ct)
     {
         var tiers = string.IsNullOrWhiteSpace(tierName)
@@ -66,13 +67,10 @@ public sealed class Exact12hBakeoffCommand
 
         if (hpSearch)
         {
-            // Grid-search variant: ignore evaluateAtLeads + maskNoncanonical
-            // (those are inference probes, not training-config probes), run
-            // the grid for each tier, report the winner config + MAE per tier.
             foreach (var tier in tiers)
             {
                 ct.ThrowIfCancellationRequested();
-                await Task.Run(() => RunHpSearch(tier, targetLead, inputLeads, ct), ct);
+                await Task.Run(() => RunHpSearch(tier, targetLead, inputLeads, includeUkv, ct), ct);
             }
             return 0;
         }
@@ -81,10 +79,10 @@ public sealed class Exact12hBakeoffCommand
         foreach (var tier in tiers)
         {
             ct.ThrowIfCancellationRequested();
-            results.Add(await Task.Run(() => RunTier(tier, targetLead, inputLeads, maskNoncanonicalAtTest, evaluateAtLeads, ct), ct));
+            results.Add(await Task.Run(() => RunTier(tier, targetLead, inputLeads, maskNoncanonicalAtTest, evaluateAtLeads, includeUkv, ct), ct));
         }
 
-        WriteReport(results, targetLead, inputLeads, maskNoncanonicalAtTest);
+        WriteReport(results, targetLead, inputLeads, maskNoncanonicalAtTest, includeUkv);
         return 0;
     }
 
@@ -102,14 +100,15 @@ public sealed class Exact12hBakeoffCommand
         Exact12hFeatureBuilder.TierSpec tier,
         int targetLead,
         IReadOnlyList<int>? inputLeads,
+        bool includeUkv,
         CancellationToken ct)
     {
         inputLeads ??= new[] { targetLead };
-        _log.LogInformation("=== HP-search: tier {Tier} target {Lead}h ===", tier.Name, targetLead);
-        var spec = Exact12hFeatureBuilder.BuildSpec(tier, targetLead, inputLeads);
+        _log.LogInformation("=== HP-search: tier {Tier} target {Lead}h includeUkv={Ukv} ===", tier.Name, targetLead, includeUkv);
+        var spec = Exact12hFeatureBuilder.BuildSpec(tier, targetLead, inputLeads, includeUkv);
         var rows = Exact12hFeatureBuilder.Build(
             _cfg.Storage.ForecastsPath, _cfg.Storage.Era5Path, _cfg.Location.Name,
-            tier, spec, targetLead, inputLeads, ct);
+            tier, spec, targetLead, inputLeads, includeUkv, ct);
         if (rows.Count == 0) { _log.LogWarning("  no rows — skipping."); return; }
 
         var sorted = rows.OrderBy(r => r.ValidTimeUtc).ToList();
@@ -188,11 +187,12 @@ public sealed class Exact12hBakeoffCommand
         IReadOnlyList<int>? inputLeads,
         bool maskNoncanonicalAtTest,
         IReadOnlyList<int>? evaluateAtLeads,
+        bool includeUkv,
         CancellationToken ct)
     {
         inputLeads ??= new[] { targetLead };
         _log.LogInformation("=== Tier {Tier}: {Desc} ===", tier.Name, tier.Description);
-        var spec = Exact12hFeatureBuilder.BuildSpec(tier, targetLead, inputLeads);
+        var spec = Exact12hFeatureBuilder.BuildSpec(tier, targetLead, inputLeads, includeUkv);
         _log.LogInformation("  spec: required=[{R}] optional=[{O}] target={Tgt}h leads=[{Leads}] features={F}",
             string.Join(",", spec.RequiredModels),
             string.Join(",", spec.OptionalModels),
@@ -208,6 +208,7 @@ public sealed class Exact12hBakeoffCommand
             spec,
             targetLead,
             inputLeads,
+            includeUkv,
             ct);
 
         if (rows.Count == 0)
@@ -350,7 +351,7 @@ public sealed class Exact12hBakeoffCommand
                 }
                 var evalRowsAll = Exact12hFeatureBuilder.Build(
                     _cfg.Storage.ForecastsPath, _cfg.Storage.Era5Path, _cfg.Location.Name,
-                    tier, evalSpec, evalLead, new[] { evalLead }, ct);
+                    tier, evalSpec, evalLead, new[] { evalLead }, includeUkv: false, ct);
                 var evalTest = evalRowsAll.Where(r => r.ValidTimeUtc >= testStart).ToList();
                 if (evalTest.Count == 0)
                 {
@@ -421,15 +422,17 @@ public sealed class Exact12hBakeoffCommand
         IReadOnlyList<TierResult> results,
         int targetLead,
         IReadOnlyList<int>? inputLeads,
-        bool maskNoncanonicalAtTest)
+        bool maskNoncanonicalAtTest,
+        bool includeUkv)
     {
         inputLeads ??= new[] { targetLead };
         var leadsSorted = inputLeads.OrderBy(l => l).ToList();
+        var ukvTag = includeUkv ? " + UKV" : "";
         var leadDesc = leadsSorted.Count == 1
-            ? $"single lead {targetLead}h"
+            ? $"single lead {targetLead}h{ukvTag}"
             : (maskNoncanonicalAtTest
-                ? $"target {targetLead}h, train on leads [{string.Join(",", leadsSorted)}], TEST ON CANONICAL ONLY (non-{targetLead}h cols masked)"
-                : $"target {targetLead}h, input leads [{string.Join(",", leadsSorted)}]");
+                ? $"target {targetLead}h{ukvTag}, train on leads [{string.Join(",", leadsSorted)}], TEST ON CANONICAL ONLY (non-{targetLead}h cols masked)"
+                : $"target {targetLead}h{ukvTag}, input leads [{string.Join(",", leadsSorted)}]");
 
         var sb = new StringBuilder();
         sb.AppendLine();

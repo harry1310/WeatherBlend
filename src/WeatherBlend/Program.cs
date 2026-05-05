@@ -387,10 +387,18 @@ public static class Program
             name: "--hp-search",
             description: "Grid-search LightGBM hyperparameters and report the winning config (instead of the regular bake-off).",
             getDefaultValue: () => false);
+        // --include-ukv (2026-05-05) — adds an extra "temp_ukv" column whose
+        // value per ValidTime hour is pulled from the appropriate UKV (cycle,
+        // lead) tuple landing at ~12h-ahead. Tests whether UKV helps the
+        // exact-runtime blender despite its odd 03Z/15Z cycle phasing.
+        var exact12hUkvOpt = new Option<bool>(
+            name: "--include-ukv",
+            description: "Add UKV as a 5th feature column (per-V-hour conditional pull from leads {9,15}). Off by default.",
+            getDefaultValue: () => false);
         var exact12hBakeoff = new Command(
             "exact-12h-bakeoff",
             "Train + score the exact-runtime temperature blender across the three coverage tiers")
-            { exact12hTierOpt, exact12hLeadOpt, exact12hLeadsOpt, exact12hMaskOpt, exact12hEvalAtLeadsOpt, exact12hHpSearchOpt };
+            { exact12hTierOpt, exact12hLeadOpt, exact12hLeadsOpt, exact12hMaskOpt, exact12hEvalAtLeadsOpt, exact12hHpSearchOpt, exact12hUkvOpt };
         exact12hBakeoff.SetHandler(async (ctx) =>
         {
             var tier = ctx.ParseResult.GetValueForOption(exact12hTierOpt);
@@ -399,6 +407,7 @@ public static class Program
             var mask = ctx.ParseResult.GetValueForOption(exact12hMaskOpt);
             var evalLeadsStr = ctx.ParseResult.GetValueForOption(exact12hEvalAtLeadsOpt) ?? "";
             var hpSearch = ctx.ParseResult.GetValueForOption(exact12hHpSearchOpt);
+            var includeUkv = ctx.ParseResult.GetValueForOption(exact12hUkvOpt);
             var inputLeads = string.IsNullOrWhiteSpace(leadsStr)
                 ? null
                 : (IReadOnlyList<int>)leadsStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -410,7 +419,7 @@ public static class Program
                     .Select(s => int.Parse(s, System.Globalization.CultureInfo.InvariantCulture))
                     .ToArray();
             var cmd = host.Services.GetRequiredService<Exact12hBakeoffCommand>();
-            ctx.ExitCode = await cmd.RunAsync(tier, lead, inputLeads, mask, evalLeads, hpSearch, CancellationToken.None);
+            ctx.ExitCode = await cmd.RunAsync(tier, lead, inputLeads, mask, evalLeads, hpSearch, includeUkv, CancellationToken.None);
         });
         root.AddCommand(exact12hBakeoff);
 

@@ -113,10 +113,24 @@ public static class Exact12hFeatureBuilder
     ///   single-lead mode — adding more leads doesn't artificially inflate
     ///   model disagreement.
     /// </summary>
+    /// <summary>
+    /// UKV-included flag — when true, the feature vector gets one extra
+    /// column "temp_ukv" whose value per ValidTime is pulled from the (cycle,
+    /// lead) tuple that lands closest to a 12h-ahead UKV forecast for that
+    /// ValidTime hour. Per-V mapping (UKV runs at 03Z and 15Z only):
+    ///   V=00 → 15Z prev day + lead 9  (9h-ahead)
+    ///   V=06 → 15Z prev day + lead 15 (15h-ahead)
+    ///   V=12 → 03Z same day + lead 9  (9h-ahead)
+    ///   V=18 → 03Z same day + lead 15 (15h-ahead)
+    /// Average UKV-effective-lead = 12h, matching the other models'
+    /// strict lead-12. UKV is always optional (NaN at any V where the
+    /// pull failed) so blender training drops nothing.
+    /// </summary>
     public static BlenderSpec BuildSpec(
         TierSpec tier,
         int targetLead = DefaultTargetLead,
-        IReadOnlyList<int>? inputLeads = null)
+        IReadOnlyList<int>? inputLeads = null,
+        bool includeUkv = false)
     {
         inputLeads ??= new[] { targetLead };
         if (inputLeads.Count == 0)
@@ -143,10 +157,13 @@ public static class Exact12hFeatureBuilder
         var leadsSorted = inputLeads.OrderBy(l => l).ToList();
         var isMulti = leadsSorted.Count > 1;
 
-        var featureNames = new List<string>(orderedModels.Count * leadsSorted.Count + 7);
+        var ukvExtra = includeUkv ? 1 : 0;
+        var featureNames = new List<string>(orderedModels.Count * leadsSorted.Count + ukvExtra + 7);
         foreach (var m in orderedModels)
             foreach (var l in leadsSorted)
                 featureNames.Add(isMulti ? $"temp_{ShortName(m)}_l{l:00}" : $"temp_{ShortName(m)}");
+        if (includeUkv)
+            featureNames.Add("temp_ukv"); // UKV slot — always optional, see BuildSpec docstring
         featureNames.Add("temp_mean");
         featureNames.Add("temp_std");
         featureNames.Add("temp_range");
@@ -191,6 +208,7 @@ public static class Exact12hFeatureBuilder
         BlenderSpec spec,
         int targetLead = DefaultTargetLead,
         IReadOnlyList<int>? inputLeads = null,
+        bool includeUkv = false,
         CancellationToken ct = default)
     {
         inputLeads ??= new[] { targetLead };
@@ -256,6 +274,51 @@ public static class Exact12hFeatureBuilder
             $"AND CAST(ValidTimeUtc AS DATE) >= DATE '{tier.StartDate:yyyy-MM-dd}' " +
             $"AND Model IN {modelInClause}";
 
+        // Optional UKV CTE — picks one UKV value per ValidTime from a
+        // hour-conditional (cycle, lead) tuple chosen to land at ~12h-ahead
+        // (see BuildSpec docstring for the rules). LEFT JOIN so a missing
+        // UKV row doesn't drop the whole training row.
+        var ukvCte = !includeUkv ? "" : $@",
+ukv_per_v AS (
+    -- For each ValidTime hour, pick the (UKV cycle, lead) tuple that
+    -- gives a ~12h-ahead forecast for that V. UKV runs at 03Z + 15Z only,
+    -- so V hours map to specific (run_hr, run_date_offset, lead) triples.
+    SELECT ValidTimeUtc, Temperature2m AS ukv_temp
+    FROM (
+        SELECT ValidTimeUtc, Temperature2m,
+               ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn
+        FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
+        WHERE LocationName = '{locationName}'
+          AND Model = 'met_office_ukv'
+          AND RunTimeSource = 'exact'
+          AND Temperature2m IS NOT NULL
+          AND CAST(ValidTimeUtc AS DATE) >= DATE '{tier.StartDate:yyyy-MM-dd}'
+          AND HOUR(ValidTimeUtc) IN (0, 6, 12, 18)
+          AND (
+            -- V=00: prev day 15Z run + lead 9
+            (HOUR(ValidTimeUtc) = 0  AND HOUR(RunTimeUtc) = 15
+             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE) - INTERVAL 1 DAY
+             AND LeadHours = 9)
+            -- V=06: prev day 15Z run + lead 15
+         OR (HOUR(ValidTimeUtc) = 6  AND HOUR(RunTimeUtc) = 15
+             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE) - INTERVAL 1 DAY
+             AND LeadHours = 15)
+            -- V=12: same day 03Z run + lead 9
+         OR (HOUR(ValidTimeUtc) = 12 AND HOUR(RunTimeUtc) = 3
+             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE)
+             AND LeadHours = 9)
+            -- V=18: same day 03Z run + lead 15
+         OR (HOUR(ValidTimeUtc) = 18 AND HOUR(RunTimeUtc) = 3
+             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE)
+             AND LeadHours = 15)
+          )
+    )
+    WHERE rn = 1
+)";
+
+        var ukvSelectCol = includeUkv ? ", u.ukv_temp" : "";
+        var ukvJoin      = includeUkv ? "LEFT JOIN ukv_per_v u USING (ValidTimeUtc)" : "";
+
         // Latest forecast per (ValidTime, Model, Lead) — defensive against
         // any case where two cycles published the same (ValidTime, Lead)
         // for one model (shouldn't happen at lead 12+ from the cycles we
@@ -284,14 +347,15 @@ era5 AS (
     FROM read_parquet('{eraGlob}', hive_partitioning = false, union_by_name = true)
     WHERE LocationName = '{locationName}'
       AND Temperature2m IS NOT NULL
-)
+){ukvCte}
 SELECT
     p.ValidTimeUtc,
     {selectCols},
     p.wind_dir_mean,
-    e.era5_temp
+    e.era5_temp{ukvSelectCol}
 FROM pivoted p
 JOIN era5 e USING (ValidTimeUtc)
+{ukvJoin}
 WHERE {requiredNotNull}
 ORDER BY p.ValidTimeUtc;
 ";
@@ -307,6 +371,8 @@ ORDER BY p.ValidTimeUtc;
         var targetLeadIdx = leadsSorted.IndexOf(targetLead);
         var perModelLeadValues = new double[perModelLeadCount];
         var canonicalPerModel  = new double[spec.Models.Count];
+        // SELECT order: ValidTimeUtc, perModelLeads..., wind_dir_mean, era5_temp [, ukv_temp]
+        var ukvIdx = includeUkv ? 3 + perModelLeadCount : -1; // -1 = absent
         while (r.Read())
         {
             ct.ThrowIfCancellationRequested();
@@ -315,12 +381,15 @@ ORDER BY p.ValidTimeUtc;
                 perModelLeadValues[i] = r.IsDBNull(1 + i) ? double.NaN : r.GetDouble(1 + i);
             var windDirMean = r.IsDBNull(1 + perModelLeadCount) ? double.NaN : r.GetDouble(1 + perModelLeadCount);
             var era5Temp = r.GetDouble(2 + perModelLeadCount);
+            var ukvTemp = ukvIdx >= 0
+                ? (r.IsDBNull(ukvIdx) ? double.NaN : r.GetDouble(ukvIdx))
+                : double.NaN;
 
             // Extract canonical-lead per-model values for the spread features.
             for (int m = 0; m < spec.Models.Count; m++)
                 canonicalPerModel[m] = perModelLeadValues[m * leadsSorted.Count + targetLeadIdx];
 
-            rows.Add(ComposeRow(spec, valid, perModelLeadValues, canonicalPerModel, windDirMean, era5Temp));
+            rows.Add(ComposeRow(spec, valid, perModelLeadValues, canonicalPerModel, windDirMean, era5Temp, ukvTemp));
         }
         return rows;
     }
@@ -339,7 +408,8 @@ ORDER BY p.ValidTimeUtc;
         IReadOnlyList<double> perModelLeadValues,
         IReadOnlyList<double> canonicalPerModel,
         double windDirMeanDeg,
-        double era5Temp)
+        double era5Temp,
+        double ukvTemp = double.NaN)
     {
         // Spread features: NaN-safe across present-only canonical-lead values.
         double sum = 0, sumSq = 0, min = double.MaxValue, max = double.MinValue;
@@ -368,14 +438,22 @@ ORDER BY p.ValidTimeUtc;
         var doySin  = Math.Sin(2 * Math.PI * doyFrac);
         var doyCos  = Math.Cos(2 * Math.PI * doyFrac);
 
-        if (perModelLeadValues.Count + 7 != spec.FeatureCount)
+        // FeatureCount = perModelLeadValues + 7 stats [+ 1 if UKV included].
+        // The UKV column's presence is encoded in spec.FeatureNames containing
+        // "temp_ukv" — derive includeUkv from the spec rather than passing
+        // another arg, so callers can't get the pair out of sync.
+        var includeUkv = spec.FeatureNames.Contains("temp_ukv");
+        var expectedCount = perModelLeadValues.Count + (includeUkv ? 1 : 0) + 7;
+        if (expectedCount != spec.FeatureCount)
             throw new InvalidOperationException(
-                $"perModelLeadValues count {perModelLeadValues.Count} + 7 stats != spec.FeatureCount {spec.FeatureCount}.");
+                $"perModelLeadValues count {perModelLeadValues.Count} (+ ukv:{includeUkv}) + 7 stats != spec.FeatureCount {spec.FeatureCount}.");
 
         var features = new float[spec.FeatureCount];
         int idx = 0;
         for (int i = 0; i < perModelLeadValues.Count; i++)
             features[idx++] = (float)perModelLeadValues[i];
+        if (includeUkv)
+            features[idx++] = (float)ukvTemp; // NaN-safe — LightGBM handles missing
         features[idx++] = (float)mean;
         features[idx++] = (float)std;
         features[idx++] = (float)range;
