@@ -132,11 +132,12 @@ public static partial class SitePages
         body.Append(tilesHtml);
         body.Append("</section>");
 
-        // Page filename convention: today is index.html (so the canonical
-        // home URL is unchanged), forward days are index-1.html / index-2.html
-        // / … / index-5.html.
-        var pageSlug = dayOffset == 0 ? "index" : $"index-{dayOffset}";
-        return WrapPage(input, "Home", pageSlug, body.ToString());
+        // Page filename is set by RenderSiteCommand (index.html for today,
+        // index-N.html for day-N). The pageId we pass to WrapPage is purely
+        // for the top-nav highlight, so it must always be "index" — using
+        // "index-N" silently broke the Home highlight on every forward-day
+        // tab because NavActive("index-1", "index") returns false.
+        return WrapPage(input, "Home", "index", body.ToString());
     }
 
     /// <summary>UTC hour at which the home tile grid starts. Tiles before

@@ -318,6 +318,10 @@ public static partial class SitePages
             <p class="skill-line">Dry hour = all four 15-min readings ≤ 0.1 mm. Search bounded to 09:00–18:00 local.</p>
             </section>
             """);
-        return WrapPage(input, "Dry window", "dry-window", content.ToString());
+        // pageId="forecasts" so the top-nav "Forecasts" stays highlighted
+        // when viewing dry-window — it's a sub-page reached via the
+        // Forecasts variable sub-nav. (The empty-state branches above
+        // already pass "forecasts" for the same reason.)
+        return WrapPage(input, "Dry window", "forecasts", content.ToString());
     }
 }

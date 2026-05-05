@@ -538,7 +538,11 @@ public static partial class SitePages
            the per-NWP agreement count. Tap-friendly on mobile, no hover needed. */
         details.low-cloud-pop { display: inline; }
         details.low-cloud-pop > summary.low-cloud-badge { background: #455a64; color: #fff; font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 999px; cursor: pointer; white-space: nowrap; list-style: none; display: inline-block; }
+        /* Kill BOTH native marker and Pico's ::after chevron — Pico v2 adds
+           the chevron via a background-image on summary::after, which the
+           webkit rule alone doesn't reach. User wants these as plain pills. */
         details.low-cloud-pop > summary.low-cloud-badge::-webkit-details-marker { display: none; }
+        details.low-cloud-pop > summary.low-cloud-badge::after { display: none !important; content: none !important; }
         details.low-cloud-pop > ul { margin: 0.4rem 0 0; padding-left: 1.1rem; font-size: 0.78rem; color: var(--pico-muted-color); }
 
         /* Day-grouped home layout — one block per UTC day with a summary line
@@ -556,6 +560,8 @@ public static partial class SitePages
         details.utci-pop { display: inline; margin-left: 0.25rem; }
         details.utci-pop summary { cursor: pointer; color: var(--pico-muted-color); font-size: 0.85rem; list-style: none; display: inline; }
         details.utci-pop summary::-webkit-details-marker { display: none; }
+        /* Kill Pico v2's ::after chevron too — see low-cloud-pop. */
+        details.utci-pop summary::after { display: none !important; content: none !important; }
         details.utci-pop[open] summary { color: var(--brand); }
         .utci-pop-table { margin: 0.4rem 0 0.1rem; font-size: 0.78rem; width: 100%; }
         .utci-pop-table td { padding: 0.1rem 0.25rem; border: 0; }
