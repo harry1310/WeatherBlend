@@ -199,6 +199,17 @@ public sealed class EcmwfClient
             for (int i = 0; i < Math.Min(vals.Count, picks.Count); i++)
                 Variables.First(v => v.Param == picks[i].Param).Apply(raw, vals[i].Value);
 
+            // Stream-specific tp units fix-up (2026-05-05). Per ECMWF Open Data
+            // docs, IFS oper publishes total precipitation in METRES (water
+            // equivalent depth) while AIFS publishes in kg/m² (= mm directly).
+            // Our shared VarMap multiplies tp × 1000 (m → mm) which is correct
+            // for IFS but produces ~430× values for AIFS. Undo the scaling
+            // for AIFS by dividing by 1000 — empirical AIFS/IFS avg ratio
+            // matches the units explanation closely (~430×, not exactly 1000×
+            // since AIFS and IFS predict slightly different precip totals).
+            if (stream == Streams.AifsOper && raw.Precipitation is double aifsPrecipMm)
+                raw.Precipitation = aifsPrecipMm / 1000.0;
+
             // RH at 2m derived from T + Td via Magnus — ECMWF doesn't publish
             // 2m RH directly in oper. Skip when either input is missing.
             double? rh2m = null;
