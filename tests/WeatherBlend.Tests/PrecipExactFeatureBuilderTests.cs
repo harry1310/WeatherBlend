@@ -108,4 +108,56 @@ public class PrecipExactFeatureBuilderTests
         var meanIdx = spec.FeatureNames.ToList().IndexOf("precip_mean");
         row.Features[meanIdx].Should().BeApproximately(1.5f, 1e-3f);
     }
+
+    // ----- UKV-included variant (2026-05-05) -------------------------------------
+
+    [Fact]
+    public void BuildSpec_with_UKV_appends_one_extra_feature_named_precip_ukv()
+    {
+        var noUkv = PrecipExactFeatureBuilder.BuildSpec(PrecipExactFeatureBuilder.AllTiers[0]);
+        var withUkv = PrecipExactFeatureBuilder.BuildSpec(PrecipExactFeatureBuilder.AllTiers[0], includeUkv: true);
+
+        withUkv.FeatureCount.Should().Be(noUkv.FeatureCount + 1);
+        withUkv.FeatureNames.Should().Contain("precip_ukv");
+        // precip_ukv slot sits immediately after the per-model precip block (4),
+        // before the spread features — matches the temperature builder's ordering.
+        withUkv.FeatureNames[noUkv.Models.Count].Should().Be("precip_ukv");
+        // FeatureSet tag carries the -ukv suffix so persisted schemas are
+        // self-describing about which variant produced them.
+        withUkv.FeatureSet.Should().EndWith("-ukv");
+    }
+
+    [Fact]
+    public void ComposeRow_with_UKV_places_ukv_value_after_per_model_block()
+    {
+        var spec = PrecipExactFeatureBuilder.BuildSpec(PrecipExactFeatureBuilder.AllTiers[0], includeUkv: true);
+        var row = PrecipExactFeatureBuilder.ComposeRow(
+            spec,
+            new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc),
+            perModelPrecip: new double[] { 1.5, 2.0, 1.8, 0.8 },
+            era5Precip: 1.7,
+            ukvPrecip: 1.2);
+        var ukvIdx = spec.FeatureNames.ToList().IndexOf("precip_ukv");
+        row.Features[ukvIdx].Should().Be(1.2f);
+    }
+
+    [Fact]
+    public void ComposeRow_with_UKV_NaN_when_unset_and_spread_unaffected()
+    {
+        // UKV is always-optional. When it's NaN, spread features (mean/std/range)
+        // must still reflect ONLY the per-model precip block — UKV in the
+        // spread would change semantics whenever someone toggles --include-ukv.
+        var spec = PrecipExactFeatureBuilder.BuildSpec(PrecipExactFeatureBuilder.AllTiers[0], includeUkv: true);
+        var row = PrecipExactFeatureBuilder.ComposeRow(
+            spec,
+            new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc),
+            perModelPrecip: new double[] { 1.5, 2.0, 1.0, 1.5 },
+            era5Precip: 1.5,
+            ukvPrecip: double.NaN);
+        var ukvIdx = spec.FeatureNames.ToList().IndexOf("precip_ukv");
+        float.IsNaN(row.Features[ukvIdx]).Should().BeTrue();
+        // Mean across {1.5, 2.0, 1.0, 1.5} = 1.5; UKV must NOT participate
+        var meanIdx = spec.FeatureNames.ToList().IndexOf("precip_mean");
+        row.Features[meanIdx].Should().BeApproximately(1.5f, 1e-3f);
+    }
 }

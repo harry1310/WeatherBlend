@@ -39,23 +39,24 @@ public sealed class PrecipExactBakeoffCommand
         _log = log;
     }
 
-    public async Task<int> RunAsync(int targetLead, CancellationToken ct)
+    public async Task<int> RunAsync(int targetLead, bool includeUkv, CancellationToken ct)
     {
         foreach (var tier in PrecipExactFeatureBuilder.AllTiers)
         {
             ct.ThrowIfCancellationRequested();
-            await Task.Run(() => RunTier(tier, targetLead, ct), ct);
+            await Task.Run(() => RunTier(tier, targetLead, includeUkv, ct), ct);
         }
         return 0;
     }
 
-    private void RunTier(PrecipExactFeatureBuilder.TierSpec tier, int targetLead, CancellationToken ct)
+    private void RunTier(PrecipExactFeatureBuilder.TierSpec tier, int targetLead, bool includeUkv, CancellationToken ct)
     {
-        _log.LogInformation("=== Precip-Brier exact bake-off: tier {Tier} target {Lead}h ===", tier.Name, targetLead);
-        var spec = PrecipExactFeatureBuilder.BuildSpec(tier, targetLead);
+        _log.LogInformation("=== Precip-Brier exact bake-off: tier {Tier} target {Lead}h UKV={Ukv} ===",
+            tier.Name, targetLead, includeUkv);
+        var spec = PrecipExactFeatureBuilder.BuildSpec(tier, targetLead, includeUkv);
         var rows = PrecipExactFeatureBuilder.Build(
             _cfg.Storage.ForecastsPath, _cfg.Storage.Era5Path, _cfg.Location.Name,
-            tier, spec, targetLead, ct);
+            tier, spec, targetLead, includeUkv, ct);
 
         if (rows.Count == 0) { _log.LogWarning("  no rows"); return; }
 

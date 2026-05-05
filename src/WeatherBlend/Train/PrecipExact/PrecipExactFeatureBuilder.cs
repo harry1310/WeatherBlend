@@ -76,7 +76,18 @@ public static class PrecipExactFeatureBuilder
         AllTiers.FirstOrDefault(t => t.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
             ?? throw new ArgumentException($"Unknown tier '{name}'", nameof(name));
 
-    public static BlenderSpec BuildSpec(TierSpec tier, int targetLead = DefaultTargetLead)
+    /// <summary>
+    /// Mirrors <c>Exact12hFeatureBuilder.BuildSpec(..., includeUkv: bool)</c>.
+    /// When <paramref name="includeUkv"/> is true the feature vector gets one
+    /// extra always-optional column "precip_ukv" pulled from UKV's 03Z + 15Z
+    /// cycles via the same per-V-hour (cycle, lead) conditional rule the
+    /// temperature builder uses. UKV stays optional regardless so a missing
+    /// pull doesn't drop the row.
+    /// </summary>
+    public static BlenderSpec BuildSpec(
+        TierSpec tier,
+        int targetLead = DefaultTargetLead,
+        bool includeUkv = false)
     {
         var requiredSet = tier.Required.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var optionalSet = tier.Optional.ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -84,8 +95,10 @@ public static class PrecipExactFeatureBuilder
             .Where(m => requiredSet.Contains(m) || optionalSet.Contains(m))
             .ToList();
 
-        var featureNames = new List<string>(orderedModels.Count + 7);
+        var ukvExtra = includeUkv ? 1 : 0;
+        var featureNames = new List<string>(orderedModels.Count + ukvExtra + 7);
         foreach (var m in orderedModels) featureNames.Add($"precip_{ShortName(m)}");
+        if (includeUkv) featureNames.Add("precip_ukv");
         featureNames.Add("precip_mean");
         featureNames.Add("precip_std");
         featureNames.Add("precip_range");
@@ -97,7 +110,7 @@ public static class PrecipExactFeatureBuilder
         return new BlenderSpec
         {
             Target = "precipitation",
-            FeatureSet = $"exact-l{targetLead:00}-{tier.Name}",
+            FeatureSet = $"exact-l{targetLead:00}-{tier.Name}{(includeUkv ? "-ukv" : "")}",
             LeadHours = targetLead,
             RequiredModels = CanonicalModelOrder.Where(requiredSet.Contains).ToList(),
             OptionalModels = CanonicalModelOrder.Where(optionalSet.Contains).ToList(),
@@ -119,6 +132,7 @@ public static class PrecipExactFeatureBuilder
         TierSpec tier,
         BlenderSpec spec,
         int targetLead = DefaultTargetLead,
+        bool includeUkv = false,
         CancellationToken ct = default)
     {
         using var conn = new DuckDBConnection("DataSource=:memory:");
@@ -145,6 +159,48 @@ public static class PrecipExactFeatureBuilder
             $"AND CAST(ValidTimeUtc AS DATE) >= DATE '{tier.StartDate:yyyy-MM-dd}' " +
             $"AND Model IN {modelInClause}";
 
+        // Optional UKV CTE — same per-V-hour (cycle, lead) rule as
+        // Exact12hFeatureBuilder, except we read Precipitation instead of
+        // Temperature2m. UKV runs at 03Z+15Z and we want a ~12h-ahead
+        // forecast per ValidTime hour:
+        //   V=00 → prev day 15Z + lead 9
+        //   V=06 → prev day 15Z + lead 15
+        //   V=12 → same day 03Z + lead 9
+        //   V=18 → same day 03Z + lead 15
+        // Always-optional → LEFT JOIN, NaN at any V where the pull failed.
+        var ukvCte = !includeUkv ? "" : $@",
+ukv_per_v AS (
+    SELECT ValidTimeUtc, Precipitation AS ukv_precip
+    FROM (
+        SELECT ValidTimeUtc, Precipitation,
+               ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn
+        FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
+        WHERE LocationName = '{locationName}'
+          AND Model = 'met_office_ukv'
+          AND RunTimeSource = 'exact'
+          AND Precipitation IS NOT NULL
+          AND CAST(ValidTimeUtc AS DATE) >= DATE '{tier.StartDate:yyyy-MM-dd}'
+          AND HOUR(ValidTimeUtc) IN (0, 6, 12, 18)
+          AND (
+            (HOUR(ValidTimeUtc) = 0  AND HOUR(RunTimeUtc) = 15
+             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE) - INTERVAL 1 DAY
+             AND LeadHours = 9)
+         OR (HOUR(ValidTimeUtc) = 6  AND HOUR(RunTimeUtc) = 15
+             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE) - INTERVAL 1 DAY
+             AND LeadHours = 15)
+         OR (HOUR(ValidTimeUtc) = 12 AND HOUR(RunTimeUtc) = 3
+             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE)
+             AND LeadHours = 9)
+         OR (HOUR(ValidTimeUtc) = 18 AND HOUR(RunTimeUtc) = 3
+             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE)
+             AND LeadHours = 15)
+          )
+    )
+    WHERE rn = 1
+)";
+        var ukvSelectCol = includeUkv ? ", u.ukv_precip" : "";
+        var ukvJoin = includeUkv ? "LEFT JOIN ukv_per_v u USING (ValidTimeUtc)" : "";
+
         var sql = $@"
 WITH latest AS (
     SELECT ValidTimeUtc, Model, Precipitation,
@@ -164,10 +220,11 @@ era5 AS (
     SELECT ValidTimeUtc, Precipitation AS era5_precip
     FROM read_parquet('{eraGlob}', hive_partitioning = false, union_by_name = true)
     WHERE LocationName = '{locationName}' AND Precipitation IS NOT NULL
-)
-SELECT p.ValidTimeUtc, {selectCols}, e.era5_precip
+){ukvCte}
+SELECT p.ValidTimeUtc, {selectCols}, e.era5_precip{ukvSelectCol}
 FROM pivoted p
 JOIN era5 e USING (ValidTimeUtc)
+{ukvJoin}
 WHERE {requiredNotNull}
 ORDER BY p.ValidTimeUtc;
 ";
@@ -179,6 +236,8 @@ ORDER BY p.ValidTimeUtc;
         var rows = new List<BinaryTrainingRow>();
         var modelCount = spec.Models.Count;
         var pcps = new double[modelCount];
+        // SELECT order: ValidTimeUtc, perModelPrecip..., era5_precip [, ukv_precip]
+        var ukvIdx = includeUkv ? 2 + modelCount : -1;
         while (r.Read())
         {
             ct.ThrowIfCancellationRequested();
@@ -186,7 +245,10 @@ ORDER BY p.ValidTimeUtc;
             for (int i = 0; i < modelCount; i++)
                 pcps[i] = r.IsDBNull(1 + i) ? double.NaN : r.GetDouble(1 + i);
             var era5Precip = r.GetDouble(1 + modelCount);
-            rows.Add(ComposeRow(spec, valid, pcps, era5Precip));
+            var ukvPrecip = ukvIdx >= 0
+                ? (r.IsDBNull(ukvIdx) ? double.NaN : r.GetDouble(ukvIdx))
+                : double.NaN;
+            rows.Add(ComposeRow(spec, valid, pcps, era5Precip, ukvPrecip));
         }
         return rows;
     }
@@ -195,8 +257,12 @@ ORDER BY p.ValidTimeUtc;
         BlenderSpec spec,
         DateTime validTimeUtc,
         IReadOnlyList<double> perModelPrecip,
-        double era5Precip)
+        double era5Precip,
+        double ukvPrecip = double.NaN)
     {
+        // Spread features computed across the per-model precip values only —
+        // UKV is excluded so spread retains "model disagreement" semantics
+        // unchanged when UKV toggles on.
         double sum = 0, sumSq = 0, min = double.MaxValue, max = double.MinValue;
         int n = 0;
         for (int i = 0; i < perModelPrecip.Count; i++)
@@ -219,9 +285,18 @@ ORDER BY p.ValidTimeUtc;
         var hourFrac = v.Hour / 24.0;
         var doyFrac  = (v.DayOfYear - 1) / 365.0;
 
+        // Mirror Exact12hFeatureBuilder: derive includeUkv from the spec
+        // rather than a parameter so callers can't get the pair out of sync.
+        var includeUkv = spec.FeatureNames.Contains("precip_ukv");
+        var expectedCount = perModelPrecip.Count + (includeUkv ? 1 : 0) + 7;
+        if (expectedCount != spec.FeatureCount)
+            throw new InvalidOperationException(
+                $"perModelPrecip count {perModelPrecip.Count} (+ ukv:{includeUkv}) + 7 stats != spec.FeatureCount {spec.FeatureCount}.");
+
         var features = new float[spec.FeatureCount];
         int idx = 0;
         for (int i = 0; i < perModelPrecip.Count; i++) features[idx++] = (float)perModelPrecip[i];
+        if (includeUkv) features[idx++] = (float)ukvPrecip;
         features[idx++] = (float)mean;
         features[idx++] = (float)std;
         features[idx++] = (float)range;

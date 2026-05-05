@@ -423,22 +423,29 @@ public static class Program
         });
         root.AddCommand(exact12hBakeoff);
 
-        // precip-exact-bakeoff — first-cut precipitation blender on exact-runtime
-        // data (mirror of exact-12h-bakeoff for temperature). 3 models (AIFS
-        // excluded due to units bug). Single tier P1, --lead 12 or 24.
+        // precip-exact-bakeoff — exact-runtime P(wet) blender (mirror of
+        // exact-12h-bakeoff for temperature). 4 models required/optional
+        // (GFS+IFS+AIFS required, MO Global optional); --include-ukv adds
+        // UKV as a 5th always-optional column via the same per-V-hour
+        // conditional pull pattern as the temperature builder. Single tier
+        // P1, --lead 12 or 24.
         var precipLeadOpt = new Option<int>(
             name: "--lead",
             description: "Target lead in hours. Default 12.",
             getDefaultValue: () => PrecipExactFeatureBuilder.DefaultTargetLead);
+        var precipUkvOpt = new Option<bool>(
+            name: "--include-ukv",
+            description: "Include Met Office UKV as a 5th always-optional precip input via per-V-hour (cycle, lead) conditional pull from 03Z+15Z cycles.",
+            getDefaultValue: () => false);
         var precipBakeoff = new Command(
             "precip-exact-bakeoff",
             "Train + score the exact-runtime precipitation blender at a single lead")
-            { precipLeadOpt };
-        precipBakeoff.SetHandler(async (lead) =>
+            { precipLeadOpt, precipUkvOpt };
+        precipBakeoff.SetHandler(async (lead, includeUkv) =>
         {
             var cmd = host.Services.GetRequiredService<PrecipExactBakeoffCommand>();
-            await cmd.RunAsync(lead, CancellationToken.None);
-        }, precipLeadOpt);
+            await cmd.RunAsync(lead, includeUkv, CancellationToken.None);
+        }, precipLeadOpt, precipUkvOpt);
         root.AddCommand(precipBakeoff);
 
         // s3-collect — live refresh of the four exact-runtime forecast sources
