@@ -27,7 +27,8 @@
 
 const WORKFLOW_FOR_CRON: Record<string, string> = {
   "30 2,8,14,20 * * *": "collect.yml",
-  "0 3,9,15,21 * * *":  "predict-and-render.yml",
+  "45 2,8,14,20 * * *": "s3-collect.yml",
+  "15 3,9,15,21 * * *": "predict-and-render.yml",
   "0 12 * * *":         "era5-refresh.yml",
   "30 9 * * MON,THU":   "verify.yml",
 };

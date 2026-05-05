@@ -188,15 +188,17 @@ public static class Program
                 // exploratory only.
                 services.AddTransient<Exact12hBakeoffCommand>();
                 services.AddTransient<PrecipExactBakeoffCommand>();
-                // Live S3 collect — refreshes the four exact-runtime sources
+                // Live S3 collect — refreshes the five exact-runtime sources
                 // the 2d temperature blender consumes (GFS / IFS / AIFS /
-                // Met Office Global). Each is a thin lookback wrapper around
-                // its existing backfill command. Wired into a 6-hourly cron
-                // workflow s3-collect.yml that pairs with the live data
-                // landing pattern (NOAA ~3-4h, ECMWF ~7-8h, MO ~3-6h).
+                // Met Office Global / Met Office UKV). Each is a thin
+                // lookback wrapper around its existing backfill command.
+                // Wired into a 6-hourly cron workflow s3-collect.yml that
+                // pairs with the live data landing pattern (NOAA ~3-4h,
+                // ECMWF ~7-8h, MO ~3-6h).
                 services.AddTransient<GfsArchiveCollector>();
                 services.AddTransient<EcmwfArchiveCollector>();
                 services.AddTransient<MetOfficeGlobalArchiveCollector>();
+                services.AddTransient<MetOfficeUkvArchiveCollector>();
                 services.AddTransient<S3CollectCommand>();
                 services.AddTransient<IElementBlender, WindBlender>();
                 services.AddTransient<IElementBlender, HumidityBlender>();
@@ -448,16 +450,16 @@ public static class Program
         }, precipLeadOpt, precipUkvOpt);
         root.AddCommand(precipBakeoff);
 
-        // s3-collect — live refresh of the four exact-runtime forecast sources
+        // s3-collect — live refresh of the five exact-runtime forecast sources
         // the 2d temperature blender consumes. Defaults to all sources; pass
         // --sources gfs,ifs to subset for testing.
         var s3CollectSourcesOpt = new Option<string>(
             name: "--sources",
-            description: "Comma-list of sources to collect (default: all). Valid: gfs, ifs, aifs, mo-global.",
+            description: "Comma-list of sources to collect (default: all). Valid: gfs, ifs, aifs, mo-global, ukv.",
             getDefaultValue: () => "");
         var s3Collect = new Command(
             "s3-collect",
-            "Live refresh of exact-runtime forecast sources (GFS / IFS / AIFS / Met Office Global) for the 2d blender")
+            "Live refresh of exact-runtime forecast sources (GFS / IFS / AIFS / Met Office Global / Met Office UKV) for the 2d blender")
             { s3CollectSourcesOpt };
         s3Collect.SetHandler(async (sourcesStr) =>
         {

@@ -4,12 +4,13 @@ using WeatherBlend.Collect;
 namespace WeatherBlend.Commands;
 
 /// <summary>
-/// Live collect of the four exact-runtime forecast sources used by the 2d
+/// Live collect of the five exact-runtime forecast sources used by the 2d
 /// temperature blender (productionised 2026-05-05+):
 ///   - GFS              (NOAA S3, ~3-4h publication latency)
-///   - ECMWF IFS oper   (AWS Open Data, ~7-8h)
+///   - ECMWF IFS oper   (AWS Open Data, ~7-8h ← slowest publisher)
 ///   - ECMWF AIFS oper  (AWS Open Data, ~5-7h)
 ///   - Met Office Global (Met Office AWS, ~3-6h, NetCDF via Python subprocess)
+///   - Met Office UKV    (Met Office AWS, ~3-6h, NetCDF via Python subprocess)
 ///
 /// Each source pulls a 3-day rolling window — comfortably covers today's
 /// cycles + late landings. Any not-yet-published cycles 404 silently per the
@@ -21,8 +22,8 @@ namespace WeatherBlend.Commands;
 /// outage doesn't cascade — exit code is the OR of failures (non-zero if
 /// any source produced no rows or errored, but the others still get to run).
 ///
-/// CLI: <c>s3-collect [--sources gfs,ifs,aifs,mo-global]</c>. Default = all
-/// four. Useful subset for dev: <c>--sources gfs</c> (cheapest to test).
+/// CLI: <c>s3-collect [--sources gfs,ifs,aifs,mo-global,ukv]</c>. Default =
+/// all five. Useful subset for dev: <c>--sources gfs</c> (cheapest to test).
 /// </summary>
 public sealed class S3CollectCommand
 {
@@ -32,23 +33,27 @@ public sealed class S3CollectCommand
         public const string Ifs      = "ifs";
         public const string Aifs     = "aifs";
         public const string MoGlobal = "mo-global";
-        public static readonly string[] All = { Gfs, Ifs, Aifs, MoGlobal };
+        public const string Ukv      = "ukv";
+        public static readonly string[] All = { Gfs, Ifs, Aifs, MoGlobal, Ukv };
     }
 
     private readonly GfsArchiveCollector _gfs;
     private readonly EcmwfArchiveCollector _ecmwf;
     private readonly MetOfficeGlobalArchiveCollector _moGlobal;
+    private readonly MetOfficeUkvArchiveCollector _moUkv;
     private readonly ILogger<S3CollectCommand> _log;
 
     public S3CollectCommand(
         GfsArchiveCollector gfs,
         EcmwfArchiveCollector ecmwf,
         MetOfficeGlobalArchiveCollector moGlobal,
+        MetOfficeUkvArchiveCollector moUkv,
         ILogger<S3CollectCommand> log)
     {
         _gfs = gfs;
         _ecmwf = ecmwf;
         _moGlobal = moGlobal;
+        _moUkv = moUkv;
         _log = log;
     }
 
@@ -98,6 +103,7 @@ public sealed class S3CollectCommand
         Sources.Ifs      => _ecmwf.CollectIfsAsync(ct),
         Sources.Aifs     => _ecmwf.CollectAifsAsync(ct),
         Sources.MoGlobal => _moGlobal.CollectAsync(ct),
+        Sources.Ukv      => _moUkv.CollectAsync(ct),
         _ => throw new ArgumentException($"Unknown source '{source}'.", nameof(source)),
     };
 }

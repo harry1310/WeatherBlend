@@ -11,10 +11,11 @@ silently slips. Cloudflare Workers cron triggers fire on time.
 ```
 Cloudflare crons                              Workflow dispatched
 ─────────────────────────                     ──────────────────────
-30 2,8,14,20 * * *  (every 6h, :30)      →   collect.yml
-0 3,9,15,21 * * *   (every 6h, 30 after collect)  →   predict-and-render.yml
-0 12 * * *          (daily 12:00 UTC)    →   era5-refresh.yml
-30 9 * * MON,THU    (Mon + Thu 09:30 UTC) →   verify.yml
+30 2,8,14,20 * * *   (every 6h, :30)            →   collect.yml
+45 2,8,14,20 * * *   (every 6h, 15 after collect) →   s3-collect.yml
+15 3,9,15,21 * * *   (every 6h, 30 after s3-collect) →   predict-and-render.yml
+0 12 * * *           (daily 12:00 UTC)          →   era5-refresh.yml
+30 9 * * MON,THU     (Mon + Thu 09:30 UTC)      →   verify.yml
         │
         ▼
 weatherblend-scheduler (this Worker)
@@ -26,18 +27,33 @@ weatherblend-scheduler (this Worker)
 GitHub Actions runs the workflow as if a human had clicked "Run workflow"
 ```
 
-Same workflows, same code paths; only the trigger source changes. Each
-workflow's GitHub-side `schedule:` block gets removed once the Cloudflare
-cron has been fired in production for at least a couple of cycles.
+Same workflows, same code paths; only the trigger source changes. **No
+workflow in this repo uses GitHub-side `schedule:` triggers** — they're
+unreliable and the Worker's whole reason to exist. If you're adding a
+scheduled workflow, the cron lives here, not in the YAML.
 
 ## Schedule rationale
+
+The four-job 6-hour slot (HH ∈ {2, 8, 14, 20}) sequences as:
 
 | Cron | Workflow | Why this time |
 |------|----------|---------------|
 | `30 2,8,14,20 * * *` | `collect.yml` | Every 6h, offset `:30` past the hour. Was `:15` until 2026-05-04; shifted +15 to give Open-Meteo more ingestion headroom for late ECMWF cycles (06z sometimes finishes ingesting ~07:30 UTC, which an `08:15` collect would miss). Recent runs complete in 2.5–3.5 min so the 30-min gap to predict still has plenty of slack. |
-| `45 2,8,14,20 * * *` | `predict-and-render.yml` | Every 6h, offset `:45` past each collect's `:15`. The 30-min lag past collect lets the R2 push settle before predict reads. Was `45 */2 * * *` (every 2h) until 2026-05-04 — but the on-disk forecast tree only changes when collect runs (which is every 6h), so 8 of every 12 daily predicts were reading IDENTICAL inputs to the previous run and producing IDENTICAL outputs. Per-cycle output is rich enough to justify the 6h cadence: temp + precip emit 24 hourly forecasts per lead bucket, dry-window emits per-day. See `data/reports/schedule_proposal_2026-05-04.md` for the full reasoning. |
+| `45 2,8,14,20 * * *` | `s3-collect.yml` | Raw S3 cycle pulls (GFS / IFS / AIFS / MO Global / MO UKV) for the 2d temperature blender + the precip-exact bake-off. Fires 15 min after collect; on the same `weatherblend-data` concurrency lock so it queues if collect overruns. The 8h45m gap past the previous synoptic cycle is past every publisher: NOAA GFS lands ~T+3h, MO ~T+3-6h, ECMWF AIFS ~T+5-7h, ECMWF IFS oper ~T+7-8h (slowest). Wired in 2026-05-05 when 2d landed. Typical runtime 5–15 min, max 60 min timeout. |
+| `15 3,9,15,21 * * *` | `predict-and-render.yml` | Every 6h, 30 min after s3-collect's `:45` and 45 min after collect's `:30`. Lag gives both R2 pushes time to settle before predict reads. Was `45 2,8,14,20` until 2026-05-05 — shifted +30 to make room for s3-collect at `:45`. Before that it was `45 */2 * * *` (every 2h) until 2026-05-04 — but the on-disk forecast tree only changes when collect runs (which is every 6h), so 8 of every 12 daily predicts were reading IDENTICAL inputs to the previous run and producing IDENTICAL outputs. Per-cycle output is rich enough to justify the 6h cadence: temp + precip emit 24 hourly forecasts per lead bucket, dry-window emits per-day. See `data/reports/schedule_proposal_2026-05-04.md` for the full reasoning. |
 | `0 12 * * *` | `era5-refresh.yml` | ECMWF publishes ERA5T daily around 09–10 UTC; Open-Meteo ingests within a few hours. 12:00 UTC is past both, so the daily refresh always lands on Open-Meteo's freshest data instead of catching ECMWF mid-publish (which writes null partitions). The refresh itself pulls a 14-day rolling window, so any null partitions left by older runs get backfilled as ECMWF catches up. |
 | `30 9 * * MON,THU` | `verify.yml` | Twice-weekly Mon + Thu 09:30 UTC. Doubled from weekly-Mon on 2026-05-04: a freshly retrained champion was waiting up to 7 days for its first verify rows (cron) plus 5 days (ERA5 latency) before showing on the Models page; cutting cron lag in half cuts that to 3-4 days. **Use day-name aliases (`MON`, `THU`) not numbers — Cloudflare cron uses 1=Sunday (not POSIX 0=Sunday), so `* * 1,4` was firing Sun+Wed instead of Mon+Thu when first deployed 2026-05-04 (caught + fixed same day, see commit history for the bug).** |
+
+## Concurrency invariant
+
+`collect`, `s3-collect`, and `predict-and-render` all share the GitHub
+Actions concurrency group `weatherblend-data` with `cancel-in-progress:
+false`. With the spacing above (15 min between dispatches, both collects
+typically finish in well under 15 min), the queue depth never exceeds 2
+simultaneously. That matters because GitHub Actions cancels the *older*
+pending entry when a 3rd job arrives on the same group — three-deep
+queueing would silently drop one of the collects. Spacing each pair by
+15+ min keeps the lock free between them.
 
 ## Adding a new schedule
 

@@ -11,8 +11,10 @@ namespace WeatherBlend.Commands;
 /// Brier-scored P(wet) bake-off for the exact-runtime precipitation blender.
 /// Mirrors the production 3a metric (binary wet/dry classification, threshold
 /// 0.1 mm/h) against the same exact-runtime sources the temperature 2d
-/// blender uses (GFS / IFS / AIFS / MO Global). Single tier P1, single lead
-/// 12h or 24h.
+/// blender uses (GFS + IFS + AIFS required, MO Global optional, plus UKV
+/// when <c>--include-ukv</c> is set — 5th always-optional input via the
+/// per-V-hour conditional rule from 03Z + 15Z cycles). Single tier P1,
+/// single lead 12h or 24h.
 ///
 /// Per-model raw precip values are still fed as features (LightGBM tree
 /// splits handle the unit/semantic differences between APCP / cumulative

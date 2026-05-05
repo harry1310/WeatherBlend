@@ -1,39 +1,42 @@
 name: s3-collect
 
-# Live refresh of the four exact-runtime forecast sources used by the 2d
+# Live refresh of the five exact-runtime forecast sources used by the 2d
 # temperature blender (productionised 2026-05-05+):
 #   - GFS              (NOAA noaa-gfs-bdp-pds, ~3-4h publication latency)
-#   - ECMWF IFS oper   (ECMWF ecmwf-forecasts, ~7-8h)
+#   - ECMWF IFS oper   (ECMWF ecmwf-forecasts, ~7-8h ← slowest)
 #   - ECMWF AIFS oper  (same bucket, ~5-7h)
 #   - Met Office Global (Met Office AWS, ~3-6h, NetCDF via Python subprocess)
+#   - Met Office UKV    (Met Office AWS, ~3-6h, NetCDF via Python subprocess)
+#                       UKV is always-optional in 2d's spec — pulled via
+#                       per-V-hour conditional rule from 03Z + 15Z cycles
+#                       so missing cycles don't drop training rows.
 #
 # Each source pulls a 3-day rolling window keyed off the wall-clock UTC date
 # at job start. Not-yet-published cycles 404 silently. Idempotent — running
 # more often than needed is harmless (just a few extra GETs).
 #
-# Schedule: every 6h, offset 30 min past the cycle hour to give NOAA and
-# ECMWF time to start publishing the cycle that just ran. The 30 min lag
-# is the minimum that catches GFS's fastest cycles; ECMWF's slower IFS
-# usually appears one collect window later (still in time for the next
-# predict cycle).
+# Schedule lives in cloudflare/scheduler-worker/wrangler.toml; the worker
+# fires this workflow at 02:45, 08:45, 14:45, 20:45 UTC (15 min after
+# collect, 30 min before predict-and-render). HH:45 is 8h45m past the
+# previous cycle, comfortably past the slowest publisher (ECMWF IFS,
+# T+7-8h). GitHub-side `schedule:` removed 2026-05-05 — see collect.yml +
+# wrangler.toml for why we don't put cron in GH workflows.
 #
 # This workflow exists alongside the existing `collect.yml` (which pulls
 # Open-Meteo data for the 2b/2c blenders). The two are independent: 2b/2c
 # use offset_day rows from Open-Meteo, 2d uses RunTimeSource='exact' rows
 # from raw S3. Both data sources land in the same forecast tree under
-# different `model=` partition keys.
+# different `model=` partition keys, and both must complete before
+# predict-and-render runs (enforced by the `weatherblend-data` concurrency
+# lock + dispatch ordering).
 
 on:
   workflow_dispatch:
     inputs:
       sources:
-        description: "Comma-list of sources (default all). Valid: gfs, ifs, aifs, mo-global"
+        description: "Comma-list of sources (default all). Valid: gfs, ifs, aifs, mo-global, ukv"
         required: false
         default: ""
-  schedule:
-    # Every 6h at HH:30 UTC — pairs with NOAA / ECMWF cycle landings
-    # (00Z run lands ~03:30, 06Z ~09:30, etc.). Same cadence as collect.yml.
-    - cron: "30 3,9,15,21 * * *"
 
 concurrency:
   # Shared lock with the existing collect / predict / verify so two jobs

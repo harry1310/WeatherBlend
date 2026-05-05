@@ -9,11 +9,18 @@ name: predict-and-render
 #   - predictions pushed to R2 once between predict and render so the deployed
 #     site reads its own freshly-written outputs
 #
-# Schedule: :45 past 02/08/14/20 UTC (4 runs/day). 30 min after the :15
-# collect cron — same delay the original predict workflow used and proven
-# to leave time for collect's R2 push to settle. The `weatherblend-data`
-# concurrency group serialises against any in-flight collect / verify /
-# manual predict, so the pull always sees the latest pushed forecast tree.
+# Schedule: 03:15, 09:15, 15:15, 21:15 UTC (4 runs/day, every 6h). Lives
+# in cloudflare/scheduler-worker/wrangler.toml — see that file for the
+# full sequencing rationale per slot:
+#   HH:30   collect       (Open-Meteo + ERA5 + METAR + EA + MO DataHub)
+#   HH:45   s3-collect    (raw S3 cycles for 2d — GFS / IFS / AIFS / MO Global / UKV)
+#   HH+1:15 predict-and-render
+#
+# Both collects MUST finish before this fires. Enforced two ways:
+# (1) dispatch ordering — predict-and-render fires 30 min after s3-collect
+#     and 45 min after collect, well past their typical runtimes;
+# (2) shared `weatherblend-data` concurrency group with cancel-in-progress=false
+#     so if either collect overruns, predict queues until the lock frees.
 # cancel-in-progress=false because we never want to interrupt a job that's
 # mid-write to predictions.
 on:
@@ -21,14 +28,10 @@ on:
   # GitHub's `schedule:` trigger removed at the same time. Cron updated
   # 2026-05-04 from `45 */2 * * *` (every 2h, 12×/day) → `45 2,8,14,20 * * *`
   # (every 6h, 4×/day, paired with collect) once temp predict moved to
-  # hourly-per-lead output. The on-disk forecast tree only changes when
-  # collect runs, so the previous 2h cadence wasted ~67% of its runs
-  # producing identical outputs to the prior cycle. See
-  # data/reports/schedule_proposal_2026-05-04.md for the full reasoning.
-  # The Cloudflare scheduler's WORKFLOW_FOR_CRON table maps the new cron
-  # expression to predict-and-render.yml. The 30-min lag past collect's
-  # `:15` cycle gives R2 time to settle the freshest forecast push before
-  # predict reads from it.
+  # hourly-per-lead output. Cron updated again 2026-05-05 from
+  # `45 2,8,14,20` → `15 3,9,15,21` to make room for s3-collect.yml at
+  # `45 2,8,14,20`. See cloudflare/scheduler-worker/wrangler.toml for the
+  # full sequencing rationale.
   #
   # `workflow_dispatch:` retained so manual dashboard runs and the
   # Cloudflare scheduler's API-driven dispatches still work.

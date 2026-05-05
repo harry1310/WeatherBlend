@@ -15,13 +15,38 @@ compatibility_date = "2025-04-01"
 # match a key in WORKFLOW_FOR_CRON in src/index.ts exactly; the worker uses
 # event.cron to look up which workflow to dispatch.
 #
-#   "30 2,8,14,20 * * *"  → collect.yml             every 6h, offset :30
-#   "0 3,9,15,21 * * *"   → predict-and-render.yml  every 6h, 30min after collect
+# Per the 2026-05-05 audit: ALL scheduling for this project lives here.
+# Never put a `schedule:` block in a GitHub Actions workflow — GitHub-side
+# cron has been documented as 15+ min late and occasionally missed runs
+# (rationale: collect.yml header). Reliability is the whole reason this
+# Worker exists.
+#
+#   "30 2,8,14,20 * * *"  → collect.yml             Open-Meteo + ERA5 + METAR + EA + MO DataHub
+#   "45 2,8,14,20 * * *"  → s3-collect.yml          Raw S3 cycles (GFS / IFS / AIFS / MO Global) for 2d
+#   "15 3,9,15,21 * * *"  → predict-and-render.yml  every 6h, 30 min after s3-collect
 #   "0 12 * * *"          → era5-refresh.yml        daily at 12:00 UTC
 #   "30 9 * * MON,THU"    → verify.yml              twice-weekly Mon + Thu 09:30 UTC
 #                                                   (Cloudflare cron uses 1=Sunday,
 #                                                   not POSIX 0=Sunday — day names
 #                                                   avoid the off-by-one trap)
+#
+# Sequencing per 6h slot (HH ∈ {2, 8, 14, 20}):
+#
+#   HH:30  collect             Open-Meteo offset_day + ERA5 + METAR + rainfall + MO DataHub.
+#                              Typical ~3-5 min, max 15 min timeout.
+#   HH:45  s3-collect          Raw S3 cycle pulls (GFS / IFS / AIFS / MO Global). Slowest source
+#                              is ECMWF IFS (T+7-8h post-cycle); HH:45 = 8h45m past the previous
+#                              cycle (e.g. 02:45 catches the 18Z cycle's fully-published data).
+#                              Typical ~5-15 min, max 60 min timeout.
+#   (HH+1):15  predict-and-render   Predictions read from R2 (post collect + s3-collect pushes),
+#                              site renders. 30 min after s3-collect dispatch — well past the
+#                              typical 15 min runtime so the lock is free.
+#
+# All three workflows share `weatherblend-data` concurrency group with
+# `cancel-in-progress: false` so the queue serialises them in dispatch order.
+# Spacing is wide enough that the queue never deepens past 2 simultaneously
+# (GH Actions' concurrency cancels older-pending when a 3rd arrives, so
+# we explicitly avoid 3-deep).
 #
 # era5-refresh moved from 06:00 → 12:00 because ECMWF ERA5T publishes around
 # 09–10 UTC and Open-Meteo's archive ingests within a few hours; 12:00 UTC
@@ -40,10 +65,17 @@ compatibility_date = "2025-04-01"
 # same site freshness for ~67% less compute. The 30-min offset past the
 # collect (which runs at `:15`) gives R2 enough time to settle before
 # predict reads.
+#
+# predict-and-render moved from `0 3,9,15,21` → `15 3,9,15,21` on
+# 2026-05-05 to make room for s3-collect at `45` of the prior hour
+# (s3-collect typical runtime is 5-15 min so its lock is reliably released
+# by 03:00; the additional 15 min margin to 03:15 covers the 60-min worst-
+# case timeout cleanly).
 [triggers]
 crons = [
   "30 2,8,14,20 * * *",
-  "0 3,9,15,21 * * *",
+  "45 2,8,14,20 * * *",
+  "15 3,9,15,21 * * *",
   "0 12 * * *",
   "30 9 * * MON,THU",
 ]

@@ -509,7 +509,7 @@ public static partial class SitePages
             // 2d ships once UKV inclusion is decided (2026-05-05+). Description
             // here so the card renders correctly the moment ActivePhasePolicy
             // gets "2d" added to the temperature list.
-            ("temperature", "2d")  => "Exact-runtime blender. Trains on raw S3 cycles (GFS / IFS oper / AIFS / MO Global) instead of Open-Meteo offset_day, with rigorous (RunTime, ValidTime, Lead) provenance per row.",
+            ("temperature", "2d")  => "Exact-runtime blender. Trains on raw S3 cycles (GFS + AIFS required, IFS oper + MO Global + UKV optional) instead of Open-Meteo offset_day, with rigorous (RunTime, ValidTime, Lead) provenance per row. UKV pulled per-V-hour from 03Z + 15Z cycles.",
             ("precipitation", "3a") => "Lean P(wet) classifier, 27 features.",
             ("precipitation", "3c") => "Rich P(wet) classifier, 55 features.",
             ("dry_window", "3b")   => "53-feature LightGBM per-(station, window).",

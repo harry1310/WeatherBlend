@@ -10,11 +10,11 @@ namespace WeatherBlend.Collect;
 /// scheduled cron picks up newly-published cycles + any that landed late
 /// without re-fetching the entire archive.
 ///
-/// Wired into the live <c>s3-collect</c> command alongside the ECMWF and
-/// Met Office equivalents — these are the four exact-runtime sources the
-/// 2d temperature blender (productionised 2026-05-05+) consumes. The
-/// existing live collect via Open-Meteo (<c>collect</c>) is unrelated and
-/// keeps running for the 2b/2c blenders.
+/// Wired into the live <c>s3-collect</c> command alongside the ECMWF
+/// (IFS + AIFS) and Met Office (Global + UKV) equivalents — these are the
+/// five exact-runtime sources the 2d temperature blender (productionised
+/// 2026-05-05+) consumes. The existing live collect via Open-Meteo
+/// (<c>collect</c>) is unrelated and keeps running for the 2b/2c blenders.
 ///
 /// Defaults — same lead set as the GFS backfill (1..120h on the 6h-aligned
 /// grid) so the collected cycles can serve any blender lead bucket. All
