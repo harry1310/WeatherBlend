@@ -1233,10 +1233,13 @@ public sealed class TempTrainCommand
             string.Join("; ", perLead.Select(kv =>
                 $"lead {kv.Key}h: blend Brier {kv.Value.BlendTestMae:0.000} vs climatology Brier {kv.Value.BlendTestRmse:0.000}")));
 
-        var (cf, cs) = await _precipConformal.FitOneAsync(
-            stationSlug, versionName, PrecipConformalFitCommand.DefaultAlpha, ct);
-        _log.LogInformation("Auto-conformal: fitted {F} leads ({S} skipped) for {S2}/{V}",
-            cf, cs, stationSlug, versionName);
+        // Auto-conformal skipped for 3d: PrecipConformalFitCommand re-loads
+        // training rows via PrecipFeatureBuilder, which only knows the
+        // offset_day model IDs (gfs_seamless etc.). 3d's exact-runtime IDs
+        // (gfs_ncep etc.) trip ShortName(). Conformal cal can be added
+        // later via a 3d-specific re-fit; until then, ConformalSetTag is
+        // null on 3d rows (legacy-row behaviour, harmless).
+        await Task.CompletedTask;
         return 0;
     }
 }
