@@ -391,11 +391,13 @@ public static class Program
             getDefaultValue: () => false);
         // --include-ukv (2026-05-05) — adds an extra "temp_ukv" column whose
         // value per ValidTime hour is pulled from the appropriate UKV (cycle,
-        // lead) tuple landing at ~12h-ahead. Tests whether UKV helps the
-        // exact-runtime blender despite its odd 03Z/15Z cycle phasing.
+        // lead) tuple chosen so the average UKV-effective-lead matches the
+        // bake-off targetLead (lead-12 → leads {9,15}; lead-24 → leads {21,27}).
+        // Tests whether UKV helps the exact-runtime blender despite its odd
+        // 03Z/15Z cycle phasing.
         var exact12hUkvOpt = new Option<bool>(
             name: "--include-ukv",
-            description: "Add UKV as a 5th feature column (per-V-hour conditional pull from leads {9,15}). Off by default.",
+            description: "Add UKV as a 5th feature column (per-V-hour conditional pull, lead-aware: lead-12 reads UKV at leads {9,15}; lead-24 reads at {21,27}). Off by default.",
             getDefaultValue: () => false);
         var exact12hBakeoff = new Command(
             "exact-12h-bakeoff",

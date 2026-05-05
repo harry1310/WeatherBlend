@@ -741,11 +741,30 @@ ORDER BY ValidTimeUtc, Model;";
         var leadInClause = "(" + string.Join(",", specLeads) + ")";
         var hourInClause = "(" + string.Join(",", Phase2dValidHoursUtc) + ")";
 
-        // Per-model pull — latest exact-runtime cycle per (ValidTime, Model,
-        // LeadHours) satisfying RunTime ≤ asOfRunTime AND RunTime ≤ Valid-L
-        // (the standard "live cycle, lead-bucketed" guard). UKV pulled
-        // separately via the per-V-hour conditional rule from
-        // Exact12hFeatureBuilder.Build.
+        // UKV CTE per blender lead — UKV's per-V-hour (cycle, lead) tuples
+        // differ by target lead so the average UKV-effective-lead matches.
+        // UNION ALL across spec leads with a BlenderLead tag column; the
+        // outer LEFT JOIN keys on (ValidTime, BlenderLead = forecast row's
+        // LeadHours) so lead-12 forecast rows get UKV picked under the
+        // 12h-ahead rule and lead-24 rows get UKV picked under the
+        // 24h-ahead rule. Fixes the lead-24 leak the buggy single-CTE
+        // version had (UKV at 12h-ahead while other inputs were at 24h).
+        var ukvUnionLegs = string.Join("\n        UNION ALL\n",
+            specLeads.Select(blenderLead => $@"        SELECT
+            ValidTimeUtc, {blenderLead} AS BlenderLead,
+            Temperature2m AS ukv_temp, RunTimeUtc AS ukv_run_time,
+            ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn2
+        FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
+        WHERE LocationName = '{loc}'
+          AND Model = 'met_office_ukv'
+          AND RunTimeSource = 'exact'
+          AND Temperature2m IS NOT NULL
+          AND HOUR(ValidTimeUtc) IN {hourInClause}
+          AND RunTimeUtc <= TIMESTAMP '{asOfRunTime:yyyy-MM-dd HH:mm:ss}'
+          AND ValidTimeUtc BETWEEN TIMESTAMP '{earliestValid:yyyy-MM-dd HH:mm:ss}'
+                               AND TIMESTAMP '{latestValid:yyyy-MM-dd HH:mm:ss}'
+          AND ({Exact12hFeatureBuilder.UkvPerVOrClause(blenderLead)})"));
+
         var sql = $@"
 WITH latest AS (
     SELECT ValidTimeUtc, Model, LeadHours, RunTimeUtc, Temperature2m,
@@ -765,40 +784,18 @@ WITH latest AS (
                            AND TIMESTAMP '{latestValid:yyyy-MM-dd HH:mm:ss}'
 ),
 ukv AS (
-    SELECT ValidTimeUtc, Temperature2m AS ukv_temp, RunTimeUtc AS ukv_run_time
+    SELECT ValidTimeUtc, BlenderLead, ukv_temp, ukv_run_time
     FROM (
-        SELECT ValidTimeUtc, Temperature2m, RunTimeUtc,
-               ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn2
-        FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
-        WHERE LocationName = '{loc}'
-          AND Model = 'met_office_ukv'
-          AND RunTimeSource = 'exact'
-          AND Temperature2m IS NOT NULL
-          AND HOUR(ValidTimeUtc) IN {hourInClause}
-          AND RunTimeUtc <= TIMESTAMP '{asOfRunTime:yyyy-MM-dd HH:mm:ss}'
-          AND ValidTimeUtc BETWEEN TIMESTAMP '{earliestValid:yyyy-MM-dd HH:mm:ss}'
-                               AND TIMESTAMP '{latestValid:yyyy-MM-dd HH:mm:ss}'
-          AND (
-            (HOUR(ValidTimeUtc) = 0  AND HOUR(RunTimeUtc) = 15
-             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE) - INTERVAL 1 DAY
-             AND LeadHours = 9)
-         OR (HOUR(ValidTimeUtc) = 6  AND HOUR(RunTimeUtc) = 15
-             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE) - INTERVAL 1 DAY
-             AND LeadHours = 15)
-         OR (HOUR(ValidTimeUtc) = 12 AND HOUR(RunTimeUtc) = 3
-             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE)
-             AND LeadHours = 9)
-         OR (HOUR(ValidTimeUtc) = 18 AND HOUR(RunTimeUtc) = 3
-             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE)
-             AND LeadHours = 15)
-          )
+{ukvUnionLegs}
     )
     WHERE rn2 = 1
 )
 SELECT l.ValidTimeUtc, l.Model, l.LeadHours, l.RunTimeUtc, l.Temperature2m,
        u.ukv_temp, u.ukv_run_time
 FROM latest l
-LEFT JOIN ukv u USING (ValidTimeUtc)
+LEFT JOIN ukv u
+       ON l.ValidTimeUtc = u.ValidTimeUtc
+      AND l.LeadHours    = u.BlenderLead
 WHERE l.rn = 1
   AND l.RunTimeUtc <= l.ValidTimeUtc - (l.LeadHours * INTERVAL 1 HOUR)
 ORDER BY l.ValidTimeUtc, l.LeadHours, l.Model;";

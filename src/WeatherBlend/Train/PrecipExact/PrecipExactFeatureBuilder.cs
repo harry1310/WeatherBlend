@@ -1,5 +1,6 @@
 using DuckDB.NET.Data;
 using WeatherBlend.Train.Common;
+using WeatherBlend.Train.Exact12h;
 
 namespace WeatherBlend.Train.PrecipExact;
 
@@ -159,15 +160,12 @@ public static class PrecipExactFeatureBuilder
             $"AND CAST(ValidTimeUtc AS DATE) >= DATE '{tier.StartDate:yyyy-MM-dd}' " +
             $"AND Model IN {modelInClause}";
 
-        // Optional UKV CTE — same per-V-hour (cycle, lead) rule as
-        // Exact12hFeatureBuilder, except we read Precipitation instead of
-        // Temperature2m. UKV runs at 03Z+15Z and we want a ~12h-ahead
-        // forecast per ValidTime hour:
-        //   V=00 → prev day 15Z + lead 9
-        //   V=06 → prev day 15Z + lead 15
-        //   V=12 → same day 03Z + lead 9
-        //   V=18 → same day 03Z + lead 15
-        // Always-optional → LEFT JOIN, NaN at any V where the pull failed.
+        // Optional UKV CTE — shares Exact12hFeatureBuilder.UkvPerVOrClause
+        // so the per-V-hour (cycle, lead) rule is target-lead-aware (avg
+        // UKV effective-lead matches targetLead, mirroring the other
+        // models' strict lead). Reads Precipitation instead of
+        // Temperature2m. Always-optional → LEFT JOIN, NaN at any V where
+        // the pull failed.
         var ukvCte = !includeUkv ? "" : $@",
 ukv_per_v AS (
     SELECT ValidTimeUtc, Precipitation AS ukv_precip
@@ -181,20 +179,7 @@ ukv_per_v AS (
           AND Precipitation IS NOT NULL
           AND CAST(ValidTimeUtc AS DATE) >= DATE '{tier.StartDate:yyyy-MM-dd}'
           AND HOUR(ValidTimeUtc) IN (0, 6, 12, 18)
-          AND (
-            (HOUR(ValidTimeUtc) = 0  AND HOUR(RunTimeUtc) = 15
-             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE) - INTERVAL 1 DAY
-             AND LeadHours = 9)
-         OR (HOUR(ValidTimeUtc) = 6  AND HOUR(RunTimeUtc) = 15
-             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE) - INTERVAL 1 DAY
-             AND LeadHours = 15)
-         OR (HOUR(ValidTimeUtc) = 12 AND HOUR(RunTimeUtc) = 3
-             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE)
-             AND LeadHours = 9)
-         OR (HOUR(ValidTimeUtc) = 18 AND HOUR(RunTimeUtc) = 3
-             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE)
-             AND LeadHours = 15)
-          )
+          AND ({Exact12hFeatureBuilder.UkvPerVOrClause(targetLead)})
     )
     WHERE rn = 1
 )";

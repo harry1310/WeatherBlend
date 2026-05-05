@@ -115,16 +115,29 @@ public static class Exact12hFeatureBuilder
     /// </summary>
     /// <summary>
     /// UKV-included flag — when true, the feature vector gets one extra
-    /// column "temp_ukv" whose value per ValidTime is pulled from the (cycle,
-    /// lead) tuple that lands closest to a 12h-ahead UKV forecast for that
-    /// ValidTime hour. Per-V mapping (UKV runs at 03Z and 15Z only):
-    ///   V=00 → 15Z prev day + lead 9  (9h-ahead)
-    ///   V=06 → 15Z prev day + lead 15 (15h-ahead)
-    ///   V=12 → 03Z same day + lead 9  (9h-ahead)
-    ///   V=18 → 03Z same day + lead 15 (15h-ahead)
-    /// Average UKV-effective-lead = 12h, matching the other models'
-    /// strict lead-12. UKV is always optional (NaN at any V where the
-    /// pull failed) so blender training drops nothing.
+    /// column "temp_ukv" whose value per ValidTime is pulled from a (cycle,
+    /// lead) tuple chosen so the average UKV-effective-lead equals
+    /// <paramref name="targetLead"/>, matching the strictness of the other
+    /// inputs. UKV runs at 03Z and 15Z only, so the per-V mapping is
+    /// target-lead-specific:
+    ///
+    /// targetLead = 12 (avg = 12h ahead):
+    ///   V=00 → 15Z prev day + lead 9     V=12 → 03Z same day + lead 9
+    ///   V=06 → 15Z prev day + lead 15    V=18 → 03Z same day + lead 15
+    ///
+    /// targetLead = 24 (avg = 24h ahead):
+    ///   V=00 → 03Z prev day + lead 21    V=12 → 15Z prev day + lead 21
+    ///   V=06 → 03Z prev day + lead 27    V=18 → 15Z prev day + lead 27
+    ///
+    /// Bug fix 2026-05-05 — earlier the lead-24 builder ALSO used the
+    /// 12h-ahead mapping, leaking 12h-fresher UKV data into the lead-24
+    /// blender vs the strict 24h-ahead other inputs. The lead-24 numbers
+    /// from the pre-fix bake-off were inflated; rerun.
+    ///
+    /// UKV is always optional (NaN at any V where the pull failed) so
+    /// blender training drops nothing. The collector
+    /// (<see cref="WeatherBlend.Collect.MetOfficeUkvArchiveCollector"/>)
+    /// pulls leads {9, 15, 21, 27} so all four mappings have data.
     /// </summary>
     public static BlenderSpec BuildSpec(
         TierSpec tier,
@@ -275,14 +288,12 @@ public static class Exact12hFeatureBuilder
             $"AND Model IN {modelInClause}";
 
         // Optional UKV CTE — picks one UKV value per ValidTime from a
-        // hour-conditional (cycle, lead) tuple chosen to land at ~12h-ahead
-        // (see BuildSpec docstring for the rules). LEFT JOIN so a missing
-        // UKV row doesn't drop the whole training row.
+        // hour-conditional (cycle, lead) tuple chosen so the average UKV
+        // effective-lead equals targetLead (see BuildSpec docstring for the
+        // per-target tables). LEFT JOIN so a missing UKV row doesn't drop
+        // the whole training row.
         var ukvCte = !includeUkv ? "" : $@",
 ukv_per_v AS (
-    -- For each ValidTime hour, pick the (UKV cycle, lead) tuple that
-    -- gives a ~12h-ahead forecast for that V. UKV runs at 03Z + 15Z only,
-    -- so V hours map to specific (run_hr, run_date_offset, lead) triples.
     SELECT ValidTimeUtc, Temperature2m AS ukv_temp
     FROM (
         SELECT ValidTimeUtc, Temperature2m,
@@ -294,24 +305,7 @@ ukv_per_v AS (
           AND Temperature2m IS NOT NULL
           AND CAST(ValidTimeUtc AS DATE) >= DATE '{tier.StartDate:yyyy-MM-dd}'
           AND HOUR(ValidTimeUtc) IN (0, 6, 12, 18)
-          AND (
-            -- V=00: prev day 15Z run + lead 9
-            (HOUR(ValidTimeUtc) = 0  AND HOUR(RunTimeUtc) = 15
-             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE) - INTERVAL 1 DAY
-             AND LeadHours = 9)
-            -- V=06: prev day 15Z run + lead 15
-         OR (HOUR(ValidTimeUtc) = 6  AND HOUR(RunTimeUtc) = 15
-             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE) - INTERVAL 1 DAY
-             AND LeadHours = 15)
-            -- V=12: same day 03Z run + lead 9
-         OR (HOUR(ValidTimeUtc) = 12 AND HOUR(RunTimeUtc) = 3
-             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE)
-             AND LeadHours = 9)
-            -- V=18: same day 03Z run + lead 15
-         OR (HOUR(ValidTimeUtc) = 18 AND HOUR(RunTimeUtc) = 3
-             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE)
-             AND LeadHours = 15)
-          )
+          AND ({UkvPerVOrClause(targetLead)})
     )
     WHERE rn = 1
 )";
@@ -472,4 +466,61 @@ ORDER BY p.ValidTimeUtc;
     }
 
     private static string NormaliseGlob(string p) => p.Replace('\\', '/');
+
+    /// <summary>
+    /// Per-V-hour (cycle, lead) tuples for UKV picks — chosen so the
+    /// average effective UKV lead matches <paramref name="targetLead"/>.
+    /// Public so the precip exact builder can share the rule (UKV mapping
+    /// is a function of the V-hour grid + UKV's 03Z/15Z cycle structure,
+    /// not of the variable being read).
+    /// </summary>
+    public static IReadOnlyList<UkvPick> UkvPicksForLead(int targetLead) => targetLead switch
+    {
+        // 12h-ahead: closest UKV cycle to V-12 each ValidTime; avg lead 12h.
+        12 => new UkvPick[]
+        {
+            new(VHour: 0,  RunHour: 15, DayOffset: 1, LeadHours: 9),
+            new(VHour: 6,  RunHour: 15, DayOffset: 1, LeadHours: 15),
+            new(VHour: 12, RunHour: 3,  DayOffset: 0, LeadHours: 9),
+            new(VHour: 18, RunHour: 3,  DayOffset: 0, LeadHours: 15),
+        },
+        // 24h-ahead: closest UKV cycle to V-24 each ValidTime; avg lead 24h.
+        // No UKV cycle on the same day satisfies "≥ 24h before V" for any V
+        // ∈ {0,6,12,18}, so every pick is from the previous day.
+        24 => new UkvPick[]
+        {
+            new(VHour: 0,  RunHour: 3,  DayOffset: 1, LeadHours: 21),
+            new(VHour: 6,  RunHour: 3,  DayOffset: 1, LeadHours: 27),
+            new(VHour: 12, RunHour: 15, DayOffset: 1, LeadHours: 21),
+            new(VHour: 18, RunHour: 15, DayOffset: 1, LeadHours: 27),
+        },
+        _ => throw new ArgumentException(
+            $"UKV per-V picks not defined for target lead {targetLead}h. Add a row to UkvPicksForLead first.",
+            nameof(targetLead)),
+    };
+
+    /// <summary>One per-(V hour) UKV pick: which (cycle hour, day offset
+    /// from V's date, lead) lands at V from a UKV run-time. <c>DayOffset</c>
+    /// is days subtracted from V's date; 0 = same day, 1 = previous day.</summary>
+    public sealed record UkvPick(int VHour, int RunHour, int DayOffset, int LeadHours);
+
+    /// <summary>Build the SQL <c>OR</c>-clause body that selects rows
+    /// matching <see cref="UkvPicksForLead"/>. Returned string is wrapped in
+    /// parens by the caller; each clause is one (V, runHour, day-offset,
+    /// lead) tuple.</summary>
+    public static string UkvPerVOrClause(int targetLead)
+    {
+        var picks = UkvPicksForLead(targetLead);
+        var parts = new List<string>(picks.Count);
+        foreach (var p in picks)
+        {
+            var dayPart = p.DayOffset == 0
+                ? "CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE)"
+                : $"CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE) - INTERVAL {p.DayOffset} DAY";
+            parts.Add(
+                $"(HOUR(ValidTimeUtc) = {p.VHour} AND HOUR(RunTimeUtc) = {p.RunHour}" +
+                $" AND {dayPart} AND LeadHours = {p.LeadHours})");
+        }
+        return string.Join("\n         OR ", parts);
+    }
 }
