@@ -31,12 +31,14 @@ public static class PrecipExactFeatureBuilder
 {
     public const int DefaultTargetLead = 12;
 
-    /// <summary>Canonical model order. AIFS deliberately omitted (units bug
-    /// see class docstring); add back once the parser is fixed.</summary>
+    /// <summary>Canonical model order. AIFS reinstated 2026-05-05 after the
+    /// EcmwfClient tp units bug was fixed and the AIFS chunks re-backfilled
+    /// against the corrected parser.</summary>
     public static readonly IReadOnlyList<string> CanonicalModelOrder = new[]
     {
         "gfs_ncep",
         "ecmwf_ifs_oper",
+        "ecmwf_aifs_oper",
         "met_office_global",
     };
 
@@ -44,6 +46,7 @@ public static class PrecipExactFeatureBuilder
     {
         "gfs_ncep"          => "gfs",
         "ecmwf_ifs_oper"    => "ifs",
+        "ecmwf_aifs_oper"   => "aifs",
         "met_office_global" => "moglobal",
         _ => throw new ArgumentException($"Unknown modelId '{modelId}'", nameof(modelId)),
     };
@@ -63,10 +66,10 @@ public static class PrecipExactFeatureBuilder
     {
         new TierSpec(
             Name: "P1",
-            Required: new[] { "gfs_ncep", "ecmwf_ifs_oper" },
+            Required: new[] { "gfs_ncep", "ecmwf_ifs_oper", "ecmwf_aifs_oper" },
             Optional: new[] { "met_office_global" },
-            StartDate: new DateOnly(2024, 5, 4), // MO Global start; restricts T2-equivalent comparison
-            Description: "GFS + IFS required, MO Global optional. From 2024-05-04 (MO Global archive start). Mirrors temp 2d T2 minus AIFS."),
+            StartDate: new DateOnly(2024, 5, 4),
+            Description: "GFS + IFS + AIFS required, MO Global optional. From 2024-05-04 (MO Global archive start). Mirrors temp 2d T2."),
     };
 
     public static TierSpec GetTier(string name) =>

@@ -13,11 +13,10 @@ namespace WeatherBlend.Tests;
 public class PrecipExactFeatureBuilderTests
 {
     [Fact]
-    public void CanonicalModelOrder_excludes_AIFS_pending_units_fix()
+    public void CanonicalModelOrder_includes_AIFS_after_units_fix()
     {
         PrecipExactFeatureBuilder.CanonicalModelOrder.Should().BeEquivalentTo(
-            "gfs_ncep", "ecmwf_ifs_oper", "met_office_global");
-        PrecipExactFeatureBuilder.CanonicalModelOrder.Should().NotContain("ecmwf_aifs_oper");
+            "gfs_ncep", "ecmwf_ifs_oper", "ecmwf_aifs_oper", "met_office_global");
     }
 
     [Fact]
@@ -26,7 +25,7 @@ public class PrecipExactFeatureBuilderTests
         PrecipExactFeatureBuilder.AllTiers.Should().HaveCount(1);
         var p1 = PrecipExactFeatureBuilder.AllTiers[0];
         p1.Name.Should().Be("P1");
-        p1.Required.Should().BeEquivalentTo("gfs_ncep", "ecmwf_ifs_oper");
+        p1.Required.Should().BeEquivalentTo("gfs_ncep", "ecmwf_ifs_oper", "ecmwf_aifs_oper");
         p1.Optional.Should().BeEquivalentTo("met_office_global");
     }
 
@@ -36,9 +35,9 @@ public class PrecipExactFeatureBuilderTests
         var spec = PrecipExactFeatureBuilder.BuildSpec(PrecipExactFeatureBuilder.AllTiers[0]);
         spec.Target.Should().Be("precipitation");
         spec.LeadHours.Should().Be(12);
-        spec.FeatureNames.Should().StartWith(new[] { "precip_gfs", "precip_ifs", "precip_moglobal" });
-        // 3 per-model + 3 spread + 4 calendar = 10 features
-        spec.FeatureNames.Should().HaveCount(10);
+        spec.FeatureNames.Should().StartWith(new[] { "precip_gfs", "precip_ifs", "precip_aifs", "precip_moglobal" });
+        // 4 per-model + 3 spread + 4 calendar = 11 features
+        spec.FeatureNames.Should().HaveCount(11);
         spec.FeatureNames.Should().Contain("precip_mean");
     }
 
@@ -58,8 +57,8 @@ public class PrecipExactFeatureBuilderTests
             var sn = PrecipExactFeatureBuilder.ShortName(m);
             sn.Should().NotBeNullOrEmpty();
         }
-        var ex = Record.Exception(() => PrecipExactFeatureBuilder.ShortName("ecmwf_aifs_oper"));
-        ex.Should().BeOfType<ArgumentException>(); // AIFS deliberately not in the map
+        var ex = Record.Exception(() => PrecipExactFeatureBuilder.ShortName("not_a_real_model"));
+        ex.Should().BeOfType<ArgumentException>();
     }
 
     [Fact]
@@ -69,27 +68,28 @@ public class PrecipExactFeatureBuilderTests
         var row = PrecipExactFeatureBuilder.ComposeRow(
             spec,
             new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc),
-            perModelPrecip: new double[] { 1.5, 2.0, 0.8 },
+            perModelPrecip: new double[] { 1.5, 2.0, 1.8, 0.8 },
             era5Precip: 1.7);
         row.Features.Should().HaveCount(spec.FeatureCount);
         row.Label.Should().Be(1.7f);
         row.Features[0].Should().Be(1.5f); // gfs
         row.Features[1].Should().Be(2.0f); // ifs
-        row.Features[2].Should().Be(0.8f); // moglobal
+        row.Features[2].Should().Be(1.8f); // aifs
+        row.Features[3].Should().Be(0.8f); // moglobal
     }
 
     [Fact]
     public void ComposeRow_NaN_safe_when_optional_model_missing()
     {
         var spec = PrecipExactFeatureBuilder.BuildSpec(PrecipExactFeatureBuilder.AllTiers[0]);
-        // MO Global (optional) NaN — spread should be over GFS + IFS only
+        // MO Global (optional) NaN — spread should be over GFS + IFS + AIFS only
         var row = PrecipExactFeatureBuilder.ComposeRow(
             spec,
             new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc),
-            perModelPrecip: new double[] { 1.5, 2.0, double.NaN },
+            perModelPrecip: new double[] { 1.5, 2.0, 1.0, double.NaN },
             era5Precip: 1.7);
-        // Mean across {1.5, 2.0} = 1.75
+        // Mean across {1.5, 2.0, 1.0} = 1.5
         var meanIdx = spec.FeatureNames.ToList().IndexOf("precip_mean");
-        row.Features[meanIdx].Should().BeApproximately(1.75f, 1e-3f);
+        row.Features[meanIdx].Should().BeApproximately(1.5f, 1e-3f);
     }
 }
