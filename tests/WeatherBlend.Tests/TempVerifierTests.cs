@@ -321,4 +321,91 @@ public class VerifierTests
                 },
             },
         };
+
+    // -----------------------------------------------------------------------
+    // ComputeActualLeadBuckets — the 6h actual-lead bucket view added 2026-05-05
+    // alongside the trained-lead view. Same input shape, different grouping
+    // (by ValidTime − PredictionMadeAt, floored to nearest 6h bucket).
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public void ComputeActualLeadBuckets_groups_by_actual_lead_in_6h_buckets()
+    {
+        // Two predictions at the same trained lead (24) but different
+        // PredictionMadeAt times → different actual leads → different buckets.
+        // Pred A made 24h before V → actual lead 24h → bucket [24, 30).
+        // Pred B made 30h before V → actual lead 30h → bucket [30, 36).
+        var v1 = AsOf.AddDays(-7).AddHours(0); // inside window
+        var predA = MakePrediction(V1, leadHours: 24, valid: v1, blend: 10.0);
+        var predB = new TempPredictionRow
+        {
+            LocationName = "Bonehill Rocks",
+            ModelVersion = V1,
+            PredictionMadeAtUtc = v1.AddHours(-30), // 30h before valid
+            ValidTimeUtc = v1,
+            LeadHours = 24, // trained-lead bucket label, not actual lead
+            BlendTemperature = 10.5,
+            FeatureVectorHash = "fakehash",
+        };
+        var truth = new Dictionary<DateTime, double> { [v1] = 10.0 };
+
+        var rows = TempVerifier.ComputeActualLeadBuckets(BaseInputs(new[] { predA, predB }, truth));
+
+        // Two distinct buckets: lead 24 (pred A) and lead 30 (pred B).
+        rows.Should().HaveCount(2);
+        rows.Select(r => r.ActualLeadBucketLowH).Should().BeEquivalentTo(new int?[] { 24, 30 });
+    }
+
+    [Fact]
+    public void ComputeActualLeadBuckets_each_row_carries_bucket_low_in_LeadHours()
+    {
+        // Bucket rows reuse LeadHours field to carry the bucket lower bound
+        // (so consumers keying on LeadHours don't need a special-case for
+        // bucket rows). Sanity-check that.
+        var v = AsOf.AddDays(-7);
+        var pred = MakePrediction(V1, leadHours: 24, valid: v, blend: 10.0);
+        var truth = new Dictionary<DateTime, double> { [v] = 10.1 };
+
+        var rows = TempVerifier.ComputeActualLeadBuckets(BaseInputs(new[] { pred }, truth));
+
+        rows.Should().HaveCount(1);
+        var r = rows[0];
+        r.LeadHours.Should().Be(r.ActualLeadBucketLowH);
+        r.LeadHours.Should().Be(24); // 24h actual lead → bucket [24, 30)
+    }
+
+    [Fact]
+    public void ComputeActualLeadBuckets_no_persistence_no_drift_on_bucket_rows()
+    {
+        // Bucket rows have no per-actual-lead training-time baseline to
+        // compare against, so PersistenceMae and ReferenceTestMae should be
+        // null and DriftFlag should be false.
+        var v = AsOf.AddDays(-7);
+        var pred = MakePrediction(V1, leadHours: 24, valid: v, blend: 10.0);
+        var truth = new Dictionary<DateTime, double> { [v] = 10.1 };
+
+        var rows = TempVerifier.ComputeActualLeadBuckets(BaseInputs(new[] { pred }, truth));
+
+        rows[0].PersistenceMae.Should().BeNull();
+        rows[0].ReferenceTestMae.Should().BeNull();
+        rows[0].DriftFlag.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ComputeActualLeadBuckets_preserves_blend_mae_relative_to_trained_view()
+    {
+        // For a single prediction at strict actual lead 24h, the bucket-view
+        // row's BlendMae should equal what the trained-view row reports
+        // (since both score the same prediction the same way).
+        var v = AsOf.AddDays(-7);
+        var pred = MakePrediction(V1, leadHours: 24, valid: v, blend: 10.5);
+        var truth = new Dictionary<DateTime, double> { [v] = 10.0 };
+
+        var trainedRows = TempVerifier.Compute(BaseInputs(new[] { pred }, truth));
+        var bucketRows  = TempVerifier.ComputeActualLeadBuckets(BaseInputs(new[] { pred }, truth));
+
+        trainedRows.Should().HaveCount(1);
+        bucketRows.Should().HaveCount(1);
+        bucketRows[0].BlendMae.Should().BeApproximately(trainedRows[0].BlendMae, 1e-6);
+    }
 }
