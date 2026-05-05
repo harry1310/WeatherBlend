@@ -240,9 +240,10 @@ public sealed class RenderSiteCommand
                 SitePages.RenderIndex(input, n), ct);
         }
         // Forecasts split per variable per lead on 2026-05-04. Temperature +
-        // rain are per-lead (24/48/72/96/120); dry-window is per-day so emits
+        // rain are per-lead — uses Leads.ForecastsTempRain (= Leads.Full plus
+        // +12h for 2d / 3d exact-runtime). Dry-window is per-day so emits
         // once + one per non-first station.
-        foreach (var lead in Leads.Full)
+        foreach (var lead in Leads.ForecastsTempRain)
         {
             await File.WriteAllTextAsync(Path.Combine(outputDir, $"forecasts-temp-{lead}h.html"),
                 SitePages.RenderForecastsTemp(input, lead), ct);

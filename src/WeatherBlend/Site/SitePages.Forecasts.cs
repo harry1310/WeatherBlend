@@ -85,7 +85,9 @@ public static partial class SitePages
     private static string RenderLeadSubNav(string pageBase, int current)
     {
         var items = new StringBuilder();
-        foreach (var lead in Leads.Full)
+        // ForecastsTempRain prepends +12h for 2d/3d (exact-runtime) on top of
+        // the standard {24, 48, 72, 96, 120} set used by 2b/2c/3a/3c.
+        foreach (var lead in Leads.ForecastsTempRain)
         {
             var cls = lead == current ? " class=\"active\"" : "";
             items.Append(Ci, $"""<li><a href="{pageBase}-{lead}h.html"{cls}>+{lead}h</a></li>""");

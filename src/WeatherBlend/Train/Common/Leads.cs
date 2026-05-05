@@ -19,4 +19,15 @@ public static class Leads
 {
     public static readonly int[] Full = { 24, 48, 72, 96, 120 };
     public static readonly int[] Short = { 24, 48, 72 };
+
+    /// <summary>
+    /// Lead set for the temperature + rain forecasts pages' sub-nav and the
+    /// matching <c>forecasts-{temp|rain}-{N}h.html</c> file emission. Same as
+    /// <see cref="Full"/> but with +12h prepended for the exact-runtime
+    /// blenders (Phase 2d / 3d) which train at {12, 24} and own the +12h
+    /// champion slot. Other consumers (rolling-MAE chart, Models per-lead
+    /// table) keep using <see cref="Full"/> so legacy 2b/2c/3a/3c phases
+    /// don't render empty +12h cells for leads they were never trained on.
+    /// </summary>
+    public static readonly int[] ForecastsTempRain = { 12, 24, 48, 72, 96, 120 };
 }

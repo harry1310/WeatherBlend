@@ -290,9 +290,13 @@ public class SitePagesTests
 
         var html = SitePages.RenderForecastsTemp(input, 48);
 
+        html.Should().Contain("forecasts-temp-12h.html",
+            "Phase 2d champions +12h — sub-nav must surface that tab even though " +
+            "2b/2c don't train at lead 12.");
         html.Should().Contain("forecasts-temp-24h.html");
         html.Should().Contain("forecasts-temp-48h.html");
         html.Should().Contain("forecasts-temp-72h.html");
+        html.Should().Contain("forecasts-temp-120h.html");
         html.Should().Contain("lead-nav");
     }
 
