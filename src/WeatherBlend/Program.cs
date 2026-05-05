@@ -441,15 +441,19 @@ public static class Program
             name: "--include-ukv",
             description: "Include Met Office UKV as a 5th always-optional precip input via per-V-hour (cycle, lead) conditional pull from 03Z+15Z cycles.",
             getDefaultValue: () => false);
+        var precipStationOpt = new Option<string?>(
+            name: "--station",
+            description: "EA rainfall station name (config-friendly, e.g. 'Bellever Dartmoor'). Defaults to first configured station.",
+            getDefaultValue: () => null);
         var precipBakeoff = new Command(
             "precip-exact-bakeoff",
-            "Train + score the exact-runtime precipitation blender at a single lead")
-            { precipLeadOpt, precipUkvOpt };
-        precipBakeoff.SetHandler(async (lead, includeUkv) =>
+            "Train + score the exact-runtime precipitation blender at a single lead, against EA gauge truth")
+            { precipLeadOpt, precipUkvOpt, precipStationOpt };
+        precipBakeoff.SetHandler(async (lead, includeUkv, station) =>
         {
             var cmd = host.Services.GetRequiredService<PrecipExactBakeoffCommand>();
-            await cmd.RunAsync(lead, includeUkv, CancellationToken.None);
-        }, precipLeadOpt, precipUkvOpt);
+            await cmd.RunAsync(lead, includeUkv, station, CancellationToken.None);
+        }, precipLeadOpt, precipUkvOpt, precipStationOpt);
         root.AddCommand(precipBakeoff);
 
         // s3-collect — live refresh of the five exact-runtime forecast sources

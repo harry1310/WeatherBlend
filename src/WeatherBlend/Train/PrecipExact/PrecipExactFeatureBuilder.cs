@@ -10,23 +10,25 @@ namespace WeatherBlend.Train.PrecipExact;
 /// grid {00, 06, 12, 18 UTC}. Differences:
 ///
 ///   - Reads <c>Precipitation</c> column instead of <c>Temperature2m</c>
-///   - AIFS excluded by default — its <c>tp</c> values were 500x too high
-///     when first probed 2026-05-05 (avg 1677 mm/h vs IFS's 3.86 mm/h, max
-///     36390 vs 65.96), almost certainly a units mismatch in the Ecmwf
-///     parser specific to AIFS. Needs investigation; for now use the 3 sane
-///     models so the bake-off is interpretable.
-///   - Joins to ERA5 <c>Precipitation</c> as truth (mm — same units we hope
-///     the model inputs are roughly in, modulo the per-model semantics caveat
-///     below).
+///   - Joins to EA Hydrology gauge truth at the requested station, NOT ERA5.
+///     Matches <see cref="PrecipFeatureBuilder.BuildForLead"/> exactly: 15-min
+///     readings aggregated to hourly with the strict 4-of-4 rule (partial
+///     hours dropped). This is THE point — head-to-head Brier comparison
+///     against 3a/3c only makes sense if both score against the same per-
+///     station gauge truth. Using ERA5 (~25km grid) was a transient mistake
+///     2026-05-05 morning; ERA5 smooths out the localised orographic /
+///     convective signal that makes Dartmoor precip hard to forecast, so
+///     ERA5-truth Brier numbers are spuriously good and not comparable to
+///     gauge-truth 3a/3c numbers.
 ///
 /// Per-model precip semantics differ — known caveat for the bake-off:
 ///   GFS APCP        = accumulation in some interval ending at ValidTime (mm)
 ///   IFS  tp         = TOTAL accumulation since cycle start (mm, after × 1000 conversion)
+///   AIFS tp         = ditto IFS; ÷1000 fix landed 2026-05-05 (units bug)
 ///   MO Global       = instantaneous rate (mm/h, after × 3.6e6 from m/s)
-/// LightGBM should be able to learn around this since each input is on its
-/// own column and the tree splits don't require commensurate units, but the
-/// MAE numbers won't be as clean as temperature's. Treat the first cut as
-/// directional ("does the blender lift over best-single?"), not absolute.
+///   UKV (optional)  = same as MO Global (Met Office NetCDF schema)
+/// LightGBM splits handle these cleanly since each input is on its own
+/// column. Wet/dry decision boundary at 0.1mm/h is what matters.
 /// </summary>
 public static class PrecipExactFeatureBuilder
 {
@@ -128,8 +130,9 @@ public static class PrecipExactFeatureBuilder
 
     public static List<BinaryTrainingRow> Build(
         string forecastsPath,
-        string era5Path,
+        string rainfallPath,
         string locationName,
+        string stationName,
         TierSpec tier,
         BlenderSpec spec,
         int targetLead = DefaultTargetLead,
@@ -140,7 +143,9 @@ public static class PrecipExactFeatureBuilder
         conn.Open();
 
         var fcGlob = NormaliseGlob(Path.Combine(forecastsPath, "**", "*.parquet"));
-        var eraGlob = NormaliseGlob(Path.Combine(era5Path, "**", "*.parquet"));
+        var rnGlob = NormaliseGlob(Path.Combine(rainfallPath, "**", "*.parquet"));
+        var escStation = stationName.Replace("'", "''");
+        var escLocation = locationName.Replace("'", "''");
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
 
         var pivotCols = string.Join(",\n        ",
@@ -152,7 +157,7 @@ public static class PrecipExactFeatureBuilder
             : "TRUE";
 
         var fcWhere =
-            $"LocationName = '{locationName}' " +
+            $"LocationName = '{escLocation}' " +
             $"AND RunTimeSource = 'exact' " +
             $"AND LeadHours = {targetLead} " +
             $"AND HOUR(ValidTimeUtc) IN (0, 6, 12, 18) " +
@@ -173,7 +178,7 @@ ukv_per_v AS (
         SELECT ValidTimeUtc, Precipitation,
                ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn
         FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
-        WHERE LocationName = '{locationName}'
+        WHERE LocationName = '{escLocation}'
           AND Model = 'met_office_ukv'
           AND RunTimeSource = 'exact'
           AND Precipitation IS NOT NULL
@@ -186,8 +191,25 @@ ukv_per_v AS (
         var ukvSelectCol = includeUkv ? ", u.ukv_precip" : "";
         var ukvJoin = includeUkv ? "LEFT JOIN ukv_per_v u USING (ValidTimeUtc)" : "";
 
+        // Truth = EA Hydrology gauge for the requested station, aggregated
+        // 15-min readings up to hourly totals with the strict 4-of-4 rule
+        // (matches PrecipFeatureBuilder.BuildForLead — partial hours dropped
+        // so they can't flip wet↔dry). Joining to gauge truth (NOT ERA5) is
+        // the whole point of 3d being directly comparable to 3a/3c on the
+        // same per-station target.
         var sql = $@"
-WITH latest AS (
+WITH hourly_truth AS (
+    SELECT
+        date_trunc('hour', ObservedTimeUtc) AS valid_time,
+        SUM(Value15MinMm) AS precip_mm_hour
+    FROM read_parquet('{rnGlob}', hive_partitioning = false, union_by_name = true)
+    WHERE LocationName = '{escLocation}'
+      AND StationName  = '{escStation}'
+      AND Value15MinMm IS NOT NULL
+    GROUP BY 1
+    HAVING COUNT(*) = 4
+),
+latest AS (
     SELECT ValidTimeUtc, Model, Precipitation,
            ROW_NUMBER() OVER (
                PARTITION BY ValidTimeUtc, Model
@@ -200,15 +222,10 @@ pivoted AS (
     SELECT ValidTimeUtc, {pivotCols}
     FROM latest WHERE rn = 1
     GROUP BY ValidTimeUtc
-),
-era5 AS (
-    SELECT ValidTimeUtc, Precipitation AS era5_precip
-    FROM read_parquet('{eraGlob}', hive_partitioning = false, union_by_name = true)
-    WHERE LocationName = '{locationName}' AND Precipitation IS NOT NULL
 ){ukvCte}
-SELECT p.ValidTimeUtc, {selectCols}, e.era5_precip{ukvSelectCol}
+SELECT p.ValidTimeUtc, {selectCols}, t.precip_mm_hour{ukvSelectCol}
 FROM pivoted p
-JOIN era5 e USING (ValidTimeUtc)
+JOIN hourly_truth t ON p.ValidTimeUtc = t.valid_time
 {ukvJoin}
 WHERE {requiredNotNull}
 ORDER BY p.ValidTimeUtc;
@@ -221,7 +238,7 @@ ORDER BY p.ValidTimeUtc;
         var rows = new List<BinaryTrainingRow>();
         var modelCount = spec.Models.Count;
         var pcps = new double[modelCount];
-        // SELECT order: ValidTimeUtc, perModelPrecip..., era5_precip [, ukv_precip]
+        // SELECT order: ValidTimeUtc, perModelPrecip..., truthMm [, ukv_precip]
         var ukvIdx = includeUkv ? 2 + modelCount : -1;
         while (r.Read())
         {
@@ -229,11 +246,11 @@ ORDER BY p.ValidTimeUtc;
             var valid = r.GetDateTime(0);
             for (int i = 0; i < modelCount; i++)
                 pcps[i] = r.IsDBNull(1 + i) ? double.NaN : r.GetDouble(1 + i);
-            var era5Precip = r.GetDouble(1 + modelCount);
+            var truthMm = r.GetDouble(1 + modelCount);
             var ukvPrecip = ukvIdx >= 0
                 ? (r.IsDBNull(ukvIdx) ? double.NaN : r.GetDouble(ukvIdx))
                 : double.NaN;
-            rows.Add(ComposeRow(spec, valid, pcps, era5Precip, ukvPrecip));
+            rows.Add(ComposeRow(spec, valid, pcps, truthMm, ukvPrecip));
         }
         return rows;
     }

@@ -1107,15 +1107,16 @@ public sealed class TempTrainCommand
             specsPerLead[lead] = spec;
             _log.LogInformation("Spec: {Spec}", spec);
 
-            // 3d trains against ERA5 (matches 3a/3c truth source) — keeps the
-            // exact-runtime path comparable head-to-head with offset_day. The
-            // station axis is preserved for parquet layout symmetry with 3a/3c
-            // (per-station artefact tree); the rainfall truth itself isn't
-            // used here.
+            // 3d trains against the per-station EA Hydrology gauge — matches
+            // 3a/3c's truth so Brier numbers are head-to-head comparable on
+            // the same target. ERA5 was wrong: ~25km grid smooths out the
+            // localised Dartmoor signal, making the task spuriously easy
+            // (caught + fixed 2026-05-05).
             var rows = PrecipExactFeatureBuilder.Build(
                 _cfg.Storage.ForecastsPath,
-                _cfg.Storage.Era5Path,
+                _cfg.Storage.RainfallPath,
                 _cfg.Location.Name,
+                stationName: primaryStation,
                 tier, spec,
                 targetLead: lead,
                 includeUkv: includeUkv,
@@ -1202,7 +1203,7 @@ public sealed class TempTrainCommand
             Version = versionName,
             Target = "precipitation",
             Phase = "3d",
-            DataSource = "exact_runtime_s3_archive+era5_truth",
+            DataSource = "exact_runtime_s3_archive+ea_rainfall",
             TrainedAtUtc = DateTime.UtcNow,
             Hyperparameters = BuildPrecipHpDict(hp),
             TestMae = perLead.ToDictionary(kv => $"lead_{kv.Key}h_brier", kv => kv.Value.BlendTestMae),
@@ -1212,7 +1213,7 @@ public sealed class TempTrainCommand
                 "Trains on RunTimeSource='exact' rows from raw S3 archives (NOAA + ECMWF Open Data + MO AWS) — distinct from the 3a/3c offset_day path. Per-row provenance is rigorous (RunTimeUtc + ValidTimeUtc + LeadHours).",
                 "Models = GFS + IFS oper + AIFS required, MO Global optional; UKV always optional via per-V-hour conditional pull from 03Z + 15Z cycles. Lead-12 reads UKV at leads {9, 15} (avg 12h-ahead); lead-24 reads at {21, 27} (avg 24h-ahead).",
                 "Lead set restricted to {12, 24} — the leads with sufficient cycle coverage at the 4-cycle ValidTime grid {00, 06, 12, 18}. 48/72/96/120 not trained; 3a/3c retain championship at those leads.",
-                "Truth = ERA5 Precipitation (NOT EA gauge). Matches the precip-exact bake-off setup; head-to-head comparable with the offset_day 3a/3c which use EA gauge truth, with the caveat that ERA5 vs gauge can disagree at sub-hourly extremes. Per-station artefact path is preserved for parquet symmetry.",
+                "Truth = per-station EA Hydrology rainfall gauge — same source as 3a/3c so Brier scores are head-to-head comparable on the same per-station target. (Earlier 2026-05-05 morning prototype used ERA5 truth which spuriously inflated skill — caught + fixed same day.)",
             },
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);

@@ -41,23 +41,49 @@ public sealed class PrecipExactBakeoffCommand
         _log = log;
     }
 
-    public async Task<int> RunAsync(int targetLead, bool includeUkv, CancellationToken ct)
+    public async Task<int> RunAsync(int targetLead, bool includeUkv, string? stationOverride, CancellationToken ct)
     {
+        // Default to the first configured rainfall station if none given.
+        // Bake-off is exploratory; pinning one station keeps the print clean.
+        // Pass --station to compare a different one head-to-head.
+        if (_cfg.Location.Rainfall.Stations.Count == 0)
+        {
+            _log.LogError("No rainfall stations configured — cannot bake off precip-exact.");
+            return 2;
+        }
+        string station;
+        if (string.IsNullOrWhiteSpace(stationOverride))
+        {
+            station = _cfg.Location.Rainfall.Stations[0].Name;
+        }
+        else
+        {
+            var match = _cfg.Location.Rainfall.Stations
+                .FirstOrDefault(s => s.Name.Equals(stationOverride, StringComparison.OrdinalIgnoreCase));
+            if (match is null)
+            {
+                _log.LogError("Station '{Station}' not found in config. Available: {Available}",
+                    stationOverride, string.Join(", ", _cfg.Location.Rainfall.Stations.Select(s => s.Name)));
+                return 2;
+            }
+            station = match.Name;
+        }
+
         foreach (var tier in PrecipExactFeatureBuilder.AllTiers)
         {
             ct.ThrowIfCancellationRequested();
-            await Task.Run(() => RunTier(tier, targetLead, includeUkv, ct), ct);
+            await Task.Run(() => RunTier(tier, targetLead, includeUkv, station, ct), ct);
         }
         return 0;
     }
 
-    private void RunTier(PrecipExactFeatureBuilder.TierSpec tier, int targetLead, bool includeUkv, CancellationToken ct)
+    private void RunTier(PrecipExactFeatureBuilder.TierSpec tier, int targetLead, bool includeUkv, string stationName, CancellationToken ct)
     {
-        _log.LogInformation("=== Precip-Brier exact bake-off: tier {Tier} target {Lead}h UKV={Ukv} ===",
-            tier.Name, targetLead, includeUkv);
+        _log.LogInformation("=== Precip-Brier exact bake-off: tier {Tier} target {Lead}h UKV={Ukv} station='{Station}' ===",
+            tier.Name, targetLead, includeUkv, stationName);
         var spec = PrecipExactFeatureBuilder.BuildSpec(tier, targetLead, includeUkv);
         var rows = PrecipExactFeatureBuilder.Build(
-            _cfg.Storage.ForecastsPath, _cfg.Storage.Era5Path, _cfg.Location.Name,
+            _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath, _cfg.Location.Name, stationName,
             tier, spec, targetLead, includeUkv, ct);
 
         if (rows.Count == 0) { _log.LogWarning("  no rows"); return; }
