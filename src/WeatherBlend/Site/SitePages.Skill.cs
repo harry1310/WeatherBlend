@@ -372,7 +372,13 @@ public static partial class SitePages
         var content = new StringBuilder();
         content.Append(Ci, $"<p class=\"skill-line\">{Escape(PrettyStation(currentStation))} — 30-day rolling Brier per (version, lead). Lower better.</p>");
 
-        foreach (var lead in Leads.Short)
+        // Rolling-Brier is for precipitation (3a/3c/3d), not dry-window — so
+        // ForecastsTempRain (= Leads.Full + lead 12) is the right set:
+        //   - 3a/3c emit + verify at {24, 48, 72, 96, 120} so 96/120 panels
+        //     surface (previously hidden by the Leads.Short copy-paste).
+        //   - 3d emits at {12, 24} so the +12h panel surfaces once verify
+        //     rows land (~5d ERA5 latency).
+        foreach (var lead in Leads.ForecastsTempRain)
         {
             var phases = stationRows.Where(r => r.LeadHours == lead)
                 .Select(r => r.Phase).Distinct().OrderBy(p => p, StringComparer.Ordinal).ToList();
