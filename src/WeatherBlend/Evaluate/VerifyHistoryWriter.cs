@@ -17,6 +17,13 @@ public static class VerifyHistoryWriter
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+        // Non-finite metrics (e.g. BSS = (clim - brier) / clim where clim=0
+        // for an all-dry station-window) come through as ±Infinity. Default
+        // System.Text.Json throws on them — caught the dry-window verify
+        // 2026-05-05. Emit as "Infinity"/"-Infinity"/"NaN" string literals
+        // so the report still writes; downstream readers handle them as
+        // tombstones.
+        NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals,
     };
 
     public static async Task WriteAsync(string reportsDir, VerifyHistoryFile file, CancellationToken ct)

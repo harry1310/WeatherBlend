@@ -55,6 +55,7 @@ public sealed class Exact12hBakeoffCommand
         string? tierName,
         int targetLead,
         IReadOnlyList<int>? inputLeads,
+        bool maskNoncanonicalAtTest,
         CancellationToken ct)
     {
         var tiers = string.IsNullOrWhiteSpace(tierName)
@@ -65,10 +66,10 @@ public sealed class Exact12hBakeoffCommand
         foreach (var tier in tiers)
         {
             ct.ThrowIfCancellationRequested();
-            results.Add(await Task.Run(() => RunTier(tier, targetLead, inputLeads, ct), ct));
+            results.Add(await Task.Run(() => RunTier(tier, targetLead, inputLeads, maskNoncanonicalAtTest, ct), ct));
         }
 
-        WriteReport(results, targetLead, inputLeads);
+        WriteReport(results, targetLead, inputLeads, maskNoncanonicalAtTest);
         return 0;
     }
 
@@ -76,6 +77,7 @@ public sealed class Exact12hBakeoffCommand
         Exact12hFeatureBuilder.TierSpec tier,
         int targetLead,
         IReadOnlyList<int>? inputLeads,
+        bool maskNoncanonicalAtTest,
         CancellationToken ct)
     {
         inputLeads ??= new[] { targetLead };
@@ -130,9 +132,42 @@ public sealed class Exact12hBakeoffCommand
         var hp = new TempTrainer.Hyperparameters();
         var trained = TempTrainer.TrainVector(train, val, spec, hp);
 
-        // Score on TEST.
-        var preds = TempTrainer.PredictVector(trained.Ml, trained.Model, spec, test);
-        var blendMae = MeanAbs(test.Select((r, i) => preds[i] - r.Label));
+        // Optional: mask non-canonical-lead columns to NaN in TEST rows
+        // before scoring. Tests "did multi-lead training help the blender's
+        // canonical-lead use, or was it just leaning on lead-6 leakage?".
+        // Lead-6 in our setup is the forecast made at ValidTime - 6h, which
+        // for a 12h-ahead prediction is in the future from the prediction
+        // time — leakage if used at inference. NaN-masking at test time
+        // forces the model to rely only on its trained canonical-lead path,
+        // exposing whether multi-lead training transferred any honest gain.
+        var testForScoring = test;
+        if (maskNoncanonicalAtTest && inputLeads.Count > 1)
+        {
+            var leadsSortedLocal = inputLeads.OrderBy(l => l).ToList();
+            var canonicalIdxLocal = leadsSortedLocal.IndexOf(targetLead);
+            var nLeadsLocal = leadsSortedLocal.Count;
+            testForScoring = test.Select(r =>
+            {
+                var masked = (float[])r.Features.Clone();
+                for (int m = 0; m < spec.Models.Count; m++)
+                    for (int l = 0; l < nLeadsLocal; l++)
+                        if (l != canonicalIdxLocal)
+                            masked[m * nLeadsLocal + l] = float.NaN;
+                return new RegressionTrainingRow
+                {
+                    ValidTimeUtc = r.ValidTimeUtc,
+                    Features = masked,
+                    Label = r.Label,
+                    WindDirMean = r.WindDirMean,
+                };
+            }).ToList();
+            _log.LogInformation("  test-time mask: non-canonical leads (≠{Tgt}h) zeroed to NaN in {N} test rows.",
+                targetLead, testForScoring.Count);
+        }
+
+        // Score on (possibly masked) TEST.
+        var preds = TempTrainer.PredictVector(trained.Ml, trained.Model, spec, testForScoring);
+        var blendMae = MeanAbs(testForScoring.Select((r, i) => preds[i] - r.Label));
 
         // Per-model baseline: each model's CANONICAL-LEAD column vs ERA5
         // on the same TEST rows. In multi-lead mode the column vector
@@ -143,6 +178,12 @@ public sealed class Exact12hBakeoffCommand
         var leadsSorted = inputLeads.OrderBy(l => l).ToList();
         var nLeads = leadsSorted.Count;
         var canonicalIdx = leadsSorted.IndexOf(targetLead);
+        // Per-model + mean-of-models baselines use the canonical-lead column
+        // from the original (un-masked) test rows — they're "what would
+        // single-model lead-12 give you" baselines, independent of whatever
+        // multi-lead masking the blender went through. This keeps the
+        // comparison interpretable: the BLENDER number reflects the masking
+        // choice, but baselines stay constant across modes.
         var perModelMae = new Dictionary<string, double>(StringComparer.Ordinal);
         for (int m = 0; m < spec.Models.Count; m++)
         {
@@ -155,8 +196,6 @@ public sealed class Exact12hBakeoffCommand
             perModelMae[spec.Models[m]] = diffs.Count == 0 ? double.NaN : diffs.Select(Math.Abs).Average();
         }
 
-        // Mean-of-models baseline: average the CANONICAL-LEAD value across
-        // present-only models per row.
         var meanMae = MeanAbs(test.Select(r =>
         {
             double sum = 0; int n = 0;
@@ -192,13 +231,16 @@ public sealed class Exact12hBakeoffCommand
     private void WriteReport(
         IReadOnlyList<TierResult> results,
         int targetLead,
-        IReadOnlyList<int>? inputLeads)
+        IReadOnlyList<int>? inputLeads,
+        bool maskNoncanonicalAtTest)
     {
         inputLeads ??= new[] { targetLead };
         var leadsSorted = inputLeads.OrderBy(l => l).ToList();
         var leadDesc = leadsSorted.Count == 1
             ? $"single lead {targetLead}h"
-            : $"target {targetLead}h, input leads [{string.Join(",", leadsSorted)}]";
+            : (maskNoncanonicalAtTest
+                ? $"target {targetLead}h, train on leads [{string.Join(",", leadsSorted)}], TEST ON CANONICAL ONLY (non-{targetLead}h cols masked)"
+                : $"target {targetLead}h, input leads [{string.Join(",", leadsSorted)}]");
 
         var sb = new StringBuilder();
         sb.AppendLine();
@@ -279,11 +321,12 @@ public sealed class Exact12hBakeoffCommand
         var report = sb.ToString();
         Console.Write(report);
 
-        // Tag the filename with the lead config so single-lead and multi-lead
-        // runs sit side-by-side without overwriting each other.
+        // Tag the filename with the lead config so single-lead, multi-lead,
+        // and masked-multi-lead runs sit side-by-side without overwriting.
+        var maskTag = maskNoncanonicalAtTest && leadsSorted.Count > 1 ? "_maskedtest" : "";
         var leadTag = leadsSorted.Count == 1
             ? $"l{targetLead:00}"
-            : "leads" + string.Concat(leadsSorted.Select(l => l.ToString("00")));
+            : "leads" + string.Concat(leadsSorted.Select(l => l.ToString("00"))) + maskTag;
         var outDir = Path.Combine(_cfg.Storage.ReportsPath, "exact_12h_bakeoff");
         Directory.CreateDirectory(outDir);
         var outFile = Path.Combine(outDir, $"bakeoff_{leadTag}_{DateTime.UtcNow:yyyyMMdd_HHmmss}.txt");

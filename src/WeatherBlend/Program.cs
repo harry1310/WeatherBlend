@@ -349,11 +349,20 @@ public static class Program
             name: "--leads",
             description: "Comma-separated input leads for multi-lead mode (e.g. 6,12,18). Must contain --lead. Empty = single-lead.",
             getDefaultValue: () => "");
+        // Honest test of multi-lead training: TRAIN with the multi-lead
+        // vector, MASK non-canonical leads to NaN at test time. Tests
+        // whether multi-lead training boosted the canonical-lead path
+        // or was just leaning on lead-6 (made AFTER prediction time, so
+        // leakage in any deployment scenario).
+        var exact12hMaskOpt = new Option<bool>(
+            name: "--mask-noncanonical-at-test",
+            description: "Multi-lead only: zero non-canonical-lead columns to NaN in test rows before scoring (fair test of multi-lead training transfer).",
+            getDefaultValue: () => false);
         var exact12hBakeoff = new Command(
             "exact-12h-bakeoff",
             "Train + score the exact-runtime temperature blender across the three coverage tiers")
-            { exact12hTierOpt, exact12hLeadOpt, exact12hLeadsOpt };
-        exact12hBakeoff.SetHandler(async (tier, lead, leadsStr) =>
+            { exact12hTierOpt, exact12hLeadOpt, exact12hLeadsOpt, exact12hMaskOpt };
+        exact12hBakeoff.SetHandler(async (tier, lead, leadsStr, mask) =>
         {
             var inputLeads = string.IsNullOrWhiteSpace(leadsStr)
                 ? null
@@ -361,8 +370,8 @@ public static class Program
                     .Select(s => int.Parse(s, System.Globalization.CultureInfo.InvariantCulture))
                     .ToArray();
             var cmd = host.Services.GetRequiredService<Exact12hBakeoffCommand>();
-            await cmd.RunAsync(tier, lead, inputLeads, CancellationToken.None);
-        }, exact12hTierOpt, exact12hLeadOpt, exact12hLeadsOpt);
+            await cmd.RunAsync(tier, lead, inputLeads, mask, CancellationToken.None);
+        }, exact12hTierOpt, exact12hLeadOpt, exact12hLeadsOpt, exact12hMaskOpt);
         root.AddCommand(exact12hBakeoff);
 
         var status = new Command("status", "Show what data is on disk");

@@ -656,6 +656,9 @@ ORDER BY LeadHours, ValidTimeUtc";
         {
             PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
             PropertyNameCaseInsensitive = true,
+            // Mirror the writer (VerifyHistoryWriter.JsonOptions) so non-finite
+            // metrics serialised as "Infinity"/"NaN" round-trip cleanly.
+            NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals,
         };
         foreach (var path in Directory.EnumerateFiles(reportsDir, "verify_*.json"))
         {
