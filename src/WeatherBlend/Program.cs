@@ -186,6 +186,16 @@ public static class Program
                 // 2026-05-05). Three tiers, no UKV, no artifact persistence —
                 // exploratory only.
                 services.AddTransient<Exact12hBakeoffCommand>();
+                // Live S3 collect — refreshes the four exact-runtime sources
+                // the 2d temperature blender consumes (GFS / IFS / AIFS /
+                // Met Office Global). Each is a thin lookback wrapper around
+                // its existing backfill command. Wired into a 6-hourly cron
+                // workflow s3-collect.yml that pairs with the live data
+                // landing pattern (NOAA ~3-4h, ECMWF ~7-8h, MO ~3-6h).
+                services.AddTransient<GfsArchiveCollector>();
+                services.AddTransient<EcmwfArchiveCollector>();
+                services.AddTransient<MetOfficeGlobalArchiveCollector>();
+                services.AddTransient<S3CollectCommand>();
                 services.AddTransient<IElementBlender, WindBlender>();
                 services.AddTransient<IElementBlender, HumidityBlender>();
                 services.AddTransient<IElementBlender, RadiationBlender>();
@@ -358,21 +368,70 @@ public static class Program
             name: "--mask-noncanonical-at-test",
             description: "Multi-lead only: zero non-canonical-lead columns to NaN in test rows before scoring (fair test of multi-lead training transfer).",
             getDefaultValue: () => false);
+        // Cross-lead evaluation — train at --lead, then score the trained
+        // model on test sets built from data at OTHER leads. Tells us how
+        // the model generalises off its training lead. Single-lead mode only
+        // (multi-lead column shape can't be remapped). Comma-separated leads
+        // on the 6h grid: 6,12,24,36,48,72,96,120.
+        var exact12hEvalAtLeadsOpt = new Option<string>(
+            name: "--evaluate-at-leads",
+            description: "After training at --lead, also score on test rows built at these alternative leads (comma list, 6h-grid). Single-lead only.",
+            getDefaultValue: () => "");
+        // HP search: grid-search LightGBM hyperparameters (lr × leaves × min-leaf × feature-frac)
+        // and report the winning config + MAE. The "2d candidate" path per the
+        // 2026-05-05 productionisation discussion. Skips the regular bake-off
+        // output when set; ignores --evaluate-at-leads / --mask.
+        var exact12hHpSearchOpt = new Option<bool>(
+            name: "--hp-search",
+            description: "Grid-search LightGBM hyperparameters and report the winning config (instead of the regular bake-off).",
+            getDefaultValue: () => false);
         var exact12hBakeoff = new Command(
             "exact-12h-bakeoff",
             "Train + score the exact-runtime temperature blender across the three coverage tiers")
-            { exact12hTierOpt, exact12hLeadOpt, exact12hLeadsOpt, exact12hMaskOpt };
-        exact12hBakeoff.SetHandler(async (tier, lead, leadsStr, mask) =>
+            { exact12hTierOpt, exact12hLeadOpt, exact12hLeadsOpt, exact12hMaskOpt, exact12hEvalAtLeadsOpt, exact12hHpSearchOpt };
+        exact12hBakeoff.SetHandler(async (ctx) =>
         {
+            var tier = ctx.ParseResult.GetValueForOption(exact12hTierOpt);
+            var lead = ctx.ParseResult.GetValueForOption(exact12hLeadOpt);
+            var leadsStr = ctx.ParseResult.GetValueForOption(exact12hLeadsOpt) ?? "";
+            var mask = ctx.ParseResult.GetValueForOption(exact12hMaskOpt);
+            var evalLeadsStr = ctx.ParseResult.GetValueForOption(exact12hEvalAtLeadsOpt) ?? "";
+            var hpSearch = ctx.ParseResult.GetValueForOption(exact12hHpSearchOpt);
             var inputLeads = string.IsNullOrWhiteSpace(leadsStr)
                 ? null
                 : (IReadOnlyList<int>)leadsStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                     .Select(s => int.Parse(s, System.Globalization.CultureInfo.InvariantCulture))
                     .ToArray();
+            var evalLeads = string.IsNullOrWhiteSpace(evalLeadsStr)
+                ? null
+                : (IReadOnlyList<int>)evalLeadsStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Select(s => int.Parse(s, System.Globalization.CultureInfo.InvariantCulture))
+                    .ToArray();
             var cmd = host.Services.GetRequiredService<Exact12hBakeoffCommand>();
-            await cmd.RunAsync(tier, lead, inputLeads, mask, CancellationToken.None);
-        }, exact12hTierOpt, exact12hLeadOpt, exact12hLeadsOpt, exact12hMaskOpt);
+            ctx.ExitCode = await cmd.RunAsync(tier, lead, inputLeads, mask, evalLeads, hpSearch, CancellationToken.None);
+        });
         root.AddCommand(exact12hBakeoff);
+
+        // s3-collect — live refresh of the four exact-runtime forecast sources
+        // the 2d temperature blender consumes. Defaults to all sources; pass
+        // --sources gfs,ifs to subset for testing.
+        var s3CollectSourcesOpt = new Option<string>(
+            name: "--sources",
+            description: "Comma-list of sources to collect (default: all). Valid: gfs, ifs, aifs, mo-global.",
+            getDefaultValue: () => "");
+        var s3Collect = new Command(
+            "s3-collect",
+            "Live refresh of exact-runtime forecast sources (GFS / IFS / AIFS / Met Office Global) for the 2d blender")
+            { s3CollectSourcesOpt };
+        s3Collect.SetHandler(async (sourcesStr) =>
+        {
+            var sources = string.IsNullOrWhiteSpace(sourcesStr)
+                ? null
+                : (IReadOnlyList<string>)sourcesStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToArray();
+            var cmd = host.Services.GetRequiredService<S3CollectCommand>();
+            await cmd.RunAsync(sources, CancellationToken.None);
+        }, s3CollectSourcesOpt);
+        root.AddCommand(s3Collect);
 
         var status = new Command("status", "Show what data is on disk");
         status.SetHandler(async ctx =>

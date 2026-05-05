@@ -5,33 +5,31 @@ namespace WeatherBlend.Collect;
 /// <summary>
 /// Collect-time refresh of the Met Office Global Deterministic 10km archive
 /// from AWS Open Data. Wraps <see cref="MetOfficeArchiveBackfillClient"/>
-/// with collect-friendly defaults so <c>CollectCommand</c> can call it like
-/// any other collector.
+/// with collect-friendly defaults so the live <c>s3-collect</c> command can
+/// keep this source current.
 ///
-/// Met Office Global Det is a COMPARISON BASELINE
-/// (memory/project_met_office_global_role.md), not a blender input. The
-/// blenders never query <c>model=met_office_global</c>. Refreshing it daily
-/// keeps the comparison current as the blenders' test windows advance.
+/// Status changed 2026-05-05: Met Office Global is now a BLENDER INPUT for
+/// the exact-runtime 2d temperature blender, not just a comparison baseline.
+/// (Earlier rationale in memory/project_met_office_global_role.md remains
+/// valid for the offset_day-based 2b/2c blenders, which still don't use it.)
 ///
-/// Defaults (overridable for one-off backfills via the CLI command):
-///   * Lookback = 3 days. AWS publishes ~3-6h after each cycle's run-time;
-///     a 3-day window catches both today and yesterday's cycles plus any
-///     that landed late.
-///   * Cycles = 0,12 only. 06Z and 18Z run a 20h horizon and are useless
-///     for our 24/48/72h leads.
-///   * Leads = 24,48,72,120 — covers every blender lead bucket. Lead 120 was
-///     added 2026-04-28 alongside the 4-way Met Office bake-off prep so the
-///     daily collect doesn't undo manual lead-120 backfills.
+/// Defaults:
+///   * Lookback = 3 days — AWS publishes ~3-6h after run, 3-day window catches
+///     today + yesterday's cycles + any late landings.
+///   * Cycles = 0,12 — 06Z/18Z cap at ~66h horizon and don't publish to long
+///     enough leads for our blender bucket.
+///   * Leads = 1,3,6,12,24,36,48,72,96,120 — matches the GFS / ECMWF backfill
+///     lead set so 2d sees the same column shape across every input source.
+///     Bumped from {24,48,72,120} on 2026-05-05 along with the bake-off win.
 ///
-/// The script is idempotent — re-pulling an existing date overwrites the
-/// parquet with whatever AWS now has. Net cost per collect run is small
-/// (under 100 NetCDF GETs even on day-one of a fresh tree).
+/// Idempotent — re-pulling an existing date overwrites the parquet with
+/// whatever AWS now has.
 /// </summary>
 public sealed class MetOfficeGlobalArchiveCollector
 {
     private const string ScriptName = "met_office_archive_backfill.py";
     private static readonly int[] DefaultCycles = { 0, 12 };
-    private static readonly int[] DefaultLeads = { 24, 48, 72, 120 };
+    private static readonly int[] DefaultLeads = { 1, 3, 6, 12, 24, 36, 48, 72, 96, 120 };
     private const int DefaultLookbackDays = 3;
     private const int DefaultParallelism = 8;
     // AWS publishes a cycle's NetCDFs ~3-6h after run time; a 7h floor avoids the

@@ -1,0 +1,167 @@
+name: s3-collect
+
+# Live refresh of the four exact-runtime forecast sources used by the 2d
+# temperature blender (productionised 2026-05-05+):
+#   - GFS              (NOAA noaa-gfs-bdp-pds, ~3-4h publication latency)
+#   - ECMWF IFS oper   (ECMWF ecmwf-forecasts, ~7-8h)
+#   - ECMWF AIFS oper  (same bucket, ~5-7h)
+#   - Met Office Global (Met Office AWS, ~3-6h, NetCDF via Python subprocess)
+#
+# Each source pulls a 3-day rolling window keyed off the wall-clock UTC date
+# at job start. Not-yet-published cycles 404 silently. Idempotent — running
+# more often than needed is harmless (just a few extra GETs).
+#
+# Schedule: every 6h, offset 30 min past the cycle hour to give NOAA and
+# ECMWF time to start publishing the cycle that just ran. The 30 min lag
+# is the minimum that catches GFS's fastest cycles; ECMWF's slower IFS
+# usually appears one collect window later (still in time for the next
+# predict cycle).
+#
+# This workflow exists alongside the existing `collect.yml` (which pulls
+# Open-Meteo data for the 2b/2c blenders). The two are independent: 2b/2c
+# use offset_day rows from Open-Meteo, 2d uses RunTimeSource='exact' rows
+# from raw S3. Both data sources land in the same forecast tree under
+# different `model=` partition keys.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: "Comma-list of sources (default all). Valid: gfs, ifs, aifs, mo-global"
+        required: false
+        default: ""
+  schedule:
+    # Every 6h at HH:30 UTC — pairs with NOAA / ECMWF cycle landings
+    # (00Z run lands ~03:30, 06Z ~09:30, etc.). Same cadence as collect.yml.
+    - cron: "30 3,9,15,21 * * *"
+
+concurrency:
+  # Shared lock with the existing collect / predict / verify so two jobs
+  # never write the forecast tree simultaneously. Different from the
+  # `archive-backfill-*` per-chunk groups which are deliberately parallel.
+  group: weatherblend-data
+  cancel-in-progress: false
+
+jobs:
+  s3-collect:
+    runs-on: ubuntu-latest
+    # Generous cap — typical run is ~5 min per source, all four ~20 min.
+    # 60-min ceiling catches any one source stalling without holding up
+    # the next scheduled run.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+          dotnet-quality: preview
+
+      - name: Install wgrib2 (via conda-forge)
+        # Needed by the GFS + ECMWF C# clients for GRIB2 point extraction.
+        # Same install path as archive-backfill.yml.
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: wgrib2-env
+          create-args: >-
+            -c conda-forge
+            wgrib2
+          cache-environment: true
+          init-shell: bash
+
+      - name: Resolve wgrib2 path
+        shell: bash -el {0}
+        run: |
+          which wgrib2
+          wgrib2 -version || true
+          echo "WEATHERBLEND_WGRIB2=$(which wgrib2)" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python deps
+        # Same set as metoffice-archive-backfill.yml — pinned for determinism.
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            xarray==2024.9.0 \
+            h5netcdf==1.4.0 \
+            h5py==3.12.1 \
+            pyproj==3.7.0 \
+            pyarrow==18.0.0 \
+            pandas==2.2.3 \
+            numpy==2.1.3 \
+            requests==2.32.3
+
+      - name: Install rclone
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          rclone version
+
+      - name: Configure rclone for R2
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf <<EOF
+          [r2]
+          type = s3
+          provider = Cloudflare
+          access_key_id = ${R2_ACCESS_KEY_ID}
+          secret_access_key = ${R2_SECRET_ACCESS_KEY}
+          endpoint = ${R2_ENDPOINT}
+          acl = private
+          EOF
+
+      - name: Pull existing forecast tree from R2
+        # We need to know what's already on disk so the per-source backfills
+        # don't re-write rows that are already there. (The collectors are
+        # idempotent — they'd just overwrite — but pulling first means rclone
+        # only pushes the *new* parquets at the end, which is much cheaper.)
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          for m in gfs_ncep ecmwf_ifs_oper ecmwf_aifs_oper met_office_global; do
+            rclone copy "r2:${R2_BUCKET}/data/forecasts/location=bonehill_rocks/model=$m" \
+              "data/forecasts/location=bonehill_rocks/model=$m" \
+              --fast-list --transfers 16 --checkers 32
+          done
+
+      - name: Build
+        run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
+
+      - name: Run s3-collect
+        env:
+          WEATHERBLEND_PYTHON: python
+        run: |
+          SOURCES_ARG=""
+          if [ -n "${{ inputs.sources }}" ]; then
+            SOURCES_ARG="--sources ${{ inputs.sources }}"
+          fi
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            s3-collect $SOURCES_ARG
+
+      - name: Push forecast tree to R2
+        # copy (not sync) — additive only. Each cycle goes to its own date+run
+        # partition so we never overwrite existing rows.
+        if: always()
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          if [ -d ./data/forecasts ]; then
+            rclone copy ./data/forecasts "r2:${R2_BUCKET}/data/forecasts" --fast-list --transfers 16 --checkers 32 --progress
+          else
+            echo "::warning::No data/forecasts directory — collect produced no rows"
+          fi
+
+      - name: Upload logs as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-collect-${{ github.run_id }}
+          path: logs/
+          retention-days: 14
+          if-no-files-found: ignore

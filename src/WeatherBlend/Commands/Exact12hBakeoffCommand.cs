@@ -56,21 +56,130 @@ public sealed class Exact12hBakeoffCommand
         int targetLead,
         IReadOnlyList<int>? inputLeads,
         bool maskNoncanonicalAtTest,
+        IReadOnlyList<int>? evaluateAtLeads,
+        bool hpSearch,
         CancellationToken ct)
     {
         var tiers = string.IsNullOrWhiteSpace(tierName)
             ? Exact12hFeatureBuilder.AllTiers
             : new[] { Exact12hFeatureBuilder.GetTier(tierName) };
 
+        if (hpSearch)
+        {
+            // Grid-search variant: ignore evaluateAtLeads + maskNoncanonical
+            // (those are inference probes, not training-config probes), run
+            // the grid for each tier, report the winner config + MAE per tier.
+            foreach (var tier in tiers)
+            {
+                ct.ThrowIfCancellationRequested();
+                await Task.Run(() => RunHpSearch(tier, targetLead, inputLeads, ct), ct);
+            }
+            return 0;
+        }
+
         var results = new List<TierResult>();
         foreach (var tier in tiers)
         {
             ct.ThrowIfCancellationRequested();
-            results.Add(await Task.Run(() => RunTier(tier, targetLead, inputLeads, maskNoncanonicalAtTest, ct), ct));
+            results.Add(await Task.Run(() => RunTier(tier, targetLead, inputLeads, maskNoncanonicalAtTest, evaluateAtLeads, ct), ct));
         }
 
         WriteReport(results, targetLead, inputLeads, maskNoncanonicalAtTest);
         return 0;
+    }
+
+    /// <summary>
+    /// Grid-search LightGBM hyperparameters for one (tier, target-lead)
+    /// combination. The grid is intentionally moderate (3 levels × 4 dims
+    /// = 81 configs, each ~5s to train on the ~2.7k-row T2 set so ~7 min
+    /// per tier) — wide enough to find the obvious wins, narrow enough to
+    /// run interactively. Each config is trained on the same train/val
+    /// split as RunTier, scored on the same test set, and the winning
+    /// config + MAE printed to stdout. Calls this the "2d" candidate
+    /// per the 2026-05-05 productionisation discussion.
+    /// </summary>
+    private void RunHpSearch(
+        Exact12hFeatureBuilder.TierSpec tier,
+        int targetLead,
+        IReadOnlyList<int>? inputLeads,
+        CancellationToken ct)
+    {
+        inputLeads ??= new[] { targetLead };
+        _log.LogInformation("=== HP-search: tier {Tier} target {Lead}h ===", tier.Name, targetLead);
+        var spec = Exact12hFeatureBuilder.BuildSpec(tier, targetLead, inputLeads);
+        var rows = Exact12hFeatureBuilder.Build(
+            _cfg.Storage.ForecastsPath, _cfg.Storage.Era5Path, _cfg.Location.Name,
+            tier, spec, targetLead, inputLeads, ct);
+        if (rows.Count == 0) { _log.LogWarning("  no rows — skipping."); return; }
+
+        var sorted = rows.OrderBy(r => r.ValidTimeUtc).ToList();
+        var maxValid = sorted[^1].ValidTimeUtc;
+        var testStart = maxValid.AddDays(-HoldoutDays);
+        var valStart  = testStart.AddDays(-ValidationDays);
+        var train = sorted.Where(r => r.ValidTimeUtc < valStart).ToList();
+        var val   = sorted.Where(r => r.ValidTimeUtc >= valStart && r.ValidTimeUtc < testStart).ToList();
+        var test  = sorted.Where(r => r.ValidTimeUtc >= testStart).ToList();
+        if (train.Count == 0 || val.Count == 0 || test.Count == 0)
+        { _log.LogWarning("  empty split — skipping."); return; }
+
+        // Grid axes — picked to span the LightGBM defaults the way most
+        // weather-blender tunings do: learning rate ×3, leaves ×3, leaf
+        // floor ×3, feature fraction ×3. Production defaults sit roughly
+        // in the middle of each axis so we explore symmetric neighbourhoods.
+        var lrGrid       = new[] { 0.02, 0.05, 0.10 };
+        var leavesGrid   = new[] { 15, 31, 63 };
+        var minLeafGrid  = new[] { 10, 20, 50 };
+        var featFracGrid = new[] { 0.6, 0.8, 1.0 };
+
+        TempTrainer.Hyperparameters? bestHp = null;
+        var bestMae = double.PositiveInfinity;
+        var n = lrGrid.Length * leavesGrid.Length * minLeafGrid.Length * featFracGrid.Length;
+        var i = 0;
+        foreach (var lr in lrGrid)
+        foreach (var leaves in leavesGrid)
+        foreach (var minLeaf in minLeafGrid)
+        foreach (var ff in featFracGrid)
+        {
+            ct.ThrowIfCancellationRequested();
+            i++;
+            var hp = new TempTrainer.Hyperparameters(
+                LearningRate: lr,
+                NumberOfLeaves: leaves,
+                MinimumExampleCountPerLeaf: minLeaf,
+                FeatureFraction: ff);
+            try
+            {
+                var trained = TempTrainer.TrainVector(train, val, spec, hp);
+                var preds = TempTrainer.PredictVector(trained.Ml, trained.Model, spec, test);
+                var mae = MeanAbs(test.Select((r, idx) => preds[idx] - r.Label));
+                _log.LogInformation("  [{I}/{N}] lr={Lr} leaves={Lv} minLeaf={Ml} featFrac={Ff} → test MAE {Mae:0.0000}",
+                    i, n, lr, leaves, minLeaf, ff, mae);
+                if (mae < bestMae) { bestMae = mae; bestHp = hp; }
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "  config failed (lr={Lr} leaves={Lv} minLeaf={Ml} featFrac={Ff})",
+                    lr, leaves, minLeaf, ff);
+            }
+        }
+
+        if (bestHp is null) { _log.LogWarning("  no successful configs"); return; }
+
+        // Run defaults for comparison so the report includes "delta vs default".
+        var defaultHp = new TempTrainer.Hyperparameters();
+        var defTrained = TempTrainer.TrainVector(train, val, spec, defaultHp);
+        var defPreds = TempTrainer.PredictVector(defTrained.Ml, defTrained.Model, spec, test);
+        var defMae = MeanAbs(test.Select((r, idx) => defPreds[idx] - r.Label));
+
+        _log.LogInformation("");
+        _log.LogInformation("=== HP-search winner — tier {Tier} target {Lead}h ===", tier.Name, targetLead);
+        _log.LogInformation("  default config MAE       : {Def:0.0000}", defMae);
+        _log.LogInformation("  best config   MAE        : {Best:0.0000}  (Δ {Delta:+0.0000;-0.0000;0.0000})", bestMae, bestMae - defMae);
+        _log.LogInformation("  best lr                  : {V}", bestHp.LearningRate);
+        _log.LogInformation("  best num leaves          : {V}", bestHp.NumberOfLeaves);
+        _log.LogInformation("  best min examples / leaf : {V}", bestHp.MinimumExampleCountPerLeaf);
+        _log.LogInformation("  best feature fraction    : {V}", bestHp.FeatureFraction);
+        _log.LogInformation("  rows: train={Tr} val={V} test={Te}", train.Count, val.Count, test.Count);
     }
 
     private TierResult RunTier(
@@ -78,6 +187,7 @@ public sealed class Exact12hBakeoffCommand
         int targetLead,
         IReadOnlyList<int>? inputLeads,
         bool maskNoncanonicalAtTest,
+        IReadOnlyList<int>? evaluateAtLeads,
         CancellationToken ct)
     {
         inputLeads ??= new[] { targetLead };
@@ -213,9 +323,88 @@ public sealed class Exact12hBakeoffCommand
         var trainMean = (double)train.Average(r => r.Label);
         var constMae = MeanAbs(test.Select(r => trainMean - (double)r.Label));
 
+        // Cross-lead evaluation — score the trained-at-target_lead model on
+        // test rows built using DIFFERENT leads. Tests deployment-realism:
+        // does the model degrade when fed forecasts at a non-trained lead?
+        // Each eval_lead produces a separate test set with the SAME feature
+        // schema (same Models, same FeatureNames, same FeatureCount) but
+        // pulled from the underlying forecast tree at eval_lead instead of
+        // target_lead. Filter to ValidTimes in the original test window so
+        // the comparison is on the same date span.
+        var crossLeadResults = new List<CrossLeadResult>();
+        if (evaluateAtLeads is { Count: > 0 } && (inputLeads is null || inputLeads.Count == 1))
+        {
+            // Cross-lead eval is only meaningful in single-lead mode — multi-lead
+            // changes the column shape per-lead, so a model trained on
+            // {6,12,18} columns can't be re-scored on {18,24,30} columns.
+            foreach (var evalLead in evaluateAtLeads)
+            {
+                ct.ThrowIfCancellationRequested();
+                var evalSpec = Exact12hFeatureBuilder.BuildSpec(tier, evalLead, new[] { evalLead });
+                if (evalSpec.FeatureCount != spec.FeatureCount)
+                {
+                    _log.LogWarning(
+                        "  cross-lead {Lead}h: spec FeatureCount mismatch ({E} vs {T}) — skipping.",
+                        evalLead, evalSpec.FeatureCount, spec.FeatureCount);
+                    continue;
+                }
+                var evalRowsAll = Exact12hFeatureBuilder.Build(
+                    _cfg.Storage.ForecastsPath, _cfg.Storage.Era5Path, _cfg.Location.Name,
+                    tier, evalSpec, evalLead, new[] { evalLead }, ct);
+                var evalTest = evalRowsAll.Where(r => r.ValidTimeUtc >= testStart).ToList();
+                if (evalTest.Count == 0)
+                {
+                    crossLeadResults.Add(new CrossLeadResult(evalLead, 0, double.NaN, double.NaN, double.NaN));
+                    continue;
+                }
+                // PredictVector uses spec.FeatureCount only — train_spec and
+                // eval_spec match, so passing either is fine.
+                var evalPreds = TempTrainer.PredictVector(trained.Ml, trained.Model, spec, evalTest);
+                var evalBlendMae = MeanAbs(evalTest.Select((r, i) => evalPreds[i] - r.Label));
+
+                // Best-single + mean-of baselines on the eval-lead test set,
+                // for comparison context (does the model still beat its
+                // best input at the off-lead?).
+                var evalBestSingle = double.PositiveInfinity;
+                for (int m = 0; m < spec.Models.Count; m++)
+                {
+                    var col = m;
+                    var diffs = evalTest
+                        .Select(r => (pred: r.Features[col], label: r.Label))
+                        .Where(t => !float.IsNaN(t.pred))
+                        .Select(t => (double)(t.pred - t.label))
+                        .ToList();
+                    if (diffs.Count == 0) continue;
+                    var mae = diffs.Select(Math.Abs).Average();
+                    if (mae < evalBestSingle) evalBestSingle = mae;
+                }
+                var evalMeanMae = MeanAbs(evalTest.Select(r =>
+                {
+                    double sum = 0; int n = 0;
+                    for (int m = 0; m < spec.Models.Count; m++)
+                    {
+                        var v = r.Features[m];
+                        if (!float.IsNaN(v)) { sum += v; n++; }
+                    }
+                    return (n == 0 ? double.NaN : sum / n) - r.Label;
+                }));
+                crossLeadResults.Add(new CrossLeadResult(
+                    evalLead, evalTest.Count, evalBlendMae,
+                    double.IsPositiveInfinity(evalBestSingle) ? double.NaN : evalBestSingle,
+                    evalMeanMae));
+            }
+        }
+        else if (evaluateAtLeads is { Count: > 0 })
+        {
+            _log.LogWarning("  cross-lead eval requested but blender is multi-lead; skipping (column shapes won't match).");
+        }
+
         return new TierResult(tier, spec, rows.Count, train.Count, val.Count, test.Count,
-            blendMae, perModelMae, meanMae, constMae, sorted[0].ValidTimeUtc, maxValid);
+            blendMae, perModelMae, meanMae, constMae, sorted[0].ValidTimeUtc, maxValid, crossLeadResults);
     }
+
+    private sealed record CrossLeadResult(
+        int EvalLead, int TestN, double BlendMae, double BestSingleMae, double MeanOfModelsMae);
 
     private static double MeanAbs(IEnumerable<double> diffs)
     {
@@ -303,6 +492,26 @@ public sealed class Exact12hBakeoffCommand
                 var pctMean = (deltaMean / r.MeanMae) * 100.0;
                 sb.AppendLine($"   Δ vs mean-of-models       : {deltaMean:+0.000;-0.000;0.000}°C   ({pctMean:+0.0;-0.0;0.0}%)");
             }
+
+            // Cross-lead evaluation: trained-at-target_lead model scored on
+            // test sets built from data at OTHER leads. Tells us how well
+            // the model generalises off its training lead — the question
+            // production 2b leaves open (trained at strict 24h but used at
+            // actual leads 24-47h in serving).
+            if (r.CrossLead is { Count: > 0 })
+            {
+                sb.AppendLine();
+                sb.AppendLine($"   Cross-lead eval (trained @ {targetLead}h, scored on data at other leads):");
+                sb.AppendLine($"     eval lead | n   | blend MAE | best single | mean-of | Δ vs train-lead");
+                sb.AppendLine($"     ----------|-----|-----------|-------------|---------|----------------");
+                foreach (var cl in r.CrossLead)
+                {
+                    var delta = (double.IsNaN(cl.BlendMae) || double.IsNaN(r.BlendMae))
+                        ? "—"
+                        : $"{cl.BlendMae - r.BlendMae:+0.000;-0.000;0.000}";
+                    sb.AppendLine($"     {cl.EvalLead,7}h  | {cl.TestN,3} | {Fmt(cl.BlendMae)} | {Fmt(cl.BestSingleMae)} | {Fmt(cl.MeanOfModelsMae)} | {delta,15}");
+                }
+            }
             sb.AppendLine();
         }
 
@@ -346,5 +555,6 @@ public sealed class Exact12hBakeoffCommand
         double MeanMae,
         double ConstantMeanMae,
         DateTime FirstValid,
-        DateTime LastValid);
+        DateTime LastValid,
+        IReadOnlyList<CrossLeadResult>? CrossLead = null);
 }
