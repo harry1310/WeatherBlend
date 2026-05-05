@@ -14,6 +14,7 @@ using WeatherBlend.Train.Element.Cloud;
 using WeatherBlend.Train.Element.Humidity;
 using WeatherBlend.Train.Element.Radiation;
 using WeatherBlend.Train.Element.Wind;
+using WeatherBlend.Train.Exact12h;
 
 namespace WeatherBlend;
 
@@ -181,6 +182,10 @@ public static class Program
                 // captured here for raw model comparisons + future work.
                 services.AddTransient<MetOfficeArchiveBackfillClient>();
                 services.AddTransient<MetOfficeArchiveBackfillCommand>();
+                // Exact-runtime 12h temperature bake-off (Option-1 design,
+                // 2026-05-05). Three tiers, no UKV, no artifact persistence —
+                // exploratory only.
+                services.AddTransient<Exact12hBakeoffCommand>();
                 services.AddTransient<IElementBlender, WindBlender>();
                 services.AddTransient<IElementBlender, HumidityBlender>();
                 services.AddTransient<IElementBlender, RadiationBlender>();
@@ -323,6 +328,42 @@ public static class Program
             await cmd.RunAsync(source, start, end, cycles, leads, parallelism, CancellationToken.None);
         }, moSourceOpt, gfsStartOpt, gfsEndOpt, moCyclesOpt, moLeadsOpt, moParallelismOpt);
         root.AddCommand(metOfficeBackfill);
+
+        // Exact-runtime 12h temperature bake-off — runs all three tiers
+        // (T1 strict / T2 GFS+AIFS-required / T3 GFS-only-required) and
+        // prints a comparison report. --tier T1|T2|T3 to run just one.
+        var exact12hTierOpt = new Option<string?>(
+            name: "--tier",
+            description: "Run a specific tier only (T1 / T2 / T3). Defaults to all three.",
+            getDefaultValue: () => null);
+        // --lead picks the SINGLE-LEAD target. Defaults to 12 (the original
+        // experiment). Pass --lead 24 to run apples-to-apples vs production 2b.
+        var exact12hLeadOpt = new Option<int>(
+            name: "--lead",
+            description: "Target lead in hours. Single-lead mode unless --leads is also passed. Default 12.",
+            getDefaultValue: () => Exact12hFeatureBuilder.DefaultTargetLead);
+        // --leads expands the column vector to multiple leads per model
+        // (the 2026-05-05 multi-lead experiment). Must contain --lead value.
+        // Default empty = single-lead mode using --lead.
+        var exact12hLeadsOpt = new Option<string>(
+            name: "--leads",
+            description: "Comma-separated input leads for multi-lead mode (e.g. 6,12,18). Must contain --lead. Empty = single-lead.",
+            getDefaultValue: () => "");
+        var exact12hBakeoff = new Command(
+            "exact-12h-bakeoff",
+            "Train + score the exact-runtime temperature blender across the three coverage tiers")
+            { exact12hTierOpt, exact12hLeadOpt, exact12hLeadsOpt };
+        exact12hBakeoff.SetHandler(async (tier, lead, leadsStr) =>
+        {
+            var inputLeads = string.IsNullOrWhiteSpace(leadsStr)
+                ? null
+                : (IReadOnlyList<int>)leadsStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Select(s => int.Parse(s, System.Globalization.CultureInfo.InvariantCulture))
+                    .ToArray();
+            var cmd = host.Services.GetRequiredService<Exact12hBakeoffCommand>();
+            await cmd.RunAsync(tier, lead, inputLeads, CancellationToken.None);
+        }, exact12hTierOpt, exact12hLeadOpt, exact12hLeadsOpt);
+        root.AddCommand(exact12hBakeoff);
 
         var status = new Command("status", "Show what data is on disk");
         status.SetHandler(async ctx =>
