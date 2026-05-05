@@ -259,7 +259,7 @@ ORDER BY p.ValidTimeUtc;
         BlenderSpec spec,
         DateTime validTimeUtc,
         IReadOnlyList<double> perModelPrecip,
-        double era5Precip,
+        double truthMmHour,
         double ukvPrecip = double.NaN)
     {
         // Spread features computed across the per-model precip values only —
@@ -311,8 +311,8 @@ ORDER BY p.ValidTimeUtc;
         {
             ValidTimeUtc = v,
             Features = features,
-            Label = era5Precip >= WetThresholdMm,
-            TruthMmHour = (float)era5Precip,
+            Label = truthMmHour >= WetThresholdMm,
+            TruthMmHour = (float)truthMmHour,
         };
     }
 

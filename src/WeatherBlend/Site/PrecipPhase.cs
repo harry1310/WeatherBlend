@@ -47,10 +47,18 @@ public static class PrecipPhases
         ChampionVsChallengerLabel: "Phase 3c (challenger)",
         Color: "#7c4dff");
 
-    /// <summary>Canonical render order: 3a → 3c.</summary>
+    public static readonly PrecipPhase Phase3d = new(
+        Key: "3d",
+        LongTitle: "Phase 3d — exact-runtime (lead 12 champion)",
+        ShortTitle: "Phase 3d (exact-runtime)",
+        Description: "Exact-runtime blender (GFS + IFS oper + AIFS + MO Global + UKV from raw S3). Champion at +12h, challenger at +24h. Per-station EA gauge truth.",
+        ChampionVsChallengerLabel: "Phase 3d (exact-runtime)",
+        Color: "#26a69a");
+
+    /// <summary>Canonical render order: 3a → 3c → 3d.</summary>
     public static readonly IReadOnlyList<PrecipPhase> All = new[]
     {
-        Phase3a, Phase3c,
+        Phase3a, Phase3c, Phase3d,
     };
 
     /// <summary>Phases that participate in the +24h overlay — currently both.</summary>

@@ -65,6 +65,14 @@ public sealed class PrecipReplayCommand
                 "in the same window. Re-point at a lean (3a) version.");
             return 2;
         }
+        if (string.Equals(metadata.Phase, "3d", StringComparison.Ordinal))
+        {
+            _log.LogError(
+                "Replay rejects Phase 3d (exact-runtime) artefacts — replay rebuilds rows " +
+                "via PrecipFeatureBuilder which only knows offset_day model IDs. Re-point " +
+                "at a 3a (lean) version, or extend replay with an exact-runtime path.");
+            return 2;
+        }
 
         var friendly = ResolveFriendlyStationName(truthStationSlug);
         if (friendly is null)

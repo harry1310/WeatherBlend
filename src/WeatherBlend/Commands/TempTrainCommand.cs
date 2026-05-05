@@ -1213,7 +1213,7 @@ public sealed class TempTrainCommand
                 "Trains on RunTimeSource='exact' rows from raw S3 archives (NOAA + ECMWF Open Data + MO AWS) — distinct from the 3a/3c offset_day path. Per-row provenance is rigorous (RunTimeUtc + ValidTimeUtc + LeadHours).",
                 "Models = GFS + IFS oper + AIFS required, MO Global optional; UKV always optional via per-V-hour conditional pull from 03Z + 15Z cycles. Lead-12 reads UKV at leads {9, 15} (avg 12h-ahead); lead-24 reads at {21, 27} (avg 24h-ahead).",
                 "Lead set restricted to {12, 24} — the leads with sufficient cycle coverage at the 4-cycle ValidTime grid {00, 06, 12, 18}. 48/72/96/120 not trained; 3a/3c retain championship at those leads.",
-                "Truth = per-station EA Hydrology rainfall gauge — same source as 3a/3c so Brier scores are head-to-head comparable on the same per-station target. (Earlier 2026-05-05 morning prototype used ERA5 truth which spuriously inflated skill — caught + fixed same day.)",
+                "Truth = per-station EA Hydrology rainfall gauge — same source as 3a/3c so Brier scores are head-to-head comparable on the same per-station target.",
             },
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);

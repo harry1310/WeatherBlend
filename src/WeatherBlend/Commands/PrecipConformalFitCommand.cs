@@ -105,6 +105,23 @@ public sealed class PrecipConformalFitCommand
         var metadata = ModelArtifact.LoadTrainingMetadata(versionDir);
         _log.LogInformation("Conformal fit: {S} / {V} (phase {P})", stationSlug, versionName, metadata.Phase);
 
+        // Phase 3d (exact-runtime) artefacts use a different feature
+        // builder (PrecipExactFeatureBuilder, exact-runtime model IDs like
+        // gfs_ncep). The conformal fit currently dispatches between
+        // PrecipFeatureBuilder (lean) and PrecipRichFeatureBuilder (rich)
+        // — neither knows the exact-runtime IDs. Skip cleanly with a
+        // warning rather than crashing in TempFeatureBuilder.ShortName.
+        // 3d ConformalSetTag stays null on predict rows in the meantime
+        // (legacy-row behaviour, harmless). Adding 3d support is a follow-
+        // up: needs PrecipExactFeatureBuilder.Build to be plumbed in here.
+        if (string.Equals(metadata.Phase, "3d", StringComparison.Ordinal))
+        {
+            _log.LogWarning(
+                "{S} {V}: phase=3d uses exact-runtime feature builder; conformal fit not yet supported. Skipping.",
+                stationSlug, versionName);
+            return Task.FromResult((fitted, skipped + metadata.PerLead.Count));
+        }
+
         // Each lead trains its own model+calibrator. PerLead keys are
         // string-form lead-hours; iterate them rather than guessing.
         foreach (var leadKey in metadata.PerLead.Keys)

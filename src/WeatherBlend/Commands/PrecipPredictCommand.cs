@@ -723,7 +723,7 @@ ORDER BY ValidTimeUtc, Model;";
 
                 var ukvPrecip = pivot.UkvPrecip;
                 var row = PrecipExactFeatureBuilder.ComposeRow(
-                    spec, valid, modelPrecip, era5Precip: 0.0, ukvPrecip: ukvPrecip);
+                    spec, valid, modelPrecip, truthMmHour: 0.0, ukvPrecip: ukvPrecip);
 
                 var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
                 var pWet = PrecipOccurrenceTrainer.PredictVectorProbability(ml, loadedModel, spec, new[] { row });

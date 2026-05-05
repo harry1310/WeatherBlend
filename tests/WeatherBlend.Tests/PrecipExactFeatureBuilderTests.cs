@@ -69,10 +69,11 @@ public class PrecipExactFeatureBuilderTests
             spec,
             new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc),
             perModelPrecip: new double[] { 1.5, 2.0, 1.8, 0.8 },
-            era5Precip: 1.7);
+            truthMmHour: 1.7);
         row.Features.Should().HaveCount(spec.FeatureCount);
-        // BinaryTrainingRow: Label is bool (= ERA5 precip ≥ 0.1 mm/h),
-        // TruthMmHour carries the actual mm value as diagnostic.
+        // BinaryTrainingRow: Label is bool (= truth precip ≥ 0.1 mm/h —
+        // EA Hydrology gauge in production); TruthMmHour carries the actual
+        // mm value as diagnostic.
         row.Label.Should().BeTrue(); // 1.7 mm ≥ 0.1 wet
         row.TruthMmHour.Should().Be(1.7f);
         row.Features[0].Should().Be(1.5f); // gfs
@@ -89,7 +90,7 @@ public class PrecipExactFeatureBuilderTests
             spec,
             new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc),
             perModelPrecip: new double[] { 0.05, 0.0, 0.02, 0.0 },
-            era5Precip: 0.05); // 0.05 < 0.1 = dry
+            truthMmHour: 0.05); // 0.05 < 0.1 = dry
         row.Label.Should().BeFalse();
         row.TruthMmHour.Should().Be(0.05f);
     }
@@ -103,7 +104,7 @@ public class PrecipExactFeatureBuilderTests
             spec,
             new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc),
             perModelPrecip: new double[] { 1.5, 2.0, 1.0, double.NaN },
-            era5Precip: 1.7);
+            truthMmHour: 1.7);
         // Mean across {1.5, 2.0, 1.0} = 1.5
         var meanIdx = spec.FeatureNames.ToList().IndexOf("precip_mean");
         row.Features[meanIdx].Should().BeApproximately(1.5f, 1e-3f);
@@ -135,7 +136,7 @@ public class PrecipExactFeatureBuilderTests
             spec,
             new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc),
             perModelPrecip: new double[] { 1.5, 2.0, 1.8, 0.8 },
-            era5Precip: 1.7,
+            truthMmHour: 1.7,
             ukvPrecip: 1.2);
         var ukvIdx = spec.FeatureNames.ToList().IndexOf("precip_ukv");
         row.Features[ukvIdx].Should().Be(1.2f);
@@ -152,7 +153,7 @@ public class PrecipExactFeatureBuilderTests
             spec,
             new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc),
             perModelPrecip: new double[] { 1.5, 2.0, 1.0, 1.5 },
-            era5Precip: 1.5,
+            truthMmHour: 1.5,
             ukvPrecip: double.NaN);
         var ukvIdx = spec.FeatureNames.ToList().IndexOf("precip_ukv");
         float.IsNaN(row.Features[ukvIdx]).Should().BeTrue();
