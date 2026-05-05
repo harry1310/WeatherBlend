@@ -6,6 +6,7 @@ using WeatherBlend.Models;
 using WeatherBlend.Train;
 using WeatherBlend.Train.Common;
 using WeatherBlend.Train.Element;
+using WeatherBlend.Train.Exact12h;
 
 namespace WeatherBlend.Commands;
 
@@ -80,9 +81,9 @@ public sealed class TempTrainCommand
         }
 
         var fs = (featureSet ?? "lean").ToLowerInvariant();
-        if (fs is not ("lean" or "rich" or "independence-mc"))
+        if (fs is not ("lean" or "rich" or "independence-mc" or "exact"))
         {
-            _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich | independence-mc.", featureSet);
+            _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich | independence-mc | exact.", featureSet);
             return 2;
         }
         // "independence-mc" = Phase 3g (parameter-free MC over 3a marginals);
@@ -91,6 +92,13 @@ public sealed class TempTrainCommand
         {
             _log.LogError(
                 "--feature-set {Fs} is only supported for target dry-window.", fs);
+            return 2;
+        }
+        // "exact" = Phase 2d (exact-runtime temperature blender) — temperature-only.
+        if (fs == "exact" && t != "temperature")
+        {
+            _log.LogError(
+                "--feature-set {Fs} is only supported for target temperature.", fs);
             return 2;
         }
         if (elementTarget is not null && fs != "lean")
@@ -119,9 +127,12 @@ public sealed class TempTrainCommand
 
         return t switch
         {
-            "temperature"   => fs == "rich"
-                                  ? await RunPhase2cAsync(leads, ct)
-                                  : await RunPhase2bAsync(leads, ct),
+            "temperature"   => fs switch
+            {
+                "rich"  => await RunPhase2cAsync(leads, ct),
+                "exact" => await RunPhase2dAsync(ct),
+                _       => await RunPhase2bAsync(leads, ct),
+            },
             "precipitation" => fs == "rich"
                                   ? await RunPhase3cAsync(leads, station, ct)
                                   : await RunPhase3aAsync(leads, station, ct),
@@ -415,6 +426,172 @@ public sealed class TempTrainCommand
 
         _log.LogInformation("Phase 2c artefacts → {Dir}", versionDir);
         _log.LogInformation("Active versions now: [{Active}]", string.Join(", ", newActive));
+        _log.LogInformation("Summary — {Summary}",
+            string.Join("; ", perLead.Select(kv =>
+                $"lead {kv.Key}h: blend MAE {kv.Value.BlendTestMae:0.000}°C vs {kv.Value.BestSingle} val MAE {kv.Value.BestSingleValMae:0.000}°C")));
+
+        await Task.CompletedTask;
+        return 0;
+    }
+
+    // ---- Phase 2d: exact-runtime temperature blender (lead-12 champion) -------------
+
+    /// <summary>
+    /// 2d's tier (P1 in the precip-exact world / T2 in the temp-exact world):
+    /// GFS + AIFS required, IFS oper + MO Global optional, UKV always
+    /// optional. Single-lead training at <see cref="DefaultPhase2dLeads"/>;
+    /// each lead gets its own per-lead artefact saved under
+    /// <c>v{ts}_phase2d/lead_{N}h.zip</c>.
+    /// </summary>
+    private static readonly int[] DefaultPhase2dLeads = { 12, 24 };
+
+    private async Task<int> RunPhase2dAsync(CancellationToken ct)
+    {
+        var leads = DefaultPhase2dLeads;
+        var now = DateTime.UtcNow;
+        var modelsRoot = _cfg.Storage.ModelsPath;
+        var versionDir = ModelArtifact.BuildVersionDir(modelsRoot, "temperature", now, suffix: "phase2d");
+        var versionName = Path.GetFileName(versionDir);
+
+        // Bake-off-tuned defaults: lr=0.05/leaves=31/min-leaf=50/feat-frac=1.0
+        // is the no-UKV per-lead winner (also a reasonable middle-ground for
+        // the UKV-included per-lead winners which differed at lead 12 vs 24).
+        // Using one HP set across both leads keeps the artefact reproducible
+        // from a single command — per-lead HP tuning can land later if the
+        // delta justifies the complexity.
+        var hp = new TempTrainer.Hyperparameters(
+            LearningRate: 0.05,
+            NumberOfLeaves: 31,
+            MinimumExampleCountPerLeaf: 50,
+            FeatureFraction: 1.0);
+
+        var tier = Exact12hFeatureBuilder.AllTiers.First(t => t.Name == "T2");
+        const bool IncludeUkv = true;
+
+        _log.LogInformation("Phase 2d — exact-runtime blender (tier {Tier}, UKV={Ukv}), leads [{Leads}]",
+            tier.Name, IncludeUkv, string.Join(",", leads));
+        _log.LogInformation("Hyperparameters: iter={Iter} lr={Lr} leaves={Leaves} min-leaf={Ml} esr={Esr} seed={Seed} feat-frac={Ff}",
+            hp.NumberOfIterations, hp.LearningRate, hp.NumberOfLeaves, hp.MinimumExampleCountPerLeaf,
+            hp.EarlyStoppingRound, hp.Seed, hp.FeatureFraction);
+
+        var perLead = new Dictionary<string, ModelArtifact.PerLeadStats>();
+        var importanceByLead = new Dictionary<int, IEnumerable<(string Name, double Gain)>>();
+        var specsPerLead = new Dictionary<int, BlenderSpec>();
+
+        foreach (var lead in leads)
+        {
+            ct.ThrowIfCancellationRequested();
+            _log.LogInformation("--- Lead {Lead}h ---", lead);
+
+            var spec = Exact12hFeatureBuilder.BuildSpec(tier, targetLead: lead, includeUkv: IncludeUkv);
+            specsPerLead[lead] = spec;
+            _log.LogInformation("Spec: {Spec}", spec);
+
+            var rows = Exact12hFeatureBuilder.Build(
+                _cfg.Storage.ForecastsPath,
+                _cfg.Storage.Era5Path,
+                _cfg.Location.Name,
+                tier,
+                spec,
+                targetLead: lead,
+                includeUkv: IncludeUkv,
+                ct: ct);
+            _log.LogInformation("Loaded {N} rows spanning {S:yyyy-MM-dd} → {E:yyyy-MM-dd}",
+                rows.Count,
+                rows.Count == 0 ? DateTime.MinValue : rows[0].ValidTimeUtc,
+                rows.Count == 0 ? DateTime.MinValue : rows[^1].ValidTimeUtc);
+            if (rows.Count < 500)
+            {
+                _log.LogError("Only {N} rows for lead {Lead}h — too few to train (run s3-collect / backfill first).",
+                    rows.Count, lead);
+                return 3;
+            }
+
+            var ds = RegressionDataset.Split(rows);
+            _log.LogInformation("Split → train {TN} ({T0:yyyy-MM-dd}..{T1:yyyy-MM-dd}), val {VN} ({V0:yyyy-MM-dd}..{V1:yyyy-MM-dd}), test {EN} ({E0:yyyy-MM-dd}..{E1:yyyy-MM-dd})",
+                ds.Train.Count, ds.TrainStart, ds.TrainEnd,
+                ds.Val.Count,   ds.ValStart,   ds.ValEnd,
+                ds.Test.Count,  ds.TestStart,  ds.TestEnd);
+
+            var trained = TempTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
+
+            var testActual = ds.Test.Select(x => (double)x.Label).ToArray();
+            var testPred   = TempTrainer.PredictVector(trained.Ml, trained.Model, spec, ds.Test);
+            var blendStats = TempMetrics.Compute(testPred, testActual);
+
+            var best = TempBaselines.BestSingle(spec, ds.Val);
+            var bestValMae = TempMetrics.Compute(
+                TempBaselines.FromFeature(spec, ds.Val, best),
+                ds.Val.Select(x => (double)x.Label).ToArray()).Mae;
+            var bestTestMae = TempMetrics.Compute(
+                TempBaselines.FromFeature(spec, ds.Test, best),
+                testActual).Mae;
+
+            ModelArtifact.SaveLeadModel(trained.Ml, trained.Model, trained.InputSchema, versionDir, lead);
+            importanceByLead[lead] = trained.FeatureImportance;
+
+            var testMonths = ds.Test.Select(r => new DateTime(r.ValidTimeUtc.Year, r.ValidTimeUtc.Month, 1))
+                                    .Distinct().Count();
+
+            perLead[lead.ToString()] = new ModelArtifact.PerLeadStats
+            {
+                LeadHours = lead,
+                DataRangeTrain = $"{ds.TrainStart:yyyy-MM-dd HH:mm}Z → {ds.TrainEnd:yyyy-MM-dd HH:mm}Z",
+                DataRangeVal   = $"{ds.ValStart:yyyy-MM-dd HH:mm}Z → {ds.ValEnd:yyyy-MM-dd HH:mm}Z",
+                DataRangeTest  = $"{ds.TestStart:yyyy-MM-dd HH:mm}Z → {ds.TestEnd:yyyy-MM-dd HH:mm}Z",
+                TrainRows = ds.Train.Count,
+                ValRows   = ds.Val.Count,
+                TestRows  = ds.Test.Count,
+                TestCalendarMonths = testMonths,
+                BestSingle = best,
+                BestSingleValMae  = bestValMae,
+                BestSingleTestMae = bestTestMae,
+                BlendTestMae  = blendStats.Mae,
+                BlendTestRmse = blendStats.Rmse,
+                BlendTestBias = blendStats.Bias,
+            };
+
+            var deltaPct = bestTestMae > 0 ? (blendStats.Mae - bestTestMae) / bestTestMae * 100 : double.NaN;
+            _log.LogInformation(
+                "Lead {Lead}h headline — blend MAE={Blend:0.000}°C, best[{Best}] test MAE={BestT:0.000}°C (val {BestV:0.000}°C), Δ {Delta:+0.0;-0.0;0.0}%, months={M}",
+                lead, blendStats.Mae, best, bestTestMae, bestValMae, deltaPct, testMonths);
+        }
+
+        ModelArtifact.SaveBlenderSpecs(versionDir, specsPerLead);
+        ModelArtifact.SavePerLeadFeatureImportance(versionDir, importanceByLead);
+
+        var metadata = new ModelArtifact.TrainingMetadata
+        {
+            Version = versionName,
+            Target = "temperature",
+            Phase = "2d",
+            DataSource = "exact_runtime_s3_archive",
+            TrainedAtUtc = now,
+            Hyperparameters = BuildHpDict(hp),
+            TestMae = perLead.ToDictionary(kv => $"lead_{kv.Key}h_blend", kv => kv.Value.BlendTestMae),
+            PerLead = perLead,
+            DeviationsFromBrief = new List<string>
+            {
+                "Trains on RunTimeSource='exact' rows from raw S3 archives (NOAA + ECMWF Open Data + MO AWS) — distinct from the 2b/2c offset_day path. Per-row provenance is rigorous (RunTimeUtc + ValidTimeUtc + LeadHours).",
+                "Models = GFS + AIFS required, IFS oper + MO Global optional (tier T2). UKV always optional, sourced via per-V-hour conditional pull from 03Z + 15Z cycles to land at ~12h-ahead per ValidTime.",
+                "Lead set restricted to {12, 24} — the leads with sufficient cycle coverage at the 4-cycle ValidTime grid {00,06,12,18}. 48/72/96/120 not trained; 2b/2c retain championship at those leads.",
+                "Hyperparameters from the 2026-05-05 81-config grid search: lr=0.05, leaves=31, min-leaf=50, feat-frac=1.0 — the no-UKV per-lead winner, used as a pragmatic split between the per-lead UKV-included winners (lr=0.1/leaves=15 at L=12 vs lr=0.02/leaves=31 at L=24) which diverged.",
+            },
+        };
+        ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
+
+        // Promote 2d as a challenger — 2b stays Current. ChampionByLead is
+        // the per-lead hook that promotes 2d at lead 12h ONLY; 24h stays
+        // with whatever Current resolves to (typically 2b). The challenger
+        // promote covers re-train idempotency: replaces any prior 2d entry
+        // in Active rather than appending duplicates.
+        ModelArtifact.PromoteVersionAsChallenger(modelsRoot, "temperature", versionName, newPhase: "2d");
+        ModelArtifact.SetChampionForLead(modelsRoot, "temperature", 12, versionName);
+        var newActive = ModelArtifact.ResolveActive(modelsRoot, "temperature");
+
+        _log.LogInformation("Phase 2d artefacts → {Dir}", versionDir);
+        _log.LogInformation("Active versions now: [{Active}]", string.Join(", ", newActive));
+        _log.LogInformation("Champion for lead 12h: {V}", versionName);
         _log.LogInformation("Summary — {Summary}",
             string.Join("; ", perLead.Select(kv =>
                 $"lead {kv.Key}h: blend MAE {kv.Value.BlendTestMae:0.000}°C vs {kv.Value.BestSingle} val MAE {kv.Value.BestSingleValMae:0.000}°C")));

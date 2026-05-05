@@ -32,7 +32,10 @@ public static class ActivePhasePolicy
     public static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> ByTarget =
         new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
         {
-            ["temperature"]   = new[] { "2b", "2c" },
+            // 2d ships as champion at lead 12h only (per-lead champion in
+            // TemperatureManifest.ChampionByLead); 2b stays Current for 24/48/
+            // 72/96/120 where 2d isn't trained. 2c keeps its challenger slot.
+            ["temperature"]   = new[] { "2b", "2c", "2d" },
             ["precipitation"] = new[] { "3a", "3c" },
             // 3g (parameter-free MC over Phase 3a hourly P(wet) marginals)
             // is the 3b challenger; cross-window monotonicity P(N=3) ≥ P(N=4)

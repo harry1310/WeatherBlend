@@ -33,12 +33,20 @@ public static partial class SitePages
         var dayWindowStart = dayUtc.AddHours(HomeFirstVisibleHourUtc);
         var dayWindowEnd   = dayUtc.AddHours(HomeLastVisibleHourUtcExclusive);
 
-        // Champion-only filter (mirrors the Models page's "active phase" gate)
-        // so a challenger version doesn't leak onto the headline cards. Empty
-        // CurrentVersion = no manifest, fall back to "any".
-        var cardSource = string.IsNullOrEmpty(input.CurrentVersion)
+        // Champion-only filter, per lead. ChampionByLead pins specific
+        // (lead → version) overrides (e.g. 2d champions lead 12h while 2b
+        // stays Current at 24+); any lead missing from the dict falls back
+        // to CurrentVersion. Empty CurrentVersion = no manifest, fall back
+        // to "any" so a freshly-deployed environment still renders cards.
+        string ChampionForLead(int lead)
+        {
+            if (input.ChampionByLead.TryGetValue(lead, out var perLead) && !string.IsNullOrEmpty(perLead))
+                return perLead;
+            return input.CurrentVersion;
+        }
+        var cardSource = string.IsNullOrEmpty(input.CurrentVersion) && input.ChampionByLead.Count == 0
             ? input.Predictions
-            : input.Predictions.Where(p => p.ModelVersion == input.CurrentVersion);
+            : input.Predictions.Where(p => p.ModelVersion == ChampionForLead(p.LeadHours));
 
         // For each future valid_time, take the smallest lead (most recent
         // cycle); within ties, freshest PredictionMadeAt wins. Restrict to

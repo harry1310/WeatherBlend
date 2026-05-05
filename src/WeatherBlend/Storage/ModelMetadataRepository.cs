@@ -67,6 +67,22 @@ public sealed class ModelMetadataRepository
     }
 
     /// <summary>
+    /// Per-lead champion overrides for a flat-target manifest
+    /// (<see cref="ModelArtifact.Manifest.ChampionByLead"/>). Maps each
+    /// pinned lead to its champion-version. Empty dict on legacy manifests
+    /// or when no per-lead pin is set; callers fall back to
+    /// <see cref="GetChampion"/> for unpinned leads.
+    /// </summary>
+    public IReadOnlyDictionary<int, string> GetChampionByLead(string target)
+    {
+        var manifest = TryReadManifest(target);
+        if (manifest?.ChampionByLead is null) return new Dictionary<int, string>();
+        return manifest.ChampionByLead
+            .Where(kv => !string.IsNullOrEmpty(kv.Value))
+            .ToDictionary(kv => kv.Key, kv => kv.Value);
+    }
+
+    /// <summary>
     /// Per-station champions for the per-station manifest layout
     /// (<c>precipitation</c>, dry-window-style targets if they ever switch
     /// to a station axis). Returns an ordinal-keyed dict of

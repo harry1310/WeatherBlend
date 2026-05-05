@@ -589,4 +589,55 @@ public class ModelArtifactTests : IDisposable
         manifest.Active.Should().Contain("v-base");
         manifest.Active.Should().ContainSingle(v => v.StartsWith("v-", StringComparison.Ordinal) && v != "v-base");
     }
+
+    // ---- ChampionByLead -------------------------------------------------------
+
+    [Fact]
+    public void ResolveChampionForLead_falls_back_to_Current_when_no_per_lead_override()
+    {
+        ModelArtifact.UpdateManifest(_root, "temperature", "v-2b");
+        ModelArtifact.ResolveChampionForLead(_root, "temperature", 24).Should().Be("v-2b");
+        ModelArtifact.ResolveChampionForLead(_root, "temperature", 12).Should().Be("v-2b");
+    }
+
+    [Fact]
+    public void SetChampionForLead_pins_per_lead_override_without_touching_Current()
+    {
+        ModelArtifact.UpdateManifest(_root, "temperature", "v-2b");
+        ModelArtifact.SetChampionForLead(_root, "temperature", 12, "v-2d");
+
+        ModelArtifact.ResolveChampionForLead(_root, "temperature", 12).Should().Be("v-2d");
+        ModelArtifact.ResolveChampionForLead(_root, "temperature", 24).Should().Be("v-2b");
+
+        var path = Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName);
+        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(File.ReadAllText(path))!;
+        manifest.Current.Should().Be("v-2b"); // Current untouched
+        manifest.ChampionByLead.Should().ContainKey(12).WhoseValue.Should().Be("v-2d");
+    }
+
+    [Fact]
+    public void SetChampionForLead_with_empty_string_clears_the_pin()
+    {
+        ModelArtifact.UpdateManifest(_root, "temperature", "v-2b");
+        ModelArtifact.SetChampionForLead(_root, "temperature", 12, "v-2d");
+        ModelArtifact.SetChampionForLead(_root, "temperature", 12, "");
+
+        ModelArtifact.ResolveChampionForLead(_root, "temperature", 12).Should().Be("v-2b");
+
+        var path = Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName);
+        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(File.ReadAllText(path))!;
+        manifest.ChampionByLead.Should().NotContainKey(12);
+    }
+
+    [Fact]
+    public void ResolveChampionForLead_pure_overload_works_against_in_memory_manifest()
+    {
+        var manifest = new ModelArtifact.Manifest
+        {
+            Current = "v-2b",
+            ChampionByLead = new Dictionary<int, string> { [12] = "v-2d" },
+        };
+        ModelArtifact.ResolveChampionForLead(manifest, 12).Should().Be("v-2d");
+        ModelArtifact.ResolveChampionForLead(manifest, 24).Should().Be("v-2b");
+    }
 }

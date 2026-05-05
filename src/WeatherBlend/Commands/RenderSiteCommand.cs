@@ -160,8 +160,12 @@ public sealed class RenderSiteCommand
         _log.LogInformation("Rainfall truth: {N} stations loaded.", rainfall.Count);
 
         var currentVersion = _metadata.GetChampion("temperature");
+        var championByLead = _metadata.GetChampionByLead("temperature");
         _log.LogInformation("Champion (temperature): {Version}",
             string.IsNullOrEmpty(currentVersion) ? "(none)" : currentVersion);
+        if (championByLead.Count > 0)
+            _log.LogInformation("Per-lead champion overrides: {Entries}",
+                string.Join(", ", championByLead.OrderBy(kv => kv.Key).Select(kv => $"+{kv.Key}h→{kv.Value}")));
 
         var precipCurrentByStation = _metadata.GetChampionsByStation("precipitation");
         _log.LogInformation("Champion (precipitation): {Entries}",
@@ -198,6 +202,7 @@ public sealed class RenderSiteCommand
             PhaseByVersion = phaseByVersion,
             RainfallTruth = rainfall,
             CurrentVersion = currentVersion,
+            ChampionByLead = championByLead,
             PrecipCurrentByStation = precipCurrentByStation,
             ActiveStationSlugs = activeStationSlugs,
             ModelSummaries = modelSummaries,

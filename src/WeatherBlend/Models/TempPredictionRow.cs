@@ -77,6 +77,25 @@ public sealed class TempPredictionRow
     public double? TempStd { get; init; }
     public double? TempRange { get; init; }
 
+    // Exact-runtime per-model slots (Phase 2d). Populated by the exact-runtime
+    // predict path only — 2b/2c rows leave these null. Distinct from the
+    // offset_day TempGfs / TempEcmwf / ... slots above so a single parquet can
+    // carry both phase shapes side-by-side without overwriting each other.
+    // Model identities don't fully overlap (IFS oper vs IFS025, MO Global vs
+    // ukmo_seamless), so the per-NWP picker dispatches by phase rather than
+    // sharing slots. UKV is exact-runtime-only and hence has no offset_day twin.
+    public double? TempGfsExact { get; init; }
+    public double? TempIfsOperExact { get; init; }
+    public double? TempAifsOperExact { get; init; }
+    public double? TempMoGlobalExact { get; init; }
+    public double? TempUkvExact { get; init; }
+
+    public DateTime? RunTimeGfsExact { get; init; }
+    public DateTime? RunTimeIfsOperExact { get; init; }
+    public DateTime? RunTimeAifsOperExact { get; init; }
+    public DateTime? RunTimeMoGlobalExact { get; init; }
+    public DateTime? RunTimeUkvExact { get; init; }
+
     /// <summary>SHA-256 hex of the 13 feature floats (little-endian, in FeatureNames order).
     /// Lets us prove, post-hoc, that a given prediction corresponds to a specific input.</summary>
     public required string FeatureVectorHash { get; init; }

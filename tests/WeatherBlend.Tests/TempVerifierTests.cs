@@ -408,4 +408,75 @@ public class VerifierTests
         bucketRows.Should().HaveCount(1);
         bucketRows[0].BlendMae.Should().BeApproximately(trainedRows[0].BlendMae, 1e-6);
     }
+
+    // -----------------------------------------------------------------------
+    // Phase 2d (exact-runtime) — best-single picker dispatches by phase.
+    // 2b/2c rows score from temp_gfs / temp_ecmwf / ... slots; 2d rows
+    // score from the new TempXxxExact slots. The verifier's MetadataByVersion
+    // is the source of truth for "what phase produced this row".
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public void Compute_uses_exact_per_model_columns_for_phase_2d()
+    {
+        const string V2d = "v2026-05-05_120000_phase2d";
+        var valid = AsOf.AddDays(-7);
+        // 2d row: offset_day TempGfs / TempEcmwf / ... null; *Exact slots populated.
+        // Truth = 10.0; AIFS-exact closest at 10.05; that's the best-single name.
+        var pred = new TempPredictionRow
+        {
+            LocationName = "Bonehill Rocks",
+            ModelVersion = V2d,
+            PredictionMadeAtUtc = valid.AddHours(-12),
+            ValidTimeUtc = valid,
+            LeadHours = 12,
+            BlendTemperature = 10.1,
+            TempGfsExact      = 11.0,
+            TempIfsOperExact  = 10.5,
+            TempAifsOperExact = 10.05,
+            TempMoGlobalExact = 11.5,
+            TempUkvExact      = 10.3,
+            FeatureVectorHash = "fakehash",
+        };
+        var truth = new Dictionary<DateTime, double> { [valid] = 10.0 };
+
+        var inputs = new TempVerifier.Inputs
+        {
+            Predictions = new[] { pred },
+            TruthByTime = truth,
+            MetadataByVersion = new Dictionary<string, ModelArtifact.TrainingMetadata>
+            {
+                [V2d] = new() { Version = V2d, Target = "temperature", Phase = "2d" },
+            },
+            AsOfUtc = AsOf,
+            WindowDays = 14,
+            Era5LatencyDays = 5,
+            DriftThreshold = 1.5,
+        };
+
+        var rows = TempVerifier.Compute(inputs);
+
+        rows.Should().ContainSingle();
+        rows[0].BestSingleName.Should().Be("temp_aifs_oper_exact",
+            "phase 2d should pick best-single from the exact-runtime per-model slots");
+    }
+
+    [Fact]
+    public void ModelNamesForPhase_returns_distinct_lists_for_2b_vs_2d()
+    {
+        TempVerifier.ModelNamesForPhase("2b").Should().BeEquivalentTo(
+            "temp_gfs", "temp_ecmwf", "temp_icon", "temp_mf", "temp_ukmo", "temp_gem", "temp_aifs");
+        TempVerifier.ModelNamesForPhase("2c").Should().BeEquivalentTo(
+            TempVerifier.ModelNamesForPhase("2b"),
+            "rich (2c) shares the offset_day per-model slot list with lean (2b)");
+        TempVerifier.ModelNamesForPhase("2d").Should().BeEquivalentTo(
+            "temp_gfs_exact", "temp_ifs_oper_exact", "temp_aifs_oper_exact",
+            "temp_moglobal_exact", "temp_ukv_exact");
+        // Unknown / null phase falls back to offset_day list — matches every
+        // shipped phase pre-2d so legacy artefacts keep verifying correctly.
+        TempVerifier.ModelNamesForPhase(null).Should().BeEquivalentTo(
+            TempVerifier.ModelNamesForPhase("2b"));
+        TempVerifier.ModelNamesForPhase("nonsense").Should().BeEquivalentTo(
+            TempVerifier.ModelNamesForPhase("2b"));
+    }
 }

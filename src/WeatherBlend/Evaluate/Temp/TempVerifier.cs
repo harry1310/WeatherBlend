@@ -16,10 +16,30 @@ namespace WeatherBlend.Evaluate.Temp;
 /// </summary>
 public static class TempVerifier
 {
-    // Same ordering as TempFeatureBuilder.ModelColumns — kept local to avoid a circular dep
-    // and because verify's per-model ordering is verification-specific anyway.
-    internal static readonly string[] ModelNames =
+    // Per-phase per-model column lists. 2b/2c (offset_day) read from the
+    // canonical 7-NWP slots; 2d (exact-runtime) reads from the 5 *Exact slots
+    // since its model identities don't match (raw IFS oper vs Open-Meteo
+    // ecmwf_ifs025, raw MO Global vs ukmo_seamless, plus UKV which has no
+    // offset_day twin). Kept local to avoid a circular dep; verify's per-model
+    // ordering is verification-specific anyway.
+    internal static readonly string[] ModelNamesOffsetDay =
         { "temp_gfs", "temp_ecmwf", "temp_icon", "temp_mf", "temp_ukmo", "temp_gem", "temp_aifs" };
+
+    /// <summary>Phase 2d per-model column list — distinct from offset_day's
+    /// because the model identities don't fully overlap. Order matches the
+    /// canonical Exact12hFeatureBuilder column order plus UKV at the end.</summary>
+    internal static readonly string[] ModelNamesExact =
+        { "temp_gfs_exact", "temp_ifs_oper_exact", "temp_aifs_oper_exact",
+          "temp_moglobal_exact", "temp_ukv_exact" };
+
+    /// <summary>Resolve the per-NWP column list for a given training phase.
+    /// Defaults to the offset_day list — preserves behaviour for any version
+    /// whose metadata is missing (legacy artefacts) or has an unknown phase.</summary>
+    internal static string[] ModelNamesForPhase(string? phase) =>
+        string.Equals(phase, "2d", StringComparison.Ordinal) ? ModelNamesExact : ModelNamesOffsetDay;
+
+    [Obsolete("Use ModelNamesForPhase(phase). Kept for tests that pre-date 2d.")]
+    internal static readonly string[] ModelNames = ModelNamesOffsetDay;
 
     public sealed class Inputs
     {
@@ -157,12 +177,13 @@ public static class TempVerifier
         var blend  = preds.Select(p => p.BlendTemperature).ToArray();
         var blendStats = TempMetrics.Compute(blend, actual);
 
-        var meanPred = preds.Select(RowMean).ToArray();
+        var modelNames = ModelNamesForPhase(PhaseFor(version, inputs));
+        var meanPred = preds.Select(p => RowMean(p, modelNames)).ToArray();
         var meanStats = TempMetrics.Compute(meanPred, actual);
 
         var bestName = "";
         var bestMae  = double.PositiveInfinity;
-        foreach (var name in ModelNames)
+        foreach (var name in modelNames)
         {
             var p = preds.Select(row => TempFor(row, name) ?? double.NaN).ToArray();
             var s = TempMetrics.Compute(p, actual);
@@ -207,7 +228,8 @@ public static class TempVerifier
         // Mean-of-models: if TempMean is populated (predict writes it), trust it;
         // otherwise recompute from non-null per-model temps on the row. A row where
         // every model is null becomes NaN and TempMetrics.Compute drops it.
-        var meanPred = preds.Select(RowMean).ToArray();
+        var modelNames = ModelNamesForPhase(PhaseFor(version, inputs));
+        var meanPred = preds.Select(p => RowMean(p, modelNames)).ToArray();
         var meanStats = TempMetrics.Compute(meanPred, actual);
 
         // Best single: pick the per-model column with the lowest MAE in this window.
@@ -215,7 +237,7 @@ public static class TempVerifier
         // from per-model inputs" so this is an observed-in-production ranking.
         var bestName = "";
         var bestMae  = double.PositiveInfinity;
-        foreach (var name in ModelNames)
+        foreach (var name in modelNames)
         {
             var p = preds.Select(row => TempFor(row, name) ?? double.NaN).ToArray();
             var s = TempMetrics.Compute(p, actual);
@@ -273,16 +295,29 @@ public static class TempVerifier
             DriftFlag:          drift);
     }
 
-    private static double RowMean(TempPredictionRow p)
+    private static double RowMean(TempPredictionRow p, IReadOnlyList<string> modelNames)
     {
         if (p.TempMean.HasValue) return p.TempMean.Value;
         double sum = 0; int n = 0;
-        foreach (var name in ModelNames)
+        foreach (var name in modelNames)
         {
             var v = TempFor(p, name);
             if (v.HasValue) { sum += v.Value; n++; }
         }
         return n == 0 ? double.NaN : sum / n;
+    }
+
+    /// <summary>Resolve the training phase for a version by looking it up
+    /// in <see cref="Inputs.MetadataByVersion"/>. Versions whose metadata
+    /// isn't loaded (e.g. mid-rotation, file truncated) get null → falls back
+    /// to the offset_day column list, which matches every shipped phase
+    /// pre-2d. Cheap to call per row but typically there's only a handful of
+    /// distinct versions per Compute call so the dict lookup is fine.</summary>
+    private static string? PhaseFor(string version, Inputs inputs)
+    {
+        if (inputs.MetadataByVersion.TryGetValue(version, out var md))
+            return md.Phase;
+        return null;
     }
 
     private static double? TempFor(TempPredictionRow p, string name) => name switch
@@ -294,6 +329,12 @@ public static class TempVerifier
         "temp_ukmo"  => p.TempUkmo,
         "temp_gem"   => p.TempGem,
         "temp_aifs"  => p.TempAifs,
+        // Phase 2d (exact-runtime) per-model slots.
+        "temp_gfs_exact"      => p.TempGfsExact,
+        "temp_ifs_oper_exact" => p.TempIfsOperExact,
+        "temp_aifs_oper_exact"=> p.TempAifsOperExact,
+        "temp_moglobal_exact" => p.TempMoGlobalExact,
+        "temp_ukv_exact"      => p.TempUkvExact,
         _ => null,
     };
 }

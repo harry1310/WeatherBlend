@@ -51,6 +51,21 @@ public static class ModelArtifact
         /// </summary>
         public List<string> Active { get; set; } = new();
 
+        /// <summary>
+        /// Per-lead champion override (Phase 2d, 2026-05-05). Maps lead-hours →
+        /// version that should be treated as champion AT THAT LEAD ONLY. Falls
+        /// back to <see cref="Current"/> for any lead not listed. Used so 2d
+        /// can take over as champion at lead 12 (where it's the only model
+        /// trained) without touching 2b's championship at 24/48/72/96/120 —
+        /// 2d isn't trained at those leads, so falling back to Current keeps
+        /// the headline forecast intact.
+        ///
+        /// Read via <see cref="ResolveChampionForLead"/>; null / missing key
+        /// → <see cref="Current"/> wins. Empty dict on legacy manifests so
+        /// nothing changes for existing callers.
+        /// </summary>
+        public Dictionary<int, string> ChampionByLead { get; set; } = new();
+
         // Per-station layout (precipitation).
         public Dictionary<string, StationEntry> Stations { get; set; } = new();
     }
@@ -451,6 +466,51 @@ public static class ModelArtifact
         if (manifest.Active.Count > 0) return manifest.Active;
         if (!string.IsNullOrWhiteSpace(manifest.Current)) return new[] { manifest.Current };
         return Array.Empty<string>();
+    }
+
+    /// <summary>
+    /// Champion version for a specific lead. Reads
+    /// <see cref="Manifest.ChampionByLead"/> when populated, otherwise falls
+    /// back to <see cref="Manifest.Current"/>. Empty string when neither is
+    /// set (legacy or freshly-initialised manifests). Per-lead champion is
+    /// the right granularity for the home-page tile-per-hour rendering once
+    /// different phases own different leads (2d at 12, 2b elsewhere) —
+    /// using the flat Current would force one phase across the whole day.
+    /// </summary>
+    public static string ResolveChampionForLead(string modelsRoot, string target, int leadHours)
+    {
+        var manifest = ReadJson<Manifest>(Path.Combine(modelsRoot, target, ManifestFileName));
+        if (manifest is null) return "";
+        return ResolveChampionForLead(manifest, leadHours);
+    }
+
+    /// <summary>Pure overload for tests / pre-loaded manifests.</summary>
+    public static string ResolveChampionForLead(Manifest manifest, int leadHours)
+    {
+        if (manifest.ChampionByLead.TryGetValue(leadHours, out var perLead)
+            && !string.IsNullOrWhiteSpace(perLead))
+            return perLead;
+        return manifest.Current ?? "";
+    }
+
+    /// <summary>
+    /// Set the per-lead champion override for one lead. Pass an empty
+    /// <paramref name="versionDirName"/> to clear the entry (falls back to
+    /// <see cref="Manifest.Current"/>). Idempotent. Doesn't touch
+    /// <see cref="Manifest.Current"/> or <see cref="Manifest.Active"/> — the
+    /// version is assumed to already be in <c>Active</c> so predict + verify
+    /// keep producing rows for it.
+    /// </summary>
+    public static void SetChampionForLead(
+        string modelsRoot, string target, int leadHours, string versionDirName)
+    {
+        MutateManifest(modelsRoot, target, m =>
+        {
+            if (string.IsNullOrWhiteSpace(versionDirName))
+                m.ChampionByLead.Remove(leadHours);
+            else
+                m.ChampionByLead[leadHours] = versionDirName;
+        });
     }
 
     /// <summary>

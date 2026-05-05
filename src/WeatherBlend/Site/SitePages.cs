@@ -244,6 +244,16 @@ public static partial class SitePages
         public string CurrentVersion { get; init; } = "";
 
         /// <summary>
+        /// Per-lead champion override (Phase 2d, 2026-05-05). Maps lead-hours
+        /// → version pinned as champion AT THAT LEAD ONLY. Lookups for any
+        /// lead not present here fall back to <see cref="CurrentVersion"/>.
+        /// Empty dict on legacy renders so behaviour is unchanged from before
+        /// per-lead championship landed.
+        /// </summary>
+        public IReadOnlyDictionary<int, string> ChampionByLead { get; init; }
+            = new Dictionary<int, string>();
+
+        /// <summary>
         /// Per-station precipitation champion (<c>StationEntry.Current</c>) keyed by EA
         /// station slug (e.g. <c>ea_bellever_dartmoor</c>). The home page pulls the P(wet)
         /// chip from this version only, so a challenger that happens to write the same

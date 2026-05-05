@@ -8,6 +8,7 @@ using WeatherBlend.Models;
 using WeatherBlend.Predict;
 using WeatherBlend.Train;
 using WeatherBlend.Train.Common;
+using WeatherBlend.Train.Exact12h;
 
 namespace WeatherBlend.Commands;
 
@@ -157,8 +158,9 @@ public sealed class TempPredictCommand
 
         var phase = (metadata.Phase ?? "").ToLowerInvariant();
         var isRich = phase == "2c";
+        var isExact = phase == "2d";
         _log.LogInformation("--- Version {V} (phase={Phase}, {Mode}) ---",
-            version, metadata.Phase, isRich ? "rich" : "lean");
+            version, metadata.Phase, isExact ? "exact-runtime" : isRich ? "rich" : "lean");
 
         var ml = new MLContext(seed: 42);
         var predictions = new List<TempPredictionRow>();
@@ -168,6 +170,17 @@ public sealed class TempPredictCommand
         // loaded from feature_schema.json so config can change without breaking
         // already-trained artefacts.
         var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
+
+        // Phase 2d (exact-runtime) takes a separate predict path: different
+        // forecast tree filter (RunTimeSource='exact'), different lead set
+        // ({12, 24}), different ValidTime grid ({0,6,12,18}), per-V-hour UKV
+        // pull. Feature vector + model are loaded the same way; only the
+        // input pivot + output column population differ.
+        if (isExact)
+        {
+            var ok = await PredictExactForVersionAsync(versionDir, metadata, specs, predictionMadeAt, anchor, ct);
+            return ok;
+        }
 
         foreach (var (lead, valid) in targets)
         {
@@ -516,4 +529,311 @@ ORDER BY ValidTimeUtc, Model;";
 
     private static double NullableDoubleAsNan(IDataReader r, int ord)
         => r.IsDBNull(ord) ? double.NaN : r.GetDouble(ord);
+
+    // ------------------------------------------------------------------
+    // Phase 2d (exact-runtime) predict path
+    // ------------------------------------------------------------------
+    //
+    // Builds predictions for the per-lead specs persisted in 2d's
+    // feature_schema.json (typically {12, 24}). For each lead, scans the
+    // exact-runtime forecast tree for ValidTime ∈ {00,06,12,18} within the
+    // forward window, picks the latest cycle satisfying RunTime ≤ Valid - L,
+    // pivots per-model temps in the spec's canonical order, conditionally
+    // pulls UKV at the per-V-hour (cycle, lead) tuple, composes the feature
+    // vector via Exact12hFeatureBuilder.ComposeRow, scores, and emits a
+    // TempPredictionRow with the new *Exact columns populated.
+
+    /// <summary>The 4-cycle ValidTime grid 2d trains on. UKV-conditional and
+    /// IFS/MO Global cycle structure all align here; predict mirrors training
+    /// exactly so a row composed at predict time is feature-byte-equivalent
+    /// to the one fed during training.</summary>
+    private static readonly int[] Phase2dValidHoursUtc = { 0, 6, 12, 18 };
+
+    private async Task<bool> PredictExactForVersionAsync(
+        string versionDir,
+        ModelArtifact.TrainingMetadata metadata,
+        IReadOnlyDictionary<int, BlenderSpec> specs,
+        DateTime predictionMadeAt,
+        DateTime anchor,
+        CancellationToken ct)
+    {
+        var ml = new MLContext(seed: 42);
+        var predictions = new List<TempPredictionRow>();
+
+        // Forward window: anchor up to anchor + max(specLead) + 24h. Loose
+        // upper bound — we filter to the spec's lead inside the loop anyway.
+        var maxLead = specs.Keys.DefaultIfEmpty(0).Max();
+        var windowStart = anchor;
+        var windowEnd = anchor.AddHours(maxLead + 24);
+
+        // One DuckDB query covers every (ValidTime, model, lead, cycle) row in
+        // the relevant window — re-used across spec leads. Stays in-memory; the
+        // resulting dictionary is keyed by (ValidTime, Lead) → per-model temps.
+        var pivotByLeadValid = QueryExactForecastRows(
+            _cfg.Storage.ForecastsPath,
+            _cfg.Location.Name,
+            specLeads: specs.Keys.ToArray(),
+            earliestValid: windowStart,
+            latestValid: windowEnd,
+            asOfRunTime: anchor,
+            ct);
+
+        foreach (var (lead, spec) in specs.OrderBy(kv => kv.Key))
+        {
+            // 24 hourly targets per lead bucket — match the offset_day predict
+            // contract so downstream parquets are uniformly shaped. Out of these
+            // 24 targets, only the four ValidTime hours {0,6,12,18} get scored;
+            // the rest land outside the exact-runtime grid and skip silently.
+            var dayStart = new DateTime(anchor.Year, anchor.Month, anchor.Day, 0, 0, 0, DateTimeKind.Utc).AddDays(lead / 24);
+            var leadTargets = Enumerable.Range(0, 24)
+                .Select(h => dayStart.AddHours(h))
+                .Where(v => Phase2dValidHoursUtc.Contains(v.Hour))
+                .ToList();
+
+            var includeUkv = spec.FeatureNames.Contains("temp_ukv");
+
+            foreach (var valid in leadTargets)
+            {
+                if (!pivotByLeadValid.TryGetValue((lead, valid), out var pivot))
+                {
+                    _log.LogDebug("  Lead {Lead}h: no exact-runtime row for valid={Valid:yyyy-MM-dd HH:mm}Z; skipping.",
+                        lead, valid);
+                    continue;
+                }
+
+                // Required-model gate matches training: row dropped when any
+                // RequiredModels slot is missing at the target lead.
+                var requiredSet = spec.RequiredModels.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var modelTemps = new double[spec.Models.Count];
+                var modelRunTimes = new DateTime?[spec.Models.Count];
+                bool allOptionalMissing = false;
+                var missingRequired = new List<string>();
+                for (int i = 0; i < spec.Models.Count; i++)
+                {
+                    var m = spec.Models[i];
+                    if (pivot.PerModelTemp.TryGetValue(m, out var v) && v.HasValue)
+                    {
+                        modelTemps[i] = v.Value;
+                        if (pivot.PerModelRunTime.TryGetValue(m, out var rt)) modelRunTimes[i] = rt;
+                    }
+                    else
+                    {
+                        modelTemps[i] = double.NaN;
+                        if (requiredSet.Contains(m)) missingRequired.Add(m);
+                    }
+                }
+                if (missingRequired.Count > 0)
+                {
+                    _log.LogDebug("  Lead {Lead}h: missing required exact-runtime models [{M}] at valid={V:yyyy-MM-dd HH:mm}Z; skipping.",
+                        lead, string.Join(",", missingRequired), valid);
+                    continue;
+                }
+                if (modelTemps.All(double.IsNaN))
+                {
+                    allOptionalMissing = true;
+                }
+                if (allOptionalMissing) continue;
+
+                // UKV pull is part of the exact-runtime row already (LEFT
+                // JOINed by the SQL). NaN when the per-V-hour conditional
+                // didn't find a 12h-ahead UKV cycle — LightGBM splits on
+                // missing.
+                var ukvTemp = pivot.UkvTemp;
+
+                var row = Exact12hFeatureBuilder.ComposeRow(
+                    spec,
+                    valid,
+                    perModelLeadValues: modelTemps,
+                    canonicalPerModel: modelTemps,   // single-lead, so canonical == per-model
+                    windDirMeanDeg: double.NaN,      // 2d feature vector doesn't include wind dir mean
+                    era5Temp: double.NaN,
+                    ukvTemp: ukvTemp);
+
+                var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
+                var yhat = TempTrainer.PredictVector(ml, loadedModel, spec, new[] { row })[0];
+                var featureHash = FeatureHashing.HashFloats(row.Features);
+
+                // Build TempPredictionRow with the new exact-runtime per-model
+                // columns populated. spec.Models order matters — slot 0 is GFS,
+                // slot 1 is IFS oper if present (otherwise AIFS), etc. We
+                // dispatch by model id (not slot index) so out-of-order specs
+                // populate the right column.
+                double? gfs = null, ifs = null, aifs = null, mog = null;
+                DateTime? gfsR = null, ifsR = null, aifsR = null, mogR = null;
+                for (int i = 0; i < spec.Models.Count; i++)
+                {
+                    var t = double.IsNaN(modelTemps[i]) ? (double?)null : modelTemps[i];
+                    switch (spec.Models[i])
+                    {
+                        case "gfs_ncep":          gfs = t;  gfsR  = modelRunTimes[i]; break;
+                        case "ecmwf_ifs_oper":    ifs = t;  ifsR  = modelRunTimes[i]; break;
+                        case "ecmwf_aifs_oper":   aifs = t; aifsR = modelRunTimes[i]; break;
+                        case "met_office_global": mog = t;  mogR  = modelRunTimes[i]; break;
+                    }
+                }
+                var ukvCol = includeUkv && !double.IsNaN(ukvTemp) ? (double?)ukvTemp : null;
+
+                // spec.FeatureNames layout: per-model temps, [optional ukv],
+                // mean, std, range, 4 calendar floats. The spread block lives
+                // at index spec.Models.Count + (ukv ? 1 : 0).
+                var spreadStart = spec.Models.Count + (includeUkv ? 1 : 0);
+                predictions.Add(new TempPredictionRow
+                {
+                    LocationName = _cfg.Location.Name,
+                    ModelVersion = metadata.Version,
+                    PredictionMadeAtUtc = predictionMadeAt,
+                    ValidTimeUtc = valid,
+                    LeadHours = lead,
+                    BlendTemperature = yhat,
+                    // Offset-day per-model slots stay null on 2d rows.
+                    TempGfsExact      = gfs,  RunTimeGfsExact      = gfsR,
+                    TempIfsOperExact  = ifs,  RunTimeIfsOperExact  = ifsR,
+                    TempAifsOperExact = aifs, RunTimeAifsOperExact = aifsR,
+                    TempMoGlobalExact = mog,  RunTimeMoGlobalExact = mogR,
+                    TempUkvExact      = ukvCol, RunTimeUkvExact    = pivot.UkvRunTime,
+                    TempMean  = row.Features[spreadStart + 0],
+                    TempStd   = row.Features[spreadStart + 1],
+                    TempRange = row.Features[spreadStart + 2],
+                    FeatureVectorHash = featureHash,
+                });
+
+                _log.LogInformation("  Lead {Lead}h → blend {Blend:0.00}°C (valid {Valid:yyyy-MM-dd HH:mm}Z, exact-runtime mean-of-{N} {Mean:0.00}°C)",
+                    lead, yhat, valid, spec.Models.Count, row.Features[spreadStart + 0]);
+            }
+        }
+
+        if (predictions.Count == 0)
+        {
+            _log.LogWarning("Version {V} produced no predictions.", metadata.Version);
+            return false;
+        }
+
+        await WritePredictionsAsync(predictions, anchor, metadata.Version, ct);
+        return true;
+    }
+
+    /// <summary>Per-(lead, ValidTime) pivot built from the exact-runtime tree.
+    /// Per-model dictionaries keyed by canonical model id rather than slot
+    /// index — keeps the dispatch above tolerant to spec.Models reordering
+    /// across phases.</summary>
+    private sealed record ExactPivotRow(
+        Dictionary<string, double?> PerModelTemp,
+        Dictionary<string, DateTime> PerModelRunTime,
+        double UkvTemp,
+        DateTime? UkvRunTime);
+
+    private Dictionary<(int Lead, DateTime ValidTime), ExactPivotRow> QueryExactForecastRows(
+        string forecastsPath,
+        string locationName,
+        IReadOnlyList<int> specLeads,
+        DateTime earliestValid,
+        DateTime latestValid,
+        DateTime asOfRunTime,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (specLeads.Count == 0) return new();
+
+        var fcGlob = Path.Combine(forecastsPath, "**", "*.parquet").Replace('\\', '/').Replace("'", "''");
+        var loc = locationName.Replace("'", "''");
+        var modelInClause = "(" + string.Join(",",
+            Exact12hFeatureBuilder.CanonicalModelOrder.Select(m => $"'{m}'")) + ")";
+        var leadInClause = "(" + string.Join(",", specLeads) + ")";
+        var hourInClause = "(" + string.Join(",", Phase2dValidHoursUtc) + ")";
+
+        // Per-model pull — latest exact-runtime cycle per (ValidTime, Model,
+        // LeadHours) satisfying RunTime ≤ asOfRunTime AND RunTime ≤ Valid-L
+        // (the standard "live cycle, lead-bucketed" guard). UKV pulled
+        // separately via the per-V-hour conditional rule from
+        // Exact12hFeatureBuilder.Build.
+        var sql = $@"
+WITH latest AS (
+    SELECT ValidTimeUtc, Model, LeadHours, RunTimeUtc, Temperature2m,
+           ROW_NUMBER() OVER (
+               PARTITION BY ValidTimeUtc, Model, LeadHours
+               ORDER BY RunTimeUtc DESC
+           ) AS rn
+    FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
+    WHERE LocationName = '{loc}'
+      AND RunTimeSource = 'exact'
+      AND LeadHours IN {leadInClause}
+      AND HOUR(ValidTimeUtc) IN {hourInClause}
+      AND Temperature2m IS NOT NULL
+      AND Model IN {modelInClause}
+      AND RunTimeUtc <= TIMESTAMP '{asOfRunTime:yyyy-MM-dd HH:mm:ss}'
+      AND ValidTimeUtc BETWEEN TIMESTAMP '{earliestValid:yyyy-MM-dd HH:mm:ss}'
+                           AND TIMESTAMP '{latestValid:yyyy-MM-dd HH:mm:ss}'
+),
+ukv AS (
+    SELECT ValidTimeUtc, Temperature2m AS ukv_temp, RunTimeUtc AS ukv_run_time
+    FROM (
+        SELECT ValidTimeUtc, Temperature2m, RunTimeUtc,
+               ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn2
+        FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
+        WHERE LocationName = '{loc}'
+          AND Model = 'met_office_ukv'
+          AND RunTimeSource = 'exact'
+          AND Temperature2m IS NOT NULL
+          AND HOUR(ValidTimeUtc) IN {hourInClause}
+          AND RunTimeUtc <= TIMESTAMP '{asOfRunTime:yyyy-MM-dd HH:mm:ss}'
+          AND ValidTimeUtc BETWEEN TIMESTAMP '{earliestValid:yyyy-MM-dd HH:mm:ss}'
+                               AND TIMESTAMP '{latestValid:yyyy-MM-dd HH:mm:ss}'
+          AND (
+            (HOUR(ValidTimeUtc) = 0  AND HOUR(RunTimeUtc) = 15
+             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE) - INTERVAL 1 DAY
+             AND LeadHours = 9)
+         OR (HOUR(ValidTimeUtc) = 6  AND HOUR(RunTimeUtc) = 15
+             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE) - INTERVAL 1 DAY
+             AND LeadHours = 15)
+         OR (HOUR(ValidTimeUtc) = 12 AND HOUR(RunTimeUtc) = 3
+             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE)
+             AND LeadHours = 9)
+         OR (HOUR(ValidTimeUtc) = 18 AND HOUR(RunTimeUtc) = 3
+             AND CAST(RunTimeUtc AS DATE) = CAST(ValidTimeUtc AS DATE)
+             AND LeadHours = 15)
+          )
+    )
+    WHERE rn2 = 1
+)
+SELECT l.ValidTimeUtc, l.Model, l.LeadHours, l.RunTimeUtc, l.Temperature2m,
+       u.ukv_temp, u.ukv_run_time
+FROM latest l
+LEFT JOIN ukv u USING (ValidTimeUtc)
+WHERE l.rn = 1
+  AND l.RunTimeUtc <= l.ValidTimeUtc - (l.LeadHours * INTERVAL 1 HOUR)
+ORDER BY l.ValidTimeUtc, l.LeadHours, l.Model;";
+
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        using var reader = cmd.ExecuteReader();
+
+        var result = new Dictionary<(int Lead, DateTime ValidTime), ExactPivotRow>();
+        while (reader.Read())
+        {
+            ct.ThrowIfCancellationRequested();
+            var valid    = reader.GetDateTime(0);
+            var model    = reader.GetString(1);
+            var lead     = reader.GetInt32(2);
+            var runTime  = reader.GetDateTime(3);
+            var temp     = NullableDouble(reader, 4);
+            var ukvTemp  = NullableDouble(reader, 5) ?? double.NaN;
+            var ukvRunTime = reader.IsDBNull(6) ? (DateTime?)null : reader.GetDateTime(6);
+
+            var key = (lead, valid);
+            if (!result.TryGetValue(key, out var existing))
+            {
+                existing = new ExactPivotRow(
+                    PerModelTemp: new Dictionary<string, double?>(StringComparer.Ordinal),
+                    PerModelRunTime: new Dictionary<string, DateTime>(StringComparer.Ordinal),
+                    UkvTemp: ukvTemp,
+                    UkvRunTime: ukvRunTime);
+                result[key] = existing;
+            }
+            existing.PerModelTemp[model] = temp;
+            if (temp.HasValue) existing.PerModelRunTime[model] = runTime;
+        }
+        return result;
+    }
 }
