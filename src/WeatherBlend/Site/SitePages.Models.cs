@@ -506,6 +506,10 @@ public static partial class SitePages
         {
             ("temperature", "2b")  => "Lean blender, 13 features.",
             ("temperature", "2c")  => "Rich blender, 88 features (adds dew/RH/cloud/wind/pressure).",
+            // 2d ships once UKV inclusion is decided (2026-05-05+). Description
+            // here so the card renders correctly the moment ActivePhasePolicy
+            // gets "2d" added to the temperature list.
+            ("temperature", "2d")  => "Exact-runtime blender. Trains on raw S3 cycles (GFS / IFS oper / AIFS / MO Global) instead of Open-Meteo offset_day, with rigorous (RunTime, ValidTime, Lead) provenance per row.",
             ("precipitation", "3a") => "Lean P(wet) classifier, 27 features.",
             ("precipitation", "3c") => "Rich P(wet) classifier, 55 features.",
             ("dry_window", "3b")   => "53-feature LightGBM per-(station, window).",
