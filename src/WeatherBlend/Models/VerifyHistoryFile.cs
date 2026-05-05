@@ -107,4 +107,24 @@ public sealed class VerifyHistoryRow
     public double? ReferenceTrainingMetric { get; init; }
 
     public required bool DriftFlag { get; init; }
+
+    /// <summary>
+    /// View discriminator. <c>"trained"</c> = the row aggregates predictions
+    /// by their trained-lead bucket (the existing behaviour, where
+    /// <see cref="LeadHours"/> equals the bucket label, e.g. 24 / 48 / 72).
+    /// <c>"actual_6h"</c> = the row aggregates predictions by their ACTUAL
+    /// lead at prediction time (<c>ValidTimeUtc − PredictionMadeAtUtc</c>),
+    /// in 6-hour buckets — needed once predict started emitting 24 hourly
+    /// rows per cycle (2026-05-04), which spreads each trained-lead bucket
+    /// across actual leads L .. L+23. Defaults to <c>"trained"</c> for
+    /// backward compat with sidecars written before this field existed.
+    /// </summary>
+    public string? ViewKind { get; init; }
+
+    /// <summary>
+    /// Actual-lead bucket lower bound (inclusive, hours). Set only on
+    /// <see cref="ViewKind"/>=<c>"actual_6h"</c> rows. The bucket spans
+    /// <c>[ActualLeadBucketLowH, ActualLeadBucketLowH + 6)</c>.
+    /// </summary>
+    public int? ActualLeadBucketLowH { get; init; }
 }

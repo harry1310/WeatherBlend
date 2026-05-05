@@ -62,7 +62,20 @@ public static class TempVerifier
         double? PersistenceMae,
         int PersistenceDropped,
         double? ReferenceTestMae,
-        bool DriftFlag);
+        bool DriftFlag,
+        // 2026-05-05 addition: bucketing-by-actual-lead view. Null on the
+        // existing trained-lead rows; set to the 6-hour bucket lower bound
+        // (0, 6, 12, 18, 24, ...) on rows produced by ComputeActualLeadBuckets.
+        // No persistence + no drift flag on bucket rows — there's no per-
+        // actual-lead training-time baseline to compare to.
+        int? ActualLeadBucketLowH = null);
+
+    /// <summary>The 6h actual-lead bucket size used for the bucketed view.
+    /// Verify groups predictions whose actual lead falls in <c>[low, low+6)</c>
+    /// where <c>actual lead = ValidTimeUtc - PredictionMadeAtUtc (hours)</c>.
+    /// Same bucket size used in 2026-05-05 ad-hoc bucketing analysis; see
+    /// memory/project_temp_actual_lead_bucketing.md for the rationale.</summary>
+    public const int ActualLeadBucketHours = 6;
 
     public static IReadOnlyList<VerifyRow> Compute(Inputs inputs)
     {
@@ -86,6 +99,99 @@ public static class TempVerifier
         foreach (var g in groups)
             result.Add(BuildRow(g.Key.ModelVersion, g.Key.LeadHours, g.ToList(), inputs));
         return result;
+    }
+
+    /// <summary>
+    /// Parallel view that groups predictions by their ACTUAL lead at
+    /// prediction time (<c>ValidTimeUtc − PredictionMadeAtUtc</c>) in 6-hour
+    /// buckets, instead of by the trained-lead bucket label. Becomes
+    /// meaningful once predict emits 24 hourly rows per cycle (the
+    /// 2026-05-04 hourly-temp-predict change), where each trained-lead
+    /// bucket spreads predictions across actual leads <c>L .. L+23h</c>.
+    /// Per-bucket: blend MAE / mean-of-models MAE / best single. No
+    /// drift flag — there's no per-actual-lead training-time baseline.
+    /// </summary>
+    public static IReadOnlyList<VerifyRow> ComputeActualLeadBuckets(Inputs inputs)
+    {
+        var windowStart = inputs.AsOfUtc.AddDays(-inputs.WindowDays);
+        var windowEnd   = inputs.AsOfUtc.AddDays(-inputs.Era5LatencyDays);
+
+        var kept = inputs.Predictions
+            .Where(p => p.ValidTimeUtc >= windowStart && p.ValidTimeUtc <= windowEnd)
+            .Where(p => inputs.TruthByTime.ContainsKey(p.ValidTimeUtc))
+            .ToList();
+
+        // Bucket by floor((ValidTime - PredictionMadeAt).TotalHours / 6) * 6.
+        // Negative actual leads (test artifacts where predict ran AFTER
+        // valid time) are kept honestly — they bucket to negative bucket
+        // labels and the renderer can decide whether to surface them.
+        var groups = kept
+            .Select(p => new
+            {
+                Pred = p,
+                BucketLow = (int)Math.Floor((p.ValidTimeUtc - p.PredictionMadeAtUtc).TotalHours / ActualLeadBucketHours) * ActualLeadBucketHours,
+            })
+            .GroupBy(x => (x.Pred.ModelVersion, x.BucketLow))
+            .OrderBy(g => g.Key.ModelVersion, StringComparer.Ordinal)
+            .ThenBy(g => g.Key.BucketLow);
+
+        var result = new List<VerifyRow>();
+        foreach (var g in groups)
+        {
+            var preds = g.Select(x => x.Pred).ToList();
+            // BuildBucketRow mirrors BuildRow but skips persistence (the
+            // (ValidTime − bucketLow) lookback isn't a meaningful "yesterday"
+            // anymore at sub-24h buckets) and skips the drift baseline lookup.
+            result.Add(BuildBucketRow(g.Key.ModelVersion, g.Key.BucketLow, preds, inputs));
+        }
+        return result;
+    }
+
+    private static VerifyRow BuildBucketRow(
+        string version,
+        int bucketLowH,
+        IReadOnlyList<TempPredictionRow> preds,
+        Inputs inputs)
+    {
+        var actual = preds.Select(p => inputs.TruthByTime[p.ValidTimeUtc]).ToArray();
+        var blend  = preds.Select(p => p.BlendTemperature).ToArray();
+        var blendStats = TempMetrics.Compute(blend, actual);
+
+        var meanPred = preds.Select(RowMean).ToArray();
+        var meanStats = TempMetrics.Compute(meanPred, actual);
+
+        var bestName = "";
+        var bestMae  = double.PositiveInfinity;
+        foreach (var name in ModelNames)
+        {
+            var p = preds.Select(row => TempFor(row, name) ?? double.NaN).ToArray();
+            var s = TempMetrics.Compute(p, actual);
+            if (s.N > 0 && s.Mae < bestMae)
+            {
+                bestMae = s.Mae;
+                bestName = name;
+            }
+        }
+
+        // LeadHours field on the row carries the bucket low for the bucket
+        // view (so consumers that key on LeadHours don't have to special-case
+        // bucket rows). The discriminator is ActualLeadBucketLowH being non-null.
+        return new VerifyRow(
+            ModelVersion:       version,
+            LeadHours:          bucketLowH,
+            N:                  blendStats.N,
+            BlendMae:           blendStats.Mae,
+            BlendRmse:          blendStats.Rmse,
+            BlendBias:          blendStats.Bias,
+            MeanMae:            meanStats.Mae,
+            MeanBias:           meanStats.Bias,
+            BestSingleName:     bestName,
+            BestSingleMae:      double.IsPositiveInfinity(bestMae) ? double.NaN : bestMae,
+            PersistenceMae:     null,
+            PersistenceDropped: 0,
+            ReferenceTestMae:   null,
+            DriftFlag:          false,
+            ActualLeadBucketLowH: bucketLowH);
     }
 
     private static VerifyRow BuildRow(

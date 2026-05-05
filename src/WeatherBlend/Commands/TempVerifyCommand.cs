@@ -79,7 +79,7 @@ public sealed class TempVerifyCommand
         _log.LogInformation("Loaded metadata for {N} versions: {Versions}",
             metadata.Count, string.Join(", ", metadata.Keys));
 
-        var rows = TempVerifier.Compute(new TempVerifier.Inputs
+        var inputs = new TempVerifier.Inputs
         {
             Predictions = predictions,
             TruthByTime = truth,
@@ -88,7 +88,14 @@ public sealed class TempVerifyCommand
             WindowDays = windowDays,
             Era5LatencyDays = era5LatencyDays,
             DriftThreshold = driftThreshold,
-        });
+        };
+        var rows = TempVerifier.Compute(inputs);
+        // Parallel view: same predictions grouped by ACTUAL lead at prediction
+        // time in 6h buckets. Distinct from the trained-lead view above —
+        // post 2026-05-04 hourly predict, each trained-lead bucket spreads
+        // across actual leads L .. L+23. Surfaces whether MAE varies within
+        // a trained bucket. No drift flag (no per-actual-lead baseline).
+        var bucketRows = TempVerifier.ComputeActualLeadBuckets(inputs);
 
         var md = TempVerifyReporter.BuildMarkdown(asOfUtc, windowDays, era5LatencyDays, driftThreshold, rows, metadata);
 
@@ -126,7 +133,31 @@ public sealed class TempVerifyCommand
                 BestSingleMetric = r.BestSingleMae,
                 ReferenceTrainingMetric = r.ReferenceTestMae,
                 DriftFlag = r.DriftFlag,
-            }).ToList(),
+                ViewKind = "trained",
+            })
+            // Append the actual-lead-bucket view as additional rows in the
+            // same sidecar. Distinguishable by ViewKind="actual_6h" + the
+            // ActualLeadBucketLowH field; ReferenceTrainingMetric / DriftFlag
+            // intentionally null/false.
+            .Concat(bucketRows.Select(r => new WeatherBlend.Models.VerifyHistoryRow
+            {
+                Station = null,
+                ModelVersion = r.ModelVersion,
+                Phase = metadata.TryGetValue(r.ModelVersion, out var meta2) ? meta2.Phase : null,
+                LeadHours = r.LeadHours, // = bucket low for these rows
+                WindowHours = null,
+                N = r.N,
+                BlendMetric = r.BlendMae,
+                ClimMetric = null,
+                MeanOfModelsMetric = r.MeanMae,
+                BestSingleName = r.BestSingleName,
+                BestSingleMetric = r.BestSingleMae,
+                ReferenceTrainingMetric = null,
+                DriftFlag = false,
+                ViewKind = "actual_6h",
+                ActualLeadBucketLowH = r.ActualLeadBucketLowH,
+            }))
+            .ToList(),
         };
         await Evaluate.VerifyHistoryWriter.WriteAsync(_cfg.Storage.ReportsPath, history, ct);
 

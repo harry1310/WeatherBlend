@@ -249,13 +249,20 @@ public static partial class SitePages
 
         // Find every (file, row) pair that matches this card. Each matching
         // file contributes one row to the history table; the per-lead values
-        // come from rows in that file.
+        // come from rows in that file. Filter to the trained-lead view (the
+        // historical row set) so the actual-lead-bucket rows added 2026-05-05
+        // don't double-count into the per-lead columns. Bucket rows render
+        // in a separate sibling table below.
+        static bool IsTrainedView(WeatherBlend.Models.VerifyHistoryRow r)
+            => r.ViewKind is null or "trained";
+
         var matchingFiles = verifyHistory
             .Where(f => f.Target == target)
             .Select(f =>
             {
                 var rows = f.Rows.Where(r =>
-                        string.Equals(r.Phase, phase, StringComparison.Ordinal)
+                        IsTrainedView(r)
+                        && string.Equals(r.Phase, phase, StringComparison.Ordinal)
                         && r.Station == station
                         && r.WindowHours == windowHours)
                     .ToList();
@@ -355,6 +362,8 @@ public static partial class SitePages
         foreach (var lead in allLeads)
             leadHeaders.Append(Ci, $"""<th class="num">+{lead}h</th>""");
 
+        var bucketTable = RenderActualLeadBucketTable(target, station, windowHours, phase, verifyHistory);
+
         return $"""
             <div class="verify-history">
               <h5>Verify history <small>({matchingFiles.Count} run{(matchingFiles.Count == 1 ? "" : "s")})</small></h5>
@@ -371,7 +380,98 @@ public static partial class SitePages
                 <tbody>
             {tbody}    </tbody>
               </table>
-            </div>
+            {bucketTable}</div>
+            """;
+    }
+
+    /// <summary>
+    /// Sibling sub-table to the verify-history view, rendered below the
+    /// trained-lead table. Buckets predictions by their ACTUAL lead at
+    /// prediction time (<c>ValidTime − PredictionMadeAt</c>) in 6h slices,
+    /// so the reader can see whether MAE varies within a trained-lead bucket
+    /// (relevant after the 2026-05-04 hourly-temp-predict change which
+    /// spread each trained bucket across actual leads L .. L+23). Empty
+    /// string when no bucket rows are present in the verify sidecars
+    /// (older sidecars written before the 2026-05-05 schema bump).
+    /// </summary>
+    private static string RenderActualLeadBucketTable(
+        string target, string? station, int? windowHours, string phase,
+        IReadOnlyList<WeatherBlend.Models.VerifyHistoryFile> verifyHistory)
+    {
+        var matching = verifyHistory
+            .Where(f => f.Target == target)
+            .Select(f =>
+            {
+                var rows = f.Rows.Where(r =>
+                        r.ViewKind == "actual_6h"
+                        && string.Equals(r.Phase, phase, StringComparison.Ordinal)
+                        && r.Station == station
+                        && r.WindowHours == windowHours)
+                    .ToList();
+                return (File: f, Rows: rows);
+            })
+            .Where(x => x.Rows.Count > 0)
+            .OrderByDescending(x => x.File.AsOfUtc)
+            .ToList();
+        if (matching.Count == 0) return "";
+
+        // Bucket lows union across runs, sorted ascending. Each bucket spans
+        // [low, low+6) hours of actual lead.
+        var allBuckets = matching
+            .SelectMany(x => x.Rows
+                .Where(r => r.ActualLeadBucketLowH.HasValue)
+                .Select(r => r.ActualLeadBucketLowH!.Value))
+            .Distinct()
+            .OrderBy(b => b)
+            .ToList();
+        if (allBuckets.Count == 0) return "";
+
+        var tbody = new StringBuilder();
+        foreach (var (file, rows) in matching)
+        {
+            // Latest version per bucket within this run (same dedupe rule
+            // as the trained-lead table — lex-sort works because every
+            // version starts with vYYYY-MM-DD_HHmmss).
+            var byBucket = rows
+                .Where(r => r.ActualLeadBucketLowH.HasValue)
+                .GroupBy(r => r.ActualLeadBucketLowH!.Value)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.OrderByDescending(r => r.ModelVersion, StringComparer.Ordinal).First());
+
+            var bucketCells = new StringBuilder();
+            foreach (var bucket in allBuckets)
+            {
+                if (byBucket.TryGetValue(bucket, out var r))
+                    bucketCells.Append(Ci, $"""<td class="num">{r.BlendMetric.ToString("0.000", Ci)}</td>""");
+                else
+                    bucketCells.Append("""<td class="num">—</td>""");
+            }
+            tbody.Append(Ci, $"""
+                <tr>
+                  <td><time datetime="{file.AsOfUtc:yyyy-MM-dd}">{file.AsOfUtc:ddd yyyy-MM-dd}</time></td>
+                  {bucketCells}
+                </tr>
+                """);
+        }
+
+        var bucketHeaders = new StringBuilder();
+        foreach (var bucket in allBuckets)
+            bucketHeaders.Append(Ci, $"""<th class="num">{bucket}-{bucket + 5}h</th>""");
+
+        return $"""
+            <h6 style="margin-top:0.6rem">By actual lead at prediction time <small>(6h buckets)</small></h6>
+            <p class="skill-line">Same data grouped by <code>ValidTime − PredictionMadeAt</code> (6h buckets) instead of trained-lead label. Reveals MAE structure within a trained bucket once predict spread to hourly outputs (2026-05-04+).</p>
+            <table>
+              <thead>
+                <tr>
+                  <th>Run (UTC)</th>
+                  {bucketHeaders}
+                </tr>
+              </thead>
+              <tbody>
+            {tbody}    </tbody>
+            </table>
             """;
     }
 
