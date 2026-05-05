@@ -436,7 +436,11 @@ public static partial class SitePages
         double? xMin = xMax is { } m ? m - 30.0 : null;
 
         var content = new StringBuilder();
-        foreach (var lead in Leads.Full)
+        // ForecastsTempRain (= Leads.Full + lead 12) so the +12h panel
+        // surfaces for 2d. Legacy phases (2b/2c) have no lead-12 verify
+        // rows, so the +12h panel will sit on the empty-chart fallback
+        // until 2d's first verify cycle lands (~5d ERA5 latency).
+        foreach (var lead in Leads.ForecastsTempRain)
         {
             var phases = input.RollingMae.Where(r => r.LeadHours == lead)
                 .Select(r => r.Phase).Distinct().OrderBy(p => p, StringComparer.Ordinal).ToList();

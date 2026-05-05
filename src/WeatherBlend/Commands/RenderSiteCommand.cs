@@ -321,7 +321,7 @@ public sealed class RenderSiteCommand
         // skill-temperature + skill-rainfall × stations +
         // skill-dry-window × stations + forecasts-dry-window × stations.
         var totalFiles = 7 + (SitePages.MaxHomeDayOffset + 1)
-            + (Leads.Full.Length * 2)
+            + (Leads.ForecastsTempRain.Length * 2)
             + Math.Max(1, rainStations.Count)        // skill-rainfall variants
             + Math.Max(1, rainStations.Count)        // skill-dry-window variants
             + Math.Max(1, dryStations.Count);        // forecasts-dry-window variants

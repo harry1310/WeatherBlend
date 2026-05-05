@@ -162,7 +162,10 @@ public static partial class SitePages
         var phaseLabel = string.IsNullOrEmpty(m.Phase) ? "—" : m.Phase;
 
         var tbody = new StringBuilder();
-        foreach (var lead in Leads.Full)
+        // ForecastsTempRain (= Leads.Full + lead 12) so 2d/3d's lead-12 row
+        // surfaces in their card. Legacy phases (2b/2c/3a/3c) continue on
+        // missing lead 12 — same effective render as before for them.
+        foreach (var lead in Leads.ForecastsTempRain)
         {
             if (!m.PerLead.TryGetValue(lead, out var s)) continue;
 
