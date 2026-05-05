@@ -15,6 +15,7 @@ using WeatherBlend.Train.Element.Humidity;
 using WeatherBlend.Train.Element.Radiation;
 using WeatherBlend.Train.Element.Wind;
 using WeatherBlend.Train.Exact12h;
+using WeatherBlend.Train.PrecipExact;
 
 namespace WeatherBlend;
 
@@ -186,6 +187,7 @@ public static class Program
                 // 2026-05-05). Three tiers, no UKV, no artifact persistence —
                 // exploratory only.
                 services.AddTransient<Exact12hBakeoffCommand>();
+                services.AddTransient<PrecipExactBakeoffCommand>();
                 // Live S3 collect — refreshes the four exact-runtime sources
                 // the 2d temperature blender consumes (GFS / IFS / AIFS /
                 // Met Office Global). Each is a thin lookback wrapper around
@@ -411,6 +413,24 @@ public static class Program
             ctx.ExitCode = await cmd.RunAsync(tier, lead, inputLeads, mask, evalLeads, hpSearch, CancellationToken.None);
         });
         root.AddCommand(exact12hBakeoff);
+
+        // precip-exact-bakeoff — first-cut precipitation blender on exact-runtime
+        // data (mirror of exact-12h-bakeoff for temperature). 3 models (AIFS
+        // excluded due to units bug). Single tier P1, --lead 12 or 24.
+        var precipLeadOpt = new Option<int>(
+            name: "--lead",
+            description: "Target lead in hours. Default 12.",
+            getDefaultValue: () => PrecipExactFeatureBuilder.DefaultTargetLead);
+        var precipBakeoff = new Command(
+            "precip-exact-bakeoff",
+            "Train + score the exact-runtime precipitation blender at a single lead")
+            { precipLeadOpt };
+        precipBakeoff.SetHandler(async (lead) =>
+        {
+            var cmd = host.Services.GetRequiredService<PrecipExactBakeoffCommand>();
+            await cmd.RunAsync(lead, CancellationToken.None);
+        }, precipLeadOpt);
+        root.AddCommand(precipBakeoff);
 
         // s3-collect — live refresh of the four exact-runtime forecast sources
         // the 2d temperature blender consumes. Defaults to all sources; pass
