@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text;
 using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
 using WeatherBlend.Train;
@@ -9,19 +8,22 @@ using WeatherBlend.Train.PrecipExact;
 namespace WeatherBlend.Commands;
 
 /// <summary>
-/// First-cut precipitation bake-off using the exact-runtime sources in the
-/// 2d temperature blender (minus AIFS — its precip parser has a units bug,
-/// see <see cref="PrecipExactFeatureBuilder"/> docstring). Single tier P1
-/// (GFS + IFS required, MO Global optional). Single-lead 12h or 24h.
+/// Brier-scored P(wet) bake-off for the exact-runtime precipitation blender.
+/// Mirrors the production 3a metric (binary wet/dry classification, threshold
+/// 0.1 mm/h) against the same exact-runtime sources the temperature 2d
+/// blender uses (GFS / IFS / AIFS / MO Global). Single tier P1, single lead
+/// 12h or 24h.
 ///
-/// Caveat: per-model precip semantics differ (GFS = APCP interval, IFS = tp
-/// cumulative, MO Global = instantaneous rate). LightGBM handles each as a
-/// separate column so this is workable for blending, but the absolute MAE
-/// won't be as clean as temperature's. Treat the first cut as
-/// directional — does the blender lift over best-single? Drop production
-/// 3a (Brier-based wet/dry) as the comparison since the metric differs;
-/// this is a side-by-side of "how does an exact-runtime precip blender
-/// perform vs its inputs" only.
+/// Per-model raw precip values are still fed as features (LightGBM tree
+/// splits handle the unit/semantic differences between APCP / cumulative
+/// tp / instantaneous rate). The decision boundary is the wet/dry call,
+/// not the absolute precip amount, so the unit mismatches matter much
+/// less here than in the earlier MAE-regression bake-off.
+///
+/// Reports per-model + mean-of-models + climatology Brier alongside the
+/// blender. The "did the blender earn its keep?" comparison is vs
+/// climatology — Brier Skill Score (BSS) > 0 means the blender beats
+/// always-predict-the-base-rate.
 /// </summary>
 public sealed class PrecipExactBakeoffCommand
 {
@@ -49,7 +51,7 @@ public sealed class PrecipExactBakeoffCommand
 
     private void RunTier(PrecipExactFeatureBuilder.TierSpec tier, int targetLead, CancellationToken ct)
     {
-        _log.LogInformation("=== Precip exact bake-off: tier {Tier} target {Lead}h ===", tier.Name, targetLead);
+        _log.LogInformation("=== Precip-Brier exact bake-off: tier {Tier} target {Lead}h ===", tier.Name, targetLead);
         var spec = PrecipExactFeatureBuilder.BuildSpec(tier, targetLead);
         var rows = PrecipExactFeatureBuilder.Build(
             _cfg.Storage.ForecastsPath, _cfg.Storage.Era5Path, _cfg.Location.Name,
@@ -69,76 +71,85 @@ public sealed class PrecipExactBakeoffCommand
 
         _log.LogInformation("  rows: total={N} train={Tr} val={V} test={Te}", rows.Count, train.Count, val.Count, test.Count);
 
-        // Use the same TempTrainer (LightGBM regressor). Default HPs to start;
-        // we can HP-tune later if there's signal.
-        var hp = new TempTrainer.Hyperparameters();
-        var trained = TempTrainer.TrainVector(train, val, spec, hp);
-        var preds = TempTrainer.PredictVector(trained.Ml, trained.Model, spec, test);
-        var blendMae = MeanAbs(test.Select((r, i) => preds[i] - r.Label));
+        // Train classifier with production 3a hyperparameters as defaults.
+        var hp = new PrecipOccurrenceTrainer.Hyperparameters();
+        var trained = PrecipOccurrenceTrainer.TrainVector(train, val, spec, hp);
+        var probs = PrecipOccurrenceTrainer.PredictVectorProbability(trained.Ml, trained.Model, spec, test);
 
-        // Per-model + mean-of-models baselines on canonical-lead values.
-        var perModelMae = new Dictionary<string, double>();
+        var labels = test.Select(r => r.Label ? 1.0 : 0.0).ToArray();
+        var blendBrier = Brier(probs, labels);
+
+        // Climatology baseline = train-set wet rate, applied as a constant
+        // probability on every test row. Brier Skill Score floor.
+        var clim = train.Count(r => r.Label) / (double)train.Count;
+        var climBrier = Brier(Enumerable.Repeat(clim, test.Count).ToArray(), labels);
+        var blendBss = (climBrier - blendBrier) / climBrier;
+
+        // Per-model "raw" Brier — convert each model's precip column to a
+        // 0/1 wet prediction at the same threshold and score. Crude but
+        // matches what 3a's "best single" baseline does.
+        var perModelBrier = new Dictionary<string, double>();
         for (int m = 0; m < spec.Models.Count; m++)
         {
             var col = m;
-            var diffs = test.Select(r => (pred: r.Features[col], label: r.Label))
-                .Where(t => !float.IsNaN(t.pred))
-                .Select(t => (double)(t.pred - t.label))
-                .ToList();
-            perModelMae[spec.Models[m]] = diffs.Count == 0 ? double.NaN : diffs.Select(Math.Abs).Average();
+            var preds = test.Select(r =>
+            {
+                var v = r.Features[col];
+                return float.IsNaN(v) ? clim : (v >= PrecipExactFeatureBuilder.WetThresholdMm ? 1.0 : 0.0);
+            }).ToArray();
+            perModelBrier[spec.Models[m]] = Brier(preds, labels);
         }
-        var meanMae = MeanAbs(test.Select(r =>
+        // Mean-of-models 0/1 vote: average the 0/1 wet calls across present-only models per row.
+        var meanPreds = test.Select(r =>
         {
             double sum = 0; int n = 0;
             for (int m = 0; m < spec.Models.Count; m++)
             {
                 var v = r.Features[m];
-                if (!float.IsNaN(v)) { sum += v; n++; }
+                if (float.IsNaN(v)) continue;
+                sum += v >= PrecipExactFeatureBuilder.WetThresholdMm ? 1.0 : 0.0;
+                n++;
             }
-            return (n == 0 ? double.NaN : sum / n) - r.Label;
-        }));
+            return n == 0 ? clim : sum / n;
+        }).ToArray();
+        var meanBrier = Brier(meanPreds, labels);
 
-        // Wet/dry context: how often is ERA5 truth ≥0.1 mm/h (the
-        // production 3a wet threshold)? Helps interpret MAE — most rows
-        // are dry-dry which is easy.
-        var truthMean = (double)test.Average(r => r.Label);
-        var wetN = test.Count(r => r.Label >= 0.1);
-        var wetFrac = (double)wetN / Math.Max(1, test.Count);
+        var wetN = test.Count(r => r.Label);
 
         Console.WriteLine();
         Console.WriteLine($"=== Tier {tier.Name} target {targetLead}h ===");
         Console.WriteLine($"  description: {tier.Description}");
         Console.WriteLine($"  rows: train={train.Count} val={val.Count} test={test.Count}");
         Console.WriteLine($"  test period: {testStart:yyyy-MM-dd}..{maxValid:yyyy-MM-dd}");
-        Console.WriteLine($"  test wet fraction (≥0.1mm): {wetFrac:P1} ({wetN}/{test.Count})");
-        Console.WriteLine($"  test ERA5 mean precip: {truthMean:F3}");
+        Console.WriteLine($"  test wet rate: {(double)wetN / test.Count:P1} ({wetN}/{test.Count})");
+        Console.WriteLine($"  train wet rate (climatology): {clim:P1}");
         Console.WriteLine();
-        Console.WriteLine($"  Test MAE (mm, lower=better):");
-        Console.WriteLine($"    → BLENDER (LightGBM)             {blendMae:F3}");
-        Console.WriteLine($"      mean-of-models                  {meanMae:F3}");
-        foreach (var kv in perModelMae.OrderBy(kv => kv.Value))
-            Console.WriteLine($"      single: {kv.Key,-25} {kv.Value:F3}");
-        var bestSingle = perModelMae.Values.Where(v => !double.IsNaN(v)).DefaultIfEmpty(double.NaN).Min();
+        Console.WriteLine($"  Test Brier (lower=better) — wet threshold ≥ 0.1 mm/h:");
+        Console.WriteLine($"    → BLENDER (LightGBM)             {blendBrier:F4}   (BSS vs clim: {blendBss:+0.000;-0.000;0.000})");
+        Console.WriteLine($"      mean-of-models                  {meanBrier:F4}");
+        Console.WriteLine($"      climatology (constant {clim:P0})  {climBrier:F4}");
+        foreach (var kv in perModelBrier.OrderBy(kv => kv.Value))
+            Console.WriteLine($"      single (0/1 vote): {kv.Key,-22} {kv.Value:F4}");
+
+        var bestSingle = perModelBrier.Values.Where(v => !double.IsNaN(v)).DefaultIfEmpty(double.NaN).Min();
         if (!double.IsNaN(bestSingle))
         {
-            var d = blendMae - bestSingle;
-            var pct = (d / bestSingle) * 100.0;
+            var d = blendBrier - bestSingle;
+            var pct = d / bestSingle * 100;
             Console.WriteLine();
-            Console.WriteLine($"  Δ vs best single model: {d:+0.000;-0.000;0.000} mm  ({pct:+0.0;-0.0;0.0}%)");
-            var dm = blendMae - meanMae;
-            var pctm = (dm / meanMae) * 100.0;
-            Console.WriteLine($"  Δ vs mean-of-models   : {dm:+0.000;-0.000;0.000} mm  ({pctm:+0.0;-0.0;0.0}%)");
+            Console.WriteLine($"  Δ vs best single (0/1):  {d:+0.0000;-0.0000;0.0000} ({pct:+0.0;-0.0;0.0}%)");
         }
     }
 
-    private static double MeanAbs(IEnumerable<double> diffs)
+    private static double Brier(IReadOnlyList<double> probs, IReadOnlyList<double> labels)
     {
-        double sum = 0; int n = 0;
-        foreach (var d in diffs)
+        if (probs.Count != labels.Count) throw new ArgumentException("length mismatch");
+        double sumSq = 0;
+        for (int i = 0; i < probs.Count; i++)
         {
-            if (double.IsNaN(d)) continue;
-            sum += Math.Abs(d); n++;
+            var d = probs[i] - labels[i];
+            sumSq += d * d;
         }
-        return n == 0 ? double.NaN : sum / n;
+        return sumSq / probs.Count;
     }
 }

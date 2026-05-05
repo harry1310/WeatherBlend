@@ -106,7 +106,13 @@ public static class PrecipExactFeatureBuilder
         };
     }
 
-    public static List<RegressionTrainingRow> Build(
+    /// <summary>Wet-threshold matching production 3a: ≥ 0.1 mm/h is "wet".
+    /// Same threshold ERA5 / EA Hydrology gauge labels use across the
+    /// project, so the exact-runtime Brier blender is directly comparable
+    /// to 3a/3c.</summary>
+    public const double WetThresholdMm = 0.1;
+
+    public static List<BinaryTrainingRow> Build(
         string forecastsPath,
         string era5Path,
         string locationName,
@@ -170,7 +176,7 @@ ORDER BY p.ValidTimeUtc;
         cmd.CommandText = sql;
         using var r = cmd.ExecuteReader();
 
-        var rows = new List<RegressionTrainingRow>();
+        var rows = new List<BinaryTrainingRow>();
         var modelCount = spec.Models.Count;
         var pcps = new double[modelCount];
         while (r.Read())
@@ -185,7 +191,7 @@ ORDER BY p.ValidTimeUtc;
         return rows;
     }
 
-    public static RegressionTrainingRow ComposeRow(
+    public static BinaryTrainingRow ComposeRow(
         BlenderSpec spec,
         DateTime validTimeUtc,
         IReadOnlyList<double> perModelPrecip,
@@ -224,11 +230,12 @@ ORDER BY p.ValidTimeUtc;
         features[idx++] = (float)Math.Sin(2 * Math.PI * doyFrac);
         features[idx++] = (float)Math.Cos(2 * Math.PI * doyFrac);
 
-        return new RegressionTrainingRow
+        return new BinaryTrainingRow
         {
             ValidTimeUtc = v,
             Features = features,
-            Label = (float)era5Precip,
+            Label = era5Precip >= WetThresholdMm,
+            TruthMmHour = (float)era5Precip,
         };
     }
 

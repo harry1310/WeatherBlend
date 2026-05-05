@@ -71,11 +71,27 @@ public class PrecipExactFeatureBuilderTests
             perModelPrecip: new double[] { 1.5, 2.0, 1.8, 0.8 },
             era5Precip: 1.7);
         row.Features.Should().HaveCount(spec.FeatureCount);
-        row.Label.Should().Be(1.7f);
+        // BinaryTrainingRow: Label is bool (= ERA5 precip ≥ 0.1 mm/h),
+        // TruthMmHour carries the actual mm value as diagnostic.
+        row.Label.Should().BeTrue(); // 1.7 mm ≥ 0.1 wet
+        row.TruthMmHour.Should().Be(1.7f);
         row.Features[0].Should().Be(1.5f); // gfs
         row.Features[1].Should().Be(2.0f); // ifs
         row.Features[2].Should().Be(1.8f); // aifs
         row.Features[3].Should().Be(0.8f); // moglobal
+    }
+
+    [Fact]
+    public void ComposeRow_label_false_when_below_wet_threshold()
+    {
+        var spec = PrecipExactFeatureBuilder.BuildSpec(PrecipExactFeatureBuilder.AllTiers[0]);
+        var row = PrecipExactFeatureBuilder.ComposeRow(
+            spec,
+            new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc),
+            perModelPrecip: new double[] { 0.05, 0.0, 0.02, 0.0 },
+            era5Precip: 0.05); // 0.05 < 0.1 = dry
+        row.Label.Should().BeFalse();
+        row.TruthMmHour.Should().Be(0.05f);
     }
 
     [Fact]
