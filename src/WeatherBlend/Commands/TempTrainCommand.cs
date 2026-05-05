@@ -7,6 +7,7 @@ using WeatherBlend.Train;
 using WeatherBlend.Train.Common;
 using WeatherBlend.Train.Element;
 using WeatherBlend.Train.Exact12h;
+using WeatherBlend.Train.PrecipExact;
 
 namespace WeatherBlend.Commands;
 
@@ -94,11 +95,12 @@ public sealed class TempTrainCommand
                 "--feature-set {Fs} is only supported for target dry-window.", fs);
             return 2;
         }
-        // "exact" = Phase 2d (exact-runtime temperature blender) — temperature-only.
-        if (fs == "exact" && t != "temperature")
+        // "exact" = Phase 2d (temperature) or Phase 3d (precipitation) — same
+        // feature-set tag, dispatched per target.
+        if (fs == "exact" && t != "temperature" && t != "precipitation")
         {
             _log.LogError(
-                "--feature-set {Fs} is only supported for target temperature.", fs);
+                "--feature-set {Fs} is only supported for targets temperature, precipitation.", fs);
             return 2;
         }
         if (elementTarget is not null && fs != "lean")
@@ -133,9 +135,12 @@ public sealed class TempTrainCommand
                 "exact" => await RunPhase2dAsync(ct),
                 _       => await RunPhase2bAsync(leads, ct),
             },
-            "precipitation" => fs == "rich"
-                                  ? await RunPhase3cAsync(leads, station, ct)
-                                  : await RunPhase3aAsync(leads, station, ct),
+            "precipitation" => fs switch
+            {
+                "rich"  => await RunPhase3cAsync(leads, station, ct),
+                "exact" => await RunPhase3dAsync(station, ct),
+                _       => await RunPhase3aAsync(leads, station, ct),
+            },
             // dry-window: lean → Phase 3b (53 features),
             //             independence-mc → Phase 3g (parameter-free MC over 3a marginals).
             // "rich" silently maps to 3b for symmetry with the temperature/precip
@@ -1022,4 +1027,216 @@ public sealed class TempTrainCommand
         ["objective"]                  = "binary (LightGBM)",
         ["evaluationMetric"]           = "AUC (LightGBM default for binary)",
     };
+
+    // ---- Phase 3d: exact-runtime precip blender (per-station, lead-12 champion) ---
+
+    private static readonly int[] DefaultPhase3dLeads = { 12, 24 };
+
+    private async Task<int> RunPhase3dAsync(string? stationOverride, CancellationToken ct)
+    {
+        if (_cfg.Location.Rainfall.Stations.Count == 0)
+        {
+            _log.LogError("No rainfall stations configured — cannot train precipitation blender.");
+            return 2;
+        }
+
+        IReadOnlyList<string> stationsToTrain;
+        if (string.IsNullOrWhiteSpace(stationOverride))
+        {
+            stationsToTrain = _cfg.Location.Rainfall.Stations.Select(s => s.Name).ToList();
+        }
+        else
+        {
+            var match = _cfg.Location.Rainfall.Stations
+                .FirstOrDefault(s => s.Name.Equals(stationOverride, StringComparison.OrdinalIgnoreCase));
+            if (match is null)
+            {
+                _log.LogError("Station '{Station}' not found in config. Available: {Available}",
+                    stationOverride, string.Join(", ", _cfg.Location.Rainfall.Stations.Select(s => s.Name)));
+                return 2;
+            }
+            stationsToTrain = new[] { match.Name };
+        }
+
+        var modelsRoot = _cfg.Storage.ModelsPath;
+        var hp = new PrecipOccurrenceTrainer.Hyperparameters();
+        var tier = PrecipExactFeatureBuilder.AllTiers.First(t => t.Name == "P1");
+        const bool IncludeUkv = true;
+
+        _log.LogInformation("Phase 3d — exact-runtime precip blender (tier {Tier}, UKV={Ukv}), stations=[{Stations}], leads=[{Leads}]",
+            tier.Name, IncludeUkv, string.Join(", ", stationsToTrain), string.Join(",", DefaultPhase3dLeads));
+        _log.LogInformation("Hyperparameters: iter={Iter} lr={Lr} leaves={Leaves} esr={Esr} seed={Seed} (3a defaults)",
+            hp.NumberOfIterations, hp.LearningRate, hp.NumberOfLeaves, hp.EarlyStoppingRound, hp.Seed);
+
+        var anyFail = false;
+        foreach (var station in stationsToTrain)
+        {
+            ct.ThrowIfCancellationRequested();
+            var rc = await TrainPhase3dStationAsync(station, modelsRoot, tier, hp, IncludeUkv, ct);
+            if (rc != 0) anyFail = true;
+        }
+        return anyFail ? 3 : 0;
+    }
+
+    private async Task<int> TrainPhase3dStationAsync(
+        string primaryStation,
+        string modelsRoot,
+        PrecipExactFeatureBuilder.TierSpec tier,
+        PrecipOccurrenceTrainer.Hyperparameters hp,
+        bool includeUkv,
+        CancellationToken ct)
+    {
+        var stationSlug = StationSlug.WithEaPrefix(primaryStation);
+        var now = DateTime.UtcNow;
+        var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "precipitation", stationSlug, now, suffix: "phase3d");
+        var versionName = Path.GetFileName(versionDir);
+
+        _log.LogInformation("=== Station '{Station}' (slug={Slug}) ===", primaryStation, stationSlug);
+
+        var perLead = new Dictionary<string, ModelArtifact.PerLeadStats>();
+        var importanceByLead = new Dictionary<int, IEnumerable<(string Name, double Gain)>>();
+        var specsPerLead = new Dictionary<int, BlenderSpec>();
+        PrecipClimatology? climatology = null;
+
+        foreach (var lead in DefaultPhase3dLeads)
+        {
+            ct.ThrowIfCancellationRequested();
+            _log.LogInformation("--- Lead {Lead}h ---", lead);
+
+            var spec = PrecipExactFeatureBuilder.BuildSpec(tier, targetLead: lead, includeUkv: includeUkv);
+            specsPerLead[lead] = spec;
+            _log.LogInformation("Spec: {Spec}", spec);
+
+            // 3d trains against ERA5 (matches 3a/3c truth source) — keeps the
+            // exact-runtime path comparable head-to-head with offset_day. The
+            // station axis is preserved for parquet layout symmetry with 3a/3c
+            // (per-station artefact tree); the rainfall truth itself isn't
+            // used here.
+            var rows = PrecipExactFeatureBuilder.Build(
+                _cfg.Storage.ForecastsPath,
+                _cfg.Storage.Era5Path,
+                _cfg.Location.Name,
+                tier, spec,
+                targetLead: lead,
+                includeUkv: includeUkv,
+                ct: ct);
+            _log.LogInformation("Loaded {N} rows (wet={Wet} / {Pct:P1}) spanning {S:yyyy-MM-dd} → {E:yyyy-MM-dd}",
+                rows.Count,
+                rows.Count(r => r.Label),
+                rows.Count == 0 ? 0 : (double)rows.Count(r => r.Label) / rows.Count,
+                rows.Count == 0 ? DateTime.MinValue : rows[0].ValidTimeUtc,
+                rows.Count == 0 ? DateTime.MinValue : rows[^1].ValidTimeUtc);
+
+            if (rows.Count < 500)
+            {
+                _log.LogError("Only {N} rows for lead {Lead}h — too few to train (run s3-collect / metoffice backfill first).",
+                    rows.Count, lead);
+                return 3;
+            }
+
+            var ds = BinaryDataset.Split(rows);
+            climatology ??= PrecipClimatology.BuildFromTraining(ds.Train);
+
+            _log.LogInformation("Split → train {TN} (wet {TW}), val {VN} (wet {VW}), test {EN} (wet {EW})",
+                ds.Train.Count, ds.TrainWet,
+                ds.Val.Count,   ds.ValWet,
+                ds.Test.Count,  ds.TestWet);
+
+            var trained = PrecipOccurrenceTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
+
+            var truthTest = ds.Test.Select(r => r.Label ? 1.0 : 0.0).ToArray();
+            var blendProb = PrecipOccurrenceTrainer.PredictVectorProbability(trained.Ml, trained.Model, spec, ds.Test);
+            var blendBrier = PrecipMetrics.Brier(blendProb, truthTest);
+
+            var best = PrecipBaselines.BestSingle(spec, ds.Val);
+            var bestValBrier = PrecipMetrics.Brier(
+                PrecipBaselines.SingleModelWet(spec, ds.Val, best),
+                ds.Val.Select(r => r.Label ? 1.0 : 0.0).ToArray());
+            var bestTestBrier = PrecipMetrics.Brier(
+                PrecipBaselines.SingleModelWet(spec, ds.Test, best),
+                truthTest);
+            var climPred = PrecipBaselines.Climatology(ds.Train, ds.Test);
+            var climBrier = PrecipMetrics.Brier(climPred, truthTest);
+            var bss = PrecipMetrics.BrierSkillScore(blendBrier, climBrier);
+
+            var blendBinary = blendProb.Select(p => p >= 0.5 ? 1.0 : 0.0).ToArray();
+            var fbias = PrecipMetrics.FrequencyBias(blendBinary, truthTest);
+
+            ModelArtifact.SaveLeadModel(trained.Ml, trained.Model, trained.InputSchema, versionDir, lead);
+            importanceByLead[lead] = trained.FeatureImportance;
+
+            var testMonths = ds.Test.Select(r => new DateTime(r.ValidTimeUtc.Year, r.ValidTimeUtc.Month, 1))
+                                    .Distinct().Count();
+
+            perLead[lead.ToString()] = new ModelArtifact.PerLeadStats
+            {
+                LeadHours = lead,
+                DataRangeTrain = $"{ds.TrainStart:yyyy-MM-dd HH:mm}Z → {ds.TrainEnd:yyyy-MM-dd HH:mm}Z",
+                DataRangeVal   = $"{ds.ValStart:yyyy-MM-dd HH:mm}Z → {ds.ValEnd:yyyy-MM-dd HH:mm}Z",
+                DataRangeTest  = $"{ds.TestStart:yyyy-MM-dd HH:mm}Z → {ds.TestEnd:yyyy-MM-dd HH:mm}Z",
+                TrainRows = ds.Train.Count,
+                ValRows   = ds.Val.Count,
+                TestRows  = ds.Test.Count,
+                TestCalendarMonths = testMonths,
+                BestSingle = best,
+                BestSingleValMae  = bestValBrier,
+                BestSingleTestMae = bestTestBrier,
+                BlendTestMae  = blendBrier,
+                BlendTestRmse = climBrier,
+                BlendTestBias = fbias,
+            };
+
+            var deltaPct = bestTestBrier > 0 ? (blendBrier - bestTestBrier) / bestTestBrier * 100 : double.NaN;
+            _log.LogInformation(
+                "Lead {Lead}h headline — blend Brier={Brier:0.000}, clim={Clim:0.000}, BSS={Bss:+0.000;-0.000;0.000}, fbias={Fb:0.00}, best[{Best}] test Brier={BestT:0.000} (val {BestV:0.000}), Δ {Delta:+0.0;-0.0;0.0}%",
+                lead, blendBrier, climBrier, bss, fbias, best, bestTestBrier, bestValBrier, deltaPct);
+        }
+
+        ModelArtifact.SaveBlenderSpecs(versionDir, specsPerLead);
+        ModelArtifact.SavePerLeadFeatureImportance(versionDir, importanceByLead);
+        if (climatology is not null)
+            climatology.SaveTo(Path.Combine(versionDir, ModelArtifact.ClimatologyFileName));
+
+        var metadata = new ModelArtifact.TrainingMetadata
+        {
+            Version = versionName,
+            Target = "precipitation",
+            Phase = "3d",
+            DataSource = "exact_runtime_s3_archive+era5_truth",
+            TrainedAtUtc = DateTime.UtcNow,
+            Hyperparameters = BuildPrecipHpDict(hp),
+            TestMae = perLead.ToDictionary(kv => $"lead_{kv.Key}h_brier", kv => kv.Value.BlendTestMae),
+            PerLead = perLead,
+            DeviationsFromBrief = new List<string>
+            {
+                "Trains on RunTimeSource='exact' rows from raw S3 archives (NOAA + ECMWF Open Data + MO AWS) — distinct from the 3a/3c offset_day path. Per-row provenance is rigorous (RunTimeUtc + ValidTimeUtc + LeadHours).",
+                "Models = GFS + IFS oper + AIFS required, MO Global optional; UKV always optional via per-V-hour conditional pull from 03Z + 15Z cycles. Lead-12 reads UKV at leads {9, 15} (avg 12h-ahead); lead-24 reads at {21, 27} (avg 24h-ahead).",
+                "Lead set restricted to {12, 24} — the leads with sufficient cycle coverage at the 4-cycle ValidTime grid {00, 06, 12, 18}. 48/72/96/120 not trained; 3a/3c retain championship at those leads.",
+                "Truth = ERA5 Precipitation (NOT EA gauge). Matches the precip-exact bake-off setup; head-to-head comparable with the offset_day 3a/3c which use EA gauge truth, with the caveat that ERA5 vs gauge can disagree at sub-hourly extremes. Per-station artefact path is preserved for parquet symmetry.",
+            },
+        };
+        ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
+
+        // Promote 3d as a station challenger — 3a stays Current. Per-station
+        // ChampionByLead pins 3d at lead 12 only; lead 24+ falls back to
+        // Current (typically 3a). Mirrors the 2d temperature ChampionByLead pin.
+        ModelArtifact.PromoteStationVersionAsChallenger(
+            modelsRoot, "precipitation", stationSlug, versionName, newPhase: "3d");
+        ModelArtifact.SetStationChampionForLead(
+            modelsRoot, "precipitation", stationSlug, leadHours: 12, versionName);
+        var newActive = ModelArtifact.ResolveStationActive(modelsRoot, "precipitation", stationSlug);
+
+        _log.LogInformation("Phase 3d artefacts → {Dir}", versionDir);
+        _log.LogInformation("Active versions for station {Station} now: [{Active}]", stationSlug, string.Join(", ", newActive));
+        _log.LogInformation("Champion for lead 12h ({Station}): {V}", stationSlug, versionName);
+        _log.LogInformation("Summary — {Summary}",
+            string.Join("; ", perLead.Select(kv =>
+                $"lead {kv.Key}h: blend Brier {kv.Value.BlendTestMae:0.000} vs climatology Brier {kv.Value.BlendTestRmse:0.000}")));
+
+        var (cf, cs) = await _precipConformal.FitOneAsync(
+            stationSlug, versionName, PrecipConformalFitCommand.DefaultAlpha, ct);
+        _log.LogInformation("Auto-conformal: fitted {F} leads ({S} skipped) for {S2}/{V}",
+            cf, cs, stationSlug, versionName);
+        return 0;
+    }
 }

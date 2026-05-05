@@ -168,10 +168,17 @@ public sealed class RenderSiteCommand
                 string.Join(", ", championByLead.OrderBy(kv => kv.Key).Select(kv => $"+{kv.Key}h→{kv.Value}")));
 
         var precipCurrentByStation = _metadata.GetChampionsByStation("precipitation");
+        var precipChampionByStationLead = _metadata.GetChampionByStationLead("precipitation");
         _log.LogInformation("Champion (precipitation): {Entries}",
             precipCurrentByStation.Count == 0
                 ? "(none)"
                 : string.Join(", ", precipCurrentByStation.Select(kv => $"{kv.Key}→{kv.Value}")));
+        if (precipChampionByStationLead.Count > 0)
+            _log.LogInformation("Per-(station, lead) precipitation champion overrides: {Entries}",
+                string.Join(", ", precipChampionByStationLead
+                    .OrderBy(kv => kv.Key.Station, StringComparer.Ordinal)
+                    .ThenBy(kv => kv.Key.LeadHours)
+                    .Select(kv => $"{kv.Key.Station}@+{kv.Key.LeadHours}h→{kv.Value}")));
 
         var activeStationSlugs = new HashSet<string>(
             _cfg.Location.Rainfall.Stations.Select(s => StationSlug.WithEaPrefix(s.Name)),
@@ -204,6 +211,7 @@ public sealed class RenderSiteCommand
             CurrentVersion = currentVersion,
             ChampionByLead = championByLead,
             PrecipCurrentByStation = precipCurrentByStation,
+            PrecipChampionByStationLead = precipChampionByStationLead,
             ActiveStationSlugs = activeStationSlugs,
             ModelSummaries = modelSummaries,
             FeelsLikePredictions = feelsLike,

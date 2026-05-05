@@ -351,4 +351,25 @@ public class PrecipVerifierTests
                 },
             },
         };
+
+    // ---- Phase 3d (exact-runtime) per-phase ModelNames tests -----------------
+
+    [Fact]
+    public void ModelNamesForPhase_returns_distinct_lists_for_3a_vs_3d()
+    {
+        PrecipVerifier.ModelNamesForPhase("3a")
+            .Should().BeEquivalentTo("gfs", "ecmwf", "icon", "mf", "ukmo", "gem", "aifs", "jma");
+        PrecipVerifier.ModelNamesForPhase("3c")
+            .Should().BeEquivalentTo(PrecipVerifier.ModelNamesForPhase("3a"),
+                "rich (3c) shares the offset_day per-model slot list with lean (3a)");
+        PrecipVerifier.ModelNamesForPhase("3d")
+            .Should().BeEquivalentTo(
+                "gfs_exact", "ifs_oper_exact", "aifs_oper_exact", "moglobal_exact", "ukv_exact");
+        // Unknown / null phase falls back to offset_day list — preserves
+        // behaviour for legacy artefacts predating per-phase ModelNames.
+        PrecipVerifier.ModelNamesForPhase(null)
+            .Should().BeEquivalentTo(PrecipVerifier.ModelNamesForPhase("3a"));
+        PrecipVerifier.ModelNamesForPhase("nonsense")
+            .Should().BeEquivalentTo(PrecipVerifier.ModelNamesForPhase("3a"));
+    }
 }

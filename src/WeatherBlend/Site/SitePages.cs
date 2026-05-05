@@ -263,6 +263,18 @@ public static partial class SitePages
             = new Dictionary<string, string>();
 
         /// <summary>
+        /// Per-(station, lead) precipitation champion override (Phase 3d,
+        /// 2026-05-05). Maps (station-slug, lead-hours) → version pinned as
+        /// champion AT THAT (STATION, LEAD) ONLY. Lookups for any (station,
+        /// lead) not present here fall back to <see cref="PrecipCurrentByStation"/>.
+        /// Mirrors <see cref="ChampionByLead"/> on the temperature side so 3d
+        /// (exact-runtime precip) can take over as champion at lead 12 per
+        /// station while 3a stays Current at 24+. Empty dict on legacy renders.
+        /// </summary>
+        public IReadOnlyDictionary<(string Station, int LeadHours), string> PrecipChampionByStationLead { get; init; }
+            = new Dictionary<(string, int), string>();
+
+        /// <summary>
         /// Per-model held-out test scores (Blend vs ERA5 / EA rainfall) for every active
         /// blender, grouped by composite. One entry per (target, optional station, optional
         /// window) × version. Drives the Models page; empty when no training metadata is

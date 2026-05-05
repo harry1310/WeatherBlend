@@ -82,6 +82,17 @@ public static class ModelArtifact
         /// so both versions emit predictions every cycle.
         /// </summary>
         public List<string> Active { get; set; } = new();
+
+        /// <summary>
+        /// Per-lead champion override (Phase 3d, 2026-05-05). Maps lead-hours
+        /// → version pinned as champion AT THAT LEAD ONLY for this station.
+        /// Falls back to <see cref="Current"/> for any lead not listed.
+        /// Mirrors <see cref="Manifest.ChampionByLead"/> on the flat-target
+        /// side so 3d (exact-runtime precip) can take over as champion at
+        /// lead 12 per station while 3a stays Current at 24/48/72/96/120 —
+        /// same shape as 2d's lead-12-only championship for temperature.
+        /// </summary>
+        public Dictionary<int, string> ChampionByLead { get; set; } = new();
     }
 
     public sealed class FeatureSchema
@@ -510,6 +521,58 @@ public static class ModelArtifact
                 m.ChampionByLead.Remove(leadHours);
             else
                 m.ChampionByLead[leadHours] = versionDirName;
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Per-station champion-by-lead (precipitation, dry-window-style targets)
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Per-lead champion for a station entry. Reads
+    /// <see cref="StationEntry.ChampionByLead"/> when populated, otherwise
+    /// falls back to <see cref="StationEntry.Current"/>. Returns empty
+    /// string when neither is set (legacy or freshly-initialised entries).
+    /// </summary>
+    public static string ResolveStationChampionForLead(
+        string modelsRoot, string target, string station, int leadHours)
+    {
+        var manifest = ReadJson<Manifest>(Path.Combine(modelsRoot, target, ManifestFileName));
+        if (manifest is null) return "";
+        if (!manifest.Stations.TryGetValue(station, out var entry)) return "";
+        return ResolveStationChampionForLead(entry, leadHours);
+    }
+
+    /// <summary>Pure overload for tests / pre-loaded entries.</summary>
+    public static string ResolveStationChampionForLead(StationEntry entry, int leadHours)
+    {
+        if (entry.ChampionByLead.TryGetValue(leadHours, out var perLead)
+            && !string.IsNullOrWhiteSpace(perLead))
+            return perLead;
+        return entry.Current ?? "";
+    }
+
+    /// <summary>
+    /// Set the per-lead champion override for one (station, lead). Pass an
+    /// empty <paramref name="versionDirName"/> to clear the entry (falls
+    /// back to <see cref="StationEntry.Current"/>). Idempotent. Doesn't
+    /// touch <see cref="StationEntry.Current"/> or
+    /// <see cref="StationEntry.Active"/>.
+    /// </summary>
+    public static void SetStationChampionForLead(
+        string modelsRoot, string target, string station, int leadHours, string versionDirName)
+    {
+        MutateManifest(modelsRoot, target, m =>
+        {
+            if (!m.Stations.TryGetValue(station, out var entry))
+            {
+                entry = new StationEntry();
+                m.Stations[station] = entry;
+            }
+            if (string.IsNullOrWhiteSpace(versionDirName))
+                entry.ChampionByLead.Remove(leadHours);
+            else
+                entry.ChampionByLead[leadHours] = versionDirName;
         });
     }
 

@@ -36,7 +36,10 @@ public static class ActivePhasePolicy
             // TemperatureManifest.ChampionByLead); 2b stays Current for 24/48/
             // 72/96/120 where 2d isn't trained. 2c keeps its challenger slot.
             ["temperature"]   = new[] { "2b", "2c", "2d" },
-            ["precipitation"] = new[] { "3a", "3c" },
+            // 3d ships as champion at lead 12h only (per-station ChampionByLead
+            // in StationEntry); 3a stays Current for 24/48/72/96/120 where 3d
+            // isn't trained. 3c keeps its challenger slot.
+            ["precipitation"] = new[] { "3a", "3c", "3d" },
             // 3g (parameter-free MC over Phase 3a hourly P(wet) marginals)
             // is the 3b challenger; cross-window monotonicity P(N=3) ≥ P(N=4)
             // ≥ P(N=6) holds by construction. 3d-shape (no Brier gain), 3e

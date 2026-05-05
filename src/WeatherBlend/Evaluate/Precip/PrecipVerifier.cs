@@ -18,9 +18,28 @@ namespace WeatherBlend.Evaluate.Precip;
 /// </summary>
 public static class PrecipVerifier
 {
-    /// <summary>Slots match the (GFS, ECMWF, ICON, MF, UKMO, GEM) ordering used elsewhere.</summary>
-    internal static readonly string[] ModelNames =
+    /// <summary>Per-phase per-model column lists. 3a/3c (offset_day) read
+    /// from the canonical 8-NWP slots; 3d (exact-runtime) reads from the
+    /// 5 *Exact slots since its model identities don't fully overlap
+    /// (raw IFS oper vs Open-Meteo ecmwf_ifs025, raw MO Global vs
+    /// ukmo_seamless, plus UKV which has no offset_day twin).</summary>
+    internal static readonly string[] ModelNamesOffsetDay =
         { "gfs", "ecmwf", "icon", "mf", "ukmo", "gem", "aifs", "jma" };
+
+    /// <summary>Phase 3d per-model column list — 5 exact-runtime sources.
+    /// Order matches PrecipExactFeatureBuilder canonical column order plus
+    /// UKV at the end.</summary>
+    internal static readonly string[] ModelNamesExact =
+        { "gfs_exact", "ifs_oper_exact", "aifs_oper_exact", "moglobal_exact", "ukv_exact" };
+
+    /// <summary>Resolve the per-NWP column list for a given training phase.
+    /// Defaults to the offset_day list — preserves behaviour for any version
+    /// whose metadata is missing (legacy artefacts) or has an unknown phase.</summary>
+    internal static string[] ModelNamesForPhase(string? phase) =>
+        string.Equals(phase, "3d", StringComparison.Ordinal) ? ModelNamesExact : ModelNamesOffsetDay;
+
+    [Obsolete("Use ModelNamesForPhase(phase). Kept for tests that pre-date 3d.")]
+    internal static readonly string[] ModelNames = ModelNamesOffsetDay;
 
     public const double WetThresholdMm = PrecipFeatureBuilder.WetThresholdMm;
 
@@ -117,9 +136,11 @@ public static class PrecipVerifier
 
         // Best single: binarise each per-model precip at 0.1mm, pick lowest Brier over the
         // window. Missing models yield NaN — PrecipMetrics.Brier silently skips them.
+        // Phase-aware ModelNames: 3a/3c reads offset_day slots, 3d reads exact slots.
+        var modelNames = ModelNamesForPhase(PhaseFor(station, version, inputs));
         var bestName = "";
         var bestBrier = double.PositiveInfinity;
-        foreach (var name in ModelNames)
+        foreach (var name in modelNames)
         {
             var p = preds.Select(row => PrecipIndicator(row, name)).ToArray();
             var b = PrecipMetrics.Brier(p, truthBin);
@@ -200,9 +221,26 @@ public static class PrecipVerifier
             "gem"   => p.PrecipGem,
             "aifs"  => p.PrecipAifs,
             "jma"   => p.PrecipJma,
+            // Phase 3d (exact-runtime) per-model slots.
+            "gfs_exact"      => p.PrecipGfsExact,
+            "ifs_oper_exact" => p.PrecipIfsOperExact,
+            "aifs_oper_exact"=> p.PrecipAifsOperExact,
+            "moglobal_exact" => p.PrecipMoGlobalExact,
+            "ukv_exact"      => p.PrecipUkvExact,
             _ => null,
         };
         if (!mm.HasValue) return double.NaN;
         return mm.Value >= WetThresholdMm ? 1.0 : 0.0;
+    }
+
+    /// <summary>Resolve the training phase for a (station, version) pair by
+    /// looking it up in <see cref="Inputs.MetadataByKey"/>. Versions whose
+    /// metadata isn't loaded get null → falls back to the offset_day column
+    /// list, which matches every shipped phase pre-3d.</summary>
+    private static string? PhaseFor(string station, string version, Inputs inputs)
+    {
+        if (inputs.MetadataByKey.TryGetValue((station, version), out var md))
+            return md.Phase;
+        return null;
     }
 }

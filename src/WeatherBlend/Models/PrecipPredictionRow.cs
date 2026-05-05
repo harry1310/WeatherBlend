@@ -72,6 +72,26 @@ public sealed class PrecipPredictionRow
     public DateTime? RunTimeAifs { get; init; }
     public DateTime? RunTimeJma { get; init; }
 
+    // Exact-runtime per-model slots (Phase 3d, 2026-05-05+). Populated by the
+    // exact-runtime predict path only — 3a/3c rows leave these null. Distinct
+    // from the offset_day Precip* slots above so a single parquet can carry
+    // both phase shapes side-by-side. Model identities don't fully overlap
+    // (IFS oper vs IFS025, MO Global vs ukmo_seamless, plus UKV which has no
+    // offset_day twin), so the per-NWP picker dispatches by phase rather
+    // than sharing slots — same architecture as TempPredictionRow's
+    // *Exact slots.
+    public double? PrecipGfsExact { get; init; }
+    public double? PrecipIfsOperExact { get; init; }
+    public double? PrecipAifsOperExact { get; init; }
+    public double? PrecipMoGlobalExact { get; init; }
+    public double? PrecipUkvExact { get; init; }
+
+    public DateTime? RunTimeGfsExact { get; init; }
+    public DateTime? RunTimeIfsOperExact { get; init; }
+    public DateTime? RunTimeAifsOperExact { get; init; }
+    public DateTime? RunTimeMoGlobalExact { get; init; }
+    public DateTime? RunTimeUkvExact { get; init; }
+
     // Ensemble spread aggregates — same definitions as the training feature row.
     public double? PrecipMean { get; init; }
     public double? PrecipStd { get; init; }

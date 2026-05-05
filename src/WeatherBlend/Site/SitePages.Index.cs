@@ -65,12 +65,22 @@ public static partial class SitePages
 
         // P(wet) lookup keyed by valid_time across all leads, smallest-lead-wins
         // mirroring the temperature pick. Bellever as the headline gauge.
+        // Per-lead champion override for precip (mirrors temperature
+        // ChampionByLead): a (Station, Lead) pin in
+        // input.PrecipChampionByStationLead beats the per-station Current.
         const string PwetStation = "ea_bellever_dartmoor";
         input.PrecipCurrentByStation.TryGetValue(PwetStation, out var pwetChampion);
+        string PwetChampionForLead(int lead)
+        {
+            if (input.PrecipChampionByStationLead.TryGetValue((PwetStation, lead), out var perLead)
+                && !string.IsNullOrEmpty(perLead))
+                return perLead;
+            return pwetChampion ?? "";
+        }
         var pwetByValid = input.PrecipPredictions
             .Where(r => r.Station == PwetStation
-                        && !string.IsNullOrEmpty(pwetChampion)
-                        && r.Version == pwetChampion)
+                        && !string.IsNullOrEmpty(PwetChampionForLead(r.LeadHours))
+                        && r.Version == PwetChampionForLead(r.LeadHours))
             .GroupBy(r => r.ValidTimeUtc)
             .ToDictionary(
                 g => g.Key,

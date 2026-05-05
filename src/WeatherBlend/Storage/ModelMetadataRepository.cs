@@ -83,6 +83,30 @@ public sealed class ModelMetadataRepository
     }
 
     /// <summary>
+    /// Per-(station, lead) champion overrides for a per-station manifest
+    /// layout. Returns a (station-slug, lead-hours) → champion-version dict.
+    /// Empty when no station has any per-lead pin set. Callers fall back to
+    /// <see cref="GetChampionsByStation"/> for any (station, lead) absent
+    /// from this dict.
+    /// </summary>
+    public IReadOnlyDictionary<(string Station, int LeadHours), string>
+        GetChampionByStationLead(string target)
+    {
+        var result = new Dictionary<(string, int), string>();
+        var manifest = TryReadManifest(target);
+        if (manifest?.Stations is null) return result;
+        foreach (var (station, entry) in manifest.Stations)
+        {
+            foreach (var (lead, version) in entry.ChampionByLead)
+            {
+                if (!string.IsNullOrEmpty(version))
+                    result[(station, lead)] = version;
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
     /// Per-station champions for the per-station manifest layout
     /// (<c>precipitation</c>, dry-window-style targets if they ever switch
     /// to a station axis). Returns an ordinal-keyed dict of

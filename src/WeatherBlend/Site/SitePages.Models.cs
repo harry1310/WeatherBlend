@@ -512,6 +512,11 @@ public static partial class SitePages
             ("temperature", "2d")  => "Exact-runtime blender. Trains on raw S3 cycles (GFS + AIFS required, IFS oper + MO Global + UKV optional) instead of Open-Meteo offset_day, with rigorous (RunTime, ValidTime, Lead) provenance per row. UKV pulled per-V-hour from 03Z + 15Z cycles.",
             ("precipitation", "3a") => "Lean P(wet) classifier, 27 features.",
             ("precipitation", "3c") => "Rich P(wet) classifier, 55 features.",
+            // 3d ships once UKV's lead-aware backfill (leads {9,15,21,27}) lands
+            // on R2 and a real artefact has been trained. Description here so
+            // the card renders correctly the moment ActivePhasePolicy gets "3d"
+            // added to the precipitation list.
+            ("precipitation", "3d") => "Exact-runtime P(wet) classifier. Trains on raw S3 cycles (GFS + IFS oper + AIFS required, MO Global + UKV optional) instead of Open-Meteo offset_day, with rigorous (RunTime, ValidTime, Lead) provenance per row. UKV pulled per-V-hour with target-lead-aware tuples.",
             ("dry_window", "3b")   => "53-feature LightGBM per-(station, window).",
             ("dry_window", "3g")   => "Parameter-free MC over 3a hourly P(wet). Monotonic by construction.",
             _ => $"Phase {phase} blender.",

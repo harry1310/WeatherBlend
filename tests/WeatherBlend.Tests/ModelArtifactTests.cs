@@ -640,4 +640,59 @@ public class ModelArtifactTests : IDisposable
         ModelArtifact.ResolveChampionForLead(manifest, 12).Should().Be("v-2d");
         ModelArtifact.ResolveChampionForLead(manifest, 24).Should().Be("v-2b");
     }
+
+    // ---- Per-station ChampionByLead (Phase 3d) -------------------------------
+
+    [Fact]
+    public void ResolveStationChampionForLead_falls_back_to_StationEntry_Current()
+    {
+        ModelArtifact.UpdateStationManifest(_root, "precipitation", "ea_bellever_dartmoor", "v-3a");
+        ModelArtifact.ResolveStationChampionForLead(_root, "precipitation", "ea_bellever_dartmoor", 24)
+            .Should().Be("v-3a");
+        ModelArtifact.ResolveStationChampionForLead(_root, "precipitation", "ea_bellever_dartmoor", 12)
+            .Should().Be("v-3a");
+    }
+
+    [Fact]
+    public void SetStationChampionForLead_pins_per_lead_override_per_station()
+    {
+        ModelArtifact.UpdateStationManifest(_root, "precipitation", "ea_bellever_dartmoor", "v-3a");
+        ModelArtifact.UpdateStationManifest(_root, "precipitation", "ea_dartmoor_nr_hexworthy", "v-3a-h");
+        ModelArtifact.SetStationChampionForLead(_root, "precipitation", "ea_bellever_dartmoor", 12, "v-3d");
+
+        ModelArtifact.ResolveStationChampionForLead(_root, "precipitation", "ea_bellever_dartmoor", 12)
+            .Should().Be("v-3d");
+        ModelArtifact.ResolveStationChampionForLead(_root, "precipitation", "ea_bellever_dartmoor", 24)
+            .Should().Be("v-3a", "lead 24 falls back to StationEntry.Current");
+        ModelArtifact.ResolveStationChampionForLead(_root, "precipitation", "ea_dartmoor_nr_hexworthy", 12)
+            .Should().Be("v-3a-h", "the other station's pin is independent");
+
+        var path = Path.Combine(_root, "precipitation", ModelArtifact.ManifestFileName);
+        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(File.ReadAllText(path))!;
+        manifest.Stations["ea_bellever_dartmoor"].Current.Should().Be("v-3a", "Current untouched");
+        manifest.Stations["ea_bellever_dartmoor"].ChampionByLead.Should().ContainKey(12)
+            .WhoseValue.Should().Be("v-3d");
+    }
+
+    [Fact]
+    public void SetStationChampionForLead_with_empty_string_clears_the_pin()
+    {
+        ModelArtifact.UpdateStationManifest(_root, "precipitation", "ea_bellever_dartmoor", "v-3a");
+        ModelArtifact.SetStationChampionForLead(_root, "precipitation", "ea_bellever_dartmoor", 12, "v-3d");
+        ModelArtifact.SetStationChampionForLead(_root, "precipitation", "ea_bellever_dartmoor", 12, "");
+        ModelArtifact.ResolveStationChampionForLead(_root, "precipitation", "ea_bellever_dartmoor", 12)
+            .Should().Be("v-3a");
+    }
+
+    [Fact]
+    public void ResolveStationChampionForLead_pure_overload_works_against_in_memory_entry()
+    {
+        var entry = new ModelArtifact.StationEntry
+        {
+            Current = "v-3a",
+            ChampionByLead = new Dictionary<int, string> { [12] = "v-3d" },
+        };
+        ModelArtifact.ResolveStationChampionForLead(entry, 12).Should().Be("v-3d");
+        ModelArtifact.ResolveStationChampionForLead(entry, 24).Should().Be("v-3a");
+    }
 }

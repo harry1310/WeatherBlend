@@ -1,3 +1,4 @@
+using System.Data;
 using DuckDB.NET.Data;
 using Microsoft.Extensions.Logging;
 using Microsoft.ML;
@@ -8,6 +9,8 @@ using WeatherBlend.Predict;
 using WeatherBlend.Site;
 using WeatherBlend.Train;
 using WeatherBlend.Train.Common;
+using WeatherBlend.Train.Exact12h;
+using WeatherBlend.Train.PrecipExact;
 
 namespace WeatherBlend.Commands;
 
@@ -174,6 +177,19 @@ public sealed class PrecipPredictCommand
 
         _log.LogInformation("Station {Station}: using blender version {V} (phase={Phase})",
             station, metadata.Version, metadata.Phase);
+
+        // Phase 3d (exact-runtime) takes a separate predict path: different
+        // forecast tree filter (RunTimeSource='exact'), different lead set
+        // ({12, 24}), different ValidTime grid ({0, 6, 12, 18}), per-V-hour
+        // UKV pull. perLeadValid (Open-Meteo offset_day pivot) is irrelevant
+        // for 3d and we build our own pivot inside.
+        var isExact = string.Equals(metadata.Phase, "3d", StringComparison.Ordinal);
+        if (isExact)
+        {
+            return await RunStationAsExactRuntimeAsync(
+                modelsRoot, station, versionDir, metadata, climatology,
+                predictionMadeAt, anchor, ct);
+        }
 
         var isRich = PrecipPhases.IsRich(metadata.Phase);
         // Isotonic-calibration handling (Phase 3a_isotonic) removed 2026-04-29 —
@@ -615,4 +631,285 @@ ORDER BY ValidTimeUtc, Model;";
         }
         return null;
     }
+
+    // ------------------------------------------------------------------
+    // Phase 3d (exact-runtime) predict path
+    // ------------------------------------------------------------------
+    //
+    // Mirrors TempPredictCommand.PredictExactForVersionAsync: separate SQL
+    // pivot from the exact-runtime tree (RunTimeSource='exact'), 4-cycle
+    // ValidTime grid {0,6,12,18}, lead set from specs.Keys (typically {12,
+    // 24}), per-V-hour UKV LEFT JOIN with target-lead-aware tuples.
+
+    /// <summary>The 4-cycle ValidTime grid 3d trains on. Same grid as
+    /// temperature 2d — UKV-conditional + IFS/MO Global cycle structure
+    /// align here.</summary>
+    private static readonly int[] Phase3dValidHoursUtc = { 0, 6, 12, 18 };
+
+    private async Task<bool> RunStationAsExactRuntimeAsync(
+        string modelsRoot,
+        string station,
+        string versionDir,
+        ModelArtifact.TrainingMetadata metadata,
+        PrecipClimatology climatology,
+        DateTime predictionMadeAt,
+        DateTime anchor,
+        CancellationToken ct)
+    {
+        var ml = new MLContext(seed: 42);
+        var predictions = new List<PrecipPredictionRow>();
+        var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
+        if (specs.Count == 0)
+        {
+            _log.LogWarning("Station {Station} version {V}: no per-lead specs in feature_schema.json", station, metadata.Version);
+            return false;
+        }
+
+        var maxLead = specs.Keys.DefaultIfEmpty(0).Max();
+        var windowStart = anchor;
+        var windowEnd = anchor.AddHours(maxLead + 24);
+
+        var pivotByLeadValid = QueryExactForecastRows(
+            _cfg.Storage.ForecastsPath,
+            _cfg.Location.Name,
+            specLeads: specs.Keys.ToArray(),
+            earliestValid: windowStart,
+            latestValid: windowEnd,
+            asOfRunTime: anchor,
+            ct);
+
+        foreach (var (lead, spec) in specs.OrderBy(kv => kv.Key))
+        {
+            var dayStart = new DateTime(anchor.Year, anchor.Month, anchor.Day, 0, 0, 0, DateTimeKind.Utc).AddDays(lead / 24);
+            var leadTargets = Enumerable.Range(0, 24)
+                .Select(h => dayStart.AddHours(h))
+                .Where(v => Phase3dValidHoursUtc.Contains(v.Hour))
+                .ToList();
+            var includeUkv = spec.FeatureNames.Contains("precip_ukv");
+
+            foreach (var valid in leadTargets)
+            {
+                if (!pivotByLeadValid.TryGetValue((lead, valid), out var pivot))
+                {
+                    _log.LogDebug("Station {Station} lead {Lead}h: no exact-runtime row for valid={Valid:yyyy-MM-dd HH:mm}Z; skipping.",
+                        station, lead, valid);
+                    continue;
+                }
+
+                var requiredSet = spec.RequiredModels.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var modelPrecip = new double[spec.Models.Count];
+                var modelRunTimes = new DateTime?[spec.Models.Count];
+                var missingRequired = new List<string>();
+                for (int i = 0; i < spec.Models.Count; i++)
+                {
+                    var m = spec.Models[i];
+                    if (pivot.PerModelPrecip.TryGetValue(m, out var v) && v.HasValue)
+                    {
+                        modelPrecip[i] = v.Value;
+                        if (pivot.PerModelRunTime.TryGetValue(m, out var rt)) modelRunTimes[i] = rt;
+                    }
+                    else
+                    {
+                        modelPrecip[i] = double.NaN;
+                        if (requiredSet.Contains(m)) missingRequired.Add(m);
+                    }
+                }
+                if (missingRequired.Count > 0)
+                {
+                    _log.LogDebug("Station {Station} lead {Lead}h: missing required exact-runtime models [{M}] at valid={V:yyyy-MM-dd HH:mm}Z; skipping.",
+                        station, lead, string.Join(",", missingRequired), valid);
+                    continue;
+                }
+
+                var ukvPrecip = pivot.UkvPrecip;
+                var row = PrecipExactFeatureBuilder.ComposeRow(
+                    spec, valid, modelPrecip, era5Precip: 0.0, ukvPrecip: ukvPrecip);
+
+                var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
+                var pWet = PrecipOccurrenceTrainer.PredictVectorProbability(ml, loadedModel, spec, new[] { row });
+                var climPWet = climatology.Predict(valid);
+
+                // Map spec.Models → exact column slots by model id (not slot
+                // index) so reordered specs still populate the right columns.
+                double? gfs = null, ifs = null, aifs = null, mog = null;
+                DateTime? gfsR = null, ifsR = null, aifsR = null, mogR = null;
+                for (int i = 0; i < spec.Models.Count; i++)
+                {
+                    var v = double.IsNaN(modelPrecip[i]) ? (double?)null : modelPrecip[i];
+                    switch (spec.Models[i])
+                    {
+                        case "gfs_ncep":          gfs = v;  gfsR  = modelRunTimes[i]; break;
+                        case "ecmwf_ifs_oper":    ifs = v;  ifsR  = modelRunTimes[i]; break;
+                        case "ecmwf_aifs_oper":   aifs = v; aifsR = modelRunTimes[i]; break;
+                        case "met_office_global": mog = v;  mogR  = modelRunTimes[i]; break;
+                    }
+                }
+                var ukvCol = includeUkv && !double.IsNaN(ukvPrecip) ? (double?)ukvPrecip : null;
+
+                // FeatureNames layout: per-model precip, [optional ukv], mean,
+                // std, range, 4 calendar floats. Spread block at index
+                // spec.Models.Count + (ukv ? 1 : 0).
+                var spreadStart = spec.Models.Count + (includeUkv ? 1 : 0);
+                predictions.Add(new PrecipPredictionRow
+                {
+                    LocationName = _cfg.Location.Name,
+                    TruthStation = station,
+                    ModelVersion = metadata.Version,
+                    PredictionMadeAtUtc = predictionMadeAt,
+                    ValidTimeUtc = valid,
+                    LeadHours = lead,
+                    ProbWet = pWet[0],
+                    ClimatologyPWet = climPWet,
+                    // Offset_day per-model slots stay null on 3d rows.
+                    PrecipGfsExact      = gfs,  RunTimeGfsExact      = gfsR,
+                    PrecipIfsOperExact  = ifs,  RunTimeIfsOperExact  = ifsR,
+                    PrecipAifsOperExact = aifs, RunTimeAifsOperExact = aifsR,
+                    PrecipMoGlobalExact = mog,  RunTimeMoGlobalExact = mogR,
+                    PrecipUkvExact      = ukvCol, RunTimeUkvExact    = pivot.UkvRunTime,
+                    PrecipMean = NanToNull(row.Features[spreadStart + 0]),
+                    PrecipStd  = NanToNull(row.Features[spreadStart + 1]),
+                    PrecipMax  = NanToNull(row.Features[spreadStart + 2]),
+                    // Range, not max — exact builder uses range; the offset_day
+                    // builder used max. Reuse the parquet column anyway since
+                    // it's a "spread of per-model precip" semantically. Note
+                    // for any reader: PrecipMax on 3d rows is range, on 3a/3c
+                    // it's max. Inspect Phase before interpreting.
+                    PrecipAgreementWet01 = null,
+                    FeatureVectorHash = FeatureHashing.HashFloats(row.Features),
+                    ConformalSetTag = ModelArtifact.PredictConformalIfPresent(versionDir, lead, pWet[0]),
+                });
+
+                _log.LogInformation(
+                    "Station {Station} lead {Lead}h → P(wet) {P:0.000} (clim {Clim:0.000}, valid {Valid:yyyy-MM-dd HH:mm}Z, exact-runtime mean-of-{N} {Mean:0.000})",
+                    station, lead, pWet[0], climPWet, valid, spec.Models.Count, row.Features[spreadStart + 0]);
+            }
+        }
+
+        if (predictions.Count == 0)
+        {
+            _log.LogWarning("Station {Station}: no exact-runtime predictions produced — likely missing forecast data.", station);
+            return false;
+        }
+
+        await WritePredictionsAsync(predictions, station, anchor, metadata.Version, ct);
+        return true;
+    }
+
+    /// <summary>Per-(lead, ValidTime) pivot from the exact-runtime tree.
+    /// Per-model dictionaries keyed by canonical model id rather than slot
+    /// index — keeps the dispatch above tolerant to spec.Models reordering
+    /// across phases. UKV pulled per blender lead via UNION ALL with the
+    /// per-targetLead picks from Exact12hFeatureBuilder.UkvPerVOrClause.</summary>
+    private sealed record ExactPivotRow(
+        Dictionary<string, double?> PerModelPrecip,
+        Dictionary<string, DateTime> PerModelRunTime,
+        double UkvPrecip,
+        DateTime? UkvRunTime);
+
+    private Dictionary<(int Lead, DateTime ValidTime), ExactPivotRow> QueryExactForecastRows(
+        string forecastsPath,
+        string locationName,
+        IReadOnlyList<int> specLeads,
+        DateTime earliestValid,
+        DateTime latestValid,
+        DateTime asOfRunTime,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (specLeads.Count == 0) return new();
+
+        var fcGlob = Path.Combine(forecastsPath, "**", "*.parquet").Replace('\\', '/').Replace("'", "''");
+        var loc = locationName.Replace("'", "''");
+        var modelInClause = "(" + string.Join(",",
+            PrecipExactFeatureBuilder.CanonicalModelOrder.Select(m => $"'{m}'")) + ")";
+        var leadInClause = "(" + string.Join(",", specLeads) + ")";
+        var hourInClause = "(" + string.Join(",", Phase3dValidHoursUtc) + ")";
+
+        var ukvUnionLegs = string.Join("\n        UNION ALL\n",
+            specLeads.Select(blenderLead => $@"        SELECT
+            ValidTimeUtc, {blenderLead} AS BlenderLead,
+            Precipitation AS ukv_precip, RunTimeUtc AS ukv_run_time,
+            ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn2
+        FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
+        WHERE LocationName = '{loc}'
+          AND Model = 'met_office_ukv'
+          AND RunTimeSource = 'exact'
+          AND Precipitation IS NOT NULL
+          AND HOUR(ValidTimeUtc) IN {hourInClause}
+          AND RunTimeUtc <= TIMESTAMP '{asOfRunTime:yyyy-MM-dd HH:mm:ss}'
+          AND ValidTimeUtc BETWEEN TIMESTAMP '{earliestValid:yyyy-MM-dd HH:mm:ss}'
+                               AND TIMESTAMP '{latestValid:yyyy-MM-dd HH:mm:ss}'
+          AND ({Exact12hFeatureBuilder.UkvPerVOrClause(blenderLead)})"));
+
+        var sql = $@"
+WITH latest AS (
+    SELECT ValidTimeUtc, Model, LeadHours, RunTimeUtc, Precipitation,
+           ROW_NUMBER() OVER (
+               PARTITION BY ValidTimeUtc, Model, LeadHours
+               ORDER BY RunTimeUtc DESC
+           ) AS rn
+    FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
+    WHERE LocationName = '{loc}'
+      AND RunTimeSource = 'exact'
+      AND LeadHours IN {leadInClause}
+      AND HOUR(ValidTimeUtc) IN {hourInClause}
+      AND Precipitation IS NOT NULL
+      AND Model IN {modelInClause}
+      AND RunTimeUtc <= TIMESTAMP '{asOfRunTime:yyyy-MM-dd HH:mm:ss}'
+      AND ValidTimeUtc BETWEEN TIMESTAMP '{earliestValid:yyyy-MM-dd HH:mm:ss}'
+                           AND TIMESTAMP '{latestValid:yyyy-MM-dd HH:mm:ss}'
+),
+ukv AS (
+    SELECT ValidTimeUtc, BlenderLead, ukv_precip, ukv_run_time
+    FROM (
+{ukvUnionLegs}
+    )
+    WHERE rn2 = 1
+)
+SELECT l.ValidTimeUtc, l.Model, l.LeadHours, l.RunTimeUtc, l.Precipitation,
+       u.ukv_precip, u.ukv_run_time
+FROM latest l
+LEFT JOIN ukv u
+       ON l.ValidTimeUtc = u.ValidTimeUtc
+      AND l.LeadHours    = u.BlenderLead
+WHERE l.rn = 1
+  AND l.RunTimeUtc <= l.ValidTimeUtc - (l.LeadHours * INTERVAL 1 HOUR)
+ORDER BY l.ValidTimeUtc, l.LeadHours, l.Model;";
+
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        using var reader = cmd.ExecuteReader();
+
+        var result = new Dictionary<(int Lead, DateTime ValidTime), ExactPivotRow>();
+        while (reader.Read())
+        {
+            ct.ThrowIfCancellationRequested();
+            var valid    = reader.GetDateTime(0);
+            var model    = reader.GetString(1);
+            var lead     = reader.GetInt32(2);
+            var runTime  = reader.GetDateTime(3);
+            var precip   = NullableDouble(reader, 4);
+            var ukvPrecip = NullableDouble(reader, 5) ?? double.NaN;
+            var ukvRunTime = reader.IsDBNull(6) ? (DateTime?)null : reader.GetDateTime(6);
+
+            var key = (lead, valid);
+            if (!result.TryGetValue(key, out var existing))
+            {
+                existing = new ExactPivotRow(
+                    PerModelPrecip: new Dictionary<string, double?>(StringComparer.Ordinal),
+                    PerModelRunTime: new Dictionary<string, DateTime>(StringComparer.Ordinal),
+                    UkvPrecip: ukvPrecip,
+                    UkvRunTime: ukvRunTime);
+                result[key] = existing;
+            }
+            existing.PerModelPrecip[model] = precip;
+            if (precip.HasValue) existing.PerModelRunTime[model] = runTime;
+        }
+        return result;
+    }
+
+    private static double? NullableDouble(IDataReader r, int ord)
+        => r.IsDBNull(ord) ? null : r.GetDouble(ord);
 }
