@@ -167,6 +167,7 @@ public static class Program
                 services.AddTransient<PrecipConformalFitCommand>();
                 services.AddTransient<DryWindowTrainCommand>();
                 services.AddTransient<DryWindowPredictCommand>();
+                services.AddTransient<DryWindowRhoBakeoffCommand>();
                 services.AddTransient<DryWindowVerifyCommand>();
                 services.AddTransient<StartHourVerifyCommand>();
                 services.AddTransient<ElementTrainCommand>();
@@ -766,6 +767,24 @@ public static class Program
             Environment.ExitCode = await cmd.RunAsync(alpha, CancellationToken.None);
         }, conformalAlphaOpt);
         root.AddCommand(dryWindowConformalFit);
+
+        // ---- dry-window-rho-bakeoff (research probe: AR(1) Gaussian copula on 3g) ----
+        var rhoStationOpt = new Option<string>(name: "--truth-station", description: "Station slug or 'all' (default).", getDefaultValue: () => "all");
+        var rhoWindowOpt = new Option<string>(name: "--window", description: "Window length: 3, 4, 6, or 'all' (default).", getDefaultValue: () => "all");
+        var rhoLeadsOpt = new Option<int[]>(name: "--leads", description: "Lead hours (default: short leads).") { AllowMultipleArgumentsPerToken = true };
+        var rhoValuesOpt = new Option<double[]>(name: "--rhos", description: "rho values to sweep (default: 0, 0.3, 0.5, 0.7, 0.9).") { AllowMultipleArgumentsPerToken = true };
+        var dryWindowRhoBakeoff = new Command(
+            "dry-window-rho-bakeoff",
+            "Score 3g test split under multiple AR(1) copula rho values; markdown comparison vs rho=0 (research probe, no artefacts).")
+        {
+            rhoStationOpt, rhoWindowOpt, rhoLeadsOpt, rhoValuesOpt,
+        };
+        dryWindowRhoBakeoff.SetHandler(async (station, window, leads, rhos) =>
+        {
+            var cmd = host.Services.GetRequiredService<DryWindowRhoBakeoffCommand>();
+            Environment.ExitCode = await cmd.RunAsync(station, window, leads, rhos, CancellationToken.None);
+        }, rhoStationOpt, rhoWindowOpt, rhoLeadsOpt, rhoValuesOpt);
+        root.AddCommand(dryWindowRhoBakeoff);
 
         // ---- precip-conformal-fit (sibling of dry-window-conformal-fit) ----
         var precipConformalAlphaOpt = new Option<double>(

@@ -160,6 +160,135 @@ public static class DryWindow3gPredictor
         => SampleStats(qHourly, windowLength, rng, nSamples).ProbAtLeast;
 
     /// <summary>
+    /// AR(1) Gaussian copula variant of <see cref="ProbDryWindow(double[],int,Random,int)"/>.
+    /// Replaces independent Bernoulli draws with hour-to-hour correlated draws
+    /// (correlation parameter <paramref name="rho"/> ∈ [0, 1)). Marginals are
+    /// preserved: each hour's wet probability stays at <c>qHourly[h]</c>.
+    /// Joint structure becomes AR(1): Cov(Z_i, Z_j) = ρ^|i-j| in the latent
+    /// Gaussian space, so adjacent hours cluster (rho>0 → more bimodal
+    /// "all-wet day" / "all-dry day" outcomes than independence).
+    ///
+    /// Mechanism per MC sample:
+    ///   Z_0 ~ N(0,1)
+    ///   Z_h = ρ·Z_{h-1} + sqrt(1-ρ²)·ε_h    (AR(1) recursion)
+    ///   wet_h = Z_h &lt; Φ⁻¹(q_h)            (probit threshold)
+    /// Equivalent to drawing from the Gaussian copula but avoids the
+    /// per-sample Cholesky cost — 2 normals per hour vs O(n²) for full MVN.
+    ///
+    /// rho=0 reduces to independent draws (mathematically equivalent to the
+    /// existing uniform-threshold sampler, though not bit-for-bit since the
+    /// random-number consumption pattern differs).
+    /// </summary>
+    public static double ProbDryWindow(
+        double[] qHourly, int windowLength, double rho, Random rng, int nSamples = DefaultMcSamples)
+    {
+        if (rho < 0 || rho >= 1)
+            throw new ArgumentOutOfRangeException(nameof(rho), $"rho must be in [0, 1), got {rho}");
+        if (qHourly.Length == 0) return 0.0;
+
+        var thresholds = new double[qHourly.Length];
+        for (int h = 0; h < qHourly.Length; h++)
+            thresholds[h] = NormalQuantile(Math.Clamp(qHourly[h], 1e-9, 1.0 - 1e-9));
+
+        var sqrtOneMinusRhoSq = Math.Sqrt(1.0 - rho * rho);
+        var normal = new BoxMullerSampler();
+        int hits = 0;
+
+        for (int s = 0; s < nSamples; s++)
+        {
+            int run = 0, longest = 0;
+            double prevZ = 0.0;
+            for (int h = 0; h < qHourly.Length; h++)
+            {
+                var z = h == 0
+                    ? normal.Sample(rng)
+                    : rho * prevZ + sqrtOneMinusRhoSq * normal.Sample(rng);
+                var dry = z >= thresholds[h];   // wet = Z < t, so dry = Z >= t
+                run = dry ? run + 1 : 0;
+                if (run > longest) longest = run;
+                prevZ = z;
+            }
+            if (windowLength <= qHourly.Length && longest >= windowLength) hits++;
+        }
+        return (double)hits / nSamples;
+    }
+
+    /// <summary>Inverse standard-normal CDF (probit / quantile function) via
+    /// Acklam's rational approximation — accurate to ~1e-9 on (0, 1).
+    /// Public so the rho-bakeoff harness and any downstream caller wanting
+    /// to threshold their own latent draws at calibrated marginals can reuse
+    /// it without pulling in MathNet.</summary>
+    public static double NormalQuantile(double p)
+    {
+        if (p <= 0) return double.NegativeInfinity;
+        if (p >= 1) return double.PositiveInfinity;
+
+        const double a1 = -3.969683028665376e+01;
+        const double a2 =  2.209460984245205e+02;
+        const double a3 = -2.759285104469687e+02;
+        const double a4 =  1.383577518672690e+02;
+        const double a5 = -3.066479806614716e+01;
+        const double a6 =  2.506628277459239e+00;
+        const double b1 = -5.447609879822406e+01;
+        const double b2 =  1.615858368580409e+02;
+        const double b3 = -1.556989798598866e+02;
+        const double b4 =  6.680131188771972e+01;
+        const double b5 = -1.328068155288572e+01;
+        const double c1 = -7.784894002430293e-03;
+        const double c2 = -3.223964580411365e-01;
+        const double c3 = -2.400758277161838e+00;
+        const double c4 = -2.549732539343734e+00;
+        const double c5 =  4.374664141464968e+00;
+        const double c6 =  2.938163982698783e+00;
+        const double d1 =  7.784695709041462e-03;
+        const double d2 =  3.224671290700398e-01;
+        const double d3 =  2.445134137142996e+00;
+        const double d4 =  3.754408661907416e+00;
+        const double pLow = 0.02425;
+        const double pHigh = 1.0 - pLow;
+
+        double q, r;
+        if (p < pLow)
+        {
+            q = Math.Sqrt(-2.0 * Math.Log(p));
+            return (((((c1*q+c2)*q+c3)*q+c4)*q+c5)*q+c6) /
+                   ((((d1*q+d2)*q+d3)*q+d4)*q+1.0);
+        }
+        if (p <= pHigh)
+        {
+            q = p - 0.5;
+            r = q * q;
+            return (((((a1*r+a2)*r+a3)*r+a4)*r+a5)*r+a6)*q /
+                   (((((b1*r+b2)*r+b3)*r+b4)*r+b5)*r+1.0);
+        }
+        q = Math.Sqrt(-2.0 * Math.Log(1.0 - p));
+        return -(((((c1*q+c2)*q+c3)*q+c4)*q+c5)*q+c6) /
+               ((((d1*q+d2)*q+d3)*q+d4)*q+1.0);
+    }
+
+    /// <summary>Box-Muller standard-normal sampler with single-element cache
+    /// (returns one draw, stashes the orthogonal pair for the next call).
+    /// Halves the per-draw cost vs throwing away the second component.</summary>
+    private sealed class BoxMullerSampler
+    {
+        private double _cached;
+        private bool _hasCached;
+
+        public double Sample(Random rng)
+        {
+            if (_hasCached) { _hasCached = false; return _cached; }
+            // Math.Log(0) is -Inf; clamp just above zero to keep the radius finite.
+            var u1 = Math.Max(rng.NextDouble(), 1e-300);
+            var u2 = rng.NextDouble();
+            var radius = Math.Sqrt(-2.0 * Math.Log(u1));
+            var theta = 2.0 * Math.PI * u2;
+            _cached = radius * Math.Sin(theta);
+            _hasCached = true;
+            return radius * Math.Cos(theta);
+        }
+    }
+
+    /// <summary>
     /// Aleatoric-uncertainty summary from one MC pass. ProbAtLeast is the
     /// "would the day satisfy a length-N dry block?" headline; the four
     /// LongestRun stats characterise the per-sample distribution of the
