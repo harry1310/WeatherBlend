@@ -38,6 +38,10 @@ on:
         description: "Override lead hours (comma list, blank = source defaults). Used 2026-05-05 to one-shot fetch UKV at leads 9,15,21 for the grid-aligned blender."
         required: false
         default: ""
+      cycles:
+        description: "Override cycle hours (comma list, blank = source defaults: global=0,12 / ukv=3,15). Added 2026-05-06 for the UKV clean-picker backfill (cycles=0,6,12,18 × leads=12,24)."
+        required: false
+        default: ""
 
 concurrency:
   # Per-(source, start-date) so every chunk is its own group — see the
@@ -129,9 +133,13 @@ jobs:
           if [ -n "${{ inputs.leads }}" ]; then
             LEADS_ARG="--leads ${{ inputs.leads }}"
           fi
+          CYCLES_ARG=""
+          if [ -n "${{ inputs.cycles }}" ]; then
+            CYCLES_ARG="--cycles ${{ inputs.cycles }}"
+          fi
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             metoffice-backfill --source ${{ inputs.source }} \
-            --start ${{ inputs.start }} $END_ARG $LEADS_ARG
+            --start ${{ inputs.start }} $END_ARG $LEADS_ARG $CYCLES_ARG
 
       - name: Push parquet to R2
         # copy (not sync) — additive only. Each cycle goes to its own date+run
