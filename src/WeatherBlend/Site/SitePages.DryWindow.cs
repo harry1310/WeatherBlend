@@ -226,8 +226,8 @@ public static partial class SitePages
                         var (label, cls) = d.ConformalSetTag switch
                         {
                             "Ambiguous" => ("ambiguous", "low"),
-                            "Wet"       => ("confident dry day", "high"),
-                            "Dry"       => ("confident wet day", "high"),
+                            "Wet"       => ("confident dry", "high"),
+                            "Dry"       => ("confident wet", "high"),
                             _           => (d.ConformalSetTag.ToLowerInvariant(), "unknown"),
                         };
                         var tauPart = input.DryWindowConformalTau.TryGetValue((d.Version, d.LeadHours), out var tau)
