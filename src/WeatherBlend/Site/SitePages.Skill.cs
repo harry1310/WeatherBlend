@@ -167,6 +167,22 @@ public static partial class SitePages
         return stations[0];
     }
 
+    // Single source of truth for leads + colours on the per-phase eyeball
+    // charts (temp vs truth, P(wet) vs observed). Both charts iterate this
+    // list; the per-lead `if (pts.Count > 0)` guard inside each loop drops
+    // empty series so legacy phases without lead-12 rows still render
+    // cleanly. When a new exact-runtime lead ships, update this one place
+    // instead of hunting the same array down in two methods — duplicating
+    // it is what silently dropped 2d's +12h line for a day after the skill
+    // chart fix on 2026-05-06.
+    private static readonly (int Lead, string Color)[] EyeballLeadSpecs =
+    {
+        (12, "#ce93d8"),
+        (24, "#b39ddb"),
+        (48, "#7c4dff"),
+        (72, "#4527a0"),
+    };
+
     // -------------------------------------------------------------------------------
     // Eyeball: temperature vs truth, grouped by phase so champion/challenger lines at
     // different leads don't pile up in one unreadable chart.
@@ -306,14 +322,7 @@ public static partial class SitePages
         if (moObsPts.Count > 0)
             series.Add(new LineSeries("Met Office obs (Taw Green)", "#6d4c41", moObsPts));
 
-        (int lead, string color)[] leadSpecs =
-        {
-            (12, "#ce93d8"),
-            (24, "#b39ddb"),
-            (48, "#7c4dff"),
-            (72, "#4527a0"),
-        };
-        foreach (var (lead, color) in leadSpecs)
+        foreach (var (lead, color) in EyeballLeadSpecs)
         {
             var pts = filtered
                 .Where(p => p.LeadHours == lead)
@@ -548,13 +557,6 @@ public static partial class SitePages
             : null;
         double? xMin = xMax is { } m ? m - 14.0 : null;
 
-        (int lead, string color)[] leadSpecs =
-        {
-            (12, "#ce93d8"),
-            (24, "#b39ddb"),
-            (48, "#7c4dff"),
-            (72, "#4527a0"),
-        };
         bool anyRendered = false;
         foreach (var spec in PrecipPhases.All)
         {
@@ -570,7 +572,7 @@ public static partial class SitePages
                 .ToList();
 
             var series = new List<LineSeries>();
-            foreach (var (lead, color) in leadSpecs)
+            foreach (var (lead, color) in EyeballLeadSpecs)
             {
                 var pts = latestPerLead
                     .Where(r => r.LeadHours == lead)
