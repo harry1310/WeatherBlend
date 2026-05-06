@@ -433,31 +433,12 @@ public static partial class SitePages
         var q10Pts = rows.Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.PWetQ10)).ToList();
         var q90Pts = rows.Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.PWetQ90)).ToList();
 
-        // Tier the average CI80 width into a label. Thresholds calibrated
-        // against the Phase 4 ci80 quartile binning from extend_phase4
-        // _with_ci.py: Q1 (narrowest) mean ~0.011, Q4 (widest) mean ~0.034.
-        // <= 0.015 → high; <= 0.025 → medium; else low.
-        var avgCi80 = rows.Average(p => p.Ci80Width);
-        var avgMedian = rows.Average(p => p.PWetQ50);
-        // Tier thresholds calibrated against the Phase 4 ci80 quartile binning
-        // from extend_phase4_with_ci.py 2026-05-06: Q1 (narrowest) mean
-        // ci80 ≈ 0.011, Q4 (widest) mean ≈ 0.034. <= 0.015 high, <= 0.025
-        // medium, else low. Re-tune if the Bayesian model retrains —
-        // these numbers are tied to a specific Phase 4 dataset snapshot.
-        var (tier, tierClass) = avgCi80 switch
-        {
-            <= 0.015 => ("high",   "conf conf-high"),
-            <= 0.025 => ("medium", "conf conf-medium"),
-            _        => ("low",    "conf conf-low"),
-        };
-        var summary = $"<p class=\"skill-line\">Bayesian credible interval: median P(wet) avg <strong>{avgMedian * 100:0}%</strong>, " +
-                      $"avg 80% CI width <strong>{avgCi80 * 100:0.0}%</strong>. " +
-                      $"Confidence: <span class=\"{tierClass}\">{tier}</span>. " +
-                      $"<small>(Independent posterior from WeatherProbabilistic — narrow CI predicts narrower Brier on the headline; wide CI flags rows to take with caution.)</small></p>";
-
         var s = new StringBuilder();
         s.Append("<h4>Bayesian credible interval — independent confidence signal</h4>");
-        s.Append(summary);
+        // No summary text — the chart is self-explanatory: tight band =
+        // confident, wide band = uncertain. An averaged tier was tried
+        // 2026-05-06 and reverted on user feedback ("why a single value?")
+        // because it smeared per-hour variability the chart already shows.
         s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
         {
             Title = $"Bayesian P(wet) median + 80% CI — {PrettyStation(stationSlug)} — +{lead}h",
