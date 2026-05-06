@@ -333,6 +333,7 @@ public static partial class SitePages
 
             s.Append(RenderPrecipDailySummaryTable(latestPerValid));
             s.Append(RenderPrecipHourlyConfidenceTable(latestPerValid, station, input.PrecipConformalTau));
+            s.Append(RenderBayesianCiPanel(input, station, lead, minValid, maxValid));
         }
 
         // Per-NWP precip rate (mm/h) — hoisted out of the per-station loop
@@ -369,6 +370,96 @@ public static partial class SitePages
             }
         }
 
+        return s.ToString();
+    }
+
+    /// <summary>
+    /// Bayesian credible-interval panel — Phase 2e. Renders a small line
+    /// chart with three series: posterior median P(wet) (solid, dark
+    /// blue) plus q10 and q90 (dashed, light blue) bracketing the median.
+    /// Above the chart, a one-line summary giving median P(wet) average
+    /// and CI80 width average across the rendered hours, plus a tier
+    /// label (high / medium / low confidence) so the eye can read it
+    /// without computing widths in their head.
+    ///
+    /// Sits below the existing per-station P(wet) chart on the precip
+    /// forecast page. The Bayesian model is from the WeatherProbabilistic
+    /// sibling repo (Phase 4 partial-pooling on 5 NWP precip features) —
+    /// distinct model from 3a's LightGBM, so the median line is a real
+    /// independent second opinion, not a re-rendering of the headline.
+    /// What we use it for is the WIDTH (CI80) per row: Phase 4's bake-off
+    /// found narrow-CI rows have ~5x lower Brier than wide-CI rows, so
+    /// CI80 transfers as a forecast-skill flag downstream.
+    ///
+    /// Silent skip if (a) no rows for this (station, lead) pair (e.g.
+    /// before the first predict-bayesian.yml fire, or for stations the
+    /// Bayesian doesn't cover — Bovey Tracey is not in the trained
+    /// hierarchy), or (b) the lead isn't one of {24, 48, 72} the
+    /// Bayesian was trained on.
+    /// </summary>
+    private static string RenderBayesianCiPanel(
+        SiteInputs input, string stationSlug, int lead,
+        DateTime minValid, DateTime maxValid)
+    {
+        if (input.BayesianCi.Count == 0) return "";
+        var stationCode = BayesianCiStationCodeFor(stationSlug);
+        if (stationCode is null) return "";  // station not in Bayesian training set
+
+        // Filter to valid times >= now-1h so we surface whatever forward
+        // coverage the Bayesian has at this lead. Don't bracket by the
+        // precip chart's [minValid, maxValid] — those are derived from the
+        // precip predictions' specific lead-24h-ahead-of-each-cycle pattern,
+        // which can starve the Bayesian's smaller anchor-relative window.
+        // Render whatever the Bayesian has from "now" onward; if empty,
+        // skip silently.
+        var nowMinus1 = input.GeneratedAtUtc.AddHours(-1);
+        var rows = input.BayesianCi
+            .Where(p => p.StationCode == stationCode
+                        && p.LeadHours == lead
+                        && p.ValidTimeUtc >= nowMinus1)
+            .OrderBy(p => p.ValidTimeUtc)
+            .ToList();
+        if (rows.Count == 0) return "";
+
+        var medianPts = rows.Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.PWetQ50)).ToList();
+        var q10Pts = rows.Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.PWetQ10)).ToList();
+        var q90Pts = rows.Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.PWetQ90)).ToList();
+
+        // Tier the average CI80 width into a label. Thresholds calibrated
+        // against the Phase 4 ci80 quartile binning from extend_phase4
+        // _with_ci.py: Q1 (narrowest) mean ~0.011, Q4 (widest) mean ~0.034.
+        // <= 0.015 → high; <= 0.025 → medium; else low.
+        var avgCi80 = rows.Average(p => p.Ci80Width);
+        var avgMedian = rows.Average(p => p.PWetQ50);
+        var (tier, tierClass) = avgCi80 switch
+        {
+            <= 0.015 => ("high",   "conf conf-high"),
+            <= 0.025 => ("medium", "conf"),
+            _        => ("low",    "conf conf-low"),
+        };
+        var summary = $"<p class=\"skill-line\">Bayesian credible interval: median P(wet) avg <strong>{avgMedian * 100:0}%</strong>, " +
+                      $"avg 80% CI width <strong>{avgCi80 * 100:0.0}%</strong>. " +
+                      $"Confidence: <span class=\"{tierClass}\">{tier}</span>. " +
+                      $"<small>(Independent posterior from WeatherProbabilistic — narrow CI predicts narrower Brier on the headline; wide CI flags rows to take with caution.)</small></p>";
+
+        var s = new StringBuilder();
+        s.Append("<h4>Bayesian credible interval — independent confidence signal</h4>");
+        s.Append(summary);
+        s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
+        {
+            Title = $"Bayesian P(wet) median + 80% CI — {PrettyStation(stationSlug)} — +{lead}h",
+            XLabel = "Valid time (UTC)",
+            YLabel = "Probability",
+            Series = new List<LineSeries>
+            {
+                new("q90 (upper)", NwpPalette.BayesianBand, q90Pts),
+                new("Median",      NwpPalette.BayesianMedian, medianPts),
+                new("q10 (lower)", NwpPalette.BayesianBand, q10Pts),
+            },
+            Height = 180,
+            FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
+            FormatY = v => v.ToString("0.00", Ci),
+        }));
         return s.ToString();
     }
 

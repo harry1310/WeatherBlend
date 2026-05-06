@@ -95,6 +95,21 @@ public static partial class SitePages
         /// so the eye reads MO Spot as a distinct comparison line on
         /// every chart it appears on.</summary>
         public const string MetOfficeSpot = "#2e7d32";
+
+        /// <summary>Dark line colour for the WeatherProbabilistic Bayesian
+        /// posterior median P(wet) line on the precip forecast page.
+        /// Material light-blue-900 — distinct from ECMWF's light-blue-400
+        /// and from every blend-purple. Reads as "considered, dark" against
+        /// the brand purples, communicating "different model, sibling
+        /// project."</summary>
+        public const string BayesianMedian = "#01579b";
+
+        /// <summary>Light shade of <see cref="BayesianMedian"/> for the
+        /// q10/q90 credible-interval bracket lines. Same hue family so the
+        /// reader pairs them with the median line; saturation difference
+        /// reads as "edges of the same uncertainty band". Material
+        /// light-blue-300.</summary>
+        public const string BayesianBand = "#4fc3f7";
     }
 
     /// <summary>NWPs that feed the temperature blender — the seven that
@@ -349,6 +364,17 @@ public static partial class SitePages
             = Array.Empty<NwpPrecipProbForecastPoint>();
 
         /// <summary>
+        /// Bayesian P(wet) posterior summary points from the
+        /// WeatherProbabilistic sibling repo. Drives the per-row confidence
+        /// signal on the precip forecast page (Phase 2e). Empty when the
+        /// upstream workflow hasn't yet pushed any anchor's parquets — the
+        /// renderer degrades silently to "no Bayesian CI section" rather
+        /// than rendering empty plots.
+        /// </summary>
+        public IReadOnlyList<BayesianCiPoint> BayesianCi { get; init; }
+            = Array.Empty<BayesianCiPoint>();
+
+        /// <summary>
         /// Structured weekly verify history loaded from
         /// <c>data/reports/verify_*.json</c>. One entry per (target, asOf)
         /// run; the Models-page renderer filters per-card on (target,
@@ -410,6 +436,48 @@ public static partial class SitePages
     /// the same way they do on the temperature rolling MAE chart.
     /// Phase grouping mirrors <see cref="RollingMaePoint"/>.</summary>
     public sealed record RollingBrierPoint(string Station, string Phase, int LeadHours, DateTime WindowEndUtc, double BlendBrier, int N);
+
+    /// <summary>
+    /// One row from the WeatherProbabilistic Phase 2b live-predict output.
+    /// Per-(station, valid_time, lead) Bayesian P(wet) posterior summary
+    /// from the sibling repo's PyMC partial-pooling model. Used as a
+    /// confidence signal next to 3a's deterministic ProbWet on the precip
+    /// forecast page — narrow CI80 → high confidence, wide CI80 → low.
+    ///
+    /// <c>StationCode</c> is the short label the Bayesian model uses
+    /// (Bellever / Princetown / Hexworthy); the C# join maps that back to
+    /// the precip station slug (<c>ea_*</c>) via
+    /// <see cref="BayesianCiStationCodeFor"/>. Parquet schema lives at
+    /// data/predictions/precipitation_bayesian_ci/location=*/station=*/
+    /// anchor=*/widths.parquet — written by the predict-bayesian.yml
+    /// workflow on every HH:45 cron tick.
+    /// </summary>
+    public sealed record BayesianCiPoint(
+        string StationCode,
+        DateTime ValidTimeUtc,
+        int LeadHours,
+        DateTime AnchorDate,
+        double PWetMean,
+        double PWetStd,
+        double PWetQ05,
+        double PWetQ10,
+        double PWetQ50,
+        double PWetQ90,
+        double PWetQ95,
+        double Ci80Width,
+        double Ci90Width);
+
+    /// <summary>Map a precip station slug to the short station code the
+    /// Bayesian CI artefact uses. Returns null for stations the Bayesian
+    /// pipeline doesn't cover (e.g. ea_bovey_tracey isn't in the trained
+    /// 3-station hierarchy).</summary>
+    internal static string? BayesianCiStationCodeFor(string precipStationSlug) => precipStationSlug switch
+    {
+        "ea_bellever_dartmoor"      => "Bellever",
+        "ea_princetown"             => "Princetown",
+        "ea_dartmoor_nr_hexworthy"  => "Hexworthy",
+        _                           => null,
+    };
 
     public sealed record PrecipForecastPoint(
         string Station,

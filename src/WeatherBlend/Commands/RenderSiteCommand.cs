@@ -114,6 +114,9 @@ public sealed class RenderSiteCommand
         _log.LogInformation("Loaded {N} Met Office Spot forecast rows.", metOfficeSpot.Count);
 
         var nwpPop = QueryNwpPrecipProbabilities(windowStart, predictionEnd, ct);
+        var bayesianCi = QueryBayesianCi(windowStart, predictionEnd, ct);
+        _log.LogInformation("Loaded {N} Bayesian CI rows ({S} stations).",
+            bayesianCi.Count, bayesianCi.Select(p => p.StationCode).Distinct().Count());
         var lowCloudByValid = QueryLowCloudSignals(windowStart, predictionEnd, ct);
         _log.LogInformation("Loaded low-cloud / mist signal for {N} valid hours.", lowCloudByValid.Count);
         _log.LogInformation("Loaded {N} per-NWP precipitation-probability rows ({M} models).",
@@ -223,6 +226,7 @@ public sealed class RenderSiteCommand
             StartHourPredictions = startHour,
             MetOfficeSpotForecasts = metOfficeSpot,
             NwpPrecipProbabilities = nwpPop,
+            BayesianCi = bayesianCi,
             VerifyHistory = verifyHistory,
         };
 
@@ -848,6 +852,67 @@ GROUP BY ValidTimeUtc";
             x => new SitePages.LowCloudSignal(
                 VisFiredCount: x.VisFired, VisTotalCount: x.VisTotal,
                 CloudBaseFiredCount: x.TdFired, CloudBaseTotalCount: x.TdTotal));
+    }
+
+    /// <summary>
+    /// Phase 2b live Bayesian P(wet) credible-interval rows from
+    /// WeatherProbabilistic. Hive layout
+    ///   data/predictions/precipitation_bayesian_ci/location=*/station=*/
+    ///   anchor=*/widths.parquet
+    /// Picks the LATEST anchor per (station, valid_time, lead) — multiple
+    /// anchors may have predicted the same (valid, lead) tuple if the
+    /// cron has run more than once for it; the freshest anchor is the
+    /// one whose forecast inputs are most recent.
+    /// </summary>
+    private IReadOnlyList<SitePages.BayesianCiPoint> QueryBayesianCi(
+        DateTime start, DateTime end, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var subdir = Path.Combine(_cfg.Storage.PredictionsPath, "precipitation_bayesian_ci");
+        if (!Directory.Exists(subdir))
+        {
+            _log.LogInformation(
+                "Bayesian CI tree at {Dir} not present yet — confidence panel will be absent until WeatherProbabilistic's predict-bayesian.yml has fired at least once.",
+                subdir);
+            return Array.Empty<SitePages.BayesianCiPoint>();
+        }
+        var glob = ParquetReader.Glob(Path.Combine(subdir, "**", "*.parquet"));
+        // Latest anchor per (station, valid_time, lead). Quote dotted column
+        // names ("p_wet_q0.1" etc) — DuckDB supports double-quoted identifiers.
+        var sql = $@"
+WITH ranked AS (
+  SELECT station, valid_time, lead, anchor,
+         p_wet_mean, p_wet_std,
+         ""p_wet_q0.05"" AS q05,
+         ""p_wet_q0.1""  AS q10,
+         ""p_wet_q0.5""  AS q50,
+         ""p_wet_q0.9""  AS q90,
+         ""p_wet_q0.95"" AS q95,
+         ci80_width, ci90_width,
+         row_number() OVER (PARTITION BY station, valid_time, lead ORDER BY anchor DESC) AS rn
+  FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+  WHERE valid_time >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
+    AND valid_time <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+)
+SELECT station, valid_time, lead, anchor, p_wet_mean, p_wet_std,
+       q05, q10, q50, q90, q95, ci80_width, ci90_width
+FROM ranked WHERE rn = 1 ORDER BY station, valid_time, lead";
+
+        return ParquetReader.Query(sql, r => new SitePages.BayesianCiPoint(
+            StationCode:   r.GetString(0),
+            ValidTimeUtc:  r.GetDateTime(1),
+            LeadHours:     (int)r.GetInt64(2),
+            AnchorDate:    r.GetDateTime(3),
+            PWetMean:      r.GetDouble(4),
+            PWetStd:       r.GetDouble(5),
+            PWetQ05:       r.GetDouble(6),
+            PWetQ10:       r.GetDouble(7),
+            PWetQ50:       r.GetDouble(8),
+            PWetQ90:       r.GetDouble(9),
+            PWetQ95:       r.GetDouble(10),
+            Ci80Width:     r.GetDouble(11),
+            Ci90Width:     r.GetDouble(12)),
+            _log, "Bayesian CI tree empty — confidence panel will be absent.", ct);
     }
 
     private IReadOnlyList<SitePages.NwpPrecipProbForecastPoint> QueryNwpPrecipProbabilities(
