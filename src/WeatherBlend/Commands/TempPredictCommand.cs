@@ -582,10 +582,17 @@ ORDER BY ValidTimeUtc, Model;";
         {
             // 24 hourly targets per lead bucket — match the offset_day predict
             // contract so downstream parquets are uniformly shaped. Out of these
-            // 24 targets, only the four ValidTime hours {0,6,12,18} get scored;
-            // the rest land outside the exact-runtime grid and skip silently.
+            // Generate today's target valid hours AND tomorrow's so a
+            // late-evening predict still has future-of-now lead-12 slots
+            // (without the +1-day extension, lead-12 at 21:15 had zero
+            // future targets — all of today's {0,6,12,18} were past-of-
+            // anchor → filtered out → no predictions written for the
+            // entire evening). Only the four ValidTime hours {0,6,12,18}
+            // get scored; the rest land outside the exact-runtime grid
+            // and skip silently. Pivot lookup misses (cycle not in R2)
+            // also skip silently.
             var dayStart = new DateTime(anchor.Year, anchor.Month, anchor.Day, 0, 0, 0, DateTimeKind.Utc).AddDays(lead / 24);
-            var leadTargets = Enumerable.Range(0, 24)
+            var leadTargets = Enumerable.Range(0, 48)
                 .Select(h => dayStart.AddHours(h))
                 .Where(v => Phase2dValidHoursUtc.Contains(v.Hour))
                 .ToList();

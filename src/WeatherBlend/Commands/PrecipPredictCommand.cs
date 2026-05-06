@@ -680,8 +680,16 @@ ORDER BY ValidTimeUtc, Model;";
 
         foreach (var (lead, spec) in specs.OrderBy(kv => kv.Key))
         {
+            // Generate target valid times for TODAY's date + (lead/24) days
+            // AND the day after, so a late-evening predict still produces
+            // future-of-now lead-12 slots from tomorrow once today's are
+            // all in the past. Without the +1-day extension, lead-12 at
+            // 21:15 had zero future targets (all of today's {0,6,12,18}
+            // were past-of-anchor → filtered out → no predictions
+            // written), which surfaced as "zero 12h data on the site"
+            // for the entire evening.
             var dayStart = new DateTime(anchor.Year, anchor.Month, anchor.Day, 0, 0, 0, DateTimeKind.Utc).AddDays(lead / 24);
-            var leadTargets = Enumerable.Range(0, 24)
+            var leadTargets = Enumerable.Range(0, 48)
                 .Select(h => dayStart.AddHours(h))
                 .Where(v => Phase3dValidHoursUtc.Contains(v.Hour))
                 .ToList();
