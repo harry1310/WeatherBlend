@@ -55,9 +55,13 @@ public sealed class MetOfficeUkvArchiveCollector
     private static readonly int[] DefaultLeads = { 9, 15, 21, 27 };
     private const int DefaultLookbackDays = 3;
     private const int DefaultParallelism = 8;
-    // AWS publishes a cycle's NetCDFs ~3-6h after run time; a 7h floor avoids the
-    // same-day "all 16 vars 404" noise on whichever 15Z run hasn't fully landed yet.
-    private const int MinCycleAgeHours = 7;
+    // No min-cycle-age filter (was 7h until 2026-05-06). AWS publishes a cycle's
+    // NetCDFs ~3-6h after run time; the script handles per-variable 404s
+    // gracefully (missing vars become null columns, leads with zero vars
+    // skipped silently), and re-pulls overwrite partial parquets when more
+    // vars land. Trade-off: noisier logs for fresher data — UKV becomes
+    // available ~6h earlier per cycle.
+    private const int MinCycleAgeHours = 0;
 
     private readonly MetOfficeArchiveBackfillClient _client;
     private readonly ILogger<MetOfficeUkvArchiveCollector> _log;
