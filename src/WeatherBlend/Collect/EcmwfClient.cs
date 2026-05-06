@@ -117,13 +117,23 @@ public sealed class EcmwfClient
         LocationConfig loc, DateOnly date, int cycleHour, string stream, string modelId,
         int lead, DateTime runTime, string scratchDir, CancellationToken ct)
     {
-        // Path: {date}/{HH}z/{streamSubpath}/0p25/oper/{date}{HH}0000-{lead}h-oper-fc.{grib2|index}
-        // ECMWF renamed AIFS's S3 subdir from `aifs/` → `aifs-single/` between
-        // 2025-02-01 and 2025-03-01. Try the modern path first (covers most of
-        // the live archive) and fall back to legacy on 404 so a long backfill
-        // crossing the cutover works without per-date dispatch.
+        // ECMWF Open Data publishes IFS HRES at all 4 daily cycles, but split
+        // across two streams:
+        //   * 00Z + 12Z → `oper` stream, full long-range (~240h)
+        //   * 06Z + 18Z → `scda` stream, short cut-off data assimilation
+        //                 (~120h+ horizon, verified 2026-05-06).
+        // Path is `{date}/{HH}z/{streamSubpath}/0p25/{streamFolder}/{date}{HH}0000-{lead}h-{streamFolder}-fc.{grib2|index}`
+        // where streamSubpath ∈ {ifs, aifs-single} (or aifs legacy) and
+        // streamFolder ∈ {oper, scda}. The filename suffix mirrors the folder.
+        // AIFS publishes all four cycles in `oper` (no scda variant), so the
+        // sub-cycle switch is IFS-only. AIFS subdir was renamed
+        // `aifs/` → `aifs-single/` between 2025-02-01 and 2025-03-01 — try
+        // modern first, fall back on 404.
+        var streamFolder = stream == Streams.IfsOper && (cycleHour == 6 || cycleHour == 18)
+            ? "scda"
+            : "oper";
         var dateStr = date.ToString("yyyyMMdd");
-        var stem = $"{dateStr}{cycleHour:00}0000-{lead}h-oper-fc";
+        var stem = $"{dateStr}{cycleHour:00}0000-{lead}h-{streamFolder}-fc";
 
         var subpathCandidates = stream == Streams.AifsOper
             ? new[] { "aifs-single", "aifs" }
@@ -133,7 +143,7 @@ public sealed class EcmwfClient
         string? baseUrl = null;
         foreach (var subpath in subpathCandidates)
         {
-            baseUrl = $"{BaseUrl}/{dateStr}/{cycleHour:00}z/{subpath}/0p25/oper/{stem}";
+            baseUrl = $"{BaseUrl}/{dateStr}/{cycleHour:00}z/{subpath}/0p25/{streamFolder}/{stem}";
             try
             {
                 indexEntries = await FetchIndexAsync(baseUrl + ".index", ct);
