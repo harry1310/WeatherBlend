@@ -202,72 +202,116 @@ public class Exact12hFeatureBuilderTests
         ex.Should().BeOfType<ArgumentException>();
     }
 
-    // ---- UKV per-V-hour picks (target-lead-aware) -----------------------------
+    // ---- UKV per-V-hour picks (target-lead-aware, strategy-aware) -------------
 
     [Fact]
-    public void UkvPicksForLead_12_averages_to_12h_ahead()
+    public void UkvPicksForLead_strict_lead_12_uses_direct_lead_12_per_V()
     {
-        var picks = Exact12hFeatureBuilder.UkvPicksForLead(12);
+        // Strict: each V-hour gets a single (cycle, lead 12) tuple from
+        // UKV's {0, 6, 12, 18} cycle set. Used by temp 2d.
+        var picks = Exact12hFeatureBuilder.UkvPicksForLead(12, Exact12hFeatureBuilder.UkvPickStrategy.Strict);
         picks.Should().HaveCount(4);
         picks.Select(p => p.VHour).Should().BeEquivalentTo(new[] { 0, 6, 12, 18 });
+        picks.Should().AllSatisfy(p => p.LeadHours.Should().Be(12));
+        picks.Should().AllSatisfy(p => p.RunHour.Should().BeOneOf(0, 6, 12, 18));
+    }
+
+    [Fact]
+    public void UkvPicksForLead_strict_lead_24_uses_direct_lead_24_per_V()
+    {
+        var picks = Exact12hFeatureBuilder.UkvPicksForLead(24, Exact12hFeatureBuilder.UkvPickStrategy.Strict);
+        picks.Should().HaveCount(4);
+        picks.Should().AllSatisfy(p => p.LeadHours.Should().Be(24));
+        picks.Should().AllSatisfy(p => p.RunHour.Should().BeOneOf(0, 6, 12, 18));
+        picks.Should().AllSatisfy(p => p.DayOffset.Should().Be(1));
+        // For lead-24 strict, runHour == VHour (24h-earlier same hour, prev day)
+        picks.Should().AllSatisfy(p => p.RunHour.Should().Be(p.VHour));
+    }
+
+    [Fact]
+    public void UkvPicksForLead_averaging_lead_12_averages_two_leads_per_V()
+    {
+        // Averaging: each V-hour gets a (cycle ∈ {3,15}, lead ∈ {9, 15})
+        // tuple. Across V-hours the leads 9 and 15 alternate so the
+        // average effective forecast horizon is 12h. Used by precip 3d.
+        var picks = Exact12hFeatureBuilder.UkvPicksForLead(12, Exact12hFeatureBuilder.UkvPickStrategy.Averaging);
+        picks.Should().HaveCount(4);
         picks.Average(p => p.LeadHours).Should().Be(12,
-            "lead-12 picks must average to 12h-ahead, matching strict-lead-12 inputs");
+            "lead-12 averaging picks must average to 12h-ahead");
         picks.Should().AllSatisfy(p => p.RunHour.Should().BeOneOf(3, 15),
-            "UKV runs only at 03Z and 15Z");
+            "averaging picks come from UKV's {3, 15} cycle set only");
+        picks.Should().AllSatisfy(p => p.LeadHours.Should().BeOneOf(9, 15));
     }
 
     [Fact]
-    public void UkvPicksForLead_24_averages_to_24h_ahead()
+    public void UkvPicksForLead_averaging_lead_24_averages_to_24h_ahead()
     {
-        var picks = Exact12hFeatureBuilder.UkvPicksForLead(24);
+        var picks = Exact12hFeatureBuilder.UkvPicksForLead(24, Exact12hFeatureBuilder.UkvPickStrategy.Averaging);
         picks.Should().HaveCount(4);
-        picks.Select(p => p.VHour).Should().BeEquivalentTo(new[] { 0, 6, 12, 18 });
-        picks.Average(p => p.LeadHours).Should().Be(24,
-            "lead-24 picks must average to 24h-ahead, matching strict-lead-24 inputs " +
-            "(this was the 2026-05-05 leak fix — lead-24 used to share lead-12's picks)");
+        picks.Average(p => p.LeadHours).Should().Be(24);
         picks.Should().AllSatisfy(p => p.RunHour.Should().BeOneOf(3, 15));
-        picks.Should().AllSatisfy(p => p.DayOffset.Should().Be(1),
-            "no UKV cycle on the same day satisfies ≥24h-before-V for V ∈ {0,6,12,18}");
+        picks.Should().AllSatisfy(p => p.LeadHours.Should().BeOneOf(21, 27));
+        picks.Should().AllSatisfy(p => p.DayOffset.Should().Be(1));
     }
 
     [Fact]
-    public void UkvPicksForLead_each_pick_lands_at_its_V_hour()
+    public void UkvPicksForLead_each_pick_lands_at_its_V_hour_under_both_strategies()
     {
         // Sanity: for each pick, (RunHour + LeadHours) mod 24 should equal VHour
         // — i.e. the (cycle, lead) tuple actually lands at the claimed ValidTime hour.
-        foreach (var lead in new[] { 12, 24 })
+        foreach (var strategy in new[] { Exact12hFeatureBuilder.UkvPickStrategy.Strict, Exact12hFeatureBuilder.UkvPickStrategy.Averaging })
         {
-            foreach (var p in Exact12hFeatureBuilder.UkvPicksForLead(lead))
+            foreach (var lead in new[] { 12, 24 })
             {
-                var landedHour = (p.RunHour + p.LeadHours) % 24;
-                landedHour.Should().Be(p.VHour,
-                    $"pick for V={p.VHour} (lead {lead}) — runHour {p.RunHour} + lead {p.LeadHours} should land at V");
+                foreach (var p in Exact12hFeatureBuilder.UkvPicksForLead(lead, strategy))
+                {
+                    var landedHour = (p.RunHour + p.LeadHours) % 24;
+                    landedHour.Should().Be(p.VHour,
+                        $"strategy={strategy}, target={lead}, V={p.VHour}: runHour {p.RunHour} + lead {p.LeadHours} should land at V");
+                }
             }
         }
     }
 
     [Fact]
-    public void UkvPicksForLead_unsupported_target_throws()
+    public void UkvPicksForLead_unsupported_target_throws_under_both_strategies()
     {
-        var ex = Record.Exception(() => Exact12hFeatureBuilder.UkvPicksForLead(48));
-        ex.Should().BeOfType<ArgumentException>();
+        foreach (var strategy in new[] { Exact12hFeatureBuilder.UkvPickStrategy.Strict, Exact12hFeatureBuilder.UkvPickStrategy.Averaging })
+        {
+            var ex = Record.Exception(() => Exact12hFeatureBuilder.UkvPicksForLead(48, strategy));
+            ex.Should().BeOfType<ArgumentException>($"strategy={strategy} should reject unsupported lead");
+        }
     }
 
     [Fact]
-    public void UkvPerVOrClause_emits_lead_aware_or_clauses()
+    public void UkvPerVOrClause_strict_emits_lead_12_or_24_only()
     {
-        var lead12 = Exact12hFeatureBuilder.UkvPerVOrClause(12);
+        var lead12 = Exact12hFeatureBuilder.UkvPerVOrClause(12, Exact12hFeatureBuilder.UkvPickStrategy.Strict);
+        lead12.Should().Contain("LeadHours = 12");
+        lead12.Should().NotContain("LeadHours = 9");
+        lead12.Should().NotContain("LeadHours = 15");
+        lead12.Should().NotContain("LeadHours = 24");
+
+        var lead24 = Exact12hFeatureBuilder.UkvPerVOrClause(24, Exact12hFeatureBuilder.UkvPickStrategy.Strict);
+        lead24.Should().Contain("LeadHours = 24");
+        lead24.Should().NotContain("LeadHours = 12");
+        lead24.Should().NotContain("LeadHours = 21");
+        lead24.Should().NotContain("LeadHours = 27");
+    }
+
+    [Fact]
+    public void UkvPerVOrClause_averaging_emits_brackets_around_target()
+    {
+        var lead12 = Exact12hFeatureBuilder.UkvPerVOrClause(12, Exact12hFeatureBuilder.UkvPickStrategy.Averaging);
         lead12.Should().Contain("LeadHours = 9");
         lead12.Should().Contain("LeadHours = 15");
+        lead12.Should().NotContain("LeadHours = 12");
         lead12.Should().NotContain("LeadHours = 21");
-        lead12.Should().NotContain("LeadHours = 27");
 
-        var lead24 = Exact12hFeatureBuilder.UkvPerVOrClause(24);
+        var lead24 = Exact12hFeatureBuilder.UkvPerVOrClause(24, Exact12hFeatureBuilder.UkvPickStrategy.Averaging);
         lead24.Should().Contain("LeadHours = 21");
         lead24.Should().Contain("LeadHours = 27");
+        lead24.Should().NotContain("LeadHours = 24");
         lead24.Should().NotContain("LeadHours = 9");
-        // "LeadHours = 15" wouldn't accidentally appear (lead-24 picks are
-        // {21, 27}); explicitly check.
-        lead24.Should().NotContain("LeadHours = 15");
     }
 }

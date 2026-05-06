@@ -839,7 +839,7 @@ ORDER BY ValidTimeUtc, Model;";
           AND RunTimeUtc <= TIMESTAMP '{asOfRunTime:yyyy-MM-dd HH:mm:ss}'
           AND ValidTimeUtc BETWEEN TIMESTAMP '{earliestValid:yyyy-MM-dd HH:mm:ss}'
                                AND TIMESTAMP '{latestValid:yyyy-MM-dd HH:mm:ss}'
-          AND ({Exact12hFeatureBuilder.UkvPerVOrClause(blenderLead)})"));
+          AND ({Exact12hFeatureBuilder.UkvPerVOrClause(blenderLead, Exact12hFeatureBuilder.UkvPickStrategy.Averaging)})"));
 
         var sql = $@"
 WITH latest AS (

@@ -184,7 +184,7 @@ ukv_per_v AS (
           AND Precipitation IS NOT NULL
           AND CAST(ValidTimeUtc AS DATE) >= DATE '{tier.StartDate:yyyy-MM-dd}'
           AND HOUR(ValidTimeUtc) IN (0, 6, 12, 18)
-          AND ({Exact12hFeatureBuilder.UkvPerVOrClause(targetLead)})
+          AND ({Exact12hFeatureBuilder.UkvPerVOrClause(targetLead, Exact12hFeatureBuilder.UkvPickStrategy.Averaging)})
     )
     WHERE rn = 1
 )";

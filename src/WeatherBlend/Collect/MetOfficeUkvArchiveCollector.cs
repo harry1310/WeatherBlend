@@ -8,38 +8,30 @@ namespace WeatherBlend.Collect;
 /// with collect-friendly defaults, mirroring
 /// <see cref="MetOfficeGlobalArchiveCollector"/> for the global 10km dataset.
 ///
-/// UKV is the 5th input to the 2d temperature blender (productionised
-/// 2026-05-05+). It enters as an always-optional column: per ValidTime
-/// hour, <see cref="WeatherBlend.Train.Exact12h.Exact12hFeatureBuilder"/>
-/// pulls a single (cycle, lead) tuple that lands ~12h-ahead of that
-/// ValidTime. UKV runs at 03Z + 15Z only, so the rule is:
-///   V=00 → 15Z prev day + lead 9     V=12 → 03Z same day + lead 9
-///   V=06 → 15Z prev day + lead 15    V=18 → 03Z same day + lead 15
-/// targetLead = 24 (avg = 24h ahead):
-///   V=00 → 03Z prev day + lead 21    V=12 → 15Z prev day + lead 21
-///   V=06 → 03Z prev day + lead 27    V=18 → 15Z prev day + lead 27
+/// UKV is an optional column for the 2d temperature blender AND the 3d
+/// precipitation blender (both productionised 2026-05-05+). The two
+/// blenders use DIFFERENT picker strategies after the 2026-05-06 bake-off:
+///   * Temp 2d → Strict: cycles {0, 6, 12, 18} × leads {12, 24}.
+///   * Precip 3d → Averaging: cycles {3, 15} × leads {9, 15, 21, 27},
+///     averaged across two leads per V-hour.
+/// See <see cref="WeatherBlend.Train.Exact12h.Exact12hFeatureBuilder.UkvPickStrategy"/>
+/// for the per-target rationale (temp gains 0.017°C MAE with Strict;
+/// precip loses up to 0.09 BSS at Hexworthy with Strict, so it sticks
+/// with Averaging).
 ///
-/// Hence the live collector pulls leads 9 + 15 + 21 + 27 — exactly what
-/// the per-V-hour rule reads at both blender leads. Earlier defaults of
-/// {24, 48, 72, 120} were aimed at the rejected raw-MO direct-blender
-/// bake-off (memory/project_met_office_raw_negative_result.md); narrowed
-/// 2026-05-05 once UKV's only live consumer was 2d. Lead-24 picks added
-/// 2026-05-05 — see Exact12hFeatureBuilder.UkvPicksForLead docstring for
-/// the leak fix.
+/// To support both pickers live, the collector pulls the UNION of both
+/// (cycle, lead) sets each tick. Cross-product is 6 cycles × 6 leads = 36
+/// (cycle, lead) tuples; ~16 of those are actually consumed by the two
+/// pickers, the rest are extra rows in R2 that nothing reads. Storage
+/// cost is trivial; pulling a superset means a future picker change
+/// doesn't trigger a backfill.
 ///
 /// Defaults (overridable for one-off backfills via the CLI command):
 ///   * Lookback = 3 days. AWS publishes ~3-6h after each cycle's run-time;
 ///     a 3-day window catches both today and yesterday's cycles plus any
 ///     that landed late.
-///   * Cycles = 3,15 only. UKV runs hourly, but only the 03Z and 15Z runs
-///     extend past ~24h leads. The conditional rule above only ever needs
-///     these two cycles per ValidTime — every other cycle is dropped.
-///   * Leads = 9, 15, 21, 27 — exactly the leads 2d's per-V-hour
-///     conditional pull reads from at lead-12 (9, 15) and lead-24 (21, 27).
-///     9 + 15 average to 12h-ahead; 21 + 27 average to 24h-ahead. Each
-///     pair matches the strictness of the other inputs at the same blender
-///     lead. Adding lead-24 picks (21, 27) was the 2026-05-05 fix to a
-///     leak where lead-24 training reused 12h-ahead UKV regardless.
+///   * Cycles = 0, 3, 6, 12, 15, 18 — superset of both pickers' needs.
+///   * Leads = 9, 12, 15, 21, 24, 27 — superset.
 ///
 /// The script is idempotent — re-pulling an existing date overwrites the
 /// parquet with whatever AWS now has.
@@ -47,12 +39,12 @@ namespace WeatherBlend.Collect;
 public sealed class MetOfficeUkvArchiveCollector
 {
     private const string ScriptName = "met_office_ukv_archive_backfill.py";
-    private static readonly int[] DefaultCycles = { 3, 15 };
-    // Leads 9 + 15 (lead-12 picks) + 21 + 27 (lead-24 picks) are exactly
-    // what Exact12hFeatureBuilder.Build's UKV CTE reads under the
-    // per-targetLead V=00/06/12/18 → (cycle, lead) mapping. Pulling more
-    // wastes bandwidth (and AWS GET requests) on data nothing reads.
-    private static readonly int[] DefaultLeads = { 9, 15, 21, 27 };
+    // Superset of both picker strategies' cycles. Strict (temp 2d) needs
+    // {0,6,12,18}; Averaging (precip 3d) needs {3,15}. Union = 6 cycles.
+    private static readonly int[] DefaultCycles = { 0, 3, 6, 12, 15, 18 };
+    // Superset of both picker strategies' leads. Strict (temp 2d) needs
+    // {12, 24}; Averaging (precip 3d) needs {9, 15, 21, 27}. Union = 6.
+    private static readonly int[] DefaultLeads = { 9, 12, 15, 21, 24, 27 };
     private const int DefaultLookbackDays = 3;
     private const int DefaultParallelism = 8;
     // No min-cycle-age filter (was 7h until 2026-05-06). AWS publishes a cycle's

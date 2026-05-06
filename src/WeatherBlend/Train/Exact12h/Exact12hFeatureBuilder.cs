@@ -305,7 +305,7 @@ ukv_per_v AS (
           AND Temperature2m IS NOT NULL
           AND CAST(ValidTimeUtc AS DATE) >= DATE '{tier.StartDate:yyyy-MM-dd}'
           AND HOUR(ValidTimeUtc) IN (0, 6, 12, 18)
-          AND ({UkvPerVOrClause(targetLead)})
+          AND ({UkvPerVOrClause(targetLead, UkvPickStrategy.Strict)})
     )
     WHERE rn = 1
 )";
@@ -468,15 +468,50 @@ ORDER BY p.ValidTimeUtc;
     private static string NormaliseGlob(string p) => p.Replace('\\', '/');
 
     /// <summary>
-    /// Per-V-hour (cycle, lead) tuples for UKV picks — chosen so the
-    /// average effective UKV lead matches <paramref name="targetLead"/>.
-    /// Public so the precip exact builder can share the rule (UKV mapping
-    /// is a function of the V-hour grid + UKV's 03Z/15Z cycle structure,
-    /// not of the variable being read).
+    /// UKV per-V-hour pick strategy. Two strategies coexist — temp 2d and
+    /// precip 3d empirically prefer different ones.
     /// </summary>
-    public static IReadOnlyList<UkvPick> UkvPicksForLead(int targetLead) => targetLead switch
+    public enum UkvPickStrategy
     {
-        // 12h-ahead: closest UKV cycle to V-12 each ValidTime; avg lead 12h.
+        /// <summary>OLD picks (pre-2026-05-06). For each V-hour, two
+        /// (cycle, lead) tuples drawn from UKV's {3, 15} cycles whose
+        /// leads bracket the target — averaged downstream into one UKV
+        /// column. Acts as ensemble bagging (averaging 9h-ahead and
+        /// 15h-ahead forecasts smooths per-row variance). Wins on
+        /// precipitation Brier — the variance-reduction beats the strict
+        /// per-cell time accuracy.</summary>
+        Averaging,
+
+        /// <summary>NEW picks (2026-05-06). For each V-hour, one
+        /// (cycle, lead) tuple drawn from UKV's {0, 6, 12, 18} cycles at
+        /// strict lead = targetLead. No averaging. Cycle-aligned with
+        /// the rest of the feature row. Wins on temperature MAE —
+        /// strict-time outperforms averaging when the loss is linear.</summary>
+        Strict,
+    }
+
+    /// <summary>
+    /// Per-V-hour (cycle, lead) tuples for UKV picks. Two strategies
+    /// (see <see cref="UkvPickStrategy"/>) — temp 2d uses Strict, precip
+    /// 3d uses Averaging. Choice was nailed down by the 2026-05-06
+    /// bake-off: temp gains 0.017°C MAE at lead 12h with Strict; precip
+    /// loses up to 0.09 BSS at Hexworthy with Strict, so keeps Averaging.
+    /// The mismatch is cosmetic (UKV is optional in both blender specs;
+    /// nothing else in the row sees the picker choice).
+    /// </summary>
+    public static IReadOnlyList<UkvPick> UkvPicksForLead(int targetLead, UkvPickStrategy strategy) =>
+        strategy switch
+        {
+            UkvPickStrategy.Averaging => UkvPicksAveraging(targetLead),
+            UkvPickStrategy.Strict    => UkvPicksStrict(targetLead),
+            _ => throw new ArgumentOutOfRangeException(nameof(strategy)),
+        };
+
+    /// <summary>OLD averaging picks (cycles {3, 15}, leads bracketing target).</summary>
+    private static IReadOnlyList<UkvPick> UkvPicksAveraging(int targetLead) => targetLead switch
+    {
+        // 12h-ahead: closest UKV cycle to V-12 each ValidTime; per-V lead
+        // is 9 OR 15, averaging across V-hours to 12h-ahead.
         12 => new UkvPick[]
         {
             new(VHour: 0,  RunHour: 15, DayOffset: 1, LeadHours: 9),
@@ -484,9 +519,10 @@ ORDER BY p.ValidTimeUtc;
             new(VHour: 12, RunHour: 3,  DayOffset: 0, LeadHours: 9),
             new(VHour: 18, RunHour: 3,  DayOffset: 0, LeadHours: 15),
         },
-        // 24h-ahead: closest UKV cycle to V-24 each ValidTime; avg lead 24h.
-        // No UKV cycle on the same day satisfies "≥ 24h before V" for any V
-        // ∈ {0,6,12,18}, so every pick is from the previous day.
+        // 24h-ahead: closest UKV cycle to V-24 each ValidTime; lead 21
+        // OR 27, averaging to 24h-ahead. No UKV cycle on the same day
+        // satisfies "≥ 24h before V" for V ∈ {0,6,12,18}, so every pick
+        // is from the previous day.
         24 => new UkvPick[]
         {
             new(VHour: 0,  RunHour: 3,  DayOffset: 1, LeadHours: 21),
@@ -495,7 +531,32 @@ ORDER BY p.ValidTimeUtc;
             new(VHour: 18, RunHour: 15, DayOffset: 1, LeadHours: 27),
         },
         _ => throw new ArgumentException(
-            $"UKV per-V picks not defined for target lead {targetLead}h. Add a row to UkvPicksForLead first.",
+            $"UKV averaging picks not defined for target lead {targetLead}h.",
+            nameof(targetLead)),
+    };
+
+    /// <summary>NEW strict picks (cycles {0,6,12,18}, lead = target).</summary>
+    private static IReadOnlyList<UkvPick> UkvPicksStrict(int targetLead) => targetLead switch
+    {
+        // 12h-ahead: cycle = (V - 12) mod 24, lead 12. Cycle-aligned with
+        // GFS/IFS/AIFS/MoG.
+        12 => new UkvPick[]
+        {
+            new(VHour: 0,  RunHour: 12, DayOffset: 1, LeadHours: 12),
+            new(VHour: 6,  RunHour: 18, DayOffset: 1, LeadHours: 12),
+            new(VHour: 12, RunHour: 0,  DayOffset: 0, LeadHours: 12),
+            new(VHour: 18, RunHour: 6,  DayOffset: 0, LeadHours: 12),
+        },
+        // 24h-ahead: cycle = V, prev day, lead 24.
+        24 => new UkvPick[]
+        {
+            new(VHour: 0,  RunHour: 0,  DayOffset: 1, LeadHours: 24),
+            new(VHour: 6,  RunHour: 6,  DayOffset: 1, LeadHours: 24),
+            new(VHour: 12, RunHour: 12, DayOffset: 1, LeadHours: 24),
+            new(VHour: 18, RunHour: 18, DayOffset: 1, LeadHours: 24),
+        },
+        _ => throw new ArgumentException(
+            $"UKV strict picks not defined for target lead {targetLead}h.",
             nameof(targetLead)),
     };
 
@@ -508,9 +569,9 @@ ORDER BY p.ValidTimeUtc;
     /// matching <see cref="UkvPicksForLead"/>. Returned string is wrapped in
     /// parens by the caller; each clause is one (V, runHour, day-offset,
     /// lead) tuple.</summary>
-    public static string UkvPerVOrClause(int targetLead)
+    public static string UkvPerVOrClause(int targetLead, UkvPickStrategy strategy)
     {
-        var picks = UkvPicksForLead(targetLead);
+        var picks = UkvPicksForLead(targetLead, strategy);
         var parts = new List<string>(picks.Count);
         foreach (var p in picks)
         {
