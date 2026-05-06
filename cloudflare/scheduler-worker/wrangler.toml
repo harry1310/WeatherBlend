@@ -23,7 +23,10 @@ compatibility_date = "2025-04-01"
 #
 #   "30 2,8,14,20 * * *"  → collect.yml             Open-Meteo + ERA5 + METAR + EA + MO DataHub (WeatherBlend)
 #   "45 2,8,14,20 * * *"  → s3-collect.yml          Raw S3 cycles (GFS / IFS / AIFS / MO Global) for 2d (WeatherBlend)
-#   "55 2,8,14,20 * * *"  → predict-bayesian.yml    Live Bayesian P(wet) + CI widths (WeatherProbabilistic repo)
+#                         + predict-bayesian.yml    Live Bayesian P(wet) + CI widths (WeatherProbabilistic repo)
+#                                                   Both fire on the same tick — different repos, no shared lock,
+#                                                   different R2 prefixes. Folded onto a single cron because
+#                                                   Cloudflare's free tier caps total cron triggers at 5.
 #   "15 3,9,15,21 * * *"  → predict-and-render.yml  every 6h, 30 min after s3-collect (WeatherBlend)
 #   "0 12 * * *"          → era5-refresh.yml        daily at 12:00 UTC (WeatherBlend)
 #   "30 9 * * MON,THU"    → verify.yml              twice-weekly Mon + Thu 09:30 UTC (WeatherBlend)
@@ -76,7 +79,6 @@ compatibility_date = "2025-04-01"
 crons = [
   "30 2,8,14,20 * * *",
   "45 2,8,14,20 * * *",
-  "55 2,8,14,20 * * *",
   "15 3,9,15,21 * * *",
   "0 12 * * *",
   "30 9 * * MON,THU",

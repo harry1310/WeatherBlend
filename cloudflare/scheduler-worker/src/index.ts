@@ -34,13 +34,29 @@
  */
 type Dispatch = { workflow: string; repo?: string };
 
-const WORKFLOW_FOR_CRON: Record<string, Dispatch> = {
-  "30 2,8,14,20 * * *": { workflow: "collect.yml" },
-  "45 2,8,14,20 * * *": { workflow: "s3-collect.yml" },
-  "55 2,8,14,20 * * *": { workflow: "predict-bayesian.yml", repo: "harry1310/WeatherProbabilistic" },
-  "15 3,9,15,21 * * *": { workflow: "predict-and-render.yml" },
-  "0 12 * * *":         { workflow: "era5-refresh.yml" },
-  "30 9 * * MON,THU":   { workflow: "verify.yml" },
+/** Each cron can dispatch ONE OR MORE workflows. Multi-workflow tick lets
+ * us stay within Cloudflare's free-tier limit of 5 cron triggers per
+ * Worker while still fanning out to additional workflows on the same
+ * schedule. Workflows on the same tick run in parallel (no shared
+ * concurrency lock between repos), so cross-repo fan-out is safe as long
+ * as the workflows don't write the same R2 prefixes.
+ */
+const WORKFLOW_FOR_CRON: Record<string, Dispatch[]> = {
+  "30 2,8,14,20 * * *": [{ workflow: "collect.yml" }],
+  // s3-collect (WeatherBlend) AND predict-bayesian (WeatherProbabilistic)
+  // share this tick. Both fire at HH:45; s3-collect uses the
+  // weatherblend-data lock while predict-bayesian reads Open-Meteo
+  // forecast data already pushed to R2 by collect.yml at HH:30 and writes
+  // to its own R2 prefix (data/predictions/precipitation_bayesian_ci/).
+  // No shared lock, no race, both finish well before
+  // predict-and-render at HH+1:15.
+  "45 2,8,14,20 * * *": [
+    { workflow: "s3-collect.yml" },
+    { workflow: "predict-bayesian.yml", repo: "harry1310/WeatherProbabilistic" },
+  ],
+  "15 3,9,15,21 * * *": [{ workflow: "predict-and-render.yml" }],
+  "0 12 * * *":         [{ workflow: "era5-refresh.yml" }],
+  "30 9 * * MON,THU":   [{ workflow: "verify.yml" }],
 };
 
 export interface Env {
@@ -53,8 +69,8 @@ export interface Env {
 
 export default {
   async scheduled(event: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
-    const target = WORKFLOW_FOR_CRON[event.cron];
-    if (!target) {
+    const targets = WORKFLOW_FOR_CRON[event.cron];
+    if (!targets || targets.length === 0) {
       // Unknown cron string means wrangler.toml and this file have drifted
       // out of sync. Throwing surfaces it as a failed Cloudflare scheduled
       // run instead of a silent miss.
@@ -62,19 +78,36 @@ export default {
         `unknown cron expression: '${event.cron}'. Update WORKFLOW_FOR_CRON in src/index.ts.`,
       );
     }
-    const repo = target.repo ?? env.GH_REPO;
-    console.log(
-      `scheduled: cron='${event.cron}' → ${repo}/${target.workflow} ` +
-      `(scheduledTime=${new Date(event.scheduledTime).toISOString()})`,
+    // Fire all dispatches in parallel — they go to (potentially) different
+    // repos and don't depend on each other. If one fails the others still
+    // run; we surface aggregate failure at the end so a partial outage is
+    // visible in `wrangler tail` rather than swallowed by an early throw.
+    const results = await Promise.allSettled(
+      targets.map((t) => {
+        const repo = t.repo ?? env.GH_REPO;
+        console.log(
+          `scheduled: cron='${event.cron}' → ${repo}/${t.workflow} ` +
+          `(scheduledTime=${new Date(event.scheduledTime).toISOString()})`,
+        );
+        return dispatchWorkflow(env, t.workflow, repo);
+      }),
     );
-    await dispatchWorkflow(env, target.workflow, repo);
+    const failures = results
+      .map((r, i) => ({ r, t: targets[i] }))
+      .filter((x) => x.r.status === "rejected");
+    if (failures.length > 0) {
+      const messages = failures.map(
+        (f) => `${f.t.repo ?? env.GH_REPO}/${f.t.workflow}: ${(f.r as PromiseRejectedResult).reason}`,
+      );
+      throw new Error(`some dispatches failed: ${messages.join("; ")}`);
+    }
   },
 
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const knownWorkflows = new Map<string, Dispatch>();
-    for (const t of Object.values(WORKFLOW_FOR_CRON)) {
-      knownWorkflows.set(t.workflow, t);
+    for (const ts of Object.values(WORKFLOW_FOR_CRON)) {
+      for (const t of ts) knownWorkflows.set(t.workflow, t);
     }
 
     if (url.pathname === "/dispatch" && request.method === "POST") {
