@@ -25,12 +25,22 @@
  *     this on.
  */
 
-const WORKFLOW_FOR_CRON: Record<string, string> = {
-  "30 2,8,14,20 * * *": "collect.yml",
-  "45 2,8,14,20 * * *": "s3-collect.yml",
-  "15 3,9,15,21 * * *": "predict-and-render.yml",
-  "0 12 * * *":         "era5-refresh.yml",
-  "30 9 * * MON,THU":   "verify.yml",
+/** A scheduled dispatch target. `repo` is the GitHub `owner/name` for the
+ * workflow we want to fire; if omitted, the worker falls back to the
+ * default `GH_REPO` env var (WeatherBlend). This lets a single worker
+ * fire workflows across multiple repos without duplicating GH App auth —
+ * the same App can be installed on each target repo and the same
+ * Installation ID covers them all.
+ */
+type Dispatch = { workflow: string; repo?: string };
+
+const WORKFLOW_FOR_CRON: Record<string, Dispatch> = {
+  "30 2,8,14,20 * * *": { workflow: "collect.yml" },
+  "45 2,8,14,20 * * *": { workflow: "s3-collect.yml" },
+  "55 2,8,14,20 * * *": { workflow: "predict-bayesian.yml", repo: "harry1310/WeatherProbabilistic" },
+  "15 3,9,15,21 * * *": { workflow: "predict-and-render.yml" },
+  "0 12 * * *":         { workflow: "era5-refresh.yml" },
+  "30 9 * * MON,THU":   { workflow: "verify.yml" },
 };
 
 export interface Env {
@@ -43,8 +53,8 @@ export interface Env {
 
 export default {
   async scheduled(event: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
-    const workflow = WORKFLOW_FOR_CRON[event.cron];
-    if (!workflow) {
+    const target = WORKFLOW_FOR_CRON[event.cron];
+    if (!target) {
       // Unknown cron string means wrangler.toml and this file have drifted
       // out of sync. Throwing surfaces it as a failed Cloudflare scheduled
       // run instead of a silent miss.
@@ -52,28 +62,34 @@ export default {
         `unknown cron expression: '${event.cron}'. Update WORKFLOW_FOR_CRON in src/index.ts.`,
       );
     }
+    const repo = target.repo ?? env.GH_REPO;
     console.log(
-      `scheduled: cron='${event.cron}' → ${workflow} ` +
+      `scheduled: cron='${event.cron}' → ${repo}/${target.workflow} ` +
       `(scheduledTime=${new Date(event.scheduledTime).toISOString()})`,
     );
-    await dispatchWorkflow(env, workflow);
+    await dispatchWorkflow(env, target.workflow, repo);
   },
 
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    const knownWorkflows = new Set(Object.values(WORKFLOW_FOR_CRON));
+    const knownWorkflows = new Map<string, Dispatch>();
+    for (const t of Object.values(WORKFLOW_FOR_CRON)) {
+      knownWorkflows.set(t.workflow, t);
+    }
 
     if (url.pathname === "/dispatch" && request.method === "POST") {
       const requested = url.searchParams.get("workflow") ?? "collect.yml";
-      if (!knownWorkflows.has(requested)) {
+      const target = knownWorkflows.get(requested);
+      if (!target) {
         return new Response(
-          `unknown workflow: '${requested}'. Known: ${[...knownWorkflows].join(", ")}\n`,
+          `unknown workflow: '${requested}'. Known: ${[...knownWorkflows.keys()].join(", ")}\n`,
           { status: 400 },
         );
       }
       try {
-        await dispatchWorkflow(env, requested);
-        return new Response(`dispatched ${requested}\n`, { status: 200 });
+        const repo = target.repo ?? env.GH_REPO;
+        await dispatchWorkflow(env, target.workflow, repo);
+        return new Response(`dispatched ${repo}/${target.workflow}\n`, { status: 200 });
       } catch (e: unknown) {
         const message = e instanceof Error ? e.message : String(e);
         return new Response(`error: ${message}\n`, { status: 500 });
@@ -81,7 +97,7 @@ export default {
     }
     return new Response(
       `weatherblend-scheduler — POST /dispatch?workflow=<filename> to fire manually.\n` +
-      `Known workflows: ${[...knownWorkflows].join(", ")}\n`,
+      `Known workflows: ${[...knownWorkflows.keys()].join(", ")}\n`,
       { status: 200 },
     );
   },
@@ -89,11 +105,11 @@ export default {
 
 // ---- workflow dispatch ----------------------------------------------------
 
-async function dispatchWorkflow(env: Env, workflowFile: string): Promise<void> {
+async function dispatchWorkflow(env: Env, workflowFile: string, repo: string): Promise<void> {
   const jwt = await mintAppJwt(env.GH_APP_ID, env.GH_APP_PRIVATE_KEY);
   const installationToken = await exchangeForInstallationToken(jwt, env.GH_APP_INSTALLATION_ID);
 
-  const url = `https://api.github.com/repos/${env.GH_REPO}/actions/workflows/${workflowFile}/dispatches`;
+  const url = `https://api.github.com/repos/${repo}/actions/workflows/${workflowFile}/dispatches`;
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -113,7 +129,7 @@ async function dispatchWorkflow(env: Env, workflowFile: string): Promise<void> {
     const body = await response.text();
     throw new Error(`workflow dispatch failed: ${response.status} ${response.statusText} — ${body}`);
   }
-  console.log(`dispatched ${env.GH_REPO}/${workflowFile}@${env.GH_REF}`);
+  console.log(`dispatched ${repo}/${workflowFile}@${env.GH_REF}`);
 }
 
 async function exchangeForInstallationToken(jwt: string, installationId: string): Promise<string> {
