@@ -308,6 +308,7 @@ public static partial class SitePages
 
         (int lead, string color)[] leadSpecs =
         {
+            (12, "#ce93d8"),
             (24, "#b39ddb"),
             (48, "#7c4dff"),
             (72, "#4527a0"),
@@ -549,6 +550,7 @@ public static partial class SitePages
 
         (int lead, string color)[] leadSpecs =
         {
+            (12, "#ce93d8"),
             (24, "#b39ddb"),
             (48, "#7c4dff"),
             (72, "#4527a0"),
