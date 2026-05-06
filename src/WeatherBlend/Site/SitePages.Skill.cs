@@ -175,19 +175,29 @@ public static partial class SitePages
     {
         var content = new StringBuilder();
 
+        // Drive the panel set off ActivePhasePolicy.ByTarget["temperature"]
+        // so a new phase joining the shipping lineup automatically gets a
+        // panel here without touching this file. The earlier hardcoded
+        // {2b, 2c} array silently dropped 2d for a day after it shipped on
+        // 2026-05-05; building from the same source-of-truth ActivePhase
+        // Policy uses for everywhere else (manifests, rolling-MAE, models
+        // page) eliminates that drift class.
+        //
+        // Per-phase (Title, Description) text stays in PhaseDescriptions
+        // because it's display-specific copy; an unrecognised phase shows
+        // a fallback heading instead of being silently dropped.
         var versionsByPhase = input.PhaseByVersion
-            .GroupBy(kv => BucketPhase(kv.Value))
-            .ToDictionary(g => g.Key, g => g.Select(kv => kv.Key).ToHashSet(StringComparer.Ordinal));
+            .GroupBy(kv => kv.Value, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.Select(kv => kv.Key).ToHashSet(StringComparer.Ordinal),
+                StringComparer.Ordinal);
 
-        (string Key, string Title, string Description)[] phaseSpecs =
-        {
-            ("2b", "Phase 2b lean (13 features)",
-                "Six per-model temperatures, their mean/std/range, and cyclical hour/day-of-year encodings. The original champion."),
-            ("2c", "Phase 2c rich (88 features)",
-                "Adds per-model dew point, RH, cloud {total/low/mid/high}, wind speed/dir/gusts, surface pressure, plus cross-model aggregates. Challenger."),
-            ("2d", "Phase 2d exact-runtime (T2, leads 12+24)",
-                "Per-cycle exact init time + lead, GFS+AIFS required, IFS+MO Global optional. Champion at lead 12; challenger at lead 24. Sparse panel until verify catches up (~5d ERA5 latency)."),
-        };
+        var phaseSpecs = ActivePhasePolicy.ByTarget["temperature"]
+            .Select(p => (
+                Key: p,
+                Title: PhaseDescriptions.GetValueOrDefault((p, "title"), $"Phase {p}"),
+                Description: PhaseDescriptions.GetValueOrDefault((p, "desc"),
+                    "(no description registered — add to SitePages.Skill.PhaseDescriptions)")))
+            .ToArray();
 
         // Section-wide X range so 2b and 2c read as aligned panels — past extent
         // pinned to WindowStartUtc, forward to the latest prediction valid_time
@@ -782,14 +792,27 @@ public static partial class SitePages
     // pages. Kept as internal statics because SitePagesTests reaches for them.
     // -------------------------------------------------------------------------------
 
-    private static string BucketPhase(string? phase)
+    /// <summary>
+    /// Display-text registry for temperature-phase eyeball panels on the
+    /// skill page. Keyed by (phase, slot) where slot ∈ {"title", "desc"}.
+    /// Unknown phases fall back to "Phase {p}" + a sentinel description in
+    /// <see cref="RenderTempVsTruthBlock"/> so a newly-added phase still
+    /// surfaces (with a "no description registered" hint) until copy is
+    /// added here. That's the explicit failure mode replacing the silent
+    /// drop we hit when 2d landed.
+    ///
+    /// Add a new phase: append its (key, "title") and (key, "desc") rows
+    /// here AND add the phase to <c>ActivePhasePolicy.ByTarget["temperature"]</c>.
+    /// </summary>
+    private static readonly Dictionary<(string Phase, string Slot), string> PhaseDescriptions = new()
     {
-        if (string.IsNullOrWhiteSpace(phase)) return "other";
-        if (phase.StartsWith("2b", StringComparison.OrdinalIgnoreCase)) return "2b";
-        if (phase.Equals("2c", StringComparison.OrdinalIgnoreCase)) return "2c";
-        if (phase.Equals("2d", StringComparison.OrdinalIgnoreCase)) return "2d";
-        return "other";
-    }
+        [("2b", "title")] = "Phase 2b lean (13 features)",
+        [("2b", "desc")]  = "Six per-model temperatures, their mean/std/range, and cyclical hour/day-of-year encodings. The original champion.",
+        [("2c", "title")] = "Phase 2c rich (88 features)",
+        [("2c", "desc")]  = "Adds per-model dew point, RH, cloud {total/low/mid/high}, wind speed/dir/gusts, surface pressure, plus cross-model aggregates. Challenger.",
+        [("2d", "title")] = "Phase 2d exact-runtime (T2, leads 12+24)",
+        [("2d", "desc")]  = "Per-cycle exact init time + lead, GFS+AIFS required, IFS+MO Global optional. Champion at lead 12; challenger at lead 24. Sparse panel until verify catches up (~5d ERA5 latency).",
+    };
 
     /// <summary>
     /// Build a champion-vs-challenger line series at a single lead for one station,

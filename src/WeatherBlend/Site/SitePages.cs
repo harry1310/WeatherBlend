@@ -444,15 +444,20 @@ public static partial class SitePages
     /// confidence signal next to 3a's deterministic ProbWet on the precip
     /// forecast page — narrow CI80 → high confidence, wide CI80 → low.
     ///
-    /// <c>StationCode</c> is the short label the Bayesian model uses
-    /// (Bellever / Princetown / Hexworthy); the C# join maps that back to
-    /// the precip station slug (<c>ea_*</c>) via
-    /// <see cref="BayesianCiStationCodeFor"/>. Parquet schema lives at
+    /// <c>StationFullName</c> is the human-readable name extracted from
+    /// the parquet's hive partition (e.g. "Bellever Dartmoor",
+    /// "Dartmoor nr Hexworthy") — the join key the C# render path uses
+    /// against <see cref="PrettyStation"/>(slug). <c>StationCode</c> is
+    /// the short label the Bayesian model uses internally
+    /// (Bellever / Princetown / Hexworthy), kept for provenance display.
+    ///
+    /// Parquet schema lives at
     /// data/predictions/precipitation_bayesian_ci/location=*/station=*/
     /// anchor=*/widths.parquet — written by the predict-bayesian.yml
     /// workflow on every HH:45 cron tick.
     /// </summary>
     public sealed record BayesianCiPoint(
+        string StationFullName,
         string StationCode,
         DateTime ValidTimeUtc,
         int LeadHours,
@@ -466,18 +471,6 @@ public static partial class SitePages
         double PWetQ95,
         double Ci80Width,
         double Ci90Width);
-
-    /// <summary>Map a precip station slug to the short station code the
-    /// Bayesian CI artefact uses. Returns null for stations the Bayesian
-    /// pipeline doesn't cover (e.g. ea_bovey_tracey isn't in the trained
-    /// 3-station hierarchy).</summary>
-    internal static string? BayesianCiStationCodeFor(string precipStationSlug) => precipStationSlug switch
-    {
-        "ea_bellever_dartmoor"      => "Bellever",
-        "ea_princetown"             => "Princetown",
-        "ea_dartmoor_nr_hexworthy"  => "Hexworthy",
-        _                           => null,
-    };
 
     public sealed record PrecipForecastPoint(
         string Station,

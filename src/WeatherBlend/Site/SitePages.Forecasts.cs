@@ -402,19 +402,27 @@ public static partial class SitePages
         DateTime minValid, DateTime maxValid)
     {
         if (input.BayesianCi.Count == 0) return "";
-        var stationCode = BayesianCiStationCodeFor(stationSlug);
-        if (stationCode is null) return "";  // station not in Bayesian training set
+
+        // Match Bayesian rows to the precip station via full-name string
+        // compare against PrettyStation. The Bayesian artefact's hive
+        // partition stores station=<full_name> (e.g. "Dartmoor nr
+        // Hexworthy") which RenderSiteCommand parses off the filename and
+        // surfaces as StationFullName. PrettyStation(slug) gives us
+        // "Dartmoor Nr Hexworthy" — case-insensitive compare bridges the
+        // capitalisation difference. Stations the Bayesian doesn't cover
+        // (e.g. ea_bovey_tracey before the model retrains) just produce 0
+        // matches and skip silently. No hardcoded slug→code switch table
+        // to keep in sync.
+        var prettyName = PrettyStation(stationSlug);
 
         // Filter to valid times >= now-1h so we surface whatever forward
         // coverage the Bayesian has at this lead. Don't bracket by the
         // precip chart's [minValid, maxValid] — those are derived from the
         // precip predictions' specific lead-24h-ahead-of-each-cycle pattern,
         // which can starve the Bayesian's smaller anchor-relative window.
-        // Render whatever the Bayesian has from "now" onward; if empty,
-        // skip silently.
         var nowMinus1 = input.GeneratedAtUtc.AddHours(-1);
         var rows = input.BayesianCi
-            .Where(p => p.StationCode == stationCode
+            .Where(p => string.Equals(p.StationFullName, prettyName, StringComparison.OrdinalIgnoreCase)
                         && p.LeadHours == lead
                         && p.ValidTimeUtc >= nowMinus1)
             .OrderBy(p => p.ValidTimeUtc)
@@ -431,10 +439,15 @@ public static partial class SitePages
         // <= 0.015 → high; <= 0.025 → medium; else low.
         var avgCi80 = rows.Average(p => p.Ci80Width);
         var avgMedian = rows.Average(p => p.PWetQ50);
+        // Tier thresholds calibrated against the Phase 4 ci80 quartile binning
+        // from extend_phase4_with_ci.py 2026-05-06: Q1 (narrowest) mean
+        // ci80 ≈ 0.011, Q4 (widest) mean ≈ 0.034. <= 0.015 high, <= 0.025
+        // medium, else low. Re-tune if the Bayesian model retrains —
+        // these numbers are tied to a specific Phase 4 dataset snapshot.
         var (tier, tierClass) = avgCi80 switch
         {
             <= 0.015 => ("high",   "conf conf-high"),
-            <= 0.025 => ("medium", "conf"),
+            <= 0.025 => ("medium", "conf conf-medium"),
             _        => ("low",    "conf conf-low"),
         };
         var summary = $"<p class=\"skill-line\">Bayesian credible interval: median P(wet) avg <strong>{avgMedian * 100:0}%</strong>, " +
@@ -450,11 +463,15 @@ public static partial class SitePages
             Title = $"Bayesian P(wet) median + 80% CI — {PrettyStation(stationSlug)} — +{lead}h",
             XLabel = "Valid time (UTC)",
             YLabel = "Probability",
+            // Median solid; q10/q90 dashed so the legend reads them as
+            // "band edges" not as independent forecast lines, even though
+            // they share the BayesianBand swatch (semantically symmetric —
+            // both are the same posterior's quantile bracket).
             Series = new List<LineSeries>
             {
-                new("q90 (upper)", NwpPalette.BayesianBand, q90Pts),
+                new("q90 (upper)", NwpPalette.BayesianBand, q90Pts, Dashed: true),
                 new("Median",      NwpPalette.BayesianMedian, medianPts),
-                new("q10 (lower)", NwpPalette.BayesianBand, q10Pts),
+                new("q10 (lower)", NwpPalette.BayesianBand, q10Pts, Dashed: true),
             },
             Height = 180,
             FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),

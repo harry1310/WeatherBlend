@@ -186,4 +186,71 @@ public class DryWindow3gPredictorTests
         q[4].Should().Be(1.0);   // 1.2 clamped to 1
         q[5].Should().Be(0.0);
     }
+
+    // ---------- AR(1) Gaussian copula overload (rho-aware MC) ----------
+
+    [Fact]
+    public void ProbDryWindow_rho_overload_returns_value_in_unit_interval()
+    {
+        var q = new[] { 0.1, 0.3, 0.5, 0.4, 0.2, 0.6, 0.3, 0.1, 0.4 };
+        foreach (var rho in new[] { 0.0, 0.3, 0.7, 0.95 })
+        {
+            var rng = new System.Random(42);
+            var p = DryWindow3gPredictor.ProbDryWindow(q, windowLength: 3, rho, rng, nSamples: 3000);
+            p.Should().BeInRange(0.0, 1.0, $"rho={rho} should produce a valid probability");
+        }
+    }
+
+    [Fact]
+    public void ProbDryWindow_rho_overload_rejects_out_of_range_rho()
+    {
+        var q = new[] { 0.3, 0.3, 0.3 };
+        Action negative = () => DryWindow3gPredictor.ProbDryWindow(q, 2, rho: -0.1, new System.Random(1), 100);
+        Action one      = () => DryWindow3gPredictor.ProbDryWindow(q, 2, rho:  1.0, new System.Random(1), 100);
+        Action above    = () => DryWindow3gPredictor.ProbDryWindow(q, 2, rho:  1.5, new System.Random(1), 100);
+        negative.Should().Throw<System.ArgumentOutOfRangeException>();
+        one     .Should().Throw<System.ArgumentOutOfRangeException>();
+        above   .Should().Throw<System.ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void ProbDryWindow_rho_overload_is_deterministic_with_fixed_seed()
+    {
+        var q = new[] { 0.2, 0.4, 0.6, 0.3, 0.5, 0.1, 0.4, 0.7, 0.2 };
+        var p1 = DryWindow3gPredictor.ProbDryWindow(q, 3, rho: 0.5, new System.Random(123), 2000);
+        var p2 = DryWindow3gPredictor.ProbDryWindow(q, 3, rho: 0.5, new System.Random(123), 2000);
+        p1.Should().Be(p2, "same seed + same rho + same q must produce bit-identical output");
+    }
+
+    [Fact]
+    public void ProbDryWindow_rho_zero_approximates_independence_overload()
+    {
+        // rho=0 is the independent-Bernoulli case: the rho overload should
+        // produce a value statistically indistinguishable from the original
+        // independence overload at the same q. Random-number consumption
+        // patterns differ (Box-Muller normals vs raw uniforms) so they
+        // won't match bit-for-bit, but the expectation should converge
+        // within MC noise at n_samples = 20k.
+        var q = new[] { 0.2, 0.5, 0.3, 0.4, 0.7, 0.2, 0.5, 0.1, 0.3 };
+        var ind = DryWindow3gPredictor.ProbDryWindow(q, windowLength: 3, new System.Random(7), nSamples: 20_000);
+        var cop = DryWindow3gPredictor.ProbDryWindow(q, windowLength: 3, rho: 0.0, new System.Random(7), nSamples: 20_000);
+        // ±2 SE on a binomial with p ≈ 0.5 at n=20k is ~0.007. 0.02 keeps
+        // the test stable while still catching a genuinely-broken sampler.
+        System.Math.Abs(ind - cop).Should().BeLessThan(0.02);
+    }
+
+    [Fact]
+    public void ProbDryWindow_rho_increases_clustering_for_long_windows()
+    {
+        // For a window approaching the day length (longest possible dry
+        // run = full day under independence is rare; under high rho the
+        // bimodal "all-dry vs all-wet" distribution lifts P(longest = N)
+        // substantially). High base-rate-of-dry q so the effect is
+        // visible at modest n_samples.
+        var q = Enumerable.Repeat(0.3, 9).ToArray();   // 70% dry per hour
+        var pInd  = DryWindow3gPredictor.ProbDryWindow(q, windowLength: 8, rho: 0.0, new System.Random(11), 10_000);
+        var pHigh = DryWindow3gPredictor.ProbDryWindow(q, windowLength: 8, rho: 0.9, new System.Random(11), 10_000);
+        pHigh.Should().BeGreaterThan(pInd,
+            "AR(1) clustering at rho=0.9 produces more all-dry days, lifting P(8h dry block in 9h day)");
+    }
 }

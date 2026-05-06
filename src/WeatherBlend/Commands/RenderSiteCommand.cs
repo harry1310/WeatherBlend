@@ -877,41 +877,51 @@ GROUP BY ValidTimeUtc";
             return Array.Empty<SitePages.BayesianCiPoint>();
         }
         var glob = ParquetReader.Glob(Path.Combine(subdir, "**", "*.parquet"));
-        // Latest anchor per (station, valid_time, lead). Quote dotted column
-        // names ("p_wet_q0.1" etc) — DuckDB supports double-quoted identifiers.
+        // Latest anchor per (station_full, valid_time, lead). Pull the full
+        // station name straight off the hive partition via filename=true so
+        // the C# join against precip slugs has a string that lines up with
+        // PrettyStation's output (case-insensitive). Avoids a hardcoded
+        // slug→code switch table that silently drops anything not pre-listed.
+        // Quoted dotted column names ("p_wet_q0.1" etc) — DuckDB supports
+        // double-quoted identifiers.
         var sql = $@"
-WITH ranked AS (
+WITH raw AS (
   SELECT station, valid_time, lead, anchor,
+         regexp_extract(filename, 'station=([^/\\]+)', 1) AS station_full,
          p_wet_mean, p_wet_std,
          ""p_wet_q0.05"" AS q05,
          ""p_wet_q0.1""  AS q10,
          ""p_wet_q0.5""  AS q50,
          ""p_wet_q0.9""  AS q90,
          ""p_wet_q0.95"" AS q95,
-         ci80_width, ci90_width,
-         row_number() OVER (PARTITION BY station, valid_time, lead ORDER BY anchor DESC) AS rn
-  FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+         ci80_width, ci90_width
+  FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true, filename = true)
   WHERE valid_time >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
     AND valid_time <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+),
+ranked AS (
+  SELECT *, row_number() OVER (PARTITION BY station_full, valid_time, lead ORDER BY anchor DESC) AS rn
+  FROM raw
 )
-SELECT station, valid_time, lead, anchor, p_wet_mean, p_wet_std,
+SELECT station_full, station, valid_time, lead, anchor, p_wet_mean, p_wet_std,
        q05, q10, q50, q90, q95, ci80_width, ci90_width
-FROM ranked WHERE rn = 1 ORDER BY station, valid_time, lead";
+FROM ranked WHERE rn = 1 ORDER BY station_full, valid_time, lead";
 
         return ParquetReader.Query(sql, r => new SitePages.BayesianCiPoint(
-            StationCode:   r.GetString(0),
-            ValidTimeUtc:  r.GetDateTime(1),
-            LeadHours:     (int)r.GetInt64(2),
-            AnchorDate:    r.GetDateTime(3),
-            PWetMean:      r.GetDouble(4),
-            PWetStd:       r.GetDouble(5),
-            PWetQ05:       r.GetDouble(6),
-            PWetQ10:       r.GetDouble(7),
-            PWetQ50:       r.GetDouble(8),
-            PWetQ90:       r.GetDouble(9),
-            PWetQ95:       r.GetDouble(10),
-            Ci80Width:     r.GetDouble(11),
-            Ci90Width:     r.GetDouble(12)),
+            StationFullName: r.GetString(0),
+            StationCode:     r.IsDBNull(1) ? "" : r.GetString(1),
+            ValidTimeUtc:    r.GetDateTime(2),
+            LeadHours:       (int)r.GetInt64(3),
+            AnchorDate:      r.GetDateTime(4),
+            PWetMean:        r.GetDouble(5),
+            PWetStd:         r.GetDouble(6),
+            PWetQ05:         r.GetDouble(7),
+            PWetQ10:         r.GetDouble(8),
+            PWetQ50:         r.GetDouble(9),
+            PWetQ90:         r.GetDouble(10),
+            PWetQ95:         r.GetDouble(11),
+            Ci80Width:       r.GetDouble(12),
+            Ci90Width:       r.GetDouble(13)),
             _log, "Bayesian CI tree empty — confidence panel will be absent.", ct);
     }
 
