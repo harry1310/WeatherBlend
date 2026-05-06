@@ -164,7 +164,14 @@ public static partial class SitePages
         {
             var phase = orderedActivePhases[i];
             if (!blendByPhase.TryGetValue(phase, out var phaseRows) || phaseRows.Count == 0) continue;
-            var color = i == 0 ? NwpPalette.Blend : NwpPalette.BlendChallenger;
+            // Exact-runtime phases (2d temp, 3d precip) get a distinct
+            // magenta — different blender family from the offset_day-trained
+            // 2c/3c challengers, so visually pop OUT of the purple family.
+            var color = i == 0
+                ? NwpPalette.Blend
+                : (phase == "2d" || phase == "3d"
+                    ? NwpPalette.BlendExactChallenger
+                    : NwpPalette.BlendChallenger);
             var label = i == 0 ? $"Blend ({phase} champion)" : $"Blend ({phase} challenger)";
             var pts = phaseRows
                 .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.BlendTemperature))
@@ -272,7 +279,14 @@ public static partial class SitePages
             {
                 var phase = orderedPrecipPhases[i];
                 if (!precipByPhase.TryGetValue(phase, out var phaseRows) || phaseRows.Count == 0) continue;
-                var color = i == 0 ? NwpPalette.Blend : NwpPalette.BlendChallenger;
+                // Exact-runtime phases (2d temp, 3d precip) get a distinct
+            // magenta — different blender family from the offset_day-trained
+            // 2c/3c challengers, so visually pop OUT of the purple family.
+            var color = i == 0
+                ? NwpPalette.Blend
+                : (phase == "2d" || phase == "3d"
+                    ? NwpPalette.BlendExactChallenger
+                    : NwpPalette.BlendChallenger);
                 var label = i == 0 ? $"P(wet) ({phase} champion)" : $"P(wet) ({phase} challenger)";
                 var pts = phaseRows
                     .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet))

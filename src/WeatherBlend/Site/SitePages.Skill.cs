@@ -185,6 +185,8 @@ public static partial class SitePages
                 "Six per-model temperatures, their mean/std/range, and cyclical hour/day-of-year encodings. The original champion."),
             ("2c", "Phase 2c rich (88 features)",
                 "Adds per-model dew point, RH, cloud {total/low/mid/high}, wind speed/dir/gusts, surface pressure, plus cross-model aggregates. Challenger."),
+            ("2d", "Phase 2d exact-runtime (T2, leads 12+24)",
+                "Per-cycle exact init time + lead, GFS+AIFS required, IFS+MO Global optional. Champion at lead 12; challenger at lead 24. Sparse panel until verify catches up (~5d ERA5 latency)."),
         };
 
         // Section-wide X range so 2b and 2c read as aligned panels — past extent
@@ -785,6 +787,7 @@ public static partial class SitePages
         if (string.IsNullOrWhiteSpace(phase)) return "other";
         if (phase.StartsWith("2b", StringComparison.OrdinalIgnoreCase)) return "2b";
         if (phase.Equals("2c", StringComparison.OrdinalIgnoreCase)) return "2c";
+        if (phase.Equals("2d", StringComparison.OrdinalIgnoreCase)) return "2d";
         return "other";
     }
 

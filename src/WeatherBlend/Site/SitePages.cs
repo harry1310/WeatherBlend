@@ -74,6 +74,17 @@ public static partial class SitePages
         /// densities we render. Material deep-purple 200.</summary>
         public const string BlendChallenger = "#b39ddb";
 
+        /// <summary>Vivid magenta for the exact-runtime challenger families
+        /// (Phase 2d temperature, Phase 3d precipitation). Distinct hue from
+        /// the deep-purple <see cref="Blend"/>/<see cref="BlendChallenger"/>
+        /// pair because exact-runtime is a structurally different blender
+        /// approach (per-cycle exact init time, not offset_day average) and
+        /// shouldn't visually read as just "another challenger in the
+        /// purple family". Material pink-700 — saturated enough to pop on
+        /// both light and dark backgrounds, distinct from AIFS soft pink
+        /// <see cref="Aifs"/> and GFS red <see cref="Gfs"/>.</summary>
+        public const string BlendExactChallenger = "#c2185b";
+
         /// <summary>Met Office DataHub Spot product line colour on the
         /// skill charts. Was navy <c>#262261</c> originally — readable on
         /// paper but too close to the blend's purple family on dark-mode
