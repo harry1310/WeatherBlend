@@ -318,7 +318,7 @@ public static partial class SitePages
             }));
 
             s.Append(RenderPrecipDailySummaryTable(latestPerValid));
-            s.Append(RenderPrecipHourlyConfidenceTable(latestPerValid));
+            s.Append(RenderPrecipHourlyConfidenceTable(latestPerValid, station, input.PrecipConformalTau));
         }
 
         // Per-NWP precip rate (mm/h) — hoisted out of the per-station loop
@@ -465,7 +465,9 @@ public static partial class SitePages
     /// or 3g-only outputs where the per-NWP features aren't computed).
     /// </summary>
     private static string RenderPrecipHourlyConfidenceTable(
-        IReadOnlyList<PrecipForecastPoint> latestPerValid)
+        IReadOnlyList<PrecipForecastPoint> latestPerValid,
+        string station,
+        IReadOnlyDictionary<(string Station, string Version, int LeadHours), double> precipConformalTau)
     {
         if (latestPerValid.Count == 0) return "";
         if (!latestPerValid.Any(r => r.AgreementWet01.HasValue)) return "";
@@ -494,10 +496,19 @@ public static partial class SitePages
             // Second confidence chip from the conformal calibrator (precip-
             // conformal-fit). Only rendered when at least one row in this
             // (station, lead) batch has a tag — keeps the column off legacy
-            // forecasts that pre-date the calibrator.
-            var conformalTd = anyConformal
-                ? "<td>" + RenderConformalChip(r.ConformalSetTag) + "</td>"
-                : "";
+            // forecasts that pre-date the calibrator. τ shown alongside the
+            // chip when the calibrator is available so the reader can see
+            // the model's overall ambiguity zone (low τ = narrow ambiguity
+            // band, model commits on more rows; high τ = wider band).
+            string conformalTd = "";
+            if (anyConformal)
+            {
+                var chip = RenderConformalChip(r.ConformalSetTag);
+                var tauPart = precipConformalTau.TryGetValue((station, r.Version, r.LeadHours), out var tau)
+                    ? string.Create(Ci, $" <small>τ={(tau * 100):0}%</small>")
+                    : "";
+                conformalTd = "<td>" + chip + tauPart + "</td>";
+            }
             rows.Append(Ci, $"""
                 <tr>
                   <td><time datetime="{r.ValidTimeUtc:yyyy-MM-ddTHH:mm}Z">{r.ValidTimeUtc:MM-dd HH'Z'}</time></td>
@@ -510,7 +521,7 @@ public static partial class SitePages
         }
 
         var conformalTh = anyConformal
-            ? "<th>Conformal <small>(90% set)</small></th>"
+            ? "<th>Conformal <small>(90% set · τ)</small></th>"
             : "";
         return $"""
             <details class="hourly-detail">

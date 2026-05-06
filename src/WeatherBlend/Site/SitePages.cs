@@ -156,6 +156,20 @@ public static partial class SitePages
             = new Dictionary<(string, int), double>();
 
         /// <summary>
+        /// Per-(station, version, lead) conformal threshold τ for the active
+        /// precipitation blenders. Surfaced on the precip forecasts page so
+        /// the conformal chip reads as "Confident wet · τ=70% · P=85%"
+        /// rather than just the chip — a reader can then judge whether the
+        /// model is confident-because-narrow-band (low τ) or
+        /// confident-because-extreme-prob (high τ + extreme P). Keyed on
+        /// station because precip artefact paths are per-station, so version
+        /// strings aren't unique across stations. Empty when no calibrators
+        /// are fitted yet.
+        /// </summary>
+        public IReadOnlyDictionary<(string Station, string Version, int LeadHours), double> PrecipConformalTau { get; init; }
+            = new Dictionary<(string, string, int), double>();
+
+        /// <summary>
         /// Same daytime window the dry-window labeller uses (default 09–18
         /// Europe/London). Surfaced here so the verify table's "Observed"
         /// column scans the same hours as the trainer's truth labels — a

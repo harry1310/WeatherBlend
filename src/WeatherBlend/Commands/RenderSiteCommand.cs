@@ -126,6 +126,10 @@ public sealed class RenderSiteCommand
         _log.LogInformation("Loaded {N} dry-window conformal τ values across (version, lead).",
             dryWindowConformalTau.Count);
 
+        var precipConformalTau = LoadPrecipConformalTau();
+        _log.LogInformation("Loaded {N} precip conformal τ values across (station, version, lead).",
+            precipConformalTau.Count);
+
         // ERA5 is gapless-for-past, but only past — query up to the clock time.
         // Persistence-lookback headroom (up to 72h before the earliest prediction)
         // keeps rolling-MAE truth pairs matchable at the start of the window.
@@ -205,6 +209,7 @@ public sealed class RenderSiteCommand
             PrecipPredictions = precip,
             DryWindowPredictions = dryWindow,
             DryWindowConformalTau = dryWindowConformalTau,
+            PrecipConformalTau = precipConformalTau,
             DryWindowDaytime = _cfg.DryWindow.BuildDaytimeWindow(),
             PhaseByVersion = phaseByVersion,
             RainfallTruth = rainfall,
@@ -722,6 +727,42 @@ ORDER BY LeadHours, ValidTimeUtc";
     /// day". Missing JSONs (a fresh version that hasn't had auto-conformal
     /// fit yet) silently drop — the cell falls back to the tag-only view.
     /// </summary>
+    /// <summary>
+    /// Load conformal τ values for every Active precipitation version × lead.
+    /// Per-(station, version, lead) because precip artefact paths are per
+    /// station so versions aren't unique across stations. Surfaced on the
+    /// precip forecasts page beside the conformal chip ("Confident wet ·
+    /// τ=70% · P=85%"). Missing JSONs (3d versions don't fit conformal yet,
+    /// or fresh 3a/3c that haven't had auto-conformal run) drop silently —
+    /// the cell falls back to chip-only.
+    /// </summary>
+    private IReadOnlyDictionary<(string Station, string Version, int LeadHours), double> LoadPrecipConformalTau()
+    {
+        var dict = new Dictionary<(string, string, int), double>();
+        var manifest = _metadata.TryGetManifest("precipitation");
+        if (manifest?.Stations is null) return dict;
+        var modelsRoot = _cfg.Storage.ModelsPath;
+
+        foreach (var (stationSlug, entry) in manifest.Stations)
+        {
+            foreach (var versionName in entry.Active)
+            {
+                var versionDir = Path.Combine(modelsRoot, "precipitation", stationSlug, versionName);
+                if (!Directory.Exists(versionDir)) continue;
+                // Try both lead sets — Full covers 3a/3c at 24-120, the
+                // smaller {12, 24} covers 3d. Cheap to over-iterate; a
+                // missing calibrator file just returns null silently.
+                foreach (var lead in WeatherBlend.Train.Common.Leads.ForecastsTempRain)
+                {
+                    var cal = ModelArtifact.TryLoadLeadConformalCalibrator(versionDir, lead);
+                    if (cal is null) continue;
+                    dict[(stationSlug, versionName, lead)] = cal.Tau;
+                }
+            }
+        }
+        return dict;
+    }
+
     private IReadOnlyDictionary<(string Version, int LeadHours), double> LoadDryWindowConformalTau()
     {
         var dict = new Dictionary<(string, int), double>();
