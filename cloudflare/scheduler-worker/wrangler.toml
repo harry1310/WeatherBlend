@@ -21,13 +21,13 @@ compatibility_date = "2025-04-01"
 # (rationale: collect.yml header). Reliability is the whole reason this
 # Worker exists.
 #
-#   "30 2,8,14,20 * * *"  → collect.yml             Open-Meteo + ERA5 + METAR + EA + MO DataHub (WeatherBlend)
-#   "45 2,8,14,20 * * *"  → s3-collect.yml          Raw S3 cycles (GFS / IFS / AIFS / MO Global) for 2d (WeatherBlend)
+#   "45 2,8,14,20 * * *"  → collect.yml             Open-Meteo + ERA5 + METAR + EA + MO DataHub (WeatherBlend)
+#   "0 3,9,15,21 * * *"   → s3-collect.yml          Raw S3 cycles (GFS / IFS / AIFS / MO Global) for 2d (WeatherBlend)
 #                         + predict-bayesian.yml    Live Bayesian P(wet) + CI widths (WeatherProbabilistic repo)
 #                                                   Both fire on the same tick — different repos, no shared lock,
 #                                                   different R2 prefixes. Folded onto a single cron because
 #                                                   Cloudflare's free tier caps total cron triggers at 5.
-#   "15 3,9,15,21 * * *"  → predict-and-render.yml  every 6h, 30 min after s3-collect (WeatherBlend)
+#   "15 3,9,15,21 * * *"  → predict-and-render.yml  every 6h, 15 min after s3-collect (WeatherBlend)
 #   "0 12 * * *"          → era5-refresh.yml        daily at 12:00 UTC (WeatherBlend)
 #   "30 9 * * MON,THU"    → verify.yml              twice-weekly Mon + Thu 09:30 UTC (WeatherBlend)
 #                                                   (Cloudflare cron uses 1=Sunday,
@@ -36,15 +36,18 @@ compatibility_date = "2025-04-01"
 #
 # Sequencing per 6h slot (HH ∈ {2, 8, 14, 20}):
 #
-#   HH:30  collect             Open-Meteo offset_day + ERA5 + METAR + rainfall + MO DataHub.
-#                              Typical ~3-5 min, max 15 min timeout.
-#   HH:45  s3-collect          Raw S3 cycle pulls (GFS / IFS / AIFS / MO Global). Slowest source
-#                              is ECMWF IFS (T+7-8h post-cycle); HH:45 = 8h45m past the previous
-#                              cycle (e.g. 02:45 catches the 18Z cycle's fully-published data).
-#                              Typical ~5-15 min, max 60 min timeout.
-#   (HH+1):15  predict-and-render   Predictions read from R2 (post collect + s3-collect pushes),
-#                              site renders. 30 min after s3-collect dispatch — well past the
-#                              typical 15 min runtime so the lock is free.
+#   HH:45        collect             Open-Meteo offset_day + ERA5 + METAR + rainfall + MO DataHub.
+#                                    Typical ~3-5 min, max 15 min timeout. Shifted from HH:30
+#                                    on 2026-05-07 to give GEM (Open-Meteo's slowest publisher)
+#                                    a further 15 min to land — was missing GEM at the 02:30 +
+#                                    14:30 slots before the move.
+#   (HH+1):00    s3-collect          Raw S3 cycle pulls (GFS / IFS / AIFS / MO Global). Slowest source
+#                                    is ECMWF IFS (T+7-8h post-cycle); HH+1:00 = 9h past the previous
+#                                    cycle (e.g. 03:00 catches the 18Z cycle's fully-published data).
+#                                    Typical ~3-5 min after the 2026-05-07 parallelisation, max 60 min timeout.
+#   (HH+1):15    predict-and-render  Predictions read from R2 (post collect + s3-collect pushes),
+#                                    site renders. 15 min after s3-collect dispatch — well past the
+#                                    typical 5 min post-parallelisation runtime so the lock is free.
 #
 # All three workflows share `weatherblend-data` concurrency group with
 # `cancel-in-progress: false` so the queue serialises them in dispatch order.
@@ -75,10 +78,18 @@ compatibility_date = "2025-04-01"
 # (s3-collect typical runtime is 5-15 min so its lock is reliably released
 # by 03:00; the additional 15 min margin to 03:15 covers the 60-min worst-
 # case timeout cleanly).
+#
+# 2026-05-07: collect + s3-collect each shifted 15 min later (HH:30→HH:45,
+# HH:45→HH+1:00) to give GEM a longer landing window — Open-Meteo's GEM
+# ingest had been arriving after our 02:30 + 14:30 ticks, so 2 of every 4
+# daily forecasts went out without a fresh GEM cycle. predict-and-render
+# stays at HH+1:15; the s3-collect→predict gap shrinks from 30 min to 15
+# min, safe because the same-day s3-collect parallelisation cut typical
+# runtime from 20+ min to 5-8 min.
 [triggers]
 crons = [
-  "30 2,8,14,20 * * *",
   "45 2,8,14,20 * * *",
+  "0 3,9,15,21 * * *",
   "15 3,9,15,21 * * *",
   "0 12 * * *",
   "30 9 * * MON,THU",

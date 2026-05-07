@@ -42,15 +42,15 @@ type Dispatch = { workflow: string; repo?: string };
  * as the workflows don't write the same R2 prefixes.
  */
 const WORKFLOW_FOR_CRON: Record<string, Dispatch[]> = {
-  "30 2,8,14,20 * * *": [{ workflow: "collect.yml" }],
+  "45 2,8,14,20 * * *": [{ workflow: "collect.yml" }],
   // s3-collect (WeatherBlend) AND predict-bayesian (WeatherProbabilistic)
-  // share this tick. Both fire at HH:45; s3-collect uses the
+  // share this tick. Both fire at HH+1:00; s3-collect uses the
   // weatherblend-data lock while predict-bayesian reads Open-Meteo
-  // forecast data already pushed to R2 by collect.yml at HH:30 and writes
+  // forecast data already pushed to R2 by collect.yml at HH:45 and writes
   // to its own R2 prefix (data/predictions/precipitation_bayesian_ci/).
   // No shared lock, no race, both finish well before
   // predict-and-render at HH+1:15.
-  "45 2,8,14,20 * * *": [
+  "0 3,9,15,21 * * *": [
     { workflow: "s3-collect.yml" },
     { workflow: "predict-bayesian.yml", repo: "harry1310/WeatherProbabilistic" },
   ],

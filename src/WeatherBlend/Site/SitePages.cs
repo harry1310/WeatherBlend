@@ -506,7 +506,7 @@ public static partial class SitePages
     /// Parquet schema lives at
     /// data/predictions/precipitation_bayesian_ci/location=*/station=*/
     /// anchor=*/widths.parquet — written by the predict-bayesian.yml
-    /// workflow on every HH:45 cron tick.
+    /// workflow on every HH+1:00 cron tick (was HH:45 until 2026-05-07).
     /// </summary>
     public sealed record BayesianCiPoint(
         string StationFullName,

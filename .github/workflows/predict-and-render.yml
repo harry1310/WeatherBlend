@@ -12,13 +12,14 @@ name: predict-and-render
 # Schedule: 03:15, 09:15, 15:15, 21:15 UTC (4 runs/day, every 6h). Lives
 # in cloudflare/scheduler-worker/wrangler.toml — see that file for the
 # full sequencing rationale per slot:
-#   HH:30   collect       (Open-Meteo + ERA5 + METAR + EA + MO DataHub)
-#   HH:45   s3-collect    (raw S3 cycles for 2d — GFS / IFS / AIFS / MO Global / UKV)
-#   HH+1:15 predict-and-render
+#   HH:45    collect       (Open-Meteo + ERA5 + METAR + EA + MO DataHub)
+#   HH+1:00  s3-collect    (raw S3 cycles for 2d — GFS / IFS / AIFS / MO Global / UKV)
+#   HH+1:15  predict-and-render
 #
 # Both collects MUST finish before this fires. Enforced two ways:
-# (1) dispatch ordering — predict-and-render fires 30 min after s3-collect
-#     and 45 min after collect, well past their typical runtimes;
+# (1) dispatch ordering — predict-and-render fires 15 min after s3-collect
+#     and 30 min after collect, past their typical runtimes (collect 3-5 min,
+#     s3-collect 5-8 min post-2026-05-07 parallelisation);
 # (2) shared `weatherblend-data` concurrency group with cancel-in-progress=false
 #     so if either collect overruns, predict queues until the lock frees.
 # cancel-in-progress=false because we never want to interrupt a job that's

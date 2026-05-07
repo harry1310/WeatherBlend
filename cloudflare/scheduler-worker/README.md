@@ -11,9 +11,9 @@ silently slips. Cloudflare Workers cron triggers fire on time.
 ```
 Cloudflare crons                              Workflow dispatched
 ─────────────────────────                     ──────────────────────
-30 2,8,14,20 * * *   (every 6h, :30)            →   collect.yml
-45 2,8,14,20 * * *   (every 6h, 15 after collect) →   s3-collect.yml
-15 3,9,15,21 * * *   (every 6h, 30 after s3-collect) →   predict-and-render.yml
+45 2,8,14,20 * * *   (every 6h, :45)            →   collect.yml
+0 3,9,15,21 * * *    (every 6h, 15 after collect) →   s3-collect.yml
+15 3,9,15,21 * * *   (every 6h, 15 after s3-collect) →   predict-and-render.yml
 0 12 * * *           (daily 12:00 UTC)          →   era5-refresh.yml
 30 9 * * MON,THU     (Mon + Thu 09:30 UTC)      →   verify.yml
         │
@@ -38,9 +38,9 @@ The four-job 6-hour slot (HH ∈ {2, 8, 14, 20}) sequences as:
 
 | Cron | Workflow | Why this time |
 |------|----------|---------------|
-| `30 2,8,14,20 * * *` | `collect.yml` | Every 6h, offset `:30` past the hour. Was `:15` until 2026-05-04; shifted +15 to give Open-Meteo more ingestion headroom for late ECMWF cycles (06z sometimes finishes ingesting ~07:30 UTC, which an `08:15` collect would miss). Recent runs complete in 2.5–3.5 min so the 30-min gap to predict still has plenty of slack. |
-| `45 2,8,14,20 * * *` | `s3-collect.yml` | Raw S3 cycle pulls (GFS / IFS / AIFS / MO Global / MO UKV) for the 2d temperature blender + the precip-exact bake-off. Fires 15 min after collect; on the same `weatherblend-data` concurrency lock so it queues if collect overruns. The 8h45m gap past the previous synoptic cycle is past every publisher: NOAA GFS lands ~T+3h, MO ~T+3-6h, ECMWF AIFS ~T+5-7h, ECMWF IFS oper ~T+7-8h (slowest). Wired in 2026-05-05 when 2d landed. Typical runtime 5–15 min, max 60 min timeout. |
-| `15 3,9,15,21 * * *` | `predict-and-render.yml` | Every 6h, 30 min after s3-collect's `:45` and 45 min after collect's `:30`. Lag gives both R2 pushes time to settle before predict reads. Was `45 2,8,14,20` until 2026-05-05 — shifted +30 to make room for s3-collect at `:45`. Before that it was `45 */2 * * *` (every 2h) until 2026-05-04 — but the on-disk forecast tree only changes when collect runs (which is every 6h), so 8 of every 12 daily predicts were reading IDENTICAL inputs to the previous run and producing IDENTICAL outputs. Per-cycle output is rich enough to justify the 6h cadence: temp + precip emit 24 hourly forecasts per lead bucket, dry-window emits per-day. See `data/reports/schedule_proposal_2026-05-04.md` for the full reasoning. |
+| `45 2,8,14,20 * * *` | `collect.yml` | Every 6h, offset `:45` past the hour. Was `:15` until 2026-05-04, then `:30` until 2026-05-07; the most recent +15 was to give Open-Meteo's GEM ingest more time to land — GEM 18Z and 06Z cycles were arriving after our 02:30 + 14:30 ticks, so two of every four daily forecasts were going out on a stale GEM cycle. Recent runs complete in 2.5–3.5 min so the 30-min gap to predict still has plenty of slack. |
+| `0 3,9,15,21 * * *` | `s3-collect.yml` | Raw S3 cycle pulls (GFS / IFS / AIFS / MO Global / MO UKV) for the 2d temperature blender + the precip-exact bake-off. Fires 15 min after collect; on the same `weatherblend-data` concurrency lock so it queues if collect overruns. The 9h gap past the previous synoptic cycle is past every publisher: NOAA GFS lands ~T+3h, MO ~T+3-6h, ECMWF AIFS ~T+5-7h, ECMWF IFS oper ~T+7-8h (slowest). Wired in 2026-05-05 when 2d landed; shifted from `:45` → `+1:00` on 2026-05-07 alongside collect's GEM-driven move. Typical runtime 5–8 min after the 2026-05-07 source-parallelisation (was 5–15 min), max 60 min timeout. |
+| `15 3,9,15,21 * * *` | `predict-and-render.yml` | Every 6h, 15 min after s3-collect's `+1:00` and 30 min after collect's `:45`. Lag gives both R2 pushes time to settle before predict reads. Cron string itself is unchanged since 2026-05-05; the gap to s3-collect tightened from 30 → 15 min on 2026-05-07 when collect + s3-collect moved 15 min later (s3-collect's parallelisation made the tighter gap safe). Before 2026-05-05 it was `45 2,8,14,20`; before 2026-05-04, `45 */2 * * *` (every 2h) — but the on-disk forecast tree only changes when collect runs (which is every 6h), so 8 of every 12 daily predicts were reading IDENTICAL inputs to the previous run and producing IDENTICAL outputs. Per-cycle output is rich enough to justify the 6h cadence: temp + precip emit 24 hourly forecasts per lead bucket, dry-window emits per-day. See `data/reports/schedule_proposal_2026-05-04.md` for the full reasoning. |
 | `0 12 * * *` | `era5-refresh.yml` | ECMWF publishes ERA5T daily around 09–10 UTC; Open-Meteo ingests within a few hours. 12:00 UTC is past both, so the daily refresh always lands on Open-Meteo's freshest data instead of catching ECMWF mid-publish (which writes null partitions). The refresh itself pulls a 14-day rolling window, so any null partitions left by older runs get backfilled as ECMWF catches up. |
 | `30 9 * * MON,THU` | `verify.yml` | Twice-weekly Mon + Thu 09:30 UTC. Doubled from weekly-Mon on 2026-05-04: a freshly retrained champion was waiting up to 7 days for its first verify rows (cron) plus 5 days (ERA5 latency) before showing on the Models page; cutting cron lag in half cuts that to 3-4 days. **Use day-name aliases (`MON`, `THU`) not numbers — Cloudflare cron uses 1=Sunday (not POSIX 0=Sunday), so `* * 1,4` was firing Sun+Wed instead of Mon+Thu when first deployed 2026-05-04 (caught + fixed same day, see commit history for the bug).** |
 
@@ -167,7 +167,7 @@ and writes the GitHub error body to the log.
 | `collect.yml` | ✅ 2026-05-01 (`874653f`) | Cloudflare proven, GH cron deleted same day. |
 | `era5-refresh.yml` | ✅ 2026-05-01 (`bebca2c`) | Moved 06:00 → 12:00 UTC at the same time. |
 | `verify.yml` | ✅ 2026-05-01 (`bebca2c`) | Same Monday 09:30 UTC slot, just different scheduler. |
-| `predict-and-render.yml` | ✅ 2026-05-01 | Cron dropped to `45 2,8,14,20 * * *` (every 6h, paired with collect) on 2026-05-04 once temp predict moved to hourly per lead — see schedule rationale above. |
+| `predict-and-render.yml` | ✅ 2026-05-01 | Cron dropped to `45 2,8,14,20 * * *` (every 6h, paired with collect) on 2026-05-04 once temp predict moved to hourly per lead — see schedule rationale above. Cron itself untouched on 2026-05-07's GEM-driven shift; only the upstream collect + s3-collect timestamps moved. |
 
 ## Cost
 

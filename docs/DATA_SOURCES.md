@@ -59,8 +59,9 @@ and tag `synthesised`.
 
 **Lead axis: hourly, dense, but scoped to one cycle at a time.** A
 single call returns one cycle's worth of hourly forecasts at
-`LeadHours ∈ {1, 2, …, forecast_days·24}`. Calling at HH:45 captures
-whatever cycle Open-Meteo has just finished publishing.
+`LeadHours ∈ {1, 2, …, forecast_days·24}`. Calling at HH:45 (was HH:30
+until 2026-05-07's GEM-driven shift) captures whatever cycle Open-Meteo
+has just finished publishing.
 
 **Valid-time axis: hourly, anchored at the run.** Valid times start at
 or just after `RunTimeUtc` and run forward.
@@ -68,7 +69,7 @@ or just after `RunTimeUtc` and run forward.
 **Density at a specific lead.** One row per call. To get multiple
 lead-24 rows for the same model in a day you have to call the API
 multiple times, hoping each call hits a different freshly-published
-cycle. In practice we collect at HH:30 ∈ {02, 08, 14, 20} UTC = ≤ 4
+cycle. In practice we collect at HH:45 ∈ {02, 08, 14, 20} UTC = ≤ 4
 distinct `RunTimeUtc`s per model per day. Most Open-Meteo models that
 back our blender expose 4 cycles/day (00/06/12/18Z) — `ecmwf_ifs025`
 even includes scda upstream so it gives 4, not 2. **The exception is
@@ -89,7 +90,7 @@ intersection at 2 lead-24 valid_times per day** (00Z and 12Z) — every
 06Z/18Z lead-24 valid time gets dropped because GEM has no 06Z/18Z
 cycle to match. Real-world data gaps thin that further to ~1/day in
 recent anchors (the live ECMWF collector occasionally misses the 12Z
-cycle when 12Z hasn't published yet at the 14:30 UTC collect tick, so
+cycle when 12Z hasn't published yet at the 14:45 UTC collect tick, so
 the 5-way intersection on that valid_time fails too).
 
 Two real fixes:
@@ -189,8 +190,9 @@ interpolation across cycle hours.
 
 **Used by.** Phase 2d (temperature exact-runtime) and Phase 3d
 (precipitation exact-runtime) blenders. The `s3-collect.yml` workflow
-fires at HH:45 ∈ {02, 08, 14, 20} UTC and each call walks a 3-day
-rolling window of cycles per source.
+fires at HH+1:00 ∈ {03, 09, 15, 21} UTC (was HH:45 until 2026-05-07's
+GEM-driven shift) and each call walks a 3-day rolling window of
+cycles per source.
 
 **The catch.** Only the (cycle, lead) tuples explicitly enumerated in
 the collectors land on disk. If a future blender wants e.g. UKV at
