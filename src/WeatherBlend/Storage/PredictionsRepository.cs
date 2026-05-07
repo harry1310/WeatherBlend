@@ -217,6 +217,8 @@ SELECT LocationName, TruthStation, WindowHours, ModelVersion,
        FeatureVectorHash,
        McMeanLongestDryRunHours, McP10LongestDryRunHours,
        McP50LongestDryRunHours,  McP90LongestDryRunHours,
+       EpistemicProbDryWindowMean, EpistemicProbDryWindowQ10,
+       EpistemicProbDryWindowQ90,  EpistemicSigmaUsed,
        ConformalSetTag
 FROM {fromClause}
 WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
@@ -264,7 +266,11 @@ ORDER BY TruthStation, WindowHours, ModelVersion, LeadHours, TargetDateUtc";
         McP10LongestDryRunHours  = NullableDouble(r, 31),
         McP50LongestDryRunHours  = NullableDouble(r, 32),
         McP90LongestDryRunHours  = NullableDouble(r, 33),
-        ConformalSetTag          = r.IsDBNull(34) ? null : r.GetString(34),
+        EpistemicProbDryWindowMean = NullableDouble(r, 34),
+        EpistemicProbDryWindowQ10  = NullableDouble(r, 35),
+        EpistemicProbDryWindowQ90  = NullableDouble(r, 36),
+        EpistemicSigmaUsed         = NullableDouble(r, 37),
+        ConformalSetTag          = r.IsDBNull(38) ? null : r.GetString(38),
     };
 
     // -----------------------------------------------------------------

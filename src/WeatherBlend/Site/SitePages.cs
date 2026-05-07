@@ -559,6 +559,17 @@ public static partial class SitePages
         double? McP10LongestDryRunHours = null,
         double? McP50LongestDryRunHours = null,
         double? McP90LongestDryRunHours = null,
+        // Phase 3a-uncertainty epistemic envelope. Populated only on 3g
+        // rows where a Bayesian CI parquet for this (station, target_date,
+        // lead) cell was joined at predict time; null on every other phase
+        // and on 3g cells without Bayesian coverage. The Q10/Q90 give an
+        // 80% epistemic band on ProbHasDryWindow — wide band ⇒ headline
+        // is fragile to 3a's hourly q being off by σ; narrow ⇒ the
+        // headline is robust.
+        double? EpistemicProbDryWindowMean = null,
+        double? EpistemicProbDryWindowQ10  = null,
+        double? EpistemicProbDryWindowQ90  = null,
+        double? EpistemicSigmaUsed         = null,
         // Conformal-prediction set tag {"Dry", "Wet", "Ambiguous"} from
         // the per-(version, lead) ConformalCalibrator if one was fitted
         // (dry-window-conformal-fit). "Ambiguous" flags rows where the model

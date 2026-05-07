@@ -104,6 +104,10 @@ public sealed class RenderSiteCommand
             McP10LongestDryRunHours:     r.McP10LongestDryRunHours,
             McP50LongestDryRunHours:     r.McP50LongestDryRunHours,
             McP90LongestDryRunHours:     r.McP90LongestDryRunHours,
+            EpistemicProbDryWindowMean:  r.EpistemicProbDryWindowMean,
+            EpistemicProbDryWindowQ10:   r.EpistemicProbDryWindowQ10,
+            EpistemicProbDryWindowQ90:   r.EpistemicProbDryWindowQ90,
+            EpistemicSigmaUsed:          r.EpistemicSigmaUsed,
             ConformalSetTag:             r.ConformalSetTag)).ToList();
         _log.LogInformation("Loaded {N} dry-window prediction rows.", dryWindow.Count);
 

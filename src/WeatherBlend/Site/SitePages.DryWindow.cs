@@ -166,8 +166,23 @@ public static partial class SitePages
                             // can scan the column without reading every digit. Values
                             // render as integer percentages — same scale as the Home
                             // P(wet) chip, less cognitive load than a 0..1 fraction.
+                            //
+                            // 3g rows that joined a Bayesian CI carry an 80% epistemic
+                            // band on the headline (EpistemicProbDryWindowQ10/Q90).
+                            // Render it as a small "(LO–HI%)" suffix below the headline
+                            // so a fragile 75% (band 60-85%) and a confident 75%
+                            // (band 73-77%) read distinctly. Null on non-3g phases and
+                            // 3g cells where no Bayesian CI was found — those cells
+                            // keep the original headline-only layout.
                             var color = ProbabilityColor(d.ProbHasDryWindow);
-                            leadCells.Append(Ci, $"<td class=\"num\" style=\"color: {color}; font-weight: 600\">{(d.ProbHasDryWindow * 100).ToString("0", Ci)}%</td>");
+                            string bandSuffix = "";
+                            if (d.EpistemicProbDryWindowQ10.HasValue && d.EpistemicProbDryWindowQ90.HasValue)
+                            {
+                                var lo = (d.EpistemicProbDryWindowQ10.Value * 100).ToString("0", Ci);
+                                var hi = (d.EpistemicProbDryWindowQ90.Value * 100).ToString("0", Ci);
+                                bandSuffix = $"<br><small style=\"opacity:0.7;font-weight:400\">{lo}–{hi}%</small>";
+                            }
+                            leadCells.Append(Ci, $"<td class=\"num\" style=\"color: {color}; font-weight: 600\">{(d.ProbHasDryWindow * 100).ToString("0", Ci)}%{bandSuffix}</td>");
                         }
                         else
                         {
