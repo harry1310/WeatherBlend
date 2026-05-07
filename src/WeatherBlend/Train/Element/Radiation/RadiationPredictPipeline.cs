@@ -28,7 +28,14 @@ public static class RadiationPredictPipeline
     {
         var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
         var canonOrder = TempFeatureBuilder.CanonicalModelOrder.ToList();
-        var targets = leads.Select(L => (Lead: L, Valid: anchor.AddHours(L))).ToArray();
+        // 24 hourly targets per lead bucket — see WindPredictPipeline for
+        // the rationale.
+        var anchorDayUtc = new DateTime(anchor.Year, anchor.Month, anchor.Day, 0, 0, 0, DateTimeKind.Utc);
+        var targets = leads.SelectMany(L =>
+        {
+            var dayStart = anchorDayUtc.AddDays(L / 24);
+            return Enumerable.Range(0, 24).Select(h => (Lead: L, Valid: dayStart.AddHours(h)));
+        }).ToArray();
         var pivot = QueryPivot(forecastsPath, locationName, anchor,
             targets.Min(t => t.Valid), targets.Max(t => t.Valid), ct);
 

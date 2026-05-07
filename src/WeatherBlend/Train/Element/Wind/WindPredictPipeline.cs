@@ -36,7 +36,19 @@ public static class WindPredictPipeline
     {
         var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
         var canonOrder = TempFeatureBuilder.CanonicalModelOrder.ToList();
-        var targets = leads.Select(L => (Lead: L, Valid: anchor.AddHours(L))).ToArray();
+        // 24 hourly targets per lead bucket — mirrors TempPredictCommand /
+        // PrecipPredictCommand so each predict cycle emits a full hourly
+        // trajectory `[anchor-day + L/24 days, +24h)` per lead, not just
+        // a single point at anchor + L hours. Feels-like joins temp +
+        // element rows on (valid_time); without this, elements were
+        // sparse to 4 valid_times/day at HH ∈ {03,09,15,21} and 9/17
+        // home tiles per day showed no Feels-like / UTCI chip.
+        var anchorDayUtc = new DateTime(anchor.Year, anchor.Month, anchor.Day, 0, 0, 0, DateTimeKind.Utc);
+        var targets = leads.SelectMany(L =>
+        {
+            var dayStart = anchorDayUtc.AddDays(L / 24);
+            return Enumerable.Range(0, 24).Select(h => (Lead: L, Valid: dayStart.AddHours(h)));
+        }).ToArray();
         var pivot = QueryPivot(forecastsPath, locationName, anchor,
             targets.Min(t => t.Valid), targets.Max(t => t.Valid), ct);
 
