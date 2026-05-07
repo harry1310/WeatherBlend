@@ -701,7 +701,12 @@ public static partial class SitePages
         nav.site-nav a { text-decoration: none; }
         nav.site-nav a.active { font-weight: 600; color: var(--brand); }
 
-        .forecast-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; }
+        /* auto-fill (not auto-fit) so empty tracks stay reserved at min
+           width — a single tile renders at ~180px instead of expanding to
+           fill the row, matching the size of the multi-tile case. Changed
+           2026-05-07 after a low-tile-count day stretched one tile to
+           full row width. */
+        .forecast-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.75rem; }
         /* Flex layout so the footer pins to the cell's lower edge regardless of
            whether the feels-like chip is present — cards with shorter content
            (e.g. 96/120h leads with no feels-like row) used to float the footer

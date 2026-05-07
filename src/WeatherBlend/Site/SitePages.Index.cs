@@ -139,7 +139,7 @@ public static partial class SitePages
 
         var body = new StringBuilder();
         body.Append("<section>");
-        body.Append(RenderHomeDaySubNav(input.GeneratedAtUtc, dayOffset));
+        body.Append(RenderHomeDaySubNav(input, dayOffset));
         body.Append(Ci, $"""
               <hgroup>
                 <h2>Forward forecast — {dayUtc:dddd dd MMMM}</h2>
@@ -160,25 +160,38 @@ public static partial class SitePages
 
     /// <summary>UTC hour at which the home tile grid starts. Tiles before
     /// this time are filtered out per user feedback (overnight hours aren't
-    /// useful for planning a climbing trip).</summary>
-    public const int HomeFirstVisibleHourUtc = 4;
+    /// useful for planning a climbing trip). Tightened from 04 → 05 on
+    /// 2026-05-07 (user request) — a 14h window 05–19Z is enough headroom
+    /// for "out before sunrise" through "back before dusk" on Dartmoor in
+    /// summer; the dropped 04Z + 20Z tiles were rarely-used edge hours.</summary>
+    public const int HomeFirstVisibleHourUtc = 5;
 
     /// <summary>UTC hour at which the home tile grid ends, exclusive. Tiles
-    /// at or after this time are filtered out.</summary>
-    public const int HomeLastVisibleHourUtcExclusive = 21;
+    /// at or after this time are filtered out. Tightened from 21 → 20 on
+    /// 2026-05-07 alongside the start-hour change so the visible window is
+    /// 05:00Z..19:00Z inclusive.</summary>
+    public const int HomeLastVisibleHourUtcExclusive = 20;
 
     /// <summary>
-    /// Day sub-nav for the home page — six pill links labelled "Mon 4/5"
+    /// Day sub-nav for the home page — pill links labelled "Mon 4/5"
     /// style (day-of-week short + day/month numeric, e.g. "Tue 5/5"). Today
     /// is offset 0 (file index.html); each forward day gets index-{n}.html.
+    /// Days with zero tiles after the outdoor-window + future-only filter
+    /// are skipped so the sub-nav can't link to a blank page (added
+    /// 2026-05-07). If the active offset itself has no tiles it's still
+    /// rendered as the highlight so the user knows where they are.
     /// </summary>
-    private static string RenderHomeDaySubNav(DateTime nowUtc, int activeOffset)
+    private static string RenderHomeDaySubNav(SiteInputs input, int activeOffset)
     {
-        var today = nowUtc.Date;
+        var today = input.GeneratedAtUtc.Date;
         var s = new StringBuilder();
         s.Append("<nav class=\"lead-nav\"><ul>");
         for (int n = 0; n <= MaxHomeDayOffset; n++)
         {
+            // Skip empty days, but always keep the active one so the
+            // current page has something highlighted in the bar.
+            if (n != activeOffset && CountHomeDayTiles(input, n) == 0) continue;
+
             var date = today.AddDays(n);
             var file = n == 0 ? "index.html" : $"index-{n}.html";
             var label = n == 0 ? "Today" : $"{date:ddd} {date.Day}/{date.Month}";
@@ -187,6 +200,40 @@ public static partial class SitePages
         }
         s.Append("</ul></nav>");
         return s.ToString();
+    }
+
+    /// <summary>
+    /// Count of tiles that the home page would render for the given
+    /// day offset. Mirrors the filter chain at the top of
+    /// <see cref="RenderIndex"/> — champion-only per lead, future-of-now,
+    /// inside the outdoor visible-hour window, smallest-lead wins per
+    /// valid_time. Used by the day sub-nav to suppress days that would
+    /// link to an empty page.
+    /// </summary>
+    private static int CountHomeDayTiles(SiteInputs input, int dayOffset)
+    {
+        var todayUtc = input.GeneratedAtUtc.Date;
+        var dayUtc = todayUtc.AddDays(dayOffset);
+        var dayWindowStart = dayUtc.AddHours(HomeFirstVisibleHourUtc);
+        var dayWindowEnd = dayUtc.AddHours(HomeLastVisibleHourUtcExclusive);
+
+        string ChampionForLead(int lead)
+        {
+            if (input.ChampionByLead.TryGetValue(lead, out var perLead) && !string.IsNullOrEmpty(perLead))
+                return perLead;
+            return input.CurrentVersion;
+        }
+        var cardSource = string.IsNullOrEmpty(input.CurrentVersion) && input.ChampionByLead.Count == 0
+            ? input.Predictions
+            : input.Predictions.Where(p => p.ModelVersion == ChampionForLead(p.LeadHours));
+
+        return cardSource
+            .Where(p => p.ValidTimeUtc > input.GeneratedAtUtc
+                        && p.ValidTimeUtc >= dayWindowStart
+                        && p.ValidTimeUtc < dayWindowEnd)
+            .Select(p => p.ValidTimeUtc)
+            .Distinct()
+            .Count();
     }
 
     /// <summary>

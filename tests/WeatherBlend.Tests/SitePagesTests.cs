@@ -172,9 +172,29 @@ public class SitePagesTests
         // Home is now per-day with a sub-nav at the top — one tab per day in
         // the 6-day window (today + 5 forward) labelled "ddd d/M" so the
         // reader can flip between days without doing UTC arithmetic. Today
-        // is the canonical "Today" tab; the others are dated.
+        // is the canonical "Today" tab; the others are dated. Empty days
+        // are suppressed from the sub-nav (added 2026-05-07), so the test
+        // input must include at least one tile-window prediction per day
+        // we expect to see in the bar.
         var generatedAt = new DateTime(2026, 4, 24, 12, 0, 0, DateTimeKind.Utc); // Fri midday
-        var input = MakeEmptyForecastInput() with { GeneratedAtUtc = generatedAt };
+        // One prediction at 12:00Z on each of today + 3 forward days. 12:00Z
+        // sits squarely inside the outdoor window so all four days have
+        // tile content and should appear in the sub-nav.
+        var preds = Enumerable.Range(0, 4).Select(n => new TempPredictionRow
+        {
+            LocationName = "Test", ModelVersion = "v",
+            PredictionMadeAtUtc = generatedAt,
+            ValidTimeUtc = generatedAt.Date.AddDays(n).AddHours(12),
+            LeadHours = 12 + n * 24,
+            BlendTemperature = 12.0,
+            FeatureVectorHash = "",
+        }).ToArray();
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            Predictions = preds,
+            CurrentVersion = "v",
+        };
 
         var html = SitePages.RenderIndex(input, dayOffset: 0);
 
@@ -182,6 +202,41 @@ public class SitePagesTests
         html.Should().Contain("Sat 25/4");     // Fri + 1 day
         html.Should().Contain("Sun 26/4");     // Fri + 2 days
         html.Should().Contain("Mon 27/4");     // Fri + 3 days
+    }
+
+    [Fact]
+    public void RenderIndex_sub_nav_skips_days_with_no_tiles()
+    {
+        // Sub-nav was rendering links to days with zero tiles, sending the
+        // user to a blank page when they clicked. After 2026-05-07 it skips
+        // empty days entirely. Predictions only on offsets 0 + 2 — offset 1
+        // and 3-5 should be absent from the bar; the active day always
+        // renders so the user knows where they are.
+        var generatedAt = new DateTime(2026, 4, 24, 12, 0, 0, DateTimeKind.Utc); // Fri midday
+        var preds = new[] { 0, 2 }.Select(n => new TempPredictionRow
+        {
+            LocationName = "Test", ModelVersion = "v",
+            PredictionMadeAtUtc = generatedAt,
+            ValidTimeUtc = generatedAt.Date.AddDays(n).AddHours(12),
+            LeadHours = 12 + n * 24,
+            BlendTemperature = 12.0,
+            FeatureVectorHash = "",
+        }).ToArray();
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            Predictions = preds,
+            CurrentVersion = "v",
+        };
+
+        var html = SitePages.RenderIndex(input, dayOffset: 0);
+
+        html.Should().Contain("Today");        // offset 0 — has tiles
+        html.Should().NotContain("Sat 25/4");  // offset 1 — empty, skipped
+        html.Should().Contain("Sun 26/4");     // offset 2 — has tiles
+        html.Should().NotContain("Mon 27/4");  // offset 3 — empty, skipped
+        html.Should().NotContain("Tue 28/4");  // offset 4 — empty
+        html.Should().NotContain("Wed 29/4");  // offset 5 — empty
     }
 
     [Fact]
