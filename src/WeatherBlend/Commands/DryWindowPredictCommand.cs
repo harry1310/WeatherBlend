@@ -352,10 +352,20 @@ public sealed class DryWindowPredictCommand
                 continue;
             }
 
-            // SampleStats does the same MC pass as ProbDryWindow but also
-            // tracks the per-sample longest-dry-run distribution. Free
-            // confidence signal — see DryWindow3gPredictor.DryWindowMcStats.
-            var stats = DryWindow3gPredictor.SampleStats(qDaytime, windowHours, rng, mcSamples);
+            // Phase 3a-uncertainty: derive an epistemic σ from the
+            // WeatherProbabilistic Bayesian CI80 width for this
+            // (station, target_date, lead) cell, then run SampleStatsWith
+            // Epistemic. σ=0 short-circuits to plain SampleStats so phases
+            // / cells without Bayesian coverage still produce the existing
+            // headline. Headline ProbHasDryWindow keeps the inner-stats
+            // value (no MC noise drift); the new Epistemic* fields carry
+            // the Q10/Q90 envelope on top.
+            var ci80Width = DryWindow3gPredictor.TryLoadBayesianCi80Width(
+                _cfg.Storage.PredictionsPath, stationSlug, lead, targetDate);
+            var sigma = DryWindow3gPredictor.SigmaFromCi80Width(ci80Width);
+            var epi = DryWindow3gPredictor.SampleStatsWithEpistemic(
+                qDaytime, windowHours, sigma, rng, mcSamples);
+            var stats = epi.InnerStats;
             var prob = stats.ProbAtLeast;
             var climProb = climatology.Predict(targetDate);
             var conformalTag = ModelArtifact.PredictConformalIfPresent(versionDir, lead, prob);
@@ -392,13 +402,28 @@ public sealed class DryWindowPredictCommand
                 McP10LongestDryRunHours = stats.P10LongestRun,
                 McP50LongestDryRunHours = stats.P50LongestRun,
                 McP90LongestDryRunHours = stats.P90LongestRun,
+                EpistemicProbDryWindowMean = sigma > 0 ? epi.ProbAtLeastMean : (double?)null,
+                EpistemicProbDryWindowQ10  = sigma > 0 ? epi.ProbAtLeastQ10  : (double?)null,
+                EpistemicProbDryWindowQ90  = sigma > 0 ? epi.ProbAtLeastQ90  : (double?)null,
+                EpistemicSigmaUsed         = sigma > 0 ? sigma : (double?)null,
                 ConformalSetTag = conformalTag,
             });
 
-            _log.LogInformation(
-                "  3g lead {L}h ({D:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (clim {C:0.000}, MC longest p10/50/90={P10:0.0}/{P50:0.0}/{P90:0.0}h)",
-                lead, targetDate, windowHours, prob, climProb,
-                stats.P10LongestRun, stats.P50LongestRun, stats.P90LongestRun);
+            if (sigma > 0)
+            {
+                _log.LogInformation(
+                    "  3g lead {L}h ({D:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} ±[{Q10:0.000},{Q90:0.000}] σ={Sig:0.0000} (clim {C:0.000}, MC longest p10/50/90={P10MC:0.0}/{P50MC:0.0}/{P90MC:0.0}h)",
+                    lead, targetDate, windowHours, prob,
+                    epi.ProbAtLeastQ10, epi.ProbAtLeastQ90, sigma, climProb,
+                    stats.P10LongestRun, stats.P50LongestRun, stats.P90LongestRun);
+            }
+            else
+            {
+                _log.LogInformation(
+                    "  3g lead {L}h ({D:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (clim {C:0.000}, MC longest p10/50/90={P10:0.0}/{P50:0.0}/{P90:0.0}h, no Bayesian CI for cell)",
+                    lead, targetDate, windowHours, prob, climProb,
+                    stats.P10LongestRun, stats.P50LongestRun, stats.P90LongestRun);
+            }
         }
 
         if (predictions.Count == 0) return false;

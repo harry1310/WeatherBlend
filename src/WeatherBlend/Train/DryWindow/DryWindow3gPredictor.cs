@@ -341,10 +341,137 @@ public static class DryWindow3gPredictor
             P90LongestRun: Percentile(longestRuns, 0.90));
     }
 
+    /// <summary>
+    /// Phase 3a-uncertainty extension: SampleStats wrapped in an epistemic
+    /// outer loop that perturbs the per-hour q vector by a shared shift
+    /// δ ~ N(0, sigmaEpistemic) on each outer draw. The mean of the outer
+    /// ProbAtLeast values reproduces SampleStats.ProbAtLeast in expectation
+    /// when sigmaEpistemic = 0; the (q10, q90) of those same outer
+    /// ProbAtLeasts is a Bayesian-flavoured envelope on the dry-window
+    /// probability — "if 3a's hourly q is uncertain to ±σ globally for
+    /// today, here's how much P(dry block) wobbles".
+    ///
+    /// The shift is shared across hours (perfectly correlated perturbation)
+    /// because the WeatherProbabilistic Bayesian model emits at most ~2
+    /// valid_times per day at lead 24 — its CI carries day-level uncertainty,
+    /// not hour-level. When the lead-as-feature Bayesian model lands
+    /// (Phase 3b in this thread), the σ source becomes per-hour and the
+    /// inner sampler can be upgraded without changing the outer-loop API.
+    ///
+    /// sigmaEpistemic = 0 → outer loop is a no-op identity, results match
+    /// SampleStats exactly modulo MC noise. Caller passes σ=0 when no
+    /// Bayesian CI is available for this (station, lead, target_date) cell
+    /// so 3g degrades cleanly to its existing behaviour.
+    /// </summary>
+    public readonly record struct DryWindowEpistemicStats(
+        double ProbAtLeastMean,
+        double ProbAtLeastQ10,
+        double ProbAtLeastQ90,
+        double SigmaEpistemic,
+        DryWindowMcStats InnerStats);
+
+    public static DryWindowEpistemicStats SampleStatsWithEpistemic(
+        double[] qHourly,
+        int windowLength,
+        double sigmaEpistemic,
+        Random rng,
+        int innerSamples = DefaultMcSamples,
+        int outerSamples = 200)
+    {
+        if (sigmaEpistemic < 0)
+            throw new ArgumentOutOfRangeException(nameof(sigmaEpistemic), $"σ must be ≥ 0, got {sigmaEpistemic}");
+
+        // σ = 0 short-circuit: the outer loop adds no information, so collapse
+        // to a single inner pass. ProbAtLeastMean = inner ProbAtLeast and the
+        // q10/q90 band degenerates to that point. Saves outerSamples × inner
+        // work in the no-Bayesian-CI fallback path.
+        if (sigmaEpistemic == 0.0)
+        {
+            var inner = SampleStats(qHourly, windowLength, rng, innerSamples);
+            return new DryWindowEpistemicStats(
+                ProbAtLeastMean: inner.ProbAtLeast,
+                ProbAtLeastQ10:  inner.ProbAtLeast,
+                ProbAtLeastQ90:  inner.ProbAtLeast,
+                SigmaEpistemic:  0.0,
+                InnerStats:      inner);
+        }
+
+        if (qHourly.Length == 0)
+            return new DryWindowEpistemicStats(0, 0, 0, sigmaEpistemic,
+                new DryWindowMcStats(0, 0, 0, 0, 0));
+
+        var outerProbs = new double[outerSamples];
+        var perturbed = new double[qHourly.Length];
+        var normal = new BoxMullerSampler();
+
+        // Single inner pass at δ=0 to populate the InnerStats payload — gives
+        // callers the longest-dry-run distribution at the unperturbed q for
+        // free, identical to what SampleStats would return if called directly.
+        // Done first so the outer loop's RNG draws don't shift this baseline.
+        var baselineStats = SampleStats(qHourly, windowLength, rng, innerSamples);
+
+        for (int k = 0; k < outerSamples; k++)
+        {
+            var delta = sigmaEpistemic * normal.Sample(rng);
+            for (int h = 0; h < qHourly.Length; h++)
+                perturbed[h] = Math.Clamp(qHourly[h] + delta, 1e-6, 1.0 - 1e-6);
+
+            // Inner MC pass on the perturbed q. We only need ProbAtLeast here;
+            // longest-run quantiles are baseline-only (the epistemic envelope
+            // is on the headline probability, not the run distribution — that
+            // would be a future cross-product if needed).
+            int hits = 0;
+            for (int s = 0; s < innerSamples; s++)
+            {
+                int run = 0, longest = 0;
+                for (int h = 0; h < qHourly.Length; h++)
+                {
+                    bool dry = rng.NextDouble() >= perturbed[h];
+                    run = dry ? run + 1 : 0;
+                    if (run > longest) longest = run;
+                }
+                if (windowLength <= qHourly.Length && longest >= windowLength) hits++;
+            }
+            outerProbs[k] = (double)hits / innerSamples;
+        }
+
+        Array.Sort(outerProbs);
+        return new DryWindowEpistemicStats(
+            ProbAtLeastMean: outerProbs.Average(),
+            ProbAtLeastQ10:  PercentileD(outerProbs, 0.10),
+            ProbAtLeastQ90:  PercentileD(outerProbs, 0.90),
+            SigmaEpistemic:  sigmaEpistemic,
+            InnerStats:      baselineStats);
+    }
+
+    /// <summary>Convert a Bayesian 80% CI width on logit-P(wet) (or P(wet)
+    /// directly — the script writes both) into a global-σ for the epistemic
+    /// shift. Width = q90 − q10; under a normal approximation the
+    /// corresponding σ = width / (2 · Φ⁻¹(0.9)) = width / 2.5631.
+    /// Returns 0 (= no perturbation) for negative or NaN widths so the caller
+    /// can use it as a guard alongside the σ=0 short-circuit above.</summary>
+    public static double SigmaFromCi80Width(double width)
+    {
+        if (double.IsNaN(width) || width <= 0) return 0.0;
+        return width / 2.5631;  // 2 × Φ⁻¹(0.9) under N(0,1)
+    }
+
     /// <summary>Linear-interpolated percentile of a pre-sorted ascending int
     /// array, returned as a double so half-integer percentiles read
     /// naturally on a continuous "expected hours" scale.</summary>
     private static double Percentile(int[] sortedAsc, double p)
+    {
+        if (sortedAsc.Length == 0) return 0.0;
+        var rank = p * (sortedAsc.Length - 1);
+        int lo = (int)Math.Floor(rank), hi = (int)Math.Ceiling(rank);
+        if (lo == hi) return sortedAsc[lo];
+        return sortedAsc[lo] + (rank - lo) * (sortedAsc[hi] - sortedAsc[lo]);
+    }
+
+    /// <summary>Linear-interpolated percentile of a pre-sorted ascending
+    /// double array. Same shape as <see cref="Percentile(int[], double)"/>
+    /// but for the epistemic outer-loop ProbAtLeast samples.</summary>
+    private static double PercentileD(double[] sortedAsc, double p)
     {
         if (sortedAsc.Length == 0) return 0.0;
         var rank = p * (sortedAsc.Length - 1);
@@ -409,6 +536,86 @@ public static class DryWindow3gPredictor
             q[h - startUtcHour] = Math.Clamp(p, 0.0, 1.0);
         }
         return q;
+    }
+
+    /// <summary>
+    /// Phase 3a-uncertainty support: read the WeatherProbabilistic Bayesian
+    /// CI80 width for one (station, lead, target_date) cell and return it
+    /// (max across whatever Bayesian valid_times survive within that day —
+    /// typically 1 row at lead 24, more at 48/72; see docs/DATA_SOURCES.md
+    /// for why). Returns 0 if no Bayesian CI is available — the caller's
+    /// downstream <see cref="SampleStatsWithEpistemic"/> short-circuits on
+    /// σ=0 and produces results identical to <see cref="SampleStats"/>, so
+    /// 3g rows for stations not covered by the Bayesian model degrade
+    /// cleanly.
+    ///
+    /// Station mapping: discovered by listing the
+    /// <c>station=*</c> directories under the bayesian-CI tree and
+    /// case-insensitively matching against the slug after dropping the
+    /// "ea_" prefix and replacing underscores with spaces. No hardcoded
+    /// slug-to-full-name map per the no-hardcoded-station-list rule —
+    /// adding a new EA gauge to the Bayesian model adds a directory and
+    /// this picker finds it.
+    /// </summary>
+    public static double TryLoadBayesianCi80Width(
+        string predictionsRoot, string stationSlug, int leadHours, DateTime targetDateUtc)
+    {
+        var bayesianRoot = Path.Combine(
+            predictionsRoot, "precipitation_bayesian_ci", "location=bonehill_rocks");
+        if (!Directory.Exists(bayesianRoot)) return 0.0;
+
+        var stationDir = FindBayesianStationDir(bayesianRoot, stationSlug);
+        if (stationDir is null) return 0.0;
+
+        var glob = Path.Combine(stationDir, "anchor=*", "widths.parquet")
+            .Replace('\\', '/').Replace("'", "''");
+        var dayStart = new DateTime(
+            targetDateUtc.Year, targetDateUtc.Month, targetDateUtc.Day, 0, 0, 0, DateTimeKind.Utc);
+        var dayEnd = dayStart.AddDays(1);
+
+        // max() so the wider end of the day's CI dominates — better to over-
+        // estimate epistemic uncertainty than under-. If no rows match (rare
+        // but possible at lead 24 for stations whose cycle availability
+        // sometimes leaves the day empty), return 0 → no perturbation.
+        var sql = $@"
+SELECT max(""ci80_width"") AS w
+FROM read_parquet('{glob}')
+WHERE lead = {leadHours}
+  AND valid_time >= TIMESTAMP '{dayStart:yyyy-MM-dd HH:mm:ss}'
+  AND valid_time <  TIMESTAMP '{dayEnd:yyyy-MM-dd HH:mm:ss}'";
+
+        try
+        {
+            using var conn = new DuckDBConnection("DataSource=:memory:");
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = sql;
+            using var rdr = cmd.ExecuteReader();
+            if (!rdr.Read()) return 0.0;
+            return rdr.IsDBNull(0) ? 0.0 : rdr.GetDouble(0);
+        }
+        catch
+        {
+            // Glob mismatch / empty parquet tree / DuckDB hiccup: treat as
+            // "no Bayesian signal for this cell" rather than failing the
+            // whole predict run. Caller short-circuits on σ=0.
+            return 0.0;
+        }
+    }
+
+    private static string? FindBayesianStationDir(string bayesianRoot, string stationSlug)
+    {
+        var trimmed = stationSlug.StartsWith("ea_", StringComparison.Ordinal) ? stationSlug[3..] : stationSlug;
+        var slugAsName = string.Join(' ', trimmed.Split('_', StringSplitOptions.RemoveEmptyEntries));
+        foreach (var dir in Directory.EnumerateDirectories(bayesianRoot, "station=*"))
+        {
+            var name = Path.GetFileName(dir);
+            if (name.StartsWith("station=", StringComparison.Ordinal))
+                name = name["station=".Length..];
+            if (string.Equals(name, slugAsName, StringComparison.OrdinalIgnoreCase))
+                return dir;
+        }
+        return null;
     }
 
     private static Dictionary<DateTime, double> ReadValidTimeProbWet(string sql)
