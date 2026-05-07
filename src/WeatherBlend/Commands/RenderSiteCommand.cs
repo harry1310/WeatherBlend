@@ -1008,6 +1008,12 @@ WITH raw AS (
   FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true, filename = true)
   WHERE valid_time >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
     AND valid_time <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+    -- Phase 5's lead-as-feature predict can write occasional null-band rows
+    -- (e.g. cycle×lead combos where the Open-Meteo features were missing
+    -- and the predictor wrote nulls instead of skipping). The C# reader
+    -- expects non-null doubles, so filter them out at SQL — the chart can't
+    -- plot a null band anyway.
+    AND p_wet_mean IS NOT NULL
 ),
 ranked AS (
   SELECT *, row_number() OVER (PARTITION BY station_full, valid_time, lead ORDER BY anchor DESC) AS rn
