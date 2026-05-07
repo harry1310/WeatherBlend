@@ -715,7 +715,12 @@ public static partial class SitePages
         .forecast-card { padding: 0.75rem 0.85rem; display: flex; flex-direction: column; }
         .forecast-card h3 { margin: 0 0 0.1rem; font-size: 1rem; }
         .forecast-card header small { color: var(--pico-muted-color); font-size: 0.8rem; }
-        .forecast-card .temp { font-size: 2rem; font-weight: 700; color: var(--temp-color, var(--brand)); line-height: 1.1; margin: 0.35rem 0 0.25rem; }
+        /* Pico v2 wraps <article> > header in its own padded container; on
+           a tight tile that opens an extra ~0.5rem gap below the time
+           heading. Override to zero so the temperature sits snug under the
+           time. Tightened 2026-05-07 per user feedback. */
+        .forecast-card > header { margin-bottom: 0; padding-bottom: 0; }
+        .forecast-card .temp { font-size: 2rem; font-weight: 700; color: var(--temp-color, var(--brand)); line-height: 1.1; margin: 0.1rem 0 0.25rem; }
         .forecast-card-empty .temp { color: var(--pico-muted-color); }
         .forecast-card .pwet { font-size: 0.9rem; color: var(--pwet); margin: 0 0 0.35rem; font-variant-numeric: tabular-nums; }
         .forecast-card .pwet strong { font-weight: 700; }
