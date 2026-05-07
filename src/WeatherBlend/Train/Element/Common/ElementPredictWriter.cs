@@ -33,8 +33,16 @@ public static class ElementPredictWriter
             ? (await ParquetSerializer.DeserializeAsync<ElementPredictionRow>(outPath, cancellationToken: ct)).ToList()
             : new List<ElementPredictionRow>();
 
+        // Dedupe key MUST include ValidTimeUtc — without it, the 24 hourly
+        // rows-per-lead the predict pipeline emits (since 2026-05-07's hourly
+        // fix) all share the same (PredictionMadeAtUtc, LeadHours) tuple and
+        // get collapsed to one. Symptom: ElementPredictionRow files held
+        // (anchors × leads) rows instead of (anchors × leads × 24), feels-
+        // like joined to the smaller surface, home tiles showed feels-like /
+        // UTCI on at most a handful of hours per day. Mirrors the same key
+        // TempPredictCommand uses for its hourly writer.
         var merged = existing.Concat(predictions)
-            .GroupBy(r => (r.PredictionMadeAtUtc, r.LeadHours))
+            .GroupBy(r => (r.PredictionMadeAtUtc, r.LeadHours, r.ValidTimeUtc))
             .Select(g => g.MaxBy(r => r.PredictionMadeAtUtc)!)
             .OrderBy(r => r.ValidTimeUtc)
             .ThenBy(r => r.LeadHours)
