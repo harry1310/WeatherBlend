@@ -87,6 +87,21 @@ public static partial class SitePages
         return WrapPage(input, "Feature spec", "models", content.ToString());
     }
 
+    /// <summary>
+    /// True when the row's feature vector includes a UKV column. UKV is
+    /// joined via the (cycle, lead) picker tables outside the normal NWP
+    /// pivot, so it never appears in <see cref="FeatureSpecRow.RequiredModels"/>
+    /// or <see cref="FeatureSpecRow.OptionalModels"/>. The reliable on-disk
+    /// signal is `temp_ukv` (temperature) or `precip_ukv` (precipitation)
+    /// in <see cref="FeatureSpecRow.FeatureNames"/>. Some FeatureSet tags
+    /// carry a `-ukv` suffix (3d at 48/72) but others don't (2d at 12/24)
+    /// — that suffix is unreliable; FeatureNames is canonical.
+    /// </summary>
+    private static bool UkvIsUsed(FeatureSpecRow row)
+        => row.FeatureNames.Any(n =>
+            string.Equals(n, "temp_ukv", StringComparison.Ordinal)
+            || string.Equals(n, "precip_ukv", StringComparison.Ordinal));
+
     private static string RenderSpecTable(IReadOnlyList<FeatureSpecRow> rows)
     {
         var t = new StringBuilder();
@@ -107,14 +122,23 @@ public static partial class SitePages
             """);
         foreach (var r in rows)
         {
-            var (source, ukvMode) = InterpretFeatureSet(r.FeatureSet, r.OptionalModels);
+            var (source, ukvMode) = InterpretFeatureSet(r);
+            // Optional column doubles up to surface UKV when present, since
+            // UKV isn't stored in OptionalModels (joined via picker tables
+            // outside the normal Required/Optional buckets) but reads as an
+            // optional input from the user's perspective. Append "UKV"
+            // explicitly when a temp_ukv / precip_ukv column is in
+            // FeatureNames so the column lists the actual on-disk inputs.
+            var optionalDisplay = r.OptionalModels.Select(NwpShort).ToList();
+            if (UkvIsUsed(r) && !optionalDisplay.Contains("UKV", StringComparer.Ordinal))
+                optionalDisplay.Add("UKV");
             t.Append(Ci, $"""
                 <tr>
                   <td>{Escape(PrettyComposite(r.Composite))}</td>
                   <td>{Escape(r.Phase)}</td>
                   <td>+{r.LeadHours}h</td>
                   <td>{Escape(string.Join(", ", r.RequiredModels.Select(NwpShort)))}</td>
-                  <td>{Escape(string.Join(", ", r.OptionalModels.Select(NwpShort)))}</td>
+                  <td>{Escape(string.Join(", ", optionalDisplay))}</td>
                   <td>{Escape(ukvMode)}</td>
                   <td>{Escape(source)}</td>
                 </tr>
@@ -125,40 +149,42 @@ public static partial class SitePages
     }
 
     /// <summary>
-    /// Decode the <c>FeatureSet</c> tag stored on disk into two human columns:
-    ///   * data source — "Open-Meteo previous_runs" (lean / rich) vs "Exact-runtime S3" (exact-l*).
-    ///   * UKV mode — "Strict" (cycles {0,6,12,18}Z, lead = target), "Averaging"
-    ///     (cycles {3,15}Z averaged across two leads), or "—" (UKV not in the
-    ///     spec). The Strict-vs-Averaging distinction can't be read from the
-    ///     tag alone, so we infer per-target: temp 2d uses Strict, precip 3d
-    ///     uses Averaging (decision baked in 2026-05-06 bake-off).
+    /// Decode the row into two human columns:
+    ///   * data source — "Open-Meteo previous_runs" (lean / rich) vs
+    ///     "Exact-runtime S3" (exact-l*). FeatureSet prefix is reliable here.
+    ///   * UKV mode — "Strict" (cycles {0,6,12,18}Z, lead = target),
+    ///     "Averaging" (cycles {3,15}Z averaged across two leads), or "—"
+    ///     (UKV not in the spec).
     ///
-    /// UKV-presence detection: the canonical signal is the `-ukv` suffix on
-    /// FeatureSet (e.g. `exact-l48-P1-ukv`). UKV is NOT listed in
-    /// <c>OptionalModels</c> in saved schemas — its value is read from the
-    /// (cycle, lead) picker tables and joined separately, so the row carries
-    /// a `precip_ukv` / `temp_ukv` column without met_office_ukv ever being
-    /// in the optional bucket. Earlier draft of this method (commit dce1d56)
-    /// checked OptionalModels for `met_office_ukv` and so always reported
-    /// "—" — visible on the live spec page as every UKV cell being a dash.
+    /// UKV-presence detection: the canonical signal is `temp_ukv` (temp) or
+    /// `precip_ukv` (precip) in <c>FeatureNames</c>. UKV is joined via the
+    /// (cycle, lead) picker tables OUTSIDE the normal Required/Optional
+    /// buckets, so it never appears in <c>OptionalModels</c>. Some
+    /// FeatureSet tags carry a `-ukv` suffix (3d at 48/72) but others don't
+    /// (2d at 12/24) — that suffix is unreliable. FeatureNames is the only
+    /// truth.
+    ///
+    /// Past failures of this function (so future me doesn't repeat):
+    ///   * commit dce1d56 — checked optionalModels for "met_office_ukv".
+    ///     Never present, so every cell rendered "—".
+    ///   * commit 556e681 — checked FeatureSet for "-ukv" suffix. Hit 3d
+    ///     correctly but missed 2d (FeatureSet "exact-l12-T2", no suffix,
+    ///     temp_ukv IS in FeatureNames), so 2d still rendered "—".
+    ///
+    /// Strict vs Averaging: read off the tier suffix (T*=Strict, P*=Averaging,
+    /// per ukv_target_aware_picker_shipped 2026-05-06).
     /// </summary>
-    private static (string Source, string UkvMode) InterpretFeatureSet(
-        string featureSet, IReadOnlyList<string> optionalModels)
+    private static (string Source, string UkvMode) InterpretFeatureSet(FeatureSpecRow row)
     {
-        var hasUkv = featureSet.EndsWith("-ukv", StringComparison.Ordinal)
-                     || featureSet.Contains("-ukv-", StringComparison.Ordinal);
-        var source = featureSet.StartsWith("exact-", StringComparison.Ordinal)
+        var source = row.FeatureSet.StartsWith("exact-", StringComparison.Ordinal)
             ? "Exact-runtime S3"
             : "Open-Meteo previous_runs";
 
-        if (!hasUkv) return (source, "—");
+        if (!UkvIsUsed(row)) return (source, "—");
 
-        // Strict vs Averaging: the tag carries a tier suffix (T2 / P1 / P2)
-        // that we use as proxy. Temp tiers are Strict; precip tiers are
-        // Averaging (ukv_target_aware_picker_shipped 2026-05-06).
-        var ukvMode = featureSet.Contains("-T", StringComparison.Ordinal)
+        var ukvMode = row.FeatureSet.Contains("-T", StringComparison.Ordinal)
             ? "Strict"
-            : featureSet.Contains("-P", StringComparison.Ordinal)
+            : row.FeatureSet.Contains("-P", StringComparison.Ordinal)
                 ? "Averaging"
                 : "Optional";
         return (source, ukvMode);

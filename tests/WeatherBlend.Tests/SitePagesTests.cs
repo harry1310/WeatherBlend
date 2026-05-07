@@ -1756,31 +1756,37 @@ public class SitePagesTests
                 LeadHours: 24,
                 FeatureSet: "lean",
                 RequiredModels: new[] { "gfs_seamless", "ecmwf_ifs025", "icon_seamless" },
-                OptionalModels: new[] { "ecmwf_aifs025_single" }),
+                OptionalModels: new[] { "ecmwf_aifs025_single" },
+                FeatureNames: new[] { "temp_gfs", "temp_ecmwf", "temp_icon", "temp_aifs", "temp_mean" }),
             new SitePages.FeatureSpecRow(
                 Composite: "precipitation/ea_bellever_dartmoor",
                 Phase: "3d",
                 Version: "v2026-05-07_125137_phase3d",
                 TrainedAtUtc: trained,
                 LeadHours: 48,
-                // Real-schema shape: UKV is signalled by the `-ukv` suffix on
-                // FeatureSet, NOT by being in OptionalModels (where it's
-                // never listed — UKV is a side-channel feature joined via
-                // the picker tables, not a normal NWP column). Earlier
-                // draft of this test had met_office_ukv in OptionalModels,
-                // which masked a renderer bug that always tagged UKV as "—".
+                // Real-schema shape: UKV is signalled by `precip_ukv` /
+                // `temp_ukv` in FeatureNames — the codified train/predict
+                // contract (see PrecipExactFeatureBuilder.cs:123 +
+                // Exact12hFeatureBuilder.cs:179). FeatureSet sometimes
+                // carries a `-ukv` suffix (3d at 48/72) but not always
+                // (2d at 12/24), so the suffix is unreliable.
                 FeatureSet: "exact-l48-P1-ukv",
                 RequiredModels: new[] { "gfs_ncep", "ecmwf_ifs_oper", "ecmwf_aifs_oper" },
-                OptionalModels: new[] { "met_office_global" }),
+                OptionalModels: new[] { "met_office_global" },
+                FeatureNames: new[] { "precip_gfs", "precip_ifs", "precip_aifs", "precip_moglobal", "precip_ukv", "precip_mean" }),
             new SitePages.FeatureSpecRow(
                 Composite: "temperature",
                 Phase: "2d",
                 Version: "v2026-05-07_094728_phase2d",
                 TrainedAtUtc: trained,
                 LeadHours: 48,
+                // 2d at lead 48 has UKV DROPPED (decision 2026-05-07,
+                // out-of-reach for the 0/6/12/18Z cycles' T+54h cap), so
+                // FeatureNames omits temp_ukv.
                 FeatureSet: "exact-l48-T2",
                 RequiredModels: new[] { "gfs_ncep", "ecmwf_aifs_oper" },
-                OptionalModels: new[] { "ecmwf_ifs_oper", "met_office_global" }),
+                OptionalModels: new[] { "ecmwf_ifs_oper", "met_office_global" },
+                FeatureNames: new[] { "temp_gfs", "temp_ifs", "temp_aifs", "temp_moglobal", "temp_mean" }),
         };
 
         var input = MakeEmptyForecastInput() with { FeatureSpecRows = rows };
@@ -1807,46 +1813,88 @@ public class SitePagesTests
     }
 
     [Fact]
-    public void RenderModelsSpec_ukv_column_reads_featureset_suffix_not_optionalmodels()
+    public void RenderModelsSpec_ukv_detected_via_feature_names_not_featureset_suffix()
     {
-        // Tighter regression test for the dce1d56 dash bug. UKV is signalled
-        // by the FeatureSet's `-ukv` suffix and is NEVER in OptionalModels in
-        // real schemas — UKV's value is joined via the picker tables, not as
-        // a normal NWP column. Three rows: one P-tier with UKV (should read
-        // "Averaging"), one T-tier with UKV (should read "Strict"), one
-        // T-tier without UKV (should read "—").
+        // Regression test for the second-attempt UKV bug (commit 556e681):
+        // checking the FeatureSet `-ukv` suffix worked for 3d's
+        // "exact-l48-P1-ukv" but FAILED for 2d's "exact-l12-T2" (no suffix
+        // even though temp_ukv IS in FeatureNames). The on-disk truth is
+        // `temp_ukv` / `precip_ukv` in FeatureNames — the codified
+        // train/predict contract (Exact12hFeatureBuilder.cs:179 + :439,
+        // PrecipExactFeatureBuilder.cs:123 + :311).
+        //
+        // Four scenarios this test covers (FeatureSet × FeatureNames):
+        //   1. Suffix yes, column yes  → render UKV mode (3d real-schema shape)
+        //   2. Suffix NO,  column yes  → render UKV mode (2d real-schema shape — the bug)
+        //   3. Suffix yes, column no   → render "—" (defensive, shouldn't happen but tag-without-data)
+        //   4. Suffix no,  column no   → render "—" (no UKV, ever)
         var trained = new DateTime(2026, 5, 7, 0, 0, 0, DateTimeKind.Utc);
         var rows = new[]
         {
+            // Case 1: 3d real shape — suffix + column both present.
             new SitePages.FeatureSpecRow(
                 Composite: "precipitation/ea_bellever_dartmoor",
-                Phase: "3d", Version: "v-precip-ukv", TrainedAtUtc: trained,
+                Phase: "3d", Version: "v-suffix-and-column", TrainedAtUtc: trained,
                 LeadHours: 24, FeatureSet: "exact-l24-P1-ukv",
                 RequiredModels: new[] { "gfs_ncep" },
-                OptionalModels: new[] { "met_office_global" }),
+                OptionalModels: new[] { "met_office_global" },
+                FeatureNames: new[] { "precip_gfs", "precip_ukv" }),
+            // Case 2: 2d real shape — column present, NO suffix. This was
+            // the failing case under commit 556e681's logic.
             new SitePages.FeatureSpecRow(
                 Composite: "temperature",
-                Phase: "2d", Version: "v-temp-ukv", TrainedAtUtc: trained,
-                LeadHours: 12, FeatureSet: "exact-l12-T2-ukv",
+                Phase: "2d", Version: "v-column-no-suffix", TrainedAtUtc: trained,
+                LeadHours: 12, FeatureSet: "exact-l12-T2",
                 RequiredModels: new[] { "gfs_ncep", "ecmwf_aifs_oper" },
-                OptionalModels: new[] { "ecmwf_ifs_oper" }),
+                OptionalModels: new[] { "ecmwf_ifs_oper" },
+                FeatureNames: new[] { "temp_gfs", "temp_ifs", "temp_aifs", "temp_ukv", "temp_mean" }),
+            // Case 4: no UKV anywhere — should render "—". (Case 3 omitted
+            // — it's defensive and the trainer can't actually emit it.)
             new SitePages.FeatureSpecRow(
                 Composite: "temperature",
-                Phase: "2d", Version: "v-temp-noukv", TrainedAtUtc: trained,
+                Phase: "2d", Version: "v-no-suffix-no-column", TrainedAtUtc: trained,
                 LeadHours: 48, FeatureSet: "exact-l48-T2",
                 RequiredModels: new[] { "gfs_ncep", "ecmwf_aifs_oper" },
-                OptionalModels: new[] { "ecmwf_ifs_oper" }),
+                OptionalModels: new[] { "ecmwf_ifs_oper" },
+                FeatureNames: new[] { "temp_gfs", "temp_ifs", "temp_aifs", "temp_mean" }),
         };
 
         var input = MakeEmptyForecastInput() with { FeatureSpecRows = rows };
         var html = SitePages.RenderModelsSpec(input);
 
-        // Each row should render its inferred UKV mode in the UKV cell.
-        // We assert on the surrounding <td> so a stray header "UKV" or
-        // unrelated dash can't satisfy the contains check.
-        html.Should().Contain("<td>Averaging</td>");
-        html.Should().Contain("<td>Strict</td>");
-        html.Should().Contain("<td>—</td>");
+        // Assert on full <td>...</td> cells so the matches can't be
+        // satisfied by a stray header or unrelated dash.
+        html.Should().Contain("<td>Averaging</td>");  // Case 1 — P-tier with UKV column
+        html.Should().Contain("<td>Strict</td>");     // Case 2 — T-tier with UKV column, NO suffix
+        html.Should().Contain("<td>—</td>");          // Case 4 — no UKV at all
+    }
+
+    [Fact]
+    public void RenderModelsSpec_optional_column_includes_UKV_when_used()
+    {
+        // The Optional column should list every feature the row treats as
+        // optional. UKV isn't carried in OptionalModels (it's joined via
+        // the picker tables outside the Required/Optional pivot), so the
+        // renderer has to splice it in based on FeatureNames. Without that
+        // splice, a 2d row with UKV reads as "Optional: ECMWF, UKMO Global"
+        // and silently omits UKV — misleading on the page that's supposed
+        // to be authoritative.
+        var trained = new DateTime(2026, 5, 7, 0, 0, 0, DateTimeKind.Utc);
+        var row = new SitePages.FeatureSpecRow(
+            Composite: "temperature",
+            Phase: "2d", Version: "v-2d-12", TrainedAtUtc: trained,
+            LeadHours: 12, FeatureSet: "exact-l12-T2",
+            RequiredModels: new[] { "gfs_ncep", "ecmwf_aifs_oper" },
+            OptionalModels: new[] { "ecmwf_ifs_oper", "met_office_global" },
+            FeatureNames: new[] { "temp_gfs", "temp_ifs", "temp_aifs", "temp_moglobal", "temp_ukv" });
+
+        var input = MakeEmptyForecastInput() with { FeatureSpecRows = new[] { row } };
+        var html = SitePages.RenderModelsSpec(input);
+
+        // The optional cell should include UKV alongside the schema-listed
+        // optionals. Asserting on the joined "ECMWF, UKMO Global, UKV" form
+        // makes sure UKV is appended (not just present somewhere).
+        html.Should().Contain("ECMWF, UKMO Global, UKV");
     }
 
     [Fact]
@@ -1864,13 +1912,15 @@ public class SitePagesTests
                 Version: "older-version", TrainedAtUtc: older,
                 LeadHours: 24, FeatureSet: "lean",
                 RequiredModels: new[] { "gfs_seamless" },
-                OptionalModels: Array.Empty<string>()),
+                OptionalModels: Array.Empty<string>(),
+                FeatureNames: new[] { "temp_gfs", "temp_mean" }),
             new SitePages.FeatureSpecRow(
                 Composite: "temperature", Phase: "2b",
                 Version: "newer-version", TrainedAtUtc: newer,
                 LeadHours: 24, FeatureSet: "lean",
                 RequiredModels: new[] { "gfs_seamless", "ecmwf_ifs025" },
-                OptionalModels: Array.Empty<string>()),
+                OptionalModels: Array.Empty<string>(),
+                FeatureNames: new[] { "temp_gfs", "temp_ecmwf", "temp_mean" }),
         };
 
         var input = MakeEmptyForecastInput() with { FeatureSpecRows = rows };

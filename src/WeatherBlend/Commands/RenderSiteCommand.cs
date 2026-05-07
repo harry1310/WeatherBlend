@@ -454,7 +454,8 @@ public sealed class RenderSiteCommand
                         LeadHours: lead,
                         FeatureSet: spec.FeatureSet,
                         RequiredModels: spec.RequiredModels.ToArray(),
-                        OptionalModels: spec.OptionalModels.ToArray()));
+                        OptionalModels: spec.OptionalModels.ToArray(),
+                        FeatureNames: spec.FeatureNames.ToArray()));
                 }
             }
             catch (Exception ex)

@@ -469,7 +469,8 @@ public static partial class SitePages
         int LeadHours,
         string FeatureSet,
         IReadOnlyList<string> RequiredModels,
-        IReadOnlyList<string> OptionalModels);
+        IReadOnlyList<string> OptionalModels,
+        IReadOnlyList<string> FeatureNames);
 
     /// <summary>One per (Phase, LeadHours, day-end) rolling-MAE point.
     /// Grouped on <c>Phase</c> rather than <c>ModelVersion</c> so a retrain
