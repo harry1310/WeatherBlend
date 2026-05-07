@@ -106,34 +106,84 @@ file with `RunTimeUtc`, `LeadHours` taken straight from the filename —
 no inference, no metadata round-trip. Tagged `RunTimeSource = exact`.
 
 **Lead axis: per-file, sparse on purpose.** We collect a hand-picked
-lead set per source rather than the full forecast horizon, because each
-lead is a separate HTTP fetch:
-
-- GFS / ECMWF IFS / AIFS: `{12, 24, 36, 48, …}`
-- UKV: `{9, 12, 15, 21, 24, 27}` (averaging-around-target picker for 3d
-  precip, strict-time picker for 2d temp — see
-  `Exact12hFeatureBuilder.UkvPickStrategy`)
-- Met Office Global: `{1, 3, 6, 12, 24, 36, 48, 72, 96, 120}`
+(cycle, lead) set per source rather than the full forecast horizon,
+because each lead is a separate HTTP fetch. The current pulls track
+what the 2d/3d exact-runtime blenders consume — extending coverage is
+a constant change + backfill, not a re-architecture.
 
 **Valid-time axis: implied by `RunTimeUtc + LeadHours`.** A given
 valid time is reached only if a cycle whose `cycle + lead` lands
-exactly there exists in the lead set above. There is no interpolation
-across cycle hours.
+exactly there exists in the (cycle, lead) set we collect. There is no
+interpolation across cycle hours.
 
-**Cycle axis.** Real, publisher-defined: GFS / GEM / ICON / MétéoFrance
-at 00/06/12/18Z; ECMWF IFS oper at 00/12Z and scda at 06/18Z (a recent
-addition, see `project_ifs_scda_plan`); Met Office UKV at every hour
-where a cycle is published, gated by `MinCycleAgeHours = 0` since
-2026-05-06.
+### Per-source detail (publisher offer vs what we currently pull)
+
+**GFS — NOAA `noaa-gfs-bdp-pds`**
+- Publisher: 4 cycles/day (00 / 06 / 12 / 18Z). Hourly to T+120, 3-hourly
+  to T+240, 6-hourly to T+384.
+- We collect: cycles `{0, 6, 12, 18}` × leads
+  `{1, 3, 6, 12, 24, 36, 48, 72, 96, 120}` (`GfsBackfillCommand`).
+  Capped at 120h by design — the inline comment notes "beyond f120
+  single-model NWP skill drops off enough that we don't care for the
+  blender".
+
+**ECMWF IFS — `ecmwf-forecasts` (two streams)**
+- Publisher:
+  - `oper` stream: cycles **00Z** and **12Z**, 3h step to T+144, 6h step
+    to T+240.
+  - `scda` stream: cycles **06Z** and **18Z**, same lead structure as
+    `oper`, published as a separate AWS path. **AWS scda coverage
+    empirically starts 2024-02-28** — backfill chunks covering
+    2023-01-18 → 2024-02-27 return 404s on every probe. Backfill in
+    flight 2026-05-07 to populate the scda gap from 2024-02-28 onwards.
+- We collect: cycles `{0, 6, 12, 18}` × leads
+  `{6, 12, 24, 36, 48, 72, 96, 120}` (`EcmwfBackfillCommand`). Same 120h
+  cap as GFS. Lands under `model=ecmwf_ifs_oper` for both streams (one
+  partition per `(date, cycle)`); `model=ecmwf_ifs025` is the separate
+  Open-Meteo path (#1 / #2 above), not the raw S3 archive.
+
+**ECMWF AIFS — `ecmwf-forecasts`**
+- Publisher: 4 cycles (00 / 06 / 12 / 18Z), 6h step to T+360.
+- We collect: cycles `{0, 6, 12, 18}` × leads
+  `{6, 12, 24, 36, 48, 72, 96, 120}`. Same path machinery as IFS,
+  separate `model=ecmwf_aifs_oper` partition.
+
+**Met Office Global / UM Global — Met Office AWS**
+- Publisher: 4 cycles (00 / 06 / 12 / 18Z), forecasts to T+168 (some
+  variables shorter).
+- We collect: cycles `{0, 6, 12, 18}` × leads
+  `{1, 3, 6, 12, 24, 36, 48, 72, 96, 120}`
+  (`MetOfficeGlobalArchiveCollector`). Capped at 120h.
+
+**Met Office UKV — Met Office AWS**
+- Publisher: 24 cycles/day (every hour). Forecast length varies sharply
+  per cycle:
+  - **03Z and 15Z cycles → leads 0–120h hourly** (full long-range).
+  - **The other 22 cycles → cap at ~T+54h.** Empirically re-verified
+    2026-05-05; the python collector's `--cycles` default is `3,15`
+    precisely for this reason.
+- We collect: cycles `{0, 3, 6, 12, 15, 18}` × leads
+  `{9, 12, 15, 21, 24, 27}` (`MetOfficeUkvArchiveCollector`). This is a
+  deliberate narrowing to the 2d/3d exact-runtime pickers' needs — see
+  `Exact12hFeatureBuilder.UkvPickStrategy` after the 2026-05-06 bake-off
+  (temp Strict on `{0,6,12,18}` × `{12,24}`, precip Averaging on
+  `{3,15}` × `{9,15,21,27}`).
+  - **UKV's 0–120h availability from 03Z/15Z is NOT currently pulled.**
+    Extending the lead set to e.g. `{1, 3, 6, 12, 24, 36, 48, 72, 96, 120}`
+    while keeping cycles `{3, 15}` would put UKV on the same lead
+    horizon as the other long-range S3 sources. One constant change in
+    `MetOfficeUkvArchiveCollector` + a chunked backfill against the
+    python script's existing long-range defaults.
 
 **Used by.** Phase 2d (temperature exact-runtime) and Phase 3d
 (precipitation exact-runtime) blenders. The `s3-collect.yml` workflow
 fires at HH:45 ∈ {02, 08, 14, 20} UTC and each call walks a 3-day
 rolling window of cycles per source.
 
-**The catch.** Only the cycles + leads explicitly enumerated in the
-collectors land on disk. If a future blender wants e.g. UKV lead-3,
-that's not there — would need a config change + backfill.
+**The catch.** Only the (cycle, lead) tuples explicitly enumerated in
+the collectors land on disk. If a future blender wants e.g. UKV at
+lead 48, or any source at T+144+, that's a config + backfill change,
+not a download-on-demand fallback.
 
 ---
 
