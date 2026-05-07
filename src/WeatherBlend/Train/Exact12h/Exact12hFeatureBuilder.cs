@@ -143,7 +143,8 @@ public static class Exact12hFeatureBuilder
         TierSpec tier,
         int targetLead = DefaultTargetLead,
         IReadOnlyList<int>? inputLeads = null,
-        bool includeUkv = false)
+        bool includeUkv = false,
+        UkvPickStrategy ukvStrategy = UkvPickStrategy.Strict)
     {
         inputLeads ??= new[] { targetLead };
         if (inputLeads.Count == 0)
@@ -198,6 +199,14 @@ public static class Exact12hFeatureBuilder
             OptionalModels = CanonicalModelOrder.Where(optionalSet.Contains).ToList(),
             Models = orderedModels,
             FeatureNames = featureNames,
+            // Structured-spec fields (added 2026-05-07) — duplicate the
+            // info already encoded in FeatureSet / FeatureNames so
+            // downstream readers can `spec.UkvStrategy?.ToString()`
+            // instead of parsing strings. UKV picker strategy only
+            // matters when UKV is actually included.
+            DataSource = BlenderDataSource.ExactRuntimeS3,
+            Tier = tier.Name,
+            UkvStrategy = includeUkv ? ukvStrategy : null,
         };
     }
 

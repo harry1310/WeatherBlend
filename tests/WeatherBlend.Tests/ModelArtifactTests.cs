@@ -1,6 +1,8 @@
 using System.Text.Json;
 using FluentAssertions;
 using WeatherBlend.Train;
+using WeatherBlend.Train.Common;
+using WeatherBlend.Train.Exact12h;
 using Xunit;
 
 namespace WeatherBlend.Tests;
@@ -239,6 +241,100 @@ public class ModelArtifactTests : IDisposable
         reloaded.PerLead.Should().ContainKey("24");
         reloaded.PerLead["24"].BestSingle.Should().Be("temp_ecmwf");
         reloaded.PerLead["24"].BlendTestMae.Should().BeApproximately(1.23, 1e-9);
+    }
+
+    [Fact]
+    public void BlenderSpecs_round_trip_through_disk_preserving_structured_fields()
+    {
+        // Lock the on-disk contract for the structured-spec fields added
+        // 2026-05-07 (DataSource / Tier / UkvStrategy). A round-trip via
+        // SaveBlenderSpecs → LoadBlenderSpecs must preserve every field
+        // — predict relies on FeatureNames + Models, and the Spec page now
+        // relies on the structured fields. Anything dropped silently here
+        // would re-introduce the dash-everywhere class of bug.
+        var versionDir = Path.Combine(_root, "temperature", "v-spec-rt");
+        Directory.CreateDirectory(versionDir);
+
+        var original = new Dictionary<int, BlenderSpec>
+        {
+            [12] = new BlenderSpec
+            {
+                Target = "temperature",
+                FeatureSet = "exact-l12-T2",
+                LeadHours = 12,
+                RequiredModels = new[] { "gfs_ncep", "ecmwf_aifs_oper" },
+                OptionalModels = new[] { "ecmwf_ifs_oper", "met_office_global" },
+                Models = new[] { "gfs_ncep", "ecmwf_ifs_oper", "ecmwf_aifs_oper", "met_office_global" },
+                FeatureNames = new[] { "temp_gfs", "temp_ifs", "temp_aifs", "temp_moglobal", "temp_ukv", "temp_mean" },
+                DataSource = BlenderDataSource.ExactRuntimeS3,
+                Tier = "T2",
+                UkvStrategy = Exact12hFeatureBuilder.UkvPickStrategy.Strict,
+            },
+            [48] = new BlenderSpec
+            {
+                Target = "temperature",
+                FeatureSet = "lean",
+                LeadHours = 48,
+                RequiredModels = new[] { "gfs_seamless", "ecmwf_ifs025" },
+                OptionalModels = new[] { "ecmwf_aifs025_single" },
+                Models = new[] { "gfs_seamless", "ecmwf_ifs025", "ecmwf_aifs025_single" },
+                FeatureNames = new[] { "temp_gfs", "temp_ecmwf", "temp_aifs", "temp_mean" },
+                DataSource = BlenderDataSource.OpenMeteoPreviousRuns,
+                Tier = "lean",
+                UkvStrategy = null,
+            },
+        };
+
+        ModelArtifact.SaveBlenderSpecs(versionDir, original);
+        var reloaded = ModelArtifact.LoadBlenderSpecs(versionDir);
+
+        reloaded.Should().HaveCount(2);
+        reloaded[12].DataSource.Should().Be(BlenderDataSource.ExactRuntimeS3);
+        reloaded[12].Tier.Should().Be("T2");
+        reloaded[12].UkvStrategy.Should().Be(Exact12hFeatureBuilder.UkvPickStrategy.Strict);
+        reloaded[12].RequiredModels.Should().Equal("gfs_ncep", "ecmwf_aifs_oper");
+        reloaded[12].FeatureNames.Should().Contain("temp_ukv");
+
+        reloaded[48].DataSource.Should().Be(BlenderDataSource.OpenMeteoPreviousRuns);
+        reloaded[48].Tier.Should().Be("lean");
+        reloaded[48].UkvStrategy.Should().BeNull();
+    }
+
+    [Fact]
+    public void BlenderSpecs_load_handles_legacy_schemas_without_structured_fields()
+    {
+        // Legacy feature_schema.json files trained before the 2026-05-07
+        // structured-spec migration don't have DataSource / Tier /
+        // UkvStrategy keys. JSON deserialisation should default these to
+        // empty strings / null without throwing — load happens on every
+        // render-site run, so a deserialisation failure here would take
+        // down the whole site.
+        var versionDir = Path.Combine(_root, "temperature", "v-legacy");
+        Directory.CreateDirectory(versionDir);
+        var legacyJson = """
+            {
+              "Leads": {
+                "24": {
+                  "Target": "temperature",
+                  "FeatureSet": "lean",
+                  "LeadHours": 24,
+                  "RequiredModels": ["gfs_seamless"],
+                  "OptionalModels": [],
+                  "Models": ["gfs_seamless"],
+                  "FeatureNames": ["temp_gfs", "temp_mean"]
+                }
+              }
+            }
+            """;
+        File.WriteAllText(Path.Combine(versionDir, "feature_schema.json"), legacyJson);
+
+        var reloaded = ModelArtifact.LoadBlenderSpecs(versionDir);
+
+        reloaded.Should().HaveCount(1);
+        reloaded[24].DataSource.Should().BeEmpty();
+        reloaded[24].Tier.Should().BeEmpty();
+        reloaded[24].UkvStrategy.Should().BeNull();
+        reloaded[24].FeatureNames.Should().Equal("temp_gfs", "temp_mean");
     }
 
     [Fact]

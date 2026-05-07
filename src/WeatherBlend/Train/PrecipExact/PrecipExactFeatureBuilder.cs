@@ -138,6 +138,13 @@ public static class PrecipExactFeatureBuilder
             OptionalModels = CanonicalModelOrder.Where(optionalSet.Contains).ToList(),
             Models = orderedModels,
             FeatureNames = featureNames,
+            // Structured-spec fields (added 2026-05-07) — see BlenderSpec
+            // docstring. Precip 3d locks UKV to Averaging (cycles 3+15Z,
+            // two leads bracketing target) per 2026-05-06 bake-off; temp
+            // 2d uses Strict.
+            DataSource = BlenderDataSource.ExactRuntimeS3,
+            Tier = tier.Name,
+            UkvStrategy = includeUkv ? Exact12hFeatureBuilder.UkvPickStrategy.Averaging : null,
         };
     }
 

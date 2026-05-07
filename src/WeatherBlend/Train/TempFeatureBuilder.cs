@@ -102,6 +102,12 @@ public static class TempFeatureBuilder
             OptionalModels = orderedOptional,
             Models = orderedModels,
             FeatureNames = featureNames,
+            // Structured-spec fields (added 2026-05-07). Lean reads
+            // forecasts via Open-Meteo previous_runs API; UKV not used
+            // anywhere in the lean blender (UKV is exact-runtime only).
+            DataSource = BlenderDataSource.OpenMeteoPreviousRuns,
+            Tier = FeatureSet,
+            UkvStrategy = null,
         };
     }
 

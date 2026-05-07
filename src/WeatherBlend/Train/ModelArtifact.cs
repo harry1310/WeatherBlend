@@ -127,6 +127,26 @@ public static class ModelArtifact
         public List<string> OptionalModels { get; set; } = new();
         public List<string> Models { get; set; } = new();
         public List<string> FeatureNames { get; set; } = new();
+
+        /// <summary>One of <see cref="BlenderDataSource"/>'s constants.
+        /// Added 2026-05-07 alongside the structured-spec migration —
+        /// see BlenderSpec docstring. Empty on legacy schemas.</summary>
+        public string DataSource { get; set; } = "";
+
+        /// <summary>Tier label ("lean" / "rich" / "T2" / "P1" etc.) as
+        /// the structured analogue of the trailing tier segment in
+        /// <see cref="FeatureSet"/>. Empty on legacy schemas.</summary>
+        public string Tier { get; set; } = "";
+
+        /// <summary>UKV picker strategy when UKV is used. Persisted as a
+        /// plain string ("Strict" / "Averaging" / "" for none) rather than
+        /// the typed enum: <c>JsonStringEnumConverter</c> doesn't unwrap
+        /// nullable enums, so a typed Nullable&lt;UkvPickStrategy&gt; here
+        /// would round-trip the value but fail to deserialise it back on
+        /// load (caught by BlenderSpecs_round_trip_through_disk... test
+        /// 2026-05-07). The translation to the typed enum lives at the
+        /// BlenderSpec boundary in SaveBlenderSpecs / LoadBlenderSpecs.</summary>
+        public string UkvStrategy { get; set; } = "";
     }
 
     public sealed class TrainingMetadata
@@ -324,6 +344,12 @@ public static class ModelArtifact
                 OptionalModels = spec.OptionalModels.ToList(),
                 Models = spec.Models.ToList(),
                 FeatureNames = spec.FeatureNames.ToList(),
+                DataSource = spec.DataSource,
+                Tier = spec.Tier,
+                // Persist enum as its string name ("Strict" / "Averaging");
+                // empty string when null (no UKV). Plain string avoids the
+                // nullable-enum deserialisation quirk in System.Text.Json.
+                UkvStrategy = spec.UkvStrategy?.ToString() ?? "",
             };
         }
         WriteJson(Path.Combine(versionDir, FeatureSchemaFileName), schema);
@@ -358,6 +384,12 @@ public static class ModelArtifact
                 OptionalModels = ls.OptionalModels,
                 Models = ls.Models,
                 FeatureNames = ls.FeatureNames,
+                DataSource = ls.DataSource,
+                Tier = ls.Tier,
+                // Translate the saved string ("Strict" / "Averaging" / "")
+                // back to the typed enum. Empty / unknown → null (no UKV).
+                UkvStrategy = Enum.TryParse<WeatherBlend.Train.Exact12h.Exact12hFeatureBuilder.UkvPickStrategy>(
+                    ls.UkvStrategy, ignoreCase: false, out var ukvParsed) ? ukvParsed : null,
             };
         }
         return result;

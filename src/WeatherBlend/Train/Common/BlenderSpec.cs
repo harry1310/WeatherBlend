@@ -1,4 +1,27 @@
+using WeatherBlend.Train.Exact12h;
+
 namespace WeatherBlend.Train.Common;
+
+/// <summary>
+/// What kind of forecast pull feeds the blender — one of two canonical
+/// data-source pipelines. Persisted as a string field on
+/// <see cref="BlenderSpec.DataSource"/> so the renderer (and any
+/// future consumer) can read the choice as data rather than guessing
+/// from a FeatureSet tag prefix. Strings deliberately stay stable;
+/// adding a new source means adding a new constant here, not parsing
+/// a new tag.
+/// </summary>
+public static class BlenderDataSource
+{
+    /// <summary>Open-Meteo previous_runs API, one row per cycle anchor;
+    /// the offset_day RunTimeSource. Used by 2b/2c/3a/3c blenders.</summary>
+    public const string OpenMeteoPreviousRuns = "open_meteo_previous_runs";
+
+    /// <summary>Raw S3 cycles from NOAA / ECMWF Open Data / Met Office /
+    /// JMA, hourly out to ~T+168h, joined by exact RunTimeUtc. Used by
+    /// 2d / 3d exact-runtime blenders.</summary>
+    public const string ExactRuntimeS3 = "exact_runtime_s3";
+}
 
 /// <summary>
 /// Runtime descriptor for one (target, feature-set, lead) blender. Single source
@@ -42,6 +65,33 @@ public sealed class BlenderSpec
     /// Persisted in feature_schema.json so train/predict stay lockstep.
     /// </summary>
     public IReadOnlyList<string> FeatureNames { get; init; } = Array.Empty<string>();
+
+    /// <summary>
+    /// Which forecast pull feeds this blender. One of the constants on
+    /// <see cref="BlenderDataSource"/>. Empty string on legacy schemas
+    /// trained before this field was added (2026-05-07) — readers should
+    /// treat empty as "infer from FeatureSet prefix" for back-compat.
+    /// </summary>
+    public string DataSource { get; init; } = "";
+
+    /// <summary>
+    /// Tier label as named on disk (e.g. "lean", "rich", "T1", "T2",
+    /// "P1", "P2"). Mirrors the trailing tier segment in
+    /// <see cref="FeatureSet"/> but is the structured-data version —
+    /// readers don't have to parse the FeatureSet string. Empty on
+    /// legacy schemas.
+    /// </summary>
+    public string Tier { get; init; } = "";
+
+    /// <summary>
+    /// UKV picker strategy when <c>temp_ukv</c> / <c>precip_ukv</c> is in
+    /// <see cref="FeatureNames"/>; <c>null</c> when UKV is not used.
+    /// Strict (cycles 0/6/12/18Z, lead = target) vs Averaging (cycles
+    /// 3/15Z, two leads bracketing target). Decided per-target by
+    /// 2026-05-06 bake-off: temp uses Strict, precip uses Averaging.
+    /// Persisted as the enum's string name via JsonStringEnumConverter.
+    /// </summary>
+    public Exact12hFeatureBuilder.UkvPickStrategy? UkvStrategy { get; init; }
 
     public int FeatureCount => FeatureNames.Count;
 

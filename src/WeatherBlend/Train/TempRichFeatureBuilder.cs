@@ -101,6 +101,9 @@ public static class TempRichFeatureBuilder
             OptionalModels = orderedOptional,
             Models = orderedModels,
             FeatureNames = names,
+            DataSource = BlenderDataSource.OpenMeteoPreviousRuns,
+            Tier = SpecFeatureSet,
+            UkvStrategy = null,
         };
     }
 

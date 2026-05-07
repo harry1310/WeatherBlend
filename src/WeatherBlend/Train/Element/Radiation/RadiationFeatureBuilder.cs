@@ -48,6 +48,9 @@ public static class RadiationFeatureBuilder
             OptionalModels = orderedOptional,
             Models = orderedModels,
             FeatureNames = names,
+            DataSource = BlenderDataSource.OpenMeteoPreviousRuns,
+            Tier = SpecFeatureSet,
+            UkvStrategy = null,
         };
     }
 

@@ -49,6 +49,9 @@ public static class HumidityFeatureBuilder
             OptionalModels = orderedOptional,
             Models = orderedModels,
             FeatureNames = names,
+            DataSource = BlenderDataSource.OpenMeteoPreviousRuns,
+            Tier = SpecFeatureSet,
+            UkvStrategy = null,
         };
     }
 

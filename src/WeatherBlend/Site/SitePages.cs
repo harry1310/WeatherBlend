@@ -470,7 +470,17 @@ public static partial class SitePages
         string FeatureSet,
         IReadOnlyList<string> RequiredModels,
         IReadOnlyList<string> OptionalModels,
-        IReadOnlyList<string> FeatureNames);
+        IReadOnlyList<string> FeatureNames,
+        // Structured-spec fields (added 2026-05-07). Sourced from the
+        // BlenderSpec on disk (BlenderDataSource constants for DataSource;
+        // tier name like "lean"/"T2" for Tier; "Strict"/"Averaging"/null
+        // for UkvStrategy). Empty / null on legacy schemas — Phase 2 of
+        // the structured-spec migration will switch the renderer to read
+        // these directly with fallback to FeatureNames inference; for
+        // Phase 1 they're plumbed through but not yet consumed.
+        string DataSource = "",
+        string Tier = "",
+        string? UkvStrategy = null);
 
     /// <summary>One per (Phase, LeadHours, day-end) rolling-MAE point.
     /// Grouped on <c>Phase</c> rather than <c>ModelVersion</c> so a retrain

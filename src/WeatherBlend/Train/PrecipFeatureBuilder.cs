@@ -85,6 +85,9 @@ public static class PrecipFeatureBuilder
             OptionalModels = orderedOptional,
             Models = orderedModels,
             FeatureNames = featureNames,
+            DataSource = BlenderDataSource.OpenMeteoPreviousRuns,
+            Tier = SpecFeatureSet,
+            UkvStrategy = null,
         };
     }
 
