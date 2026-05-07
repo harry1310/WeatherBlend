@@ -363,6 +363,22 @@ public static partial class SitePages
         public IReadOnlyList<NwpPrecipProbForecastPoint> NwpPrecipProbabilities { get; init; }
             = Array.Empty<NwpPrecipProbForecastPoint>();
 
+        /// <summary>Per-NWP precipitation rate (mm/h) at hourly granularity,
+        /// pulled from the raw forecast tree (same path as NwpPrecipProbabilities).
+        /// Used at the lead-12 page where the prediction-row-based NWP overlay
+        /// is sparse (3d only emits at {0,6,12,18}Z); at lead 24+ the
+        /// prediction parquet itself carries hourly per-NWP rate so this is
+        /// only consulted on the 12h tab.</summary>
+        public IReadOnlyList<NwpPrecipRateForecastPoint> NwpPrecipRates { get; init; }
+            = Array.Empty<NwpPrecipRateForecastPoint>();
+
+        /// <summary>Per-NWP 2m temperature at hourly granularity, pulled from
+        /// the raw forecast tree. Same purpose as NwpPrecipRates: backfills
+        /// the temperature lead-12 chart's per-NWP overlay where 2b/2c don't
+        /// emit and 2d only emits at {0,6,12,18}Z.</summary>
+        public IReadOnlyList<NwpTemperatureForecastPoint> NwpTemperatures { get; init; }
+            = Array.Empty<NwpTemperatureForecastPoint>();
+
         /// <summary>
         /// Bayesian P(wet) posterior summary points from the
         /// WeatherProbabilistic sibling repo. Drives the per-row confidence
@@ -587,6 +603,23 @@ public static partial class SitePages
         string Model,
         DateTime ValidTimeUtc,
         double ProbabilityPercent);
+
+    /// <summary>Per-NWP precipitation rate (mm/h) — Open-Meteo's
+    /// <c>precipitation</c> field. Hourly granularity, deduped to the
+    /// freshest RunTime per (Model, ValidTime). Used by the lead-12
+    /// rain page's NWP rate chart where the prediction-row-based overlay
+    /// is too sparse.</summary>
+    public sealed record NwpPrecipRateForecastPoint(
+        string Model,
+        DateTime ValidTimeUtc,
+        double PrecipMmPerHour);
+
+    /// <summary>Per-NWP 2m temperature (°C). Same shape and purpose as
+    /// NwpPrecipRateForecastPoint, used on the temp lead-12 page.</summary>
+    public sealed record NwpTemperatureForecastPoint(
+        string Model,
+        DateTime ValidTimeUtc,
+        double Temperature2m);
 
     /// <summary>One Met Office DataHub Spot forecast row at a single
     /// (RunTime, ValidTime). Fields nullable because the Spot product

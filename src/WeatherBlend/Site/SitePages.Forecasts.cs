@@ -109,9 +109,11 @@ public static partial class SitePages
         //   - For the blend line itself we partition by phase first so each
         //     phase's BlendTemperature time series is built from rows of
         //     the right version.
+        // No now-1h floor: phase 2d emits only at {0,6,12,18}Z valid hours
+        // so the lead-12 chart often had 0-1 future-of-now rows per
+        // anchor. Show the historical context — outer windowStart bounds.
         var poolFuture = input.Predictions
-            .Where(p => p.LeadHours == lead
-                        && p.ValidTimeUtc >= input.GeneratedAtUtc.AddHours(-1))
+            .Where(p => p.LeadHours == lead)
             .GroupBy(p => p.ValidTimeUtc)
             .Select(g => g.OrderByDescending(p => p.PredictionMadeAtUtc).First())
             .OrderBy(p => p.ValidTimeUtc)
@@ -127,16 +129,30 @@ public static partial class SitePages
         }
 
         // NWPs first so the brand-purple Blend draws last and sits visually on top.
+        // Source: input.NwpTemperatures (hourly raw forecast tree, deduped to
+        // freshest cycle per (Model, ValidTime)). Switched away from the
+        // prediction-row source (poolFuture × NwpsForTemperature) 2026-05-07
+        // so the lead-12 chart populates at hourly density — 2b/2c don't
+        // emit at lead 12 and 2d only emits at {0,6,12,18}Z, so the
+        // prediction-row path was empty/sparse there. At lead 24+ the
+        // raw-forecast source gives near-identical hourly data to what the
+        // 2b prediction rows carried in the per-NWP columns, so unifying
+        // the path doesn't change behaviour at the existing leads.
         var series = new List<LineSeries>();
-        foreach (var nwp in NwpsForTemperature())
+        var tempPalette = NwpsForTemperature()
+            .ToDictionary(np => np.Label, np => np.Color, StringComparer.Ordinal);
+        foreach (var grp in input.NwpTemperatures
+            .GroupBy(t => t.Model)
+            .OrderBy(g => g.Key, StringComparer.Ordinal))
         {
-            var pts = poolFuture
-                .Select(p => (Valid: p.ValidTimeUtc, Val: nwp.Get(p)))
-                .Where(t => t.Val.HasValue)
-                .Select(t => (X: t.Valid.ToOADate(), Y: t.Val!.Value))
+            var label = LookupNwpLabel(grp.Key);
+            if (!tempPalette.TryGetValue(label, out var colour)) colour = "#999";
+            var pts = grp
+                .OrderBy(t => t.ValidTimeUtc)
+                .Select(t => (X: t.ValidTimeUtc.ToOADate(), Y: t.Temperature2m))
                 .ToList();
             if (pts.Count > 0)
-                series.Add(new LineSeries(nwp.Label, nwp.Color, pts));
+                series.Add(new LineSeries(label, colour, pts));
         }
 
         // Champion + challenger blend lines, ordered by ActivePhasePolicy
@@ -146,9 +162,9 @@ public static partial class SitePages
         // for fresh challengers whose predictions haven't reached this lead's
         // valid-time band yet.
         var orderedActivePhases = ActivePhasePolicy.ByTarget["temperature"];
+        // Same now-1h drop as poolFuture above.
         var blendByPhase = input.Predictions
-            .Where(p => p.LeadHours == lead
-                        && p.ValidTimeUtc >= input.GeneratedAtUtc.AddHours(-1))
+            .Where(p => p.LeadHours == lead)
             .Where(p => input.PhaseByVersion.TryGetValue(p.ModelVersion, out var ph)
                         && orderedActivePhases.Contains(ph, StringComparer.Ordinal))
             .GroupBy(p => input.PhaseByVersion[p.ModelVersion])
@@ -188,6 +204,8 @@ public static partial class SitePages
             Height = 360,
             FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
             FormatY = v => v.ToString("0.#", Ci) + "°",
+            TodayLineX = input.GeneratedAtUtc.ToOADate(),
+            XMin = input.GeneratedAtUtc.AddDays(-7).ToOADate(),
         }));
         return s.ToString();
     }
@@ -226,10 +244,15 @@ public static partial class SitePages
             // Same rationale as the temp chart: champion-only collapses to ~one
             // point per anchor; the per-NWP columns are identical regardless of
             // blender version anyway, so pooling doesn't change the input story.
+            // No now-1h floor: phases like 3d emit only at {0,6,12,18}Z
+            // valid hours, so the chart at lead 12 typically has 0-1
+            // future-of-now rows per anchor. Filtering to future-only
+            // emptied the chart for entire half-days. Show historical
+            // points in context — the outer windowStart (~30d back) still
+            // bounds the data, and xMax/xMin in the chart spec keep the
+            // visible window at 14d.
             var latestPerValid = input.PrecipPredictions
-                .Where(r => r.Station == station
-                            && r.LeadHours == lead
-                            && r.ValidTimeUtc >= input.GeneratedAtUtc.AddHours(-1))
+                .Where(r => r.Station == station && r.LeadHours == lead)
                 .GroupBy(r => r.ValidTimeUtc)
                 .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
                 .OrderBy(r => r.ValidTimeUtc)
@@ -262,10 +285,12 @@ public static partial class SitePages
             // Climatology + NWP PoP overlay sit on top in their own colours.
             var probSeries = new List<LineSeries>();
             var orderedPrecipPhases = ActivePhasePolicy.ByTarget["precipitation"];
+            // Same now-1h drop as latestPerValid above — historical points
+            // alongside the live ones, bounded by the renderer's outer
+            // window.
             var precipByPhase = input.PrecipPredictions
                 .Where(r => r.Station == station
-                            && r.LeadHours == lead
-                            && r.ValidTimeUtc >= input.GeneratedAtUtc.AddHours(-1))
+                            && r.LeadHours == lead)
                 .Where(r => input.PhaseByVersion.TryGetValue(r.Version, out var ph)
                             && orderedPrecipPhases.Contains(ph, StringComparer.Ordinal))
                 .GroupBy(r => input.PhaseByVersion[r.Version])
@@ -329,6 +354,8 @@ public static partial class SitePages
                 Height = 220,
                 FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
                 FormatY = v => v.ToString("0.00", Ci),
+                TodayLineX = input.GeneratedAtUtc.ToOADate(),
+                XMin = input.GeneratedAtUtc.AddDays(-7).ToOADate(),
             }));
 
             s.Append(RenderPrecipDailySummaryTable(latestPerValid));
@@ -336,23 +363,30 @@ public static partial class SitePages
             s.Append(RenderBayesianCiPanel(input, station, lead, minValid, maxValid));
         }
 
-        // Per-NWP precip rate (mm/h) — hoisted out of the per-station loop
-        // because PrecipGfs / PrecipEcmwf / etc. are point forecasts for
-        // Bonehill, not gauge-station-specific. Pick any non-empty station
-        // to source the rows from; values for the NWP columns are identical.
-        var sourceRows = latestPerValidByStation.Values.FirstOrDefault(r => r.Count > 0);
-        if (sourceRows is { Count: > 0 })
+        // Per-NWP precip rate (mm/h) — point forecast at Bonehill, hoisted
+        // out of the per-station loop because PrecipGfs/PrecipEcmwf/etc are
+        // identical across rainfall stations. Source: input.NwpPrecipRates
+        // (raw forecast tree, hourly), switched 2026-05-07 from the
+        // prediction-row source so the lead-12 page populates at hourly
+        // density (3d only emits at {0,6,12,18}Z which made the prior
+        // chart absent at lead 12 entirely).
+        if (input.NwpPrecipRates.Count > 0)
         {
             var nwpSeries = new List<LineSeries>();
-            foreach (var nwp in nwpSpecs)
+            var ratePalette = nwpSpecs
+                .ToDictionary(np => np.Label, np => np.Color, StringComparer.Ordinal);
+            foreach (var grp in input.NwpPrecipRates
+                .GroupBy(t => t.Model)
+                .OrderBy(g => g.Key, StringComparer.Ordinal))
             {
-                var pts = sourceRows
-                    .Select(r => (Valid: r.ValidTimeUtc, Val: nwp.Get(r)))
-                    .Where(t => t.Val.HasValue)
-                    .Select(t => (X: t.Valid.ToOADate(), Y: t.Val!.Value))
+                var label = LookupNwpLabel(grp.Key);
+                if (!ratePalette.TryGetValue(label, out var colour)) colour = "#999";
+                var pts = grp
+                    .OrderBy(t => t.ValidTimeUtc)
+                    .Select(t => (X: t.ValidTimeUtc.ToOADate(), Y: t.PrecipMmPerHour))
                     .ToList();
                 if (pts.Count > 0)
-                    nwpSeries.Add(new LineSeries(nwp.Label, nwp.Color, pts));
+                    nwpSeries.Add(new LineSeries(label, colour, pts));
             }
             if (nwpSeries.Count > 0)
             {
@@ -366,6 +400,8 @@ public static partial class SitePages
                     Height = 220,
                     FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
                     FormatY = v => v.ToString("0.0", Ci),
+                    TodayLineX = input.GeneratedAtUtc.ToOADate(),
+                    XMin = input.GeneratedAtUtc.AddDays(-7).ToOADate(),
                 }));
             }
         }
@@ -415,17 +451,26 @@ public static partial class SitePages
         // to keep in sync.
         var prettyName = PrettyStation(stationSlug);
 
-        // No now-1h floor: with GEM Seamless capping the 5-model inner-join
-        // to 2 lead-24 valid times per day (00Z + 12Z; see docs/DATA_SOURCES
-        // for the GEM-as-bottleneck story), filtering to future-only rows
-        // routinely empties the lead-24 chart entirely. Showing the past
-        // hours alongside future hours gives the eye a context of "model
-        // said X for last day, says Y now" — useful framing even when the
-        // forward-only window is sparse. The renderer's outer windowStart
-        // (input.WindowStartUtc, ~30d back) still bounds the dataset.
+        // No now-1h floor: showing past hours alongside future gives eye-
+        // context ("model said X for last day, says Y now") and the
+        // renderer's outer windowStart still bounds the dataset.
+        //
+        // Filter on a ±12h band around the page's nominal lead rather than
+        // strict equality. Phase 5 (lead-as-feature) emits one row per
+        // (cycle, lead) pair with the ACTUAL run-to-valid offset; strict
+        // `LeadHours == 24` would only catch cycles at HH ∈ {0,6,12,18}
+        // landing on 00/06/12/18Z valid_times — same cycle-grid bottleneck
+        // we hit before. The band keeps the per-lead-page distinction
+        // (lead-24 page = "predictions made roughly 24h ahead") while
+        // letting hourly cycle output fill the chart densely. Bands tile
+        // cleanly: [12,36], [36,60], [60,84] for the three pages.
         var rows = input.BayesianCi
             .Where(p => string.Equals(p.StationFullName, prettyName, StringComparison.OrdinalIgnoreCase)
-                        && p.LeadHours == lead)
+                        && p.LeadHours >= lead - 12 && p.LeadHours < lead + 12)
+            .GroupBy(p => p.ValidTimeUtc)
+            .Select(g => g.OrderByDescending(p => p.AnchorDate)
+                          .ThenByDescending(p => p.LeadHours)
+                          .First())
             .OrderBy(p => p.ValidTimeUtc)
             .ToList();
         if (rows.Count == 0) return "";
@@ -458,6 +503,8 @@ public static partial class SitePages
             Height = 180,
             FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
             FormatY = v => v.ToString("0.00", Ci),
+            TodayLineX = input.GeneratedAtUtc.ToOADate(),
+            XMin = input.GeneratedAtUtc.AddDays(-7).ToOADate(),
         }));
         return s.ToString();
     }
