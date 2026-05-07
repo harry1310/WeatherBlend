@@ -601,22 +601,30 @@ public static partial class SitePages
               <th class="num" title="Hours the calibrator says are confidently dry at the 90% set">conf dry h</th>
               """
             : "";
+        // Same collapsible wrapper as the hourly P(wet) + agreement table
+        // below — daily totals were eating chart's worth of vertical space
+        // by default. Closed by default so the chart stays the focal point;
+        // tap the summary to drill in. Class re-used so styling stays
+        // consistent across both tables.
         return $"""
-            <figure>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Date (UTC)</th>
-                    <th class="num">Mean P(wet)</th>
-                    <th class="num" title="Lowest forecast P(wet) of the day — the best 'go now' hour">Driest hour</th>
-                    <th class="num">n_h</th>
-                    {conformalHeader}
-                  </tr>
-                </thead>
-                <tbody>
-            {rows}    </tbody>
-              </table>
-            </figure>
+            <details class="hourly-detail">
+              <summary>Daily P(wet) summary</summary>
+              <figure>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date (UTC)</th>
+                      <th class="num">Mean P(wet)</th>
+                      <th class="num" title="Lowest forecast P(wet) of the day — the best 'go now' hour">Driest hour</th>
+                      <th class="num">n_h</th>
+                      {conformalHeader}
+                    </tr>
+                  </thead>
+                  <tbody>
+            {rows}      </tbody>
+                </table>
+              </figure>
+            </details>
             """;
     }
 
@@ -652,16 +660,14 @@ public static partial class SitePages
             var agreementCell = r.AgreementWet01.HasValue
                 ? (r.AgreementWet01.Value * 100).ToString("0", Ci) + "%"
                 : "—";
-            // Tint the P(wet) cell by confidence: greyer when low-confidence,
-            // bolder when high. Cheaper than chart annotations and reads at
-            // table-scan speed.
-            var pwetStyle = label switch
-            {
-                "high"   => "color: #4527a0; font-weight: 600",
-                "medium" => "color: #7c4dff",
-                "low"    => "color: #9e9e9e; font-style: italic",
-                _        => "",
-            };
+            // P(wet) cell colour-graded green-to-red by value — same
+            // PrecipProbColor scale used on the home page summary line and
+            // every other P(wet) chip on the site, so a 70% wet hour reads
+            // the same colour wherever it appears. Confidence is already
+            // surfaced in its own column to the right (NWPs wet + the
+            // confidence chip), so the cell can lose the dual-encoding
+            // (purple-by-confidence) and just colour-grade by P(wet).
+            var pwetStyle = $"color: {PrecipProbColor(r.ProbWet)}; font-weight: 600";
             // Second confidence chip from the conformal calibrator (precip-
             // conformal-fit). Only rendered when at least one row in this
             // (station, lead) batch has a tag — keeps the column off legacy
