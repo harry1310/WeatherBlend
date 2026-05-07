@@ -731,7 +731,13 @@ public static partial class SitePages
         .forecast-card footer { margin-top: auto; padding-top: 0.4rem; border-top: 1px solid var(--pico-muted-border-color); }
         .forecast-card footer small { color: var(--pico-muted-color); font-size: 0.75rem; }
         .forecast-card h4 { margin: 0; font-size: 1rem; font-variant-numeric: tabular-nums; }
-        .forecast-card header { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+        /* Lock the header to a fixed min-height so tiles align across the
+           grid regardless of whether a low-cloud badge sits next to the
+           time. Without this, badged tiles render ~0.4rem taller than
+           plain tiles and the temperature row drifts down inconsistently
+           (visible 2026-05-07 — gap to temp tiny without badge, large
+           with). 1.4rem covers the badge's outer height. */
+        .forecast-card header { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; min-height: 1.4rem; }
         /* Low-cloud / mist badge — slate pill in the tile header. Click to
            expand details (Pico <details>) listing which signal(s) fired and
            the per-NWP agreement count. Tap-friendly on mobile, no hover needed. */
@@ -758,15 +764,16 @@ public static partial class SitePages
           margin: 0;
           padding: 0.4rem 0.6rem 0.4rem 1.5rem;
           font-size: 0.78rem;
+          line-height: 1.35;
           color: var(--pico-muted-color);
           background: var(--pico-card-background-color);
           border: 1px solid var(--pico-card-border-color);
           border-radius: 4px;
           box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-          min-width: 14rem;
-          max-width: 18rem;
-          white-space: nowrap;
+          width: max-content;
+          max-width: 16rem;
         }
+        details.low-cloud-pop > ul li { margin: 0; padding: 0.05rem 0; }
 
         /* Day-grouped home layout — one block per UTC day with a summary line
            above the per-hour tile grid. Top + bottom margin so days read as
