@@ -415,16 +415,17 @@ public static partial class SitePages
         // to keep in sync.
         var prettyName = PrettyStation(stationSlug);
 
-        // Filter to valid times >= now-1h so we surface whatever forward
-        // coverage the Bayesian has at this lead. Don't bracket by the
-        // precip chart's [minValid, maxValid] — those are derived from the
-        // precip predictions' specific lead-24h-ahead-of-each-cycle pattern,
-        // which can starve the Bayesian's smaller anchor-relative window.
-        var nowMinus1 = input.GeneratedAtUtc.AddHours(-1);
+        // No now-1h floor: with GEM Seamless capping the 5-model inner-join
+        // to 2 lead-24 valid times per day (00Z + 12Z; see docs/DATA_SOURCES
+        // for the GEM-as-bottleneck story), filtering to future-only rows
+        // routinely empties the lead-24 chart entirely. Showing the past
+        // hours alongside future hours gives the eye a context of "model
+        // said X for last day, says Y now" — useful framing even when the
+        // forward-only window is sparse. The renderer's outer windowStart
+        // (input.WindowStartUtc, ~30d back) still bounds the dataset.
         var rows = input.BayesianCi
             .Where(p => string.Equals(p.StationFullName, prettyName, StringComparison.OrdinalIgnoreCase)
-                        && p.LeadHours == lead
-                        && p.ValidTimeUtc >= nowMinus1)
+                        && p.LeadHours == lead)
             .OrderBy(p => p.ValidTimeUtc)
             .ToList();
         if (rows.Count == 0) return "";

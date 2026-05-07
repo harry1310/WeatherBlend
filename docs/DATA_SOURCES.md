@@ -68,26 +68,38 @@ or just after `RunTimeUtc` and run forward.
 **Density at a specific lead.** One row per call. To get multiple
 lead-24 rows for the same model in a day you have to call the API
 multiple times, hoping each call hits a different freshly-published
-cycle. In practice we collect at HH:45 ∈ {02, 08, 14, 20} UTC = ≤ 4
-distinct `RunTimeUtc`s per model per day — and if a publisher only
-issues 2 cycles/day (ECMWF IFS oper) you only see 2.
+cycle. In practice we collect at HH:30 ∈ {02, 08, 14, 20} UTC = ≤ 4
+distinct `RunTimeUtc`s per model per day. Most Open-Meteo models that
+back our blender expose 4 cycles/day (00/06/12/18Z) — `ecmwf_ifs025`
+even includes scda upstream so it gives 4, not 2. **The exception is
+`gem_seamless`, which only publishes 2 cycles/day (00Z + 12Z).** This
+matters more than it looks (see the catch below).
 
 **Used by.** `collect.yml` (the 2b/2c blender's input refresh), and
 critically, the WeatherProbabilistic live predict
 (`predict_live_with_ci.py` reading the same parquet tree).
 
-**The catch — and it's the catch behind the "1 Bayesian point per day at
-lead 24h" question.** The Bayesian model was _trained_ off source #1
-(hourly density at lead 24). At predict time we read source #2 (one
-row per cycle), filter to `LeadHours ∈ {24, 48, 72}`, and inner-join
-across 5 models on `(ValidTimeUtc, LeadHours)`. The intersection of
-4–5 cycles/day across 5 models, restricted to ECMWF oper's 00Z + 12Z
-issuance, leaves 1–2 lead-24 valid times per day. Hence one chart
-point per day on the 24h-lead CI band, even though the underlying
-training data is hourly. The fix is either to predict from source #1
-(re-using the same endpoint as training), or to enrich source #2
-(more cycles, e.g. via ECMWF scda for the 06/18Z runs); see the
-`feedback_bayesian_chart_per_day` thread.
+**The catch — the actual story behind "1 Bayesian point per day at
+lead 24h" (corrected 2026-05-07 after empirical trace).** The Bayesian
+model was _trained_ off source #1 (hourly density at lead 24). At
+predict time we read source #2 (one row per cycle), filter to
+`LeadHours ∈ {24, 48, 72}`, and inner-join across 5 models on
+`(ValidTimeUtc, LeadHours)`. **GEM Seamless's 2 cycles/day caps the
+intersection at 2 lead-24 valid_times per day** (00Z and 12Z) — every
+06Z/18Z lead-24 valid time gets dropped because GEM has no 06Z/18Z
+cycle to match. Real-world data gaps thin that further to ~1/day in
+recent anchors (the live ECMWF collector occasionally misses the 12Z
+cycle when 12Z hasn't published yet at the 14:30 UTC collect tick, so
+the 5-way intersection on that valid_time fails too).
+
+Two real fixes:
+1. **Drop GEM** from the Bayesian model and retrain on the remaining 4
+   sources. Lead-24 ceiling rises to 4/day. Likely small skill cost.
+2. **Lead-as-feature retrain** (Phase 3b): re-train so the posterior
+   takes lead as a continuous covariate. Then any forecast row at any
+   hour can be scored against the single posterior — no more (cycle,
+   lead) intersection bottleneck. Ceiling = 24/day from any model with
+   hourly forecast emission.
 
 ---
 
