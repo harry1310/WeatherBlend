@@ -20,13 +20,21 @@ public class PrecipExactFeatureBuilderTests
     }
 
     [Fact]
-    public void AllTiers_has_one_first_cut_tier()
+    public void AllTiers_has_p1_and_p2()
     {
-        PrecipExactFeatureBuilder.AllTiers.Should().HaveCount(1);
+        // P2 added 2026-05-07 as a no-IFS challenger to P1 — see
+        // PrecipExactFeatureBuilder for the bake-off rationale. P1 stays as
+        // index 0 to keep the existing default-tier behaviour stable for
+        // every other test in this file.
+        PrecipExactFeatureBuilder.AllTiers.Should().HaveCount(2);
         var p1 = PrecipExactFeatureBuilder.AllTiers[0];
         p1.Name.Should().Be("P1");
         p1.Required.Should().BeEquivalentTo("gfs_ncep", "ecmwf_ifs_oper", "ecmwf_aifs_oper");
         p1.Optional.Should().BeEquivalentTo("met_office_global");
+        var p2 = PrecipExactFeatureBuilder.AllTiers[1];
+        p2.Name.Should().Be("P2");
+        p2.Required.Should().BeEquivalentTo("gfs_ncep", "ecmwf_aifs_oper");
+        p2.Optional.Should().BeEquivalentTo("met_office_global");
     }
 
     [Fact]

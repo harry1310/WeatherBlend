@@ -530,6 +530,27 @@ ORDER BY p.ValidTimeUtc;
             new(VHour: 12, RunHour: 15, DayOffset: 1, LeadHours: 21),
             new(VHour: 18, RunHour: 15, DayOffset: 1, LeadHours: 27),
         },
+        // 48h-ahead: same per-V pattern as the 24h picks, just shifted
+        // one day further back. Run-times are 03Z/15Z 2 days before V's
+        // date; effective leads {45, 51} centred on 48h. Required
+        // backfill: cycles {3,15} × leads {45, 51} — landed on R2
+        // 2026-05-07 alongside the existing {21, 27} via the 14-lead
+        // re-backfill.
+        48 => new UkvPick[]
+        {
+            new(VHour: 0,  RunHour: 3,  DayOffset: 2, LeadHours: 45),
+            new(VHour: 6,  RunHour: 3,  DayOffset: 2, LeadHours: 51),
+            new(VHour: 12, RunHour: 15, DayOffset: 2, LeadHours: 45),
+            new(VHour: 18, RunHour: 15, DayOffset: 2, LeadHours: 51),
+        },
+        // 72h-ahead: shift another day. Effective leads {69, 75}.
+        72 => new UkvPick[]
+        {
+            new(VHour: 0,  RunHour: 3,  DayOffset: 3, LeadHours: 69),
+            new(VHour: 6,  RunHour: 3,  DayOffset: 3, LeadHours: 75),
+            new(VHour: 12, RunHour: 15, DayOffset: 3, LeadHours: 69),
+            new(VHour: 18, RunHour: 15, DayOffset: 3, LeadHours: 75),
+        },
         _ => throw new ArgumentException(
             $"UKV averaging picks not defined for target lead {targetLead}h.",
             nameof(targetLead)),
@@ -555,8 +576,21 @@ ORDER BY p.ValidTimeUtc;
             new(VHour: 12, RunHour: 12, DayOffset: 1, LeadHours: 24),
             new(VHour: 18, RunHour: 18, DayOffset: 1, LeadHours: 24),
         },
+        // 48h-ahead: cycle = V, 2 days prior, lead 48. UKV's 0/6/12/18Z
+        // cycles publish out to ~T+54h so lead 48 is in range. Required
+        // backfill: cycles {0,6,12,18} × lead 48 — landed 2026-05-07
+        // alongside existing {12, 24}.
+        48 => new UkvPick[]
+        {
+            new(VHour: 0,  RunHour: 0,  DayOffset: 2, LeadHours: 48),
+            new(VHour: 6,  RunHour: 6,  DayOffset: 2, LeadHours: 48),
+            new(VHour: 12, RunHour: 12, DayOffset: 2, LeadHours: 48),
+            new(VHour: 18, RunHour: 18, DayOffset: 2, LeadHours: 48),
+        },
         _ => throw new ArgumentException(
-            $"UKV strict picks not defined for target lead {targetLead}h.",
+            $"UKV strict picks not defined for target lead {targetLead}h. "
+            + "Lead 72+ would need cycles {3,15}Z (Averaging picker) — "
+            + "0/6/12/18Z cycles cap at ~T+54h.",
             nameof(targetLead)),
     };
 

@@ -43,8 +43,15 @@ public sealed class MetOfficeUkvArchiveCollector
     // {0,6,12,18}; Averaging (precip 3d) needs {3,15}. Union = 6 cycles.
     private static readonly int[] DefaultCycles = { 0, 3, 6, 12, 15, 18 };
     // Superset of both picker strategies' leads. Strict (temp 2d) needs
-    // {12, 24}; Averaging (precip 3d) needs {9, 15, 21, 27}. Union = 6.
-    private static readonly int[] DefaultLeads = { 9, 12, 15, 21, 24, 27 };
+    // {12, 24, 48}; Averaging (precip 3d) needs {9, 15, 21, 27, 45, 51,
+    // 69, 75}. Union = 9 leads. Lead 48 added 2026-05-07 alongside the
+    // historical backfill so 2d's Strict picker can reach 48h. Long
+    // leads (45/51/69/75) are only published from 03Z + 15Z cycles —
+    // including them in the cycle 0/6/12/18 fetches would 404 silently
+    // since those cycles cap at ~T+54h, but that's harmless overhead.
+    // Filtering per-cycle to "leads this cycle can publish" is a further
+    // optimisation if the live collect runtime ever bites.
+    private static readonly int[] DefaultLeads = { 9, 12, 15, 21, 24, 27, 45, 48, 51, 69, 72, 75 };
     private const int DefaultLookbackDays = 3;
     private const int DefaultParallelism = 8;
     // No min-cycle-age filter (was 7h until 2026-05-06). AWS publishes a cycle's

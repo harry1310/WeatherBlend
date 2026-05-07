@@ -276,9 +276,13 @@ public class Exact12hFeatureBuilderTests
     [Fact]
     public void UkvPicksForLead_unsupported_target_throws_under_both_strategies()
     {
+        // Picker tables now cover {12, 24, 48} for Strict and
+        // {12, 24, 48, 72} for Averaging. Lead 96+ is unsupported by
+        // either strategy (Strict caps at UKV's T+54h horizon; Averaging
+        // would need a backfill of leads {93, 99} from cycles 3/15Z).
         foreach (var strategy in new[] { Exact12hFeatureBuilder.UkvPickStrategy.Strict, Exact12hFeatureBuilder.UkvPickStrategy.Averaging })
         {
-            var ex = Record.Exception(() => Exact12hFeatureBuilder.UkvPicksForLead(48, strategy));
+            var ex = Record.Exception(() => Exact12hFeatureBuilder.UkvPicksForLead(96, strategy));
             ex.Should().BeOfType<ArgumentException>($"strategy={strategy} should reject unsupported lead");
         }
     }
