@@ -61,10 +61,22 @@ public static class PrecipExactFeatureBuilder
         DateOnly StartDate,
         string Description);
 
-    /// <summary>One tier for the first cut — same shape as the temperature
-    /// T2: GFS required, IFS + MO Global optional. (No T1 since "all 3
-    /// required" would force MO Global which restricts ValidTimes to {00,12}
-    /// — same constraint as temp T1, exposed via test if interesting.)</summary>
+    /// <summary>Two precip tiers, used as champion/challenger:
+    ///   * <b>P1</b> — GFS + IFS + AIFS required, MO Global optional. Original
+    ///     1-tier definition, mirrors temp 2d T2.
+    ///   * <b>P2</b> — GFS + AIFS required, MO Global optional. Drops IFS
+    ///     entirely (and is paired with includeUkv=false for the bake-off
+    ///     against P1). Added 2026-05-07 after the IFS scda backfill
+    ///     produced a uniform regression at every (station, lead) cell when
+    ///     the 3d retrain ingested it — raw 0.25° IFS precip carries an
+    ///     elevation/grid bias at Bonehill (393m tor) that the blender
+    ///     learns to weight more as IFS coverage densifies, and that
+    ///     hurts test Brier. The temp 2d retrain on the SAME data
+    ///     improved (-4.5% MAE), so the bias is precip-specific, not a
+    ///     general scda problem. P2 lets us isolate whether removing
+    ///     IFS recovers the previous Brier and, if so, whether re-adding
+    ///     UKV (2km grid — least elevation bias of the raw S3 sources)
+    ///     buys back any of the dropped IFS contribution.</summary>
     public static readonly IReadOnlyList<TierSpec> AllTiers = new[]
     {
         new TierSpec(
@@ -73,6 +85,13 @@ public static class PrecipExactFeatureBuilder
             Optional: new[] { "met_office_global" },
             StartDate: new DateOnly(2024, 5, 4),
             Description: "GFS + IFS + AIFS required, MO Global optional. From 2024-05-04 (MO Global archive start). Mirrors temp 2d T2."),
+
+        new TierSpec(
+            Name: "P2",
+            Required: new[] { "gfs_ncep", "ecmwf_aifs_oper" },
+            Optional: new[] { "met_office_global" },
+            StartDate: new DateOnly(2024, 5, 4),
+            Description: "GFS + AIFS required, MO Global optional. IFS dropped — bake-off challenger to P1 after the 2026-05-07 IFS scda regression."),
     };
 
     public static TierSpec GetTier(string name) =>

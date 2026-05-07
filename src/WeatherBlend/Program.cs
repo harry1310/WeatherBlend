@@ -506,9 +506,17 @@ public static class Program
             name: "--feature-set",
             description: "Temperature target only: 'lean' (Phase 2b — 13 features) or 'rich' (Phase 2c — 88 features incl. per-model dew/RH/cloud/wind/pressure secondaries).",
             getDefaultValue: () => "lean");
+        var tierOpt = new Option<string?>(
+            name: "--tier",
+            description: "Exact-runtime only: model-set tier name. Temperature: T1/T2/T3 (default T2). Precipitation: P1/P2 (default P1; P2 drops IFS).",
+            getDefaultValue: () => null);
+        var includeUkvOpt = new Option<bool?>(
+            name: "--include-ukv",
+            description: "Exact-runtime only: include UKV column in feature vector (default true). Pass --include-ukv false to exclude.",
+            getDefaultValue: () => null);
         var train = new Command("train", "Train the blender (phase 2b temperature / phase 3a precipitation / phase 3b dry-window)")
         {
-            targetOpt, leadOpt, stationOpt, windowOpt, featureSetOpt,
+            targetOpt, leadOpt, stationOpt, windowOpt, featureSetOpt, tierOpt, includeUkvOpt,
         };
         train.SetHandler(async (ctx) =>
         {
@@ -517,8 +525,10 @@ public static class Program
             var station = ctx.ParseResult.GetValueForOption(stationOpt);
             var window = ctx.ParseResult.GetValueForOption(windowOpt);
             var featureSet = ctx.ParseResult.GetValueForOption(featureSetOpt)!;
+            var tier = ctx.ParseResult.GetValueForOption(tierOpt);
+            var includeUkv = ctx.ParseResult.GetValueForOption(includeUkvOpt);
             var cmd = host.Services.GetRequiredService<TempTrainCommand>();
-            ctx.ExitCode = await cmd.RunAsync(target, lead, station, window, featureSet, ctx.GetCancellationToken());
+            ctx.ExitCode = await cmd.RunAsync(target, lead, station, window, featureSet, tier, includeUkv, ctx.GetCancellationToken());
         });
         root.AddCommand(train);
 
