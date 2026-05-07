@@ -514,9 +514,13 @@ public static class Program
             name: "--include-ukv",
             description: "Exact-runtime only: include UKV column in feature vector (default true). Pass --include-ukv false to exclude.",
             getDefaultValue: () => null);
+        var exactLeadsOpt = new Option<string?>(
+            name: "--leads",
+            description: "Exact-runtime only: comma-separated lead hours (default 12,24). E.g. --leads 48,72 for the long-range bake-off vs 2b/3a.",
+            getDefaultValue: () => null);
         var train = new Command("train", "Train the blender (phase 2b temperature / phase 3a precipitation / phase 3b dry-window)")
         {
-            targetOpt, leadOpt, stationOpt, windowOpt, featureSetOpt, tierOpt, includeUkvOpt,
+            targetOpt, leadOpt, stationOpt, windowOpt, featureSetOpt, tierOpt, includeUkvOpt, exactLeadsOpt,
         };
         train.SetHandler(async (ctx) =>
         {
@@ -527,8 +531,11 @@ public static class Program
             var featureSet = ctx.ParseResult.GetValueForOption(featureSetOpt)!;
             var tier = ctx.ParseResult.GetValueForOption(tierOpt);
             var includeUkv = ctx.ParseResult.GetValueForOption(includeUkvOpt);
+            var exactLeadsStr = ctx.ParseResult.GetValueForOption(exactLeadsOpt);
+            int[]? exactLeads = string.IsNullOrWhiteSpace(exactLeadsStr) ? null
+                : exactLeadsStr.Split(',').Select(s => int.Parse(s.Trim(), System.Globalization.CultureInfo.InvariantCulture)).ToArray();
             var cmd = host.Services.GetRequiredService<TempTrainCommand>();
-            ctx.ExitCode = await cmd.RunAsync(target, lead, station, window, featureSet, tier, includeUkv, ctx.GetCancellationToken());
+            ctx.ExitCode = await cmd.RunAsync(target, lead, station, window, featureSet, tier, includeUkv, exactLeads, ctx.GetCancellationToken());
         });
         root.AddCommand(train);
 

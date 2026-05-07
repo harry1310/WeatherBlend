@@ -59,16 +59,23 @@ public sealed class TempTrainCommand
     }
 
     public Task<int> RunAsync(string target, string lead, string? station, string? window, string featureSet, CancellationToken ct)
-        => RunAsync(target, lead, station, window, featureSet, tier: null, includeUkv: null, ct);
+        => RunAsync(target, lead, station, window, featureSet, tier: null, includeUkv: null, exactLeads: null, ct);
+
+    public Task<int> RunAsync(
+        string target, string lead, string? station, string? window, string featureSet,
+        string? tier, bool? includeUkv, CancellationToken ct)
+        => RunAsync(target, lead, station, window, featureSet, tier, includeUkv, exactLeads: null, ct);
 
     public async Task<int> RunAsync(
         string target, string lead, string? station, string? window, string featureSet,
-        string? tier, bool? includeUkv, CancellationToken ct)
+        string? tier, bool? includeUkv, int[]? exactLeads, CancellationToken ct)
     {
-        // tier + includeUkv are exact-runtime levers (Phase 2d / 3d). Defaults
-        // (null, null) preserve historical behaviour: 2d picks T2+UKV, 3d
-        // picks P1+UKV. Bake-off variants pass non-default values to swap
-        // tiers (P1 vs P2 — drop IFS) or toggle UKV without code changes.
+        // tier + includeUkv + exactLeads are exact-runtime levers (Phase 2d /
+        // 3d). Defaults (null, null, null) preserve historical behaviour: 2d
+        // picks T2 + UKV + leads {12,24}; 3d picks P1 + UKV + leads {12,24}.
+        // Bake-off variants pass non-default values to swap tiers (P1 vs P2),
+        // toggle UKV, or extend leads to {48,72,96,120} for the long-range
+        // 2b/3a comparison without code changes.
         var t = target.ToLowerInvariant();
         var elementTarget = ElementTargets.TryFromCli(t);
         var validTargets = new[]
@@ -141,13 +148,13 @@ public sealed class TempTrainCommand
             "temperature"   => fs switch
             {
                 "rich"  => await RunPhase2cAsync(leads, ct),
-                "exact" => await RunPhase2dAsync(tier, includeUkv, ct),
+                "exact" => await RunPhase2dAsync(tier, includeUkv, exactLeads, ct),
                 _       => await RunPhase2bAsync(leads, ct),
             },
             "precipitation" => fs switch
             {
                 "rich"  => await RunPhase3cAsync(leads, station, ct),
-                "exact" => await RunPhase3dAsync(station, tier, includeUkv, ct),
+                "exact" => await RunPhase3dAsync(station, tier, includeUkv, exactLeads, ct),
                 _       => await RunPhase3aAsync(leads, station, ct),
             },
             // dry-window: lean → Phase 3b (53 features),
@@ -459,9 +466,9 @@ public sealed class TempTrainCommand
     /// </summary>
     private static readonly int[] DefaultPhase2dLeads = { 12, 24 };
 
-    private async Task<int> RunPhase2dAsync(string? tierName, bool? includeUkvOpt, CancellationToken ct)
+    private async Task<int> RunPhase2dAsync(string? tierName, bool? includeUkvOpt, int[]? exactLeads, CancellationToken ct)
     {
-        var leads = DefaultPhase2dLeads;
+        var leads = exactLeads is { Length: > 0 } ? exactLeads : DefaultPhase2dLeads;
         var now = DateTime.UtcNow;
         var modelsRoot = _cfg.Storage.ModelsPath;
         var versionDir = ModelArtifact.BuildVersionDir(modelsRoot, "temperature", now, suffix: "phase2d");
@@ -1041,7 +1048,7 @@ public sealed class TempTrainCommand
 
     private static readonly int[] DefaultPhase3dLeads = { 12, 24 };
 
-    private async Task<int> RunPhase3dAsync(string? stationOverride, string? tierName, bool? includeUkvOpt, CancellationToken ct)
+    private async Task<int> RunPhase3dAsync(string? stationOverride, string? tierName, bool? includeUkvOpt, int[]? exactLeads, CancellationToken ct)
     {
         if (_cfg.Location.Rainfall.Stations.Count == 0)
         {
@@ -1071,9 +1078,10 @@ public sealed class TempTrainCommand
         var hp = new PrecipOccurrenceTrainer.Hyperparameters();
         var tier = PrecipExactFeatureBuilder.AllTiers.First(t => t.Name == (tierName ?? "P1"));
         bool IncludeUkv = includeUkvOpt ?? true;
+        var leadsToTrain = exactLeads is { Length: > 0 } ? exactLeads : DefaultPhase3dLeads;
 
         _log.LogInformation("Phase 3d — exact-runtime precip blender (tier {Tier}, UKV={Ukv}), stations=[{Stations}], leads=[{Leads}]",
-            tier.Name, IncludeUkv, string.Join(", ", stationsToTrain), string.Join(",", DefaultPhase3dLeads));
+            tier.Name, IncludeUkv, string.Join(", ", stationsToTrain), string.Join(",", leadsToTrain));
         _log.LogInformation("Hyperparameters: iter={Iter} lr={Lr} leaves={Leaves} esr={Esr} seed={Seed} (3a defaults)",
             hp.NumberOfIterations, hp.LearningRate, hp.NumberOfLeaves, hp.EarlyStoppingRound, hp.Seed);
 
@@ -1081,7 +1089,7 @@ public sealed class TempTrainCommand
         foreach (var station in stationsToTrain)
         {
             ct.ThrowIfCancellationRequested();
-            var rc = await TrainPhase3dStationAsync(station, modelsRoot, tier, hp, IncludeUkv, ct);
+            var rc = await TrainPhase3dStationAsync(station, modelsRoot, tier, hp, IncludeUkv, leadsToTrain, ct);
             if (rc != 0) anyFail = true;
         }
         return anyFail ? 3 : 0;
@@ -1093,6 +1101,7 @@ public sealed class TempTrainCommand
         PrecipExactFeatureBuilder.TierSpec tier,
         PrecipOccurrenceTrainer.Hyperparameters hp,
         bool includeUkv,
+        int[] leadsToTrain,
         CancellationToken ct)
     {
         var stationSlug = StationSlug.WithEaPrefix(primaryStation);
@@ -1107,7 +1116,7 @@ public sealed class TempTrainCommand
         var specsPerLead = new Dictionary<int, BlenderSpec>();
         PrecipClimatology? climatology = null;
 
-        foreach (var lead in DefaultPhase3dLeads)
+        foreach (var lead in leadsToTrain)
         {
             ct.ThrowIfCancellationRequested();
             _log.LogInformation("--- Lead {Lead}h ---", lead);
