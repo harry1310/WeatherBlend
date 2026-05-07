@@ -71,29 +71,58 @@ public sealed class S3CollectCommand
             return 2;
         }
 
-        _log.LogInformation("S3 live collect — sources=[{Sources}]", string.Join(",", sources));
+        var distinct = sources.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        _log.LogInformation(
+            "S3 live collect — sources=[{Sources}] running in parallel (sequential per source)",
+            string.Join(",", distinct));
+        var t0 = DateTime.UtcNow;
 
-        var failures = 0;
-        foreach (var src in sources.Distinct(StringComparer.OrdinalIgnoreCase))
+        // Each source writes to its own model= partition (gfs_ncep,
+        // ecmwf_ifs_oper, ecmwf_aifs_oper, met_office_global,
+        // met_office_ukv) so there's no filesystem contention across sources.
+        // Within a source the per-cycle iteration stays sequential — the
+        // upstream collectors haven't been audited for thread safety on
+        // their internal HTTP/wgrib2/python state. Net effect: wall-clock
+        // ≈ slowest source instead of sum-of-all-sources. Each source is
+        // wrapped in its own try/catch so one source's outage doesn't fail
+        // the others (preserves the original per-source isolation).
+        var tasks = distinct.Select(src => Task.Run(async () =>
         {
-            ct.ThrowIfCancellationRequested();
+            var srcStart = DateTime.UtcNow;
             try
             {
+                ct.ThrowIfCancellationRequested();
                 var exit = await CollectOneAsync(src, ct);
+                var elapsed = DateTime.UtcNow - srcStart;
                 if (exit != 0)
                 {
-                    failures++;
-                    _log.LogWarning("Source {Src} returned non-zero exit {Exit}", src, exit);
+                    _log.LogWarning(
+                        "Source {Src} returned non-zero exit {Exit} after {Elapsed}",
+                        src, exit, elapsed);
+                    return 1;
                 }
+                _log.LogInformation("Source {Src} OK after {Elapsed}", src, elapsed);
+                return 0;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
-                failures++;
-                _log.LogError(ex, "Source {Src} threw — continuing with remaining sources.", src);
+                _log.LogError(ex,
+                    "Source {Src} threw after {Elapsed} — other sources continuing.",
+                    src, DateTime.UtcNow - srcStart);
+                return 1;
             }
-        }
+        }, ct)).ToArray();
 
-        _log.LogInformation("S3 live collect done — {N} source(s), {F} failure(s)", sources.Count, failures);
+        var results = await Task.WhenAll(tasks);
+        var failures = results.Sum();
+
+        _log.LogInformation(
+            "S3 live collect done in {Elapsed} — {N} source(s), {F} failure(s)",
+            DateTime.UtcNow - t0, distinct.Count, failures);
         return failures == 0 ? 0 : 1;
     }
 
