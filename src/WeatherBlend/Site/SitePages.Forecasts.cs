@@ -205,7 +205,7 @@ public static partial class SitePages
             FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
             FormatY = v => v.ToString("0.#", Ci) + "°",
             TodayLineX = input.GeneratedAtUtc.ToOADate(),
-            XMin = input.GeneratedAtUtc.AddDays(-7).ToOADate(),
+            XMin = input.GeneratedAtUtc.AddDays(-3).ToOADate(),
         }));
         return s.ToString();
     }
@@ -355,7 +355,7 @@ public static partial class SitePages
                 FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
                 FormatY = v => v.ToString("0.00", Ci),
                 TodayLineX = input.GeneratedAtUtc.ToOADate(),
-                XMin = input.GeneratedAtUtc.AddDays(-7).ToOADate(),
+                XMin = input.GeneratedAtUtc.AddDays(-3).ToOADate(),
             }));
 
             s.Append(RenderPrecipDailySummaryTable(latestPerValid));
@@ -401,7 +401,7 @@ public static partial class SitePages
                     FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
                     FormatY = v => v.ToString("0.0", Ci),
                     TodayLineX = input.GeneratedAtUtc.ToOADate(),
-                    XMin = input.GeneratedAtUtc.AddDays(-7).ToOADate(),
+                    XMin = input.GeneratedAtUtc.AddDays(-3).ToOADate(),
                 }));
             }
         }
@@ -504,7 +504,7 @@ public static partial class SitePages
             FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
             FormatY = v => v.ToString("0.00", Ci),
             TodayLineX = input.GeneratedAtUtc.ToOADate(),
-            XMin = input.GeneratedAtUtc.AddDays(-7).ToOADate(),
+            XMin = input.GeneratedAtUtc.AddDays(-3).ToOADate(),
         }));
         return s.ToString();
     }
