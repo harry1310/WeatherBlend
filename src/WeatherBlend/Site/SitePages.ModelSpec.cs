@@ -132,11 +132,21 @@ public static partial class SitePages
     ///     spec). The Strict-vs-Averaging distinction can't be read from the
     ///     tag alone, so we infer per-target: temp 2d uses Strict, precip 3d
     ///     uses Averaging (decision baked in 2026-05-06 bake-off).
+    ///
+    /// UKV-presence detection: the canonical signal is the `-ukv` suffix on
+    /// FeatureSet (e.g. `exact-l48-P1-ukv`). UKV is NOT listed in
+    /// <c>OptionalModels</c> in saved schemas — its value is read from the
+    /// (cycle, lead) picker tables and joined separately, so the row carries
+    /// a `precip_ukv` / `temp_ukv` column without met_office_ukv ever being
+    /// in the optional bucket. Earlier draft of this method (commit dce1d56)
+    /// checked OptionalModels for `met_office_ukv` and so always reported
+    /// "—" — visible on the live spec page as every UKV cell being a dash.
     /// </summary>
     private static (string Source, string UkvMode) InterpretFeatureSet(
         string featureSet, IReadOnlyList<string> optionalModels)
     {
-        var hasUkv = optionalModels.Any(m => m == "met_office_ukv");
+        var hasUkv = featureSet.EndsWith("-ukv", StringComparison.Ordinal)
+                     || featureSet.Contains("-ukv-", StringComparison.Ordinal);
         var source = featureSet.StartsWith("exact-", StringComparison.Ordinal)
             ? "Exact-runtime S3"
             : "Open-Meteo previous_runs";

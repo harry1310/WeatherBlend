@@ -7,6 +7,24 @@ namespace WeatherBlend.Site;
 public static partial class SitePages
 {
     /// <summary>
+    /// How many days of past valid-time history every forecast-page chart
+    /// shows before today. The four per-lead chart specs in this file
+    /// (temp + temp NWP overlay + rain + rain NWP overlay) all read the
+    /// same axis lower bound from <see cref="ForecastChartXMin"/>, so this
+    /// is the single knob to turn when tuning the historical context shown
+    /// alongside the forward forecast.
+    /// </summary>
+    private const int ForecastChartHistoryDays = 3;
+
+    /// <summary>
+    /// Lower bound (OADate) of the X axis on every forecast-page chart.
+    /// Computed once per render from <see cref="ForecastChartHistoryDays"/>
+    /// so the four chart sites can't drift on the window length.
+    /// </summary>
+    private static double ForecastChartXMin(SiteInputs input)
+        => input.GeneratedAtUtc.AddDays(-ForecastChartHistoryDays).ToOADate();
+
+    /// <summary>
     /// Forecasts pages, split per variable per lead since the 2026-05-04 site
     /// rework. The reader picks one of three variables in the variable sub-nav
     /// (Temperature / Rain / Dry window), then for temp + rain a per-lead
@@ -205,7 +223,7 @@ public static partial class SitePages
             FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
             FormatY = v => v.ToString("0.#", Ci) + "°",
             TodayLineX = input.GeneratedAtUtc.ToOADate(),
-            XMin = input.GeneratedAtUtc.AddDays(-3).ToOADate(),
+            XMin = ForecastChartXMin(input),
         }));
         return s.ToString();
     }
@@ -355,7 +373,7 @@ public static partial class SitePages
                 FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
                 FormatY = v => v.ToString("0.00", Ci),
                 TodayLineX = input.GeneratedAtUtc.ToOADate(),
-                XMin = input.GeneratedAtUtc.AddDays(-3).ToOADate(),
+                XMin = ForecastChartXMin(input),
             }));
 
             s.Append(RenderPrecipDailySummaryTable(latestPerValid));
@@ -401,7 +419,7 @@ public static partial class SitePages
                     FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
                     FormatY = v => v.ToString("0.0", Ci),
                     TodayLineX = input.GeneratedAtUtc.ToOADate(),
-                    XMin = input.GeneratedAtUtc.AddDays(-3).ToOADate(),
+                    XMin = ForecastChartXMin(input),
                 }));
             }
         }
@@ -504,7 +522,7 @@ public static partial class SitePages
             FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
             FormatY = v => v.ToString("0.00", Ci),
             TodayLineX = input.GeneratedAtUtc.ToOADate(),
-            XMin = input.GeneratedAtUtc.AddDays(-3).ToOADate(),
+            XMin = ForecastChartXMin(input),
         }));
         return s.ToString();
     }

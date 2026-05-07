@@ -1708,9 +1708,15 @@ public class SitePagesTests
                 Version: "v2026-05-07_125137_phase3d",
                 TrainedAtUtc: trained,
                 LeadHours: 48,
+                // Real-schema shape: UKV is signalled by the `-ukv` suffix on
+                // FeatureSet, NOT by being in OptionalModels (where it's
+                // never listed — UKV is a side-channel feature joined via
+                // the picker tables, not a normal NWP column). Earlier
+                // draft of this test had met_office_ukv in OptionalModels,
+                // which masked a renderer bug that always tagged UKV as "—".
                 FeatureSet: "exact-l48-P1-ukv",
                 RequiredModels: new[] { "gfs_ncep", "ecmwf_ifs_oper", "ecmwf_aifs_oper" },
-                OptionalModels: new[] { "met_office_global", "met_office_ukv" }),
+                OptionalModels: new[] { "met_office_global" }),
             new SitePages.FeatureSpecRow(
                 Composite: "temperature",
                 Phase: "2d",
@@ -1734,12 +1740,58 @@ public class SitePagesTests
         html.Should().Contain("Open-Meteo previous_runs");
         // Exact-runtime rows tagged as S3.
         html.Should().Contain("Exact-runtime S3");
-        // UKV averaging mode for the precip P-tier row.
+        // UKV averaging mode for the precip P-tier row (FeatureSet ends in
+        // `-ukv`). Regression check for the dce1d56 bug where every UKV
+        // cell rendered "—" because the renderer looked for met_office_ukv
+        // in OptionalModels (where it never appears) instead of the
+        // FeatureSet suffix.
         html.Should().Contain("Averaging");
         // NWP shorts in place — no raw IDs leaking through.
         html.Should().Contain("AIFS");
         html.Should().Contain("UKMO Global");
-        html.Should().Contain("UKV");
+    }
+
+    [Fact]
+    public void RenderModelsSpec_ukv_column_reads_featureset_suffix_not_optionalmodels()
+    {
+        // Tighter regression test for the dce1d56 dash bug. UKV is signalled
+        // by the FeatureSet's `-ukv` suffix and is NEVER in OptionalModels in
+        // real schemas — UKV's value is joined via the picker tables, not as
+        // a normal NWP column. Three rows: one P-tier with UKV (should read
+        // "Averaging"), one T-tier with UKV (should read "Strict"), one
+        // T-tier without UKV (should read "—").
+        var trained = new DateTime(2026, 5, 7, 0, 0, 0, DateTimeKind.Utc);
+        var rows = new[]
+        {
+            new SitePages.FeatureSpecRow(
+                Composite: "precipitation/ea_bellever_dartmoor",
+                Phase: "3d", Version: "v-precip-ukv", TrainedAtUtc: trained,
+                LeadHours: 24, FeatureSet: "exact-l24-P1-ukv",
+                RequiredModels: new[] { "gfs_ncep" },
+                OptionalModels: new[] { "met_office_global" }),
+            new SitePages.FeatureSpecRow(
+                Composite: "temperature",
+                Phase: "2d", Version: "v-temp-ukv", TrainedAtUtc: trained,
+                LeadHours: 12, FeatureSet: "exact-l12-T2-ukv",
+                RequiredModels: new[] { "gfs_ncep", "ecmwf_aifs_oper" },
+                OptionalModels: new[] { "ecmwf_ifs_oper" }),
+            new SitePages.FeatureSpecRow(
+                Composite: "temperature",
+                Phase: "2d", Version: "v-temp-noukv", TrainedAtUtc: trained,
+                LeadHours: 48, FeatureSet: "exact-l48-T2",
+                RequiredModels: new[] { "gfs_ncep", "ecmwf_aifs_oper" },
+                OptionalModels: new[] { "ecmwf_ifs_oper" }),
+        };
+
+        var input = MakeEmptyForecastInput() with { FeatureSpecRows = rows };
+        var html = SitePages.RenderModelsSpec(input);
+
+        // Each row should render its inferred UKV mode in the UKV cell.
+        // We assert on the surrounding <td> so a stray header "UKV" or
+        // unrelated dash can't satisfy the contains check.
+        html.Should().Contain("<td>Averaging</td>");
+        html.Should().Contain("<td>Strict</td>");
+        html.Should().Contain("<td>—</td>");
     }
 
     [Fact]
