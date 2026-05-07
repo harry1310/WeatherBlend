@@ -729,14 +729,38 @@ public static partial class SitePages
         /* Low-cloud / mist badge — slate pill in the tile header. Click to
            expand details (Pico <details>) listing which signal(s) fired and
            the per-NWP agreement count. Tap-friendly on mobile, no hover needed. */
-        details.low-cloud-pop { display: inline; }
+        /* Low-cloud and UTCI pop-outs both float their open panel ON TOP of
+           tile contents instead of expanding inline. Without this the
+           panel inside the tile <header> shoved the temperature / feels-
+           like / P(wet) rows down — tiles ended up different heights and
+           the row alignment broke. position:relative on the <details>
+           makes the inner panel's position:absolute anchor to it. The
+           panel is invisible by default; details[open] flips it to
+           visible. Click-to-toggle is the native <details> behaviour. */
+        details.low-cloud-pop { display: inline; position: relative; }
         details.low-cloud-pop > summary.low-cloud-badge { background: #455a64; color: #fff; font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 999px; cursor: pointer; white-space: nowrap; list-style: none; display: inline-block; }
         /* Kill BOTH native marker and Pico's ::after chevron — Pico v2 adds
            the chevron via a background-image on summary::after, which the
            webkit rule alone doesn't reach. User wants these as plain pills. */
         details.low-cloud-pop > summary.low-cloud-badge::-webkit-details-marker { display: none; }
         details.low-cloud-pop > summary.low-cloud-badge::after { display: none !important; content: none !important; }
-        details.low-cloud-pop > ul { margin: 0.4rem 0 0; padding-left: 1.1rem; font-size: 0.78rem; color: var(--pico-muted-color); }
+        details.low-cloud-pop > ul {
+          position: absolute;
+          top: calc(100% + 0.25rem);
+          left: 0;
+          z-index: 10;
+          margin: 0;
+          padding: 0.4rem 0.6rem 0.4rem 1.5rem;
+          font-size: 0.78rem;
+          color: var(--pico-muted-color);
+          background: var(--pico-card-background-color);
+          border: 1px solid var(--pico-card-border-color);
+          border-radius: 4px;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+          min-width: 14rem;
+          max-width: 18rem;
+          white-space: nowrap;
+        }
 
         /* Day-grouped home layout — one block per UTC day with a summary line
            above the per-hour tile grid. Top + bottom margin so days read as
@@ -750,13 +774,29 @@ public static partial class SitePages
            line. The panel itself opens below the tile contents (Pico handles
            the toggle) and shows a tight 2-column table of the element-blender
            values that fed UTCI. */
-        details.utci-pop { display: inline; margin-left: 0.25rem; }
+        details.utci-pop { display: inline; margin-left: 0.25rem; position: relative; }
         details.utci-pop summary { cursor: pointer; color: var(--pico-muted-color); font-size: 0.85rem; list-style: none; display: inline; }
         details.utci-pop summary::-webkit-details-marker { display: none; }
         /* Kill Pico v2's ::after chevron too — see low-cloud-pop. */
         details.utci-pop summary::after { display: none !important; content: none !important; }
         details.utci-pop[open] summary { color: var(--brand); }
-        .utci-pop-table { margin: 0.4rem 0 0.1rem; font-size: 0.78rem; width: 100%; }
+        /* Float the table on top of subsequent tile content (P(wet) row +
+           footer) for the same reason as low-cloud-pop's <ul> — keeps the
+           tile height stable when expanded so the grid stays aligned. */
+        .utci-pop-table {
+          position: absolute;
+          top: calc(100% + 0.25rem);
+          left: 0;
+          z-index: 10;
+          margin: 0;
+          font-size: 0.78rem;
+          background: var(--pico-card-background-color);
+          border: 1px solid var(--pico-card-border-color);
+          border-radius: 4px;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+          padding: 0.3rem 0.5rem;
+          min-width: 12rem;
+        }
         .utci-pop-table td { padding: 0.1rem 0.25rem; border: 0; }
 
         nav.lead-nav { margin: 0 0 1.25rem; padding: 0; }
