@@ -124,13 +124,27 @@ jobs:
         # don't re-write rows that are already there. (The collectors are
         # idempotent — they'd just overwrite — but pulling first means rclone
         # only pushes the *new* parquets at the end, which is much cheaper.)
+        #
+        # Each collector's per-cycle iteration is bounded to a 3-day rolling
+        # window, so the "already on disk" check only consults the last 3-5
+        # days of cycle dates. Pulling the full historical tree (~7k files
+        # across the 4 source models, ~2 min wall-clock) is wasted bytes —
+        # nothing older than 5 days back gets read or written this run.
+        # Filter to the last 5 cycle dates → a few dozen files, ~10-15s.
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
+          RECENT_INCLUDES=""
+          for i in $(seq 0 5); do
+            d=$(date -u -d "$i days ago" +%Y-%m-%d)
+            RECENT_INCLUDES="$RECENT_INCLUDES --include **/date=$d/**"
+          done
+
           for m in gfs_ncep ecmwf_ifs_oper ecmwf_aifs_oper met_office_global; do
             rclone copy "r2:${R2_BUCKET}/data/forecasts/location=bonehill_rocks/model=$m" \
               "data/forecasts/location=bonehill_rocks/model=$m" \
-              --fast-list --transfers 16 --checkers 32
+              --fast-list --transfers 16 --checkers 32 \
+              $RECENT_INCLUDES
           done
 
       - name: Build
