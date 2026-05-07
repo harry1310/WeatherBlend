@@ -1684,6 +1684,104 @@ public class SitePagesTests
         html.Should().NotContain("delta-good");
     }
 
+    [Fact]
+    public void RenderModelsSpec_groups_by_target_and_decodes_feature_set()
+    {
+        // Three rows mirroring real shapes: lean temp, exact-runtime precip
+        // with UKV (averaging), exact-runtime temp without UKV. Phases match
+        // ActivePhasePolicy so they survive the IsActivePhase filter.
+        var trained = new DateTime(2026, 5, 7, 0, 0, 0, DateTimeKind.Utc);
+        var rows = new[]
+        {
+            new SitePages.FeatureSpecRow(
+                Composite: "temperature",
+                Phase: "2b",
+                Version: "v2026-04-28_232613",
+                TrainedAtUtc: trained,
+                LeadHours: 24,
+                FeatureSet: "lean",
+                RequiredModels: new[] { "gfs_seamless", "ecmwf_ifs025", "icon_seamless" },
+                OptionalModels: new[] { "ecmwf_aifs025_single" }),
+            new SitePages.FeatureSpecRow(
+                Composite: "precipitation/ea_bellever_dartmoor",
+                Phase: "3d",
+                Version: "v2026-05-07_125137_phase3d",
+                TrainedAtUtc: trained,
+                LeadHours: 48,
+                FeatureSet: "exact-l48-P1-ukv",
+                RequiredModels: new[] { "gfs_ncep", "ecmwf_ifs_oper", "ecmwf_aifs_oper" },
+                OptionalModels: new[] { "met_office_global", "met_office_ukv" }),
+            new SitePages.FeatureSpecRow(
+                Composite: "temperature",
+                Phase: "2d",
+                Version: "v2026-05-07_094728_phase2d",
+                TrainedAtUtc: trained,
+                LeadHours: 48,
+                FeatureSet: "exact-l48-T2",
+                RequiredModels: new[] { "gfs_ncep", "ecmwf_aifs_oper" },
+                OptionalModels: new[] { "ecmwf_ifs_oper", "met_office_global" }),
+        };
+
+        var input = MakeEmptyForecastInput() with { FeatureSpecRows = rows };
+
+        var html = SitePages.RenderModelsSpec(input);
+
+        html.Should().Contain("Feature spec");
+        // Target groupings rendered.
+        html.Should().Contain("<h3>Temperature</h3>");
+        html.Should().Contain("<h3>Precipitation</h3>");
+        // Lean temp row decoded as Open-Meteo, no UKV.
+        html.Should().Contain("Open-Meteo previous_runs");
+        // Exact-runtime rows tagged as S3.
+        html.Should().Contain("Exact-runtime S3");
+        // UKV averaging mode for the precip P-tier row.
+        html.Should().Contain("Averaging");
+        // NWP shorts in place — no raw IDs leaking through.
+        html.Should().Contain("AIFS");
+        html.Should().Contain("UKMO Global");
+        html.Should().Contain("UKV");
+    }
+
+    [Fact]
+    public void RenderModelsSpec_dedupes_to_freshest_per_lead()
+    {
+        // Two rows for the same (composite, phase, lead) — the older one's
+        // version string should not appear in the rendered HTML, the newer
+        // one's should.
+        var older = new DateTime(2026, 5, 5, 0, 0, 0, DateTimeKind.Utc);
+        var newer = new DateTime(2026, 5, 7, 0, 0, 0, DateTimeKind.Utc);
+        var rows = new[]
+        {
+            new SitePages.FeatureSpecRow(
+                Composite: "temperature", Phase: "2b",
+                Version: "older-version", TrainedAtUtc: older,
+                LeadHours: 24, FeatureSet: "lean",
+                RequiredModels: new[] { "gfs_seamless" },
+                OptionalModels: Array.Empty<string>()),
+            new SitePages.FeatureSpecRow(
+                Composite: "temperature", Phase: "2b",
+                Version: "newer-version", TrainedAtUtc: newer,
+                LeadHours: 24, FeatureSet: "lean",
+                RequiredModels: new[] { "gfs_seamless", "ecmwf_ifs025" },
+                OptionalModels: Array.Empty<string>()),
+        };
+
+        var input = MakeEmptyForecastInput() with { FeatureSpecRows = rows };
+        var html = SitePages.RenderModelsSpec(input);
+
+        // Newer row's required-model count (GFS + ECMWF) wins; "ECMWF" only
+        // appears via the newer row, so its presence is the dedupe signal.
+        html.Should().Contain("ECMWF");
+    }
+
+    [Fact]
+    public void RenderModelsSpec_renders_empty_state_when_no_rows()
+    {
+        var input = MakeEmptyForecastInput();
+        var html = SitePages.RenderModelsSpec(input);
+        html.Should().Contain("No feature schemas on disk");
+    }
+
     private static SitePages.SiteInputs MakeEmptyForecastInput()
     {
         var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);

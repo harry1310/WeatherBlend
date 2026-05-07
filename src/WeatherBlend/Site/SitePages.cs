@@ -324,6 +324,18 @@ public static partial class SitePages
             = Array.Empty<ModelSummary>();
 
         /// <summary>
+        /// Auto-generated rows for the Models / Spec page. One row per
+        /// (composite, version, lead) triple loaded from each active version's
+        /// <c>feature_schema.json</c>. The renderer dedupes per
+        /// (composite, phase, lead) keeping the freshest <see cref="FeatureSpecRow.TrainedAtUtc"/>
+        /// so the table reads as "what's actually deployed at each lead today".
+        /// Empty list when no schemas are on disk (first-render); page degrades
+        /// to an empty-state message rather than crashing.
+        /// </summary>
+        public IReadOnlyList<FeatureSpecRow> FeatureSpecRows { get; init; }
+            = Array.Empty<FeatureSpecRow>();
+
+        /// <summary>
         /// Joined "feels-like" predictions per (lead, valid_time). Each row pairs the lean
         /// temperature blender output with the four element blenders (humidity / wind /
         /// shortwave radiation / cloud cover) at the same anchor and runs both Bröde 2012
@@ -434,6 +446,30 @@ public static partial class SitePages
         double BlendTestBias,
         int TestRows,
         int TestCalendarMonths);
+
+    /// <summary>
+    /// One row in the auto-generated feature spec table on the Models / Spec
+    /// page. Sourced from each Active version's <c>feature_schema.json</c> so
+    /// the table reflects deployed truth — when the table and the hand-edited
+    /// design doc disagree, the table is right by construction.
+    ///
+    /// <c>Composite</c> uses the same key the Models page uses
+    /// (<c>"temperature"</c>, <c>"precipitation/{station}"</c>,
+    /// <c>"dry_window/{station}/{N}h"</c>) so a future link from a card to
+    /// "show me this composite's spec" is a string match. <c>FeatureSet</c>
+    /// is the raw tag stored on disk (<c>"lean"</c>, <c>"exact-l24-T2"</c>,
+    /// <c>"exact-l48-P1-ukv"</c>); the renderer derives data-source label
+    /// + UKV mode from the tag prefix / suffix rather than re-storing them.
+    /// </summary>
+    public sealed record FeatureSpecRow(
+        string Composite,
+        string Phase,
+        string Version,
+        DateTime TrainedAtUtc,
+        int LeadHours,
+        string FeatureSet,
+        IReadOnlyList<string> RequiredModels,
+        IReadOnlyList<string> OptionalModels);
 
     /// <summary>One per (Phase, LeadHours, day-end) rolling-MAE point.
     /// Grouped on <c>Phase</c> rather than <c>ModelVersion</c> so a retrain

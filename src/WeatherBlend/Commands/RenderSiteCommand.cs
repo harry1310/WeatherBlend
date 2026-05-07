@@ -198,6 +198,8 @@ public sealed class RenderSiteCommand
             StringComparer.Ordinal);
         var modelSummaries = LoadModelSummaries(predictions, precip, dryWindow, activeStationSlugs);
         _log.LogInformation("Loaded {N} model summaries for Models page.", modelSummaries.Count);
+        var featureSpecRows = LoadFeatureSpecRows(predictions, precip, dryWindow, activeStationSlugs, modelSummaries);
+        _log.LogInformation("Loaded {N} feature spec rows for Spec page.", featureSpecRows.Count);
 
         var input = new SitePages.SiteInputs
         {
@@ -228,6 +230,7 @@ public sealed class RenderSiteCommand
             PrecipChampionByStationLead = precipChampionByStationLead,
             ActiveStationSlugs = activeStationSlugs,
             ModelSummaries = modelSummaries,
+            FeatureSpecRows = featureSpecRows,
             FeelsLikePredictions = feelsLike,
             StartHourPredictions = startHour,
             MetOfficeSpotForecasts = metOfficeSpot,
@@ -274,6 +277,12 @@ public sealed class RenderSiteCommand
         await File.WriteAllTextAsync(Path.Combine(outputDir, "models-temp.html"),       SitePages.RenderModels(input, "temperature"),   ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "models-rain.html"),       SitePages.RenderModels(input, "precipitation"), ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "models-dry-window.html"), SitePages.RenderModels(input, "dry_window"),    ct);
+        // Auto-generated feature spec — single source of truth for "what NWPs
+        // feed each blender at each lead", read directly from each Active
+        // version's feature_schema.json. Sits as the 4th tab on the Models
+        // sub-nav; replaces hand-edited docs/MODEL_SPEC.md as the canonical
+        // reference (the doc remains as design intent / commentary).
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "models-spec.html"),       SitePages.RenderModelsSpec(input),              ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "about.html"),         SitePages.RenderAbout(input),          ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "styles.css"),         SitePages.Stylesheet(),                ct);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "chart.js"),           SitePages.ChartScript(),               ct);
@@ -388,6 +397,99 @@ public sealed class RenderSiteCommand
         }
 
         return summaries;
+    }
+
+    /// <summary>
+    /// Walk every (composite, version) that emitted predictions in the window
+    /// and load each version's <c>feature_schema.json</c> via
+    /// <see cref="ModelArtifact.LoadBlenderSpecs"/>. Joins each row with the
+    /// <see cref="SitePages.ModelSummary"/> already-loaded to pull
+    /// <c>Phase</c> + <c>TrainedAtUtc</c> without re-reading
+    /// <c>training_metadata.json</c>. Same active-station gating as
+    /// <see cref="LoadModelSummaries"/> so a demoted station doesn't appear
+    /// on the Spec page either. Schema-load failures are logged and skipped —
+    /// a missing schema disqualifies just that one (composite, version) row,
+    /// not the whole page.
+    /// </summary>
+    private IReadOnlyList<SitePages.FeatureSpecRow> LoadFeatureSpecRows(
+        IReadOnlyList<TempPredictionRow> predictions,
+        IReadOnlyList<SitePages.PrecipForecastPoint> precip,
+        IReadOnlyList<SitePages.DryWindowForecastPoint> dryWindow,
+        IReadOnlySet<string> activeStationSlugs,
+        IReadOnlyList<SitePages.ModelSummary> summaries)
+    {
+        var modelsRoot = _cfg.Storage.ModelsPath;
+        var rows = new List<SitePages.FeatureSpecRow>();
+        // Index summaries by (composite, version) so we can carry phase +
+        // trained-at without re-parsing training_metadata.json. Versions
+        // that emitted predictions but have no metadata on disk are skipped
+        // here too — the Spec table needs the phase string to group by.
+        var byKey = summaries.ToDictionary(s => (s.Composite, s.Version));
+
+        void Add(string composite, string version)
+        {
+            if (!byKey.TryGetValue((composite, version), out var summary)) return;
+            var dir = composite switch
+            {
+                "temperature" => Path.Combine(modelsRoot, "temperature", version),
+                _ when composite.StartsWith("precipitation/", StringComparison.Ordinal) =>
+                    Path.Combine(modelsRoot, "precipitation",
+                        composite["precipitation/".Length..], version),
+                _ when composite.StartsWith("dry_window/", StringComparison.Ordinal) =>
+                    // dry_window/{station}/{N}h
+                    BuildDryWindowDir(modelsRoot, composite, version),
+                _ => null,
+            };
+            if (dir is null || !Directory.Exists(dir)) return;
+            try
+            {
+                var specs = ModelArtifact.LoadBlenderSpecs(dir);
+                foreach (var (lead, spec) in specs)
+                {
+                    rows.Add(new SitePages.FeatureSpecRow(
+                        Composite: composite,
+                        Phase: summary.Phase,
+                        Version: version,
+                        TrainedAtUtc: summary.TrainedAtUtc,
+                        LeadHours: lead,
+                        FeatureSet: spec.FeatureSet,
+                        RequiredModels: spec.RequiredModels.ToArray(),
+                        OptionalModels: spec.OptionalModels.ToArray()));
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning("Skipping feature spec for {Composite}/{Version}: {Msg}",
+                    composite, version, ex.Message);
+            }
+        }
+
+        foreach (var v in predictions.Select(p => p.ModelVersion).Distinct())
+            Add("temperature", v);
+
+        foreach (var (station, version) in precip.Select(p => (p.Station, p.Version)).Distinct())
+        {
+            if (activeStationSlugs.Count > 0 && !activeStationSlugs.Contains(station)) continue;
+            Add($"precipitation/{station}", version);
+        }
+
+        foreach (var (station, window, version) in dryWindow.Select(d => (d.Station, d.WindowHours, d.Version)).Distinct())
+        {
+            if (activeStationSlugs.Count > 0 && !activeStationSlugs.Contains(station)) continue;
+            Add($"dry_window/{station}/{window}h", version);
+        }
+
+        return rows;
+    }
+
+    private static string BuildDryWindowDir(string modelsRoot, string composite, string version)
+    {
+        // "dry_window/{station}/{N}h" → modelsRoot/dry_window/{station}/window_{N}h/{version}
+        var parts = composite.Split('/');
+        if (parts.Length != 3) return string.Empty;
+        var station = parts[1];
+        var window = parts[2]; // e.g. "6h"
+        return Path.Combine(modelsRoot, "dry_window", station, $"window_{window}", version);
     }
 
     private SitePages.ModelSummary? TryLoadSummary(string versionDir, string composite, string version, string metricLabel)

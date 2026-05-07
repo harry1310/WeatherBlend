@@ -122,6 +122,7 @@ public static partial class SitePages
             ("temp",       "models-temp.html",       "Temperature"),
             ("rain",       "models-rain.html",       "Rain"),
             ("dry-window", "models-dry-window.html", "Dry window"),
+            ("spec",       "models-spec.html",       "Spec"),
         };
         var s = new StringBuilder();
         s.Append("<nav class=\"lead-nav\"><ul>");
