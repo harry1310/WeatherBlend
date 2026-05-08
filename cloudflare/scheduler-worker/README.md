@@ -80,7 +80,7 @@ cloudflare/scheduler-worker/
 
 ## Required secrets
 
-The Worker reads three secrets at fire time. Set them via **wrangler** or the
+The Worker reads four secrets at fire time. Set them via **wrangler** or the
 Cloudflare dashboard (**Workers & Pages → weatherblend-scheduler → Settings →
 Variables and Secrets**):
 
@@ -89,6 +89,7 @@ Variables and Secrets**):
 | `GH_APP_ID` | The App ID (top of the GitHub App's settings page; integer). |
 | `GH_APP_INSTALLATION_ID` | The Installation ID (visible in the install URL `/installations/<n>`; integer). |
 | `GH_APP_PRIVATE_KEY` | Full contents of the `.pem` file generated when you created the App. PKCS#1 (`BEGIN RSA PRIVATE KEY`) or PKCS#8 (`BEGIN PRIVATE KEY`) both work — the Worker handles either format. |
+| `GH_WEBHOOK_SECRET` | Random secret (32+ bytes) shared between the Worker and each repo's `workflow_run` webhook. Used to HMAC-verify webhook deliveries. Generate with `openssl rand -hex 32` or similar; configure the same value in every repo's webhook config (Settings → Webhooks → Secret). One value across both repos is fine — each webhook signs its own POSTs and the Worker verifies per-request. |
 
 Plain (non-secret) configuration lives in `wrangler.toml` under `[vars]`:
 
@@ -102,9 +103,44 @@ via `WORKFLOW_FOR_CRON` in `src/index.ts` (see "Adding a new schedule" above).
 
 ## Required GitHub App permissions
 
-When creating the App: **Repository permissions → Actions → Read and write**.
-That's the only permission needed. Webhooks unchecked. Install on the
-WeatherBlend repo only.
+The App needs **Repository permissions** for the Worker's two responsibilities
+(workflow dispatch + CI-failure issue management):
+
+| Permission | Access | Why |
+|------------|--------|-----|
+| Actions | Read and write | Dispatch workflow runs (`POST /actions/workflows/{file}/dispatches`). |
+| Issues | Read and write | Open / comment on / close `[ci-fail]` issues from the `workflow_run` webhook handler (added 2026-05-08). |
+
+Webhooks (App-level) unchecked. Install on every repo whose workflows the
+Worker needs to act on — currently **WeatherBlend** + **WeatherProbabilistic**.
+
+## GitHub `workflow_run` webhooks (one per monitored repo)
+
+In addition to dispatching workflows, the Worker now consumes the GitHub
+`workflow_run` webhook event to open / auto-close `[ci-fail]` issues per
+repo. **Each monitored repo configures its own webhook** pointing at the
+same Worker endpoint — one Worker, many sources.
+
+Configure on each repo (Settings → Webhooks → Add webhook):
+
+| Field | Value |
+|-------|-------|
+| Payload URL | `https://weatherblend-scheduler.rhcslater.workers.dev/github-webhook` |
+| Content type | `application/json` |
+| Secret | the `GH_WEBHOOK_SECRET` value from the Worker config (same value in every repo's webhook). |
+| SSL verification | Enable. |
+| Which events | "Let me select individual events" → tick **Workflow runs** only. |
+| Active | ✓ |
+
+Repos to configure today: **WeatherBlend** + **WeatherProbabilistic**. Add a
+webhook to any new repo whose CI failures you want to be alerted to —
+no Worker code change needed.
+
+The handler opens `[ci-fail] <workflow-name>` issues with label `ci-failure`
+on `conclusion = failure | timed_out | startup_failure`. Successive failures
+of the same workflow append a comment rather than spawning a new issue. On
+`conclusion = success`, the matching open issue auto-closes with a "now
+passing" comment. `cancelled` and `skipped` runs are ignored.
 
 ## Deploy
 

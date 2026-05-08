@@ -65,6 +65,13 @@ export interface Env {
   GH_APP_PRIVATE_KEY: string;
   GH_REPO: string;
   GH_REF: string;
+  /** Shared HMAC secret configured on the GitHub `workflow_run` webhook for
+   * the repos we monitor (WeatherBlend + WeatherProbabilistic). Set via
+   * `wrangler secret put GH_WEBHOOK_SECRET`. The same value goes into each
+   * repo's webhook config (Settings → Webhooks → Add webhook → Secret).
+   * One secret across both repos is fine; each webhook signs its own POSTs
+   * and we verify the signature in handleWebhook below. */
+  GH_WEBHOOK_SECRET: string;
 }
 
 export default {
@@ -128,13 +135,325 @@ export default {
         return new Response(`error: ${message}\n`, { status: 500 });
       }
     }
+    // GitHub `workflow_run` webhook → open / close a CI-failure issue in
+    // the repo where the workflow ran. One endpoint serves all repos that
+    // configure a webhook pointing at it (WeatherBlend +
+    // WeatherProbabilistic at the time of writing). See handleWorkflowRun
+    // below for the open/auto-close behaviour.
+    if (url.pathname === "/github-webhook" && request.method === "POST") {
+      return await handleWebhook(request, env);
+    }
     return new Response(
       `weatherblend-scheduler — POST /dispatch?workflow=<filename> to fire manually.\n` +
+      `POST /github-webhook for GitHub workflow_run events (HMAC-signed).\n` +
       `Known workflows: ${[...knownWorkflows.keys()].join(", ")}\n`,
       { status: 200 },
     );
   },
 };
+
+// ---- GitHub workflow_run webhook ------------------------------------------
+
+/**
+ * Handle a GitHub webhook delivery. Verifies the HMAC signature against
+ * `GH_WEBHOOK_SECRET`, parses the event, and dispatches `workflow_run`
+ * completions to <see cref="handleWorkflowRun"/>. Other event types are
+ * ignored (returning 200) so we don't 4xx GitHub when it sends events we
+ * don't care about (e.g. `ping` on initial webhook setup).
+ */
+async function handleWebhook(request: Request, env: Env): Promise<Response> {
+  const eventName = request.headers.get("X-GitHub-Event") ?? "";
+  const signature = request.headers.get("X-Hub-Signature-256") ?? "";
+  // Read body as text first so we can verify the signature against the EXACT
+  // bytes GitHub sent. JSON-parsing first would lose whitespace and make the
+  // HMAC comparison fail.
+  const body = await request.text();
+
+  if (!signature) {
+    return new Response("missing X-Hub-Signature-256\n", { status: 401 });
+  }
+  const ok = await verifyWebhookSignature(env.GH_WEBHOOK_SECRET, body, signature);
+  if (!ok) {
+    console.warn(`webhook: signature mismatch (event=${eventName})`);
+    return new Response("signature mismatch\n", { status: 401 });
+  }
+
+  // GitHub fires a `ping` on webhook creation — acknowledge it so the UI
+  // shows the green "Last delivery" tick. No payload action needed.
+  if (eventName === "ping") {
+    return new Response("pong\n", { status: 200 });
+  }
+
+  if (eventName !== "workflow_run") {
+    // We only subscribe to `workflow_run` in the webhook config, but in
+    // case someone widens the subscription, ignore other events
+    // gracefully rather than 400.
+    return new Response(`ignored: event=${eventName}\n`, { status: 200 });
+  }
+
+  let payload: WorkflowRunPayload;
+  try {
+    payload = JSON.parse(body) as WorkflowRunPayload;
+  } catch (e) {
+    console.warn(`webhook: malformed JSON: ${e}`);
+    return new Response("malformed JSON\n", { status: 400 });
+  }
+
+  try {
+    const summary = await handleWorkflowRun(env, payload);
+    return new Response(`${summary}\n`, { status: 200 });
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error(`webhook: handleWorkflowRun failed: ${message}`);
+    return new Response(`handler error: ${message}\n`, { status: 500 });
+  }
+}
+
+/**
+ * Open / close a CI-failure issue based on a `workflow_run` event.
+ *
+ * Algorithm:
+ *   - Only act on `action = completed`. In-progress runs are noise.
+ *   - Compute issueTitle = "[ci-fail] {workflow_name}". Per-repo issues —
+ *     same workflow name in two repos files into each repo independently
+ *     because the issue API call uses payload.repository.full_name.
+ *   - On `conclusion = failure | timed_out | startup_failure`:
+ *       Look up open issues with label `ci-failure` matching the title.
+ *       If none → create a new issue assigned to the repo owner.
+ *       If one exists → comment on it with the new failure's run URL.
+ *   - On `conclusion = success`:
+ *       Look up open issues with the same title.
+ *       If any → close them with a "now passing" comment.
+ *   - Other conclusions (cancelled, skipped, neutral) are ignored — they
+ *     usually mean someone deliberately stopped the run, not a real fault.
+ */
+async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise<string> {
+  if (payload.action !== "completed") {
+    return `ignored: action=${payload.action}`;
+  }
+  const repo = payload.repository.full_name;
+  const wfRun = payload.workflow_run;
+  const wfName = wfRun.name;
+  const conclusion = wfRun.conclusion;
+  const runUrl = wfRun.html_url;
+  const branch = wfRun.head_branch ?? "(unknown)";
+  const sha = (wfRun.head_sha ?? "").slice(0, 7);
+
+  const issueTitle = `[ci-fail] ${wfName}`;
+  const failureConclusions = new Set(["failure", "timed_out", "startup_failure"]);
+  const isFailure = conclusion !== null && failureConclusions.has(conclusion);
+  const isSuccess = conclusion === "success";
+
+  if (!isFailure && !isSuccess) {
+    return `ignored: conclusion=${conclusion}`;
+  }
+
+  // Mint a fresh installation token for the target repo. Same App auth
+  // path used by dispatchWorkflow; works for any repo where the App is
+  // installed (WeatherBlend + WeatherProbabilistic both qualify).
+  const jwt = await mintAppJwt(env.GH_APP_ID, env.GH_APP_PRIVATE_KEY);
+  const installationToken = await exchangeForInstallationToken(jwt, env.GH_APP_INSTALLATION_ID);
+
+  // Search for existing OPEN issues with this exact title + label.
+  // GitHub's issue search API is eventual-consistency on indexing — for
+  // the open/close flow we want strict consistency, so use the per-repo
+  // issues list endpoint with state=open + labels filter instead.
+  const existing = await listOpenCiFailureIssues(installationToken, repo);
+  const matching = existing.filter((i) => i.title === issueTitle);
+
+  if (isFailure) {
+    if (matching.length === 0) {
+      const body = renderFailureIssueBody(wfName, branch, sha, runUrl, payload.workflow_run.run_number);
+      await createIssue(installationToken, repo, issueTitle, body, ["ci-failure"]);
+      return `opened issue [${repo}] ${issueTitle}`;
+    } else {
+      // Already an open issue — append a comment so consecutive failures
+      // accumulate context without spamming new issues.
+      const body = renderFailureCommentBody(branch, sha, runUrl, payload.workflow_run.run_number);
+      await commentOnIssue(installationToken, repo, matching[0].number, body);
+      return `commented on issue [${repo}] #${matching[0].number}`;
+    }
+  }
+
+  // Success path — close any open ci-failure issue for this workflow.
+  if (matching.length === 0) {
+    return `success but no open issue to close [${repo}] ${issueTitle}`;
+  }
+  const body = `Workflow now passing on \`${branch}\` @ \`${sha}\` — closing.\n\nRun: ${runUrl}`;
+  await commentOnIssue(installationToken, repo, matching[0].number, body);
+  await closeIssue(installationToken, repo, matching[0].number);
+  return `closed issue [${repo}] #${matching[0].number}`;
+}
+
+/** GitHub Issue (subset of fields we use). */
+interface GitHubIssue {
+  number: number;
+  title: string;
+  labels: { name: string }[];
+}
+
+/** GitHub `workflow_run` webhook payload (subset). Full schema:
+ * https://docs.github.com/en/webhooks/webhook-events-and-payloads#workflow_run */
+interface WorkflowRunPayload {
+  action: "requested" | "in_progress" | "completed" | string;
+  workflow_run: {
+    id: number;
+    name: string;
+    run_number: number;
+    head_branch: string | null;
+    head_sha: string | null;
+    conclusion: "success" | "failure" | "cancelled" | "skipped" | "timed_out" | "neutral" | "startup_failure" | null;
+    html_url: string;
+  };
+  repository: {
+    full_name: string;
+    name: string;
+    owner: { login: string };
+  };
+}
+
+async function listOpenCiFailureIssues(token: string, repo: string): Promise<GitHubIssue[]> {
+  const url = `https://api.github.com/repos/${repo}/issues?state=open&labels=ci-failure&per_page=100`;
+  const response = await fetch(url, {
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Accept": "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "weatherblend-scheduler",
+    },
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`list issues failed: ${response.status} ${response.statusText} — ${body}`);
+  }
+  return (await response.json()) as GitHubIssue[];
+}
+
+async function createIssue(
+  token: string, repo: string, title: string, body: string, labels: string[],
+): Promise<void> {
+  const url = `https://api.github.com/repos/${repo}/issues`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Accept": "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "weatherblend-scheduler",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ title, body, labels }),
+  });
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`create issue failed: ${response.status} ${response.statusText} — ${errText}`);
+  }
+}
+
+async function commentOnIssue(
+  token: string, repo: string, issueNumber: number, body: string,
+): Promise<void> {
+  const url = `https://api.github.com/repos/${repo}/issues/${issueNumber}/comments`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Accept": "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "weatherblend-scheduler",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ body }),
+  });
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`comment failed: ${response.status} ${response.statusText} — ${errText}`);
+  }
+}
+
+async function closeIssue(token: string, repo: string, issueNumber: number): Promise<void> {
+  const url = `https://api.github.com/repos/${repo}/issues/${issueNumber}`;
+  const response = await fetch(url, {
+    method: "PATCH",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Accept": "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "weatherblend-scheduler",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ state: "closed", state_reason: "completed" }),
+  });
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`close issue failed: ${response.status} ${response.statusText} — ${errText}`);
+  }
+}
+
+function renderFailureIssueBody(
+  wfName: string, branch: string, sha: string, runUrl: string, runNumber: number,
+): string {
+  return [
+    `Workflow **${wfName}** failed.`,
+    ``,
+    `- Branch: \`${branch}\``,
+    `- Commit: \`${sha}\``,
+    `- Run #${runNumber}: ${runUrl}`,
+    ``,
+    `This issue auto-closes when the same workflow next succeeds. Subsequent`,
+    `failures of this workflow append a comment here rather than opening a`,
+    `new issue.`,
+  ].join("\n");
+}
+
+function renderFailureCommentBody(
+  branch: string, sha: string, runUrl: string, runNumber: number,
+): string {
+  return [
+    `Another failure on \`${branch}\` @ \`${sha}\`.`,
+    ``,
+    `Run #${runNumber}: ${runUrl}`,
+  ].join("\n");
+}
+
+async function verifyWebhookSignature(
+  secret: string, body: string, signatureHeader: string,
+): Promise<boolean> {
+  // GitHub format: "sha256=<hex>"
+  const expected = "sha256=";
+  if (!signatureHeader.startsWith(expected)) return false;
+  const providedHex = signatureHeader.slice(expected.length);
+
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sigBytes = await crypto.subtle.sign("HMAC", key, enc.encode(body));
+  const computedHex = bytesToHex(new Uint8Array(sigBytes));
+
+  // Constant-time-ish compare. JS string ===  isn't strictly constant-time
+  // but we're verifying a single signature per request and the timing
+  // signal is masked by network noise — defensive enough for this
+  // attack surface (a 256-bit secret kept off the public web).
+  if (computedHex.length !== providedHex.length) return false;
+  let diff = 0;
+  for (let i = 0; i < computedHex.length; i++) {
+    diff |= computedHex.charCodeAt(i) ^ providedHex.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  let hex = "";
+  for (let i = 0; i < bytes.length; i++) {
+    hex += bytes[i].toString(16).padStart(2, "0");
+  }
+  return hex;
+}
 
 // ---- workflow dispatch ----------------------------------------------------
 
