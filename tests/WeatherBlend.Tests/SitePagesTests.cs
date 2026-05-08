@@ -1870,6 +1870,105 @@ public class SitePagesTests
     }
 
     [Fact]
+    public void RenderModelsSpec_reads_structured_fields_when_present()
+    {
+        // Phase 2 of the structured-spec migration — when DataSource +
+        // UkvStrategy are populated on the row (which they are for any
+        // schema written post-Phase-1, 2026-05-07+), the renderer reads
+        // them directly without parsing the FeatureSet string. This test
+        // sets DataSource to a known value and FeatureSet to a value that
+        // would WRONGLY classify under legacy inference — proving the
+        // structured fields take precedence.
+        var trained = new DateTime(2026, 5, 8, 0, 0, 0, DateTimeKind.Utc);
+        var rows = new[]
+        {
+            // FeatureSet "exact-l24-P1" would infer source=Exact-runtime
+            // and ukv=— under legacy. Structured fields say otherwise:
+            // OpenMeteoPreviousRuns + Strict. Renderer must trust the
+            // structured fields.
+            new SitePages.FeatureSpecRow(
+                Composite: "temperature", Phase: "2d", Version: "v-structured",
+                TrainedAtUtc: trained, LeadHours: 24, FeatureSet: "exact-l24-P1",
+                RequiredModels: new[] { "gfs_ncep" },
+                OptionalModels: Array.Empty<string>(),
+                FeatureNames: new[] { "temp_gfs", "temp_ukv", "temp_mean" },
+                DataSource: "open_meteo_previous_runs",
+                Tier: "T2",
+                UkvStrategy: "Strict"),
+        };
+
+        var input = MakeEmptyForecastInput() with { FeatureSpecRows = rows };
+        var html = SitePages.RenderModelsSpec(input);
+
+        // Structured DataSource wins over the misleading FeatureSet prefix.
+        html.Should().Contain("Open-Meteo previous_runs");
+        html.Should().NotContain("Exact-runtime S3");
+        // Structured UkvStrategy = "Strict" wins.
+        html.Should().Contain("<td>Strict</td>");
+    }
+
+    [Fact]
+    public void RenderModelsSpec_falls_back_to_inference_for_legacy_schemas()
+    {
+        // Legacy schemas (pre-2026-05-07) have empty DataSource. Renderer
+        // must fall back to the FeatureSet/FeatureNames inference path.
+        // This is a regression check: a refactor that drops the fallback
+        // would break every model version trained before Phase 1 landed
+        // (and there are dozens still in the predictions window).
+        var trained = new DateTime(2026, 5, 5, 0, 0, 0, DateTimeKind.Utc);
+        var rows = new[]
+        {
+            // Legacy: no DataSource, no UkvStrategy. FeatureSet says
+            // exact-l12-T2; FeatureNames has temp_ukv. Inference must
+            // produce Exact-runtime S3 + Strict.
+            new SitePages.FeatureSpecRow(
+                Composite: "temperature", Phase: "2d", Version: "v-legacy",
+                TrainedAtUtc: trained, LeadHours: 12, FeatureSet: "exact-l12-T2",
+                RequiredModels: new[] { "gfs_ncep", "ecmwf_aifs_oper" },
+                OptionalModels: new[] { "ecmwf_ifs_oper" },
+                FeatureNames: new[] { "temp_gfs", "temp_aifs", "temp_ukv" }
+                // DataSource defaults to "", UkvStrategy defaults to null.
+                ),
+        };
+
+        var input = MakeEmptyForecastInput() with { FeatureSpecRows = rows };
+        var html = SitePages.RenderModelsSpec(input);
+
+        html.Should().Contain("Exact-runtime S3");
+        html.Should().Contain("<td>Strict</td>");
+    }
+
+    [Fact]
+    public void RenderModelsSpec_structured_null_ukv_renders_dash_even_when_featurenames_has_temp_ukv()
+    {
+        // Edge case: structured says "no UKV here" (UkvStrategy=null with
+        // a non-empty DataSource — so we know it's a Phase-1+ schema), but
+        // the row's FeatureNames happens to include temp_ukv (e.g. a
+        // forgotten column from a copy-paste). The structured field is
+        // canonical — render "—", not "Strict". Without this rule the
+        // renderer would silently disagree with the trainer's intent.
+        var trained = new DateTime(2026, 5, 8, 0, 0, 0, DateTimeKind.Utc);
+        var rows = new[]
+        {
+            new SitePages.FeatureSpecRow(
+                Composite: "temperature", Phase: "2d", Version: "v-no-ukv",
+                TrainedAtUtc: trained, LeadHours: 72, FeatureSet: "exact-l72-T2",
+                RequiredModels: new[] { "gfs_ncep" },
+                OptionalModels: Array.Empty<string>(),
+                FeatureNames: new[] { "temp_gfs", "temp_ukv", "temp_mean" }, // stale column!
+                DataSource: "exact_runtime_s3",
+                Tier: "T2",
+                UkvStrategy: null), // trainer says no UKV
+        };
+
+        var input = MakeEmptyForecastInput() with { FeatureSpecRows = rows };
+        var html = SitePages.RenderModelsSpec(input);
+
+        html.Should().Contain("<td>—</td>");
+        html.Should().NotContain("<td>Strict</td>");
+    }
+
+    [Fact]
     public void RenderModelsSpec_optional_column_includes_UKV_when_used()
     {
         // The Optional column should list every feature the row treats as

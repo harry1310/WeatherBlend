@@ -1,5 +1,6 @@
 using System.Text;
 using WeatherBlend.Models;
+using WeatherBlend.Train.Common;
 
 namespace WeatherBlend.Site;
 
@@ -149,45 +150,62 @@ public static partial class SitePages
     }
 
     /// <summary>
-    /// Decode the row into two human columns:
-    ///   * data source — "Open-Meteo previous_runs" (lean / rich) vs
-    ///     "Exact-runtime S3" (exact-l*). FeatureSet prefix is reliable here.
-    ///   * UKV mode — "Strict" (cycles {0,6,12,18}Z, lead = target),
-    ///     "Averaging" (cycles {3,15}Z averaged across two leads), or "—"
-    ///     (UKV not in the spec).
+    /// Decode the row into two human columns: data source ("Open-Meteo
+    /// previous_runs" / "Exact-runtime S3") and UKV mode ("Strict" /
+    /// "Averaging" / "—").
     ///
-    /// UKV-presence detection: the canonical signal is `temp_ukv` (temp) or
-    /// `precip_ukv` (precip) in <c>FeatureNames</c>. UKV is joined via the
-    /// (cycle, lead) picker tables OUTSIDE the normal Required/Optional
-    /// buckets, so it never appears in <c>OptionalModels</c>. Some
-    /// FeatureSet tags carry a `-ukv` suffix (3d at 48/72) but others don't
-    /// (2d at 12/24) — that suffix is unreliable. FeatureNames is the only
-    /// truth.
+    /// Two paths:
+    /// 1. **Structured fields (Phase 2 — primary path).** When a row has
+    ///    a non-empty <see cref="FeatureSpecRow.DataSource"/> and the
+    ///    <see cref="FeatureSpecRow.UkvStrategy"/> is either set or null
+    ///    explicitly, the renderer reads the answers directly from these
+    ///    fields. No string parsing, no inference. This is the path every
+    ///    new training run (post-2026-05-07) takes.
+    /// 2. **Legacy inference (fallback).** When DataSource is empty
+    ///    (schemas predating the structured-spec migration), fall back to
+    ///    inferring from FeatureSet prefix + FeatureNames-contains-temp_ukv
+    ///    /precip_ukv. Same logic as before Phase 2 — preserved so old
+    ///    versions still in the predictions window render correctly.
     ///
-    /// Past failures of this function (so future me doesn't repeat):
-    ///   * commit dce1d56 — checked optionalModels for "met_office_ukv".
+    /// History of bugs in the legacy path that the structured fields
+    /// retire (so future me doesn't reintroduce them on a refactor):
+    ///   * commit dce1d56 — checked OptionalModels for "met_office_ukv".
     ///     Never present, so every cell rendered "—".
     ///   * commit 556e681 — checked FeatureSet for "-ukv" suffix. Hit 3d
-    ///     correctly but missed 2d (FeatureSet "exact-l12-T2", no suffix,
-    ///     temp_ukv IS in FeatureNames), so 2d still rendered "—".
-    ///
-    /// Strict vs Averaging: read off the tier suffix (T*=Strict, P*=Averaging,
-    /// per ukv_target_aware_picker_shipped 2026-05-06).
+    ///     correctly but missed 2d ("exact-l12-T2", no suffix, temp_ukv
+    ///     IS in FeatureNames) so 2d still rendered "—".
     /// </summary>
     private static (string Source, string UkvMode) InterpretFeatureSet(FeatureSpecRow row)
     {
-        var source = row.FeatureSet.StartsWith("exact-", StringComparison.Ordinal)
+        // Path 1 — structured fields. Non-empty DataSource means the row
+        // came from a post-Phase-1 schema. UkvStrategy is either set
+        // (Strict / Averaging) or explicitly null (no UKV).
+        if (!string.IsNullOrEmpty(row.DataSource))
+        {
+            var source = row.DataSource switch
+            {
+                BlenderDataSource.ExactRuntimeS3 => "Exact-runtime S3",
+                BlenderDataSource.OpenMeteoPreviousRuns => "Open-Meteo previous_runs",
+                _ => row.DataSource, // unknown source — surface as-is, don't hide
+            };
+            var ukvMode = row.UkvStrategy ?? "—";
+            return (source, ukvMode);
+        }
+
+        // Path 2 — legacy inference. Source from FeatureSet prefix; UKV
+        // presence from FeatureNames; mode from the FeatureSet tier letter.
+        var legacySource = row.FeatureSet.StartsWith("exact-", StringComparison.Ordinal)
             ? "Exact-runtime S3"
             : "Open-Meteo previous_runs";
 
-        if (!UkvIsUsed(row)) return (source, "—");
+        if (!UkvIsUsed(row)) return (legacySource, "—");
 
-        var ukvMode = row.FeatureSet.Contains("-T", StringComparison.Ordinal)
+        var legacyMode = row.FeatureSet.Contains("-T", StringComparison.Ordinal)
             ? "Strict"
             : row.FeatureSet.Contains("-P", StringComparison.Ordinal)
                 ? "Averaging"
                 : "Optional";
-        return (source, ukvMode);
+        return (legacySource, legacyMode);
     }
 
     /// <summary>

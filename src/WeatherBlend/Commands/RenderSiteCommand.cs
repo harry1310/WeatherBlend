@@ -455,7 +455,16 @@ public sealed class RenderSiteCommand
                         FeatureSet: spec.FeatureSet,
                         RequiredModels: spec.RequiredModels.ToArray(),
                         OptionalModels: spec.OptionalModels.ToArray(),
-                        FeatureNames: spec.FeatureNames.ToArray()));
+                        FeatureNames: spec.FeatureNames.ToArray(),
+                        // Structured-spec fields from the BlenderSpec (Phase 1
+                        // shipped 2026-05-07). Empty strings / null on legacy
+                        // schemas predating the migration; the renderer's
+                        // InterpretFeatureSet falls back to FeatureNames-based
+                        // inference in that case so old + new schemas render
+                        // identically.
+                        DataSource: spec.DataSource,
+                        Tier: spec.Tier,
+                        UkvStrategy: spec.UkvStrategy?.ToString()));
                 }
             }
             catch (Exception ex)
