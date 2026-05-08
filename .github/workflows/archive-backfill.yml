@@ -21,7 +21,7 @@ on:
         required: true
         default: "ecmwf-ifs"
         type: choice
-        options: [gfs, ecmwf-ifs, ecmwf-aifs]
+        options: [gfs, gefs, ecmwf-ifs, ecmwf-aifs]
       start:
         description: "Start cycle date (yyyy-MM-dd, UTC)"
         required: true
@@ -127,6 +127,11 @@ jobs:
             gfs)
               dotnet run --project src/WeatherBlend --no-build -c Release -- \
                 gfs-backfill --start ${{ inputs.start }} $END_ARG \
+                --cycles ${{ inputs.cycles }}
+              ;;
+            gefs)
+              dotnet run --project src/WeatherBlend --no-build -c Release -- \
+                gefs-backfill --start ${{ inputs.start }} $END_ARG \
                 --cycles ${{ inputs.cycles }}
               ;;
             ecmwf-ifs)

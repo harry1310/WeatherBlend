@@ -108,7 +108,7 @@ public sealed class Exact12hBakeoffCommand
         var spec = Exact12hFeatureBuilder.BuildSpec(tier, targetLead, inputLeads, includeUkv);
         var rows = Exact12hFeatureBuilder.Build(
             _cfg.Storage.ForecastsPath, _cfg.Storage.Era5Path, _cfg.Location.Name,
-            tier, spec, targetLead, inputLeads, includeUkv, ct);
+            tier, spec, targetLead, inputLeads, includeUkv, ct: ct);
         if (rows.Count == 0) { _log.LogWarning("  no rows — skipping."); return; }
 
         var sorted = rows.OrderBy(r => r.ValidTimeUtc).ToList();
@@ -209,7 +209,7 @@ public sealed class Exact12hBakeoffCommand
             targetLead,
             inputLeads,
             includeUkv,
-            ct);
+            ct: ct);
 
         if (rows.Count == 0)
         {
@@ -351,7 +351,7 @@ public sealed class Exact12hBakeoffCommand
                 }
                 var evalRowsAll = Exact12hFeatureBuilder.Build(
                     _cfg.Storage.ForecastsPath, _cfg.Storage.Era5Path, _cfg.Location.Name,
-                    tier, evalSpec, evalLead, new[] { evalLead }, includeUkv: false, ct);
+                    tier, evalSpec, evalLead, new[] { evalLead }, includeUkv: false, ct: ct);
                 var evalTest = evalRowsAll.Where(r => r.ValidTimeUtc >= testStart).ToList();
                 if (evalTest.Count == 0)
                 {

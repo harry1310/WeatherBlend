@@ -113,6 +113,20 @@ public static class Program
                     opts.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(240);
                 });
 
+                // GEFS S3 archive — same Range-download + idx pattern as GFS.
+                // Reads the geavg ensemble-mean member from pgrb2ap5/0.5°.
+                services.AddHttpClient<GefsClient>(c =>
+                {
+                    c.Timeout = TimeSpan.FromSeconds(120);
+                    c.DefaultRequestHeaders.UserAgent.ParseAdd(cfg.Http.UserAgent);
+                })
+                .AddStandardResilienceHandler(opts =>
+                {
+                    opts.AttemptTimeout.Timeout = TimeSpan.FromSeconds(60);
+                    opts.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(180);
+                    opts.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(240);
+                });
+
                 // ECMWF S3 archive — same Range-download shape as GFS, same
                 // resilience profile. Reuses Wgrib2 singleton below.
                 services.AddHttpClient<EcmwfClient>(c =>
@@ -145,6 +159,7 @@ public static class Program
                 services.AddTransient<MetOfficeBootstrapCommand>();
                 services.AddTransient<BackfillCommand>();
                 services.AddTransient<GfsBackfillCommand>();
+                services.AddTransient<GefsBackfillCommand>();
                 services.AddTransient<EcmwfBackfillCommand>();
                 services.AddTransient<StatusCommand>();
                 services.AddTransient<TempTrainCommand>();
@@ -197,6 +212,11 @@ public static class Program
                 // pairs with the live data landing pattern (NOAA ~3-4h,
                 // ECMWF ~7-8h, MO ~3-6h).
                 services.AddTransient<GfsArchiveCollector>();
+                // GefsArchiveCollector exists for parity with the others but
+                // isn't yet wired into S3CollectCommand — flip on once the
+                // historical backfill has produced enough rows for a 2d/3d
+                // bake-off to validate GEFS as a feature column.
+                services.AddTransient<GefsArchiveCollector>();
                 services.AddTransient<EcmwfArchiveCollector>();
                 services.AddTransient<MetOfficeGlobalArchiveCollector>();
                 services.AddTransient<MetOfficeUkvArchiveCollector>();
@@ -275,6 +295,37 @@ public static class Program
             await cmd.RunAsync(start, end, cycles, CancellationToken.None);
         }, gfsStartOpt, gfsEndOpt, gfsCyclesOpt);
         root.AddCommand(gfsBackfill);
+
+        // GEFS backfill — NOAA's Global Ensemble Forecast System ensemble
+        // mean (geavg member) from s3://noaa-gefs-pds/. Reuses the same
+        // --start/--end/--cycles option shape as the GFS backfill above
+        // since the bucket layout is identical apart from the geavg
+        // member prefix and the pgrb2ap5/0.5° subfolder.
+        var gefsStartOpt = new Option<DateOnly>(
+            name: "--start",
+            description: "Start cycle date (yyyy-MM-dd), UTC",
+            getDefaultValue: () => DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-30)));
+        var gefsEndOpt = new Option<DateOnly>(
+            name: "--end",
+            description: "End cycle date (yyyy-MM-dd), UTC (default: yesterday)",
+            getDefaultValue: () => DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-1)));
+        var gefsCyclesOpt = new Option<string>(
+            name: "--cycles",
+            description: "Comma-separated cycle hours, e.g. 0,6,12,18 (default: all four)",
+            getDefaultValue: () => "0,6,12,18");
+        var gefsBackfill = new Command(
+            "gefs-backfill",
+            "Fetch GEFS ensemble-mean cycles from NOAA S3 archive with exact run-times/lead-hours")
+            { gefsStartOpt, gefsEndOpt, gefsCyclesOpt };
+        gefsBackfill.SetHandler(async (start, end, cyclesStr) =>
+        {
+            var cycles = cyclesStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(s => int.Parse(s, System.Globalization.CultureInfo.InvariantCulture))
+                .ToArray();
+            var cmd = host.Services.GetRequiredService<GefsBackfillCommand>();
+            await cmd.RunAsync(start, end, cycles, CancellationToken.None);
+        }, gefsStartOpt, gefsEndOpt, gefsCyclesOpt);
+        root.AddCommand(gefsBackfill);
 
         // ECMWF backfill — IFS oper or AIFS oper. Reuses --start/--end/--cycles
         // from the GFS shape; adds --stream {ifs|aifs}.
@@ -518,9 +569,13 @@ public static class Program
             name: "--leads",
             description: "Exact-runtime only: comma-separated lead hours (default 12,24). E.g. --leads 48,72 for the long-range bake-off vs 2b/3a.",
             getDefaultValue: () => null);
+        var cyclesOpt = new Option<string?>(
+            name: "--cycles",
+            description: "Exact-runtime only: IFS-specific cycle filter — comma-separated RunTime cycle hours that the ecmwf_ifs_oper feature column may draw from (default null = all IFS cycles on disk). Other models pass through unfiltered. Use --cycles 0,12 for an oper-only IFS bake-off vs the default which includes the 06/18 scda cycles.",
+            getDefaultValue: () => null);
         var train = new Command("train", "Train the blender (phase 2b temperature / phase 3a precipitation / phase 3b dry-window)")
         {
-            targetOpt, leadOpt, stationOpt, windowOpt, featureSetOpt, tierOpt, includeUkvOpt, exactLeadsOpt,
+            targetOpt, leadOpt, stationOpt, windowOpt, featureSetOpt, tierOpt, includeUkvOpt, exactLeadsOpt, cyclesOpt,
         };
         train.SetHandler(async (ctx) =>
         {
@@ -534,8 +589,11 @@ public static class Program
             var exactLeadsStr = ctx.ParseResult.GetValueForOption(exactLeadsOpt);
             int[]? exactLeads = string.IsNullOrWhiteSpace(exactLeadsStr) ? null
                 : exactLeadsStr.Split(',').Select(s => int.Parse(s.Trim(), System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+            var cyclesStr = ctx.ParseResult.GetValueForOption(cyclesOpt);
+            int[]? cycles = string.IsNullOrWhiteSpace(cyclesStr) ? null
+                : cyclesStr.Split(',').Select(s => int.Parse(s.Trim(), System.Globalization.CultureInfo.InvariantCulture)).ToArray();
             var cmd = host.Services.GetRequiredService<TempTrainCommand>();
-            ctx.ExitCode = await cmd.RunAsync(target, lead, station, window, featureSet, tier, includeUkv, exactLeads, ctx.GetCancellationToken());
+            ctx.ExitCode = await cmd.RunAsync(target, lead, station, window, featureSet, tier, includeUkv, exactLeads, cycles, ctx.GetCancellationToken());
         });
         root.AddCommand(train);
 

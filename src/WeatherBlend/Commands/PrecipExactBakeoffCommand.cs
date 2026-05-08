@@ -84,7 +84,7 @@ public sealed class PrecipExactBakeoffCommand
         var spec = PrecipExactFeatureBuilder.BuildSpec(tier, targetLead, includeUkv);
         var rows = PrecipExactFeatureBuilder.Build(
             _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath, _cfg.Location.Name, stationName,
-            tier, spec, targetLead, includeUkv, ct);
+            tier, spec, targetLead, includeUkv, ct: ct);
 
         if (rows.Count == 0) { _log.LogWarning("  no rows"); return; }
 

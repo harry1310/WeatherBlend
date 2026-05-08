@@ -59,16 +59,21 @@ public sealed class TempTrainCommand
     }
 
     public Task<int> RunAsync(string target, string lead, string? station, string? window, string featureSet, CancellationToken ct)
-        => RunAsync(target, lead, station, window, featureSet, tier: null, includeUkv: null, exactLeads: null, ct);
+        => RunAsync(target, lead, station, window, featureSet, tier: null, includeUkv: null, exactLeads: null, cycles: null, ct);
 
     public Task<int> RunAsync(
         string target, string lead, string? station, string? window, string featureSet,
         string? tier, bool? includeUkv, CancellationToken ct)
-        => RunAsync(target, lead, station, window, featureSet, tier, includeUkv, exactLeads: null, ct);
+        => RunAsync(target, lead, station, window, featureSet, tier, includeUkv, exactLeads: null, cycles: null, ct);
+
+    public Task<int> RunAsync(
+        string target, string lead, string? station, string? window, string featureSet,
+        string? tier, bool? includeUkv, int[]? exactLeads, CancellationToken ct)
+        => RunAsync(target, lead, station, window, featureSet, tier, includeUkv, exactLeads, cycles: null, ct);
 
     public async Task<int> RunAsync(
         string target, string lead, string? station, string? window, string featureSet,
-        string? tier, bool? includeUkv, int[]? exactLeads, CancellationToken ct)
+        string? tier, bool? includeUkv, int[]? exactLeads, int[]? cycles, CancellationToken ct)
     {
         // tier + includeUkv + exactLeads are exact-runtime levers (Phase 2d /
         // 3d). Defaults (null, null, null) preserve historical behaviour: 2d
@@ -148,13 +153,13 @@ public sealed class TempTrainCommand
             "temperature"   => fs switch
             {
                 "rich"  => await RunPhase2cAsync(leads, ct),
-                "exact" => await RunPhase2dAsync(tier, includeUkv, exactLeads, ct),
+                "exact" => await RunPhase2dAsync(tier, includeUkv, exactLeads, cycles, ct),
                 _       => await RunPhase2bAsync(leads, ct),
             },
             "precipitation" => fs switch
             {
                 "rich"  => await RunPhase3cAsync(leads, station, ct),
-                "exact" => await RunPhase3dAsync(station, tier, includeUkv, exactLeads, ct),
+                "exact" => await RunPhase3dAsync(station, tier, includeUkv, exactLeads, cycles, ct),
                 _       => await RunPhase3aAsync(leads, station, ct),
             },
             // dry-window: lean → Phase 3b (53 features),
@@ -466,7 +471,7 @@ public sealed class TempTrainCommand
     /// </summary>
     private static readonly int[] DefaultPhase2dLeads = { 12, 24 };
 
-    private async Task<int> RunPhase2dAsync(string? tierName, bool? includeUkvOpt, int[]? exactLeads, CancellationToken ct)
+    private async Task<int> RunPhase2dAsync(string? tierName, bool? includeUkvOpt, int[]? exactLeads, int[]? cycleHoursFilter, CancellationToken ct)
     {
         var leads = exactLeads is { Length: > 0 } ? exactLeads : DefaultPhase2dLeads;
         var now = DateTime.UtcNow;
@@ -489,8 +494,13 @@ public sealed class TempTrainCommand
         var tier = Exact12hFeatureBuilder.AllTiers.First(t => t.Name == (tierName ?? "T2"));
         bool IncludeUkv = includeUkvOpt ?? true;
 
-        _log.LogInformation("Phase 2d — exact-runtime blender (tier {Tier}, UKV={Ukv}), leads [{Leads}]",
-            tier.Name, IncludeUkv, string.Join(",", leads));
+        // Cycle-filter logging — null/empty means "all cycles on disk",
+        // i.e. production default. Comma-list logged when restricted so
+        // bake-off runs leave a clear trail in the log of which cycles
+        // contributed to the trained version.
+        _log.LogInformation("Phase 2d — exact-runtime blender (tier {Tier}, UKV={Ukv}), leads [{Leads}], cycles [{Cycles}]",
+            tier.Name, IncludeUkv, string.Join(",", leads),
+            (cycleHoursFilter is { Length: > 0 }) ? string.Join(",", cycleHoursFilter) : "all");
         _log.LogInformation("Hyperparameters: iter={Iter} lr={Lr} leaves={Leaves} min-leaf={Ml} esr={Esr} seed={Seed} feat-frac={Ff}",
             hp.NumberOfIterations, hp.LearningRate, hp.NumberOfLeaves, hp.MinimumExampleCountPerLeaf,
             hp.EarlyStoppingRound, hp.Seed, hp.FeatureFraction);
@@ -516,6 +526,7 @@ public sealed class TempTrainCommand
                 spec,
                 targetLead: lead,
                 includeUkv: IncludeUkv,
+                runCycleHoursFilter: cycleHoursFilter,
                 ct: ct);
             _log.LogInformation("Loaded {N} rows spanning {S:yyyy-MM-dd} → {E:yyyy-MM-dd}",
                 rows.Count,
@@ -1066,7 +1077,7 @@ public sealed class TempTrainCommand
 
     private static readonly int[] DefaultPhase3dLeads = { 12, 24 };
 
-    private async Task<int> RunPhase3dAsync(string? stationOverride, string? tierName, bool? includeUkvOpt, int[]? exactLeads, CancellationToken ct)
+    private async Task<int> RunPhase3dAsync(string? stationOverride, string? tierName, bool? includeUkvOpt, int[]? exactLeads, int[]? cycleHoursFilter, CancellationToken ct)
     {
         if (_cfg.Location.Rainfall.Stations.Count == 0)
         {
@@ -1098,8 +1109,9 @@ public sealed class TempTrainCommand
         bool IncludeUkv = includeUkvOpt ?? true;
         var leadsToTrain = exactLeads is { Length: > 0 } ? exactLeads : DefaultPhase3dLeads;
 
-        _log.LogInformation("Phase 3d — exact-runtime precip blender (tier {Tier}, UKV={Ukv}), stations=[{Stations}], leads=[{Leads}]",
-            tier.Name, IncludeUkv, string.Join(", ", stationsToTrain), string.Join(",", leadsToTrain));
+        _log.LogInformation("Phase 3d — exact-runtime precip blender (tier {Tier}, UKV={Ukv}), stations=[{Stations}], leads=[{Leads}], cycles=[{Cycles}]",
+            tier.Name, IncludeUkv, string.Join(", ", stationsToTrain), string.Join(",", leadsToTrain),
+            (cycleHoursFilter is { Length: > 0 }) ? string.Join(",", cycleHoursFilter) : "all");
         _log.LogInformation("Hyperparameters: iter={Iter} lr={Lr} leaves={Leaves} esr={Esr} seed={Seed} (3a defaults)",
             hp.NumberOfIterations, hp.LearningRate, hp.NumberOfLeaves, hp.EarlyStoppingRound, hp.Seed);
 
@@ -1107,7 +1119,7 @@ public sealed class TempTrainCommand
         foreach (var station in stationsToTrain)
         {
             ct.ThrowIfCancellationRequested();
-            var rc = await TrainPhase3dStationAsync(station, modelsRoot, tier, hp, IncludeUkv, leadsToTrain, ct);
+            var rc = await TrainPhase3dStationAsync(station, modelsRoot, tier, hp, IncludeUkv, leadsToTrain, cycleHoursFilter, ct);
             if (rc != 0) anyFail = true;
         }
         return anyFail ? 3 : 0;
@@ -1120,6 +1132,7 @@ public sealed class TempTrainCommand
         PrecipOccurrenceTrainer.Hyperparameters hp,
         bool includeUkv,
         int[] leadsToTrain,
+        int[]? cycleHoursFilter,
         CancellationToken ct)
     {
         var stationSlug = StationSlug.WithEaPrefix(primaryStation);
@@ -1156,6 +1169,7 @@ public sealed class TempTrainCommand
                 tier, spec,
                 targetLead: lead,
                 includeUkv: includeUkv,
+                runCycleHoursFilter: cycleHoursFilter,
                 ct: ct);
             _log.LogInformation("Loaded {N} rows (wet={Wet} / {Pct:P1}) spanning {S:yyyy-MM-dd} → {E:yyyy-MM-dd}",
                 rows.Count,

@@ -231,6 +231,7 @@ public static class Exact12hFeatureBuilder
         int targetLead = DefaultTargetLead,
         IReadOnlyList<int>? inputLeads = null,
         bool includeUkv = false,
+        IReadOnlyList<int>? runCycleHoursFilter = null,
         CancellationToken ct = default)
     {
         inputLeads ??= new[] { targetLead };
@@ -287,11 +288,28 @@ public static class Exact12hFeatureBuilder
                     "(otherwise ValidTime hour ∈ {0,6,12,18} is invalid). Got: " +
                     string.Join(",", leadsSorted), nameof(inputLeads));
 
+        // Optional cycle-hour filter on RunTimeUtc, restricted to IFS rows
+        // ONLY. Used by oper-vs-scda bake-offs to isolate the contribution
+        // of the scda assimilation cycles (06/18Z) from oper (00/12Z) at
+        // the IFS feature column without simultaneously slicing GFS / AIFS
+        // / MO Global to half their cycles (which would confound the
+        // result). Other models pass through unfiltered. UKV stays on its
+        // own picker-driven CTE below regardless.
+        //
+        // The "OR Model != ifs" half preserves every non-IFS row; the
+        // cycle filter only kicks in for the ifs_oper feature column.
+        // When null, IFS rows pass through unrestricted (production
+        // default).
+        var cycleFilterClause = runCycleHoursFilter is { Count: > 0 }
+            ? $"AND (Model != 'ecmwf_ifs_oper' OR HOUR(RunTimeUtc) IN ({string.Join(",", runCycleHoursFilter)})) "
+            : "";
+
         var fcWhere =
             $"LocationName = '{locationName}' " +
             $"AND RunTimeSource = 'exact' " +
             $"AND LeadHours IN {leadInClause} " +
             $"AND HOUR(ValidTimeUtc) IN (0, 6, 12, 18) " +
+            cycleFilterClause +
             $"AND Temperature2m IS NOT NULL " +
             $"AND CAST(ValidTimeUtc AS DATE) >= DATE '{tier.StartDate:yyyy-MM-dd}' " +
             $"AND Model IN {modelInClause}";

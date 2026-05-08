@@ -163,6 +163,7 @@ public static class PrecipExactFeatureBuilder
         BlenderSpec spec,
         int targetLead = DefaultTargetLead,
         bool includeUkv = false,
+        IReadOnlyList<int>? runCycleHoursFilter = null,
         CancellationToken ct = default)
     {
         using var conn = new DuckDBConnection("DataSource=:memory:");
@@ -182,11 +183,21 @@ public static class PrecipExactFeatureBuilder
             ? string.Join("\n  AND ", spec.RequiredModels.Select(m => $"p.precip_{ShortName(m)} IS NOT NULL"))
             : "TRUE";
 
+        // Optional IFS-only cycle-hour filter — see Exact12hFeatureBuilder.Build
+        // for the bake-off rationale. Filter applies to the ecmwf_ifs_oper
+        // feature column only so other models (GFS / AIFS / MO Global)
+        // keep their full cycle coverage and the bake-off isolates IFS's
+        // oper-vs-scda contribution cleanly.
+        var cycleFilterClause = runCycleHoursFilter is { Count: > 0 }
+            ? $"AND (Model != 'ecmwf_ifs_oper' OR HOUR(RunTimeUtc) IN ({string.Join(",", runCycleHoursFilter)})) "
+            : "";
+
         var fcWhere =
             $"LocationName = '{escLocation}' " +
             $"AND RunTimeSource = 'exact' " +
             $"AND LeadHours = {targetLead} " +
             $"AND HOUR(ValidTimeUtc) IN (0, 6, 12, 18) " +
+            cycleFilterClause +
             $"AND Precipitation IS NOT NULL " +
             $"AND CAST(ValidTimeUtc AS DATE) >= DATE '{tier.StartDate:yyyy-MM-dd}' " +
             $"AND Model IN {modelInClause}";
