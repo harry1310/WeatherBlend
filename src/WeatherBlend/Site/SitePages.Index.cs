@@ -323,10 +323,16 @@ public static partial class SitePages
                     </details>
                     """;
             }
+            // Band label moved to its own line under the UTCI value (and
+            // wrapped in double-quotes) — the ⓘ toggle stays inline with
+            // the UTCI value so the click target is always next to the
+            // number it explains. Splits the previous one-liner into two
+            // <div>s.
             feelsCell = string.Create(Ci, $"""
                 <div class="feels">
                   <div>Feels like <strong style="color: {apparentColor}">{fl.ApparentC:0.0}°C</strong></div>
-                  <div>UTCI <strong style="color: {utciColor}">{fl.UtciC:0.0}°C</strong> <small>{Escape(PrettyUtciBand(fl.Band))}</small> {toggle}</div>
+                  <div>UTCI <strong style="color: {utciColor}">{fl.UtciC:0.0}°C</strong> {toggle}</div>
+                  <div class="utci-band"><small>"{Escape(PrettyUtciBand(fl.Band))}"</small></div>
                 </div>
                 """);
         }

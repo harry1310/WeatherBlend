@@ -738,6 +738,11 @@ public static partial class SitePages
         .forecast-card .feels { font-size: 0.85rem; color: var(--pico-muted-color); margin: 0 0 0.35rem; font-variant-numeric: tabular-nums; }
         .forecast-card .feels strong { font-weight: 700; }
         .forecast-card .feels small { margin-left: 0.35rem; }
+        /* UTCI band on its own line under the UTCI value, italic + muted
+           so it reads as a quiet caption rather than competing with the
+           number. Margin pulls it tight under the value rather than the
+           feels-row's default 0.35rem gap. */
+        .forecast-card .feels .utci-band { margin-top: -0.1rem; font-style: italic; color: var(--pico-muted-color); }
         .forecast-card footer { margin-top: auto; padding-top: 0.4rem; border-top: 1px solid var(--pico-muted-border-color); }
         .forecast-card footer small { color: var(--pico-muted-color); font-size: 0.75rem; }
         .forecast-card h4 { margin: 0; font-size: 1rem; font-variant-numeric: tabular-nums; }
