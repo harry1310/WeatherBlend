@@ -900,25 +900,42 @@ public static class ModelArtifact
     }
 
     /// <summary>
-    /// Build the new Active list with lead-set-aware replacement.
-    /// Replacement rule: drop an existing entry only when its phase matches
-    /// <paramref name="newPhase"/> AND its lead-set is exactly equal to
-    /// <paramref name="newLeadSet"/>. That handles re-train idempotency
-    /// (same phase, same leads → replace) without clobbering a sibling
-    /// version of the same phase that covers a DIFFERENT lead bucket
-    /// (e.g. 2d V_short for leads {12,24,48} alongside 2d V_long for
-    /// {72,96,120} — both stay Active, both emit predictions).
+    /// Build the new Active list with lead-overlap-aware replacement.
+    ///
+    /// Replacement rule: drop an existing entry when its phase matches
+    /// <paramref name="newPhase"/> AND its lead-set OVERLAPS with
+    /// <paramref name="newLeadSet"/> on at least one lead. Two same-phase
+    /// versions can only coexist when their leads are fully disjoint
+    /// (e.g. 2d V_short {12,24,48} alongside 2d V_long {72,96,120} —
+    /// both Active, neither emits at the other's leads, no duplicate
+    /// predictions on the same (composite, lead, valid) tuple).
+    ///
+    /// Concretely:
+    ///   * V_old {48,72} + V_new {12,24,48,72} → overlap on {48,72} → drop V_old.
+    ///     V_new fully supersedes V_old's coverage.
+    ///   * V_old {12,24,48} + V_new {72,96,120} → disjoint → both stay.
+    ///   * V_old {12,24,48} + V_new {12,24,48} → full overlap → drop V_old
+    ///     (re-train idempotency).
+    ///   * V_old {12,24} + V_new {24} → overlap on {24} → drop V_old.
+    ///     This is the operational footgun: a partial retrain that
+    ///     overlaps an existing wider version supersedes it. Operator's
+    ///     mental model is "training at lead L replaces any prior model
+    ///     emitting at L"; so don't run partial-coverage retrains
+    ///     unless that's what you want.
     ///
     /// Versions whose metadata is unreadable (missing dir, malformed JSON,
     /// missing schema) are PRESERVED — we don't silently retire something
     /// we can't introspect. Versions where lead-set is unknown but phase
-    /// matches are also preserved (conservative — operator can drop via
-    /// explicit edit if they really mean to).
+    /// matches are also preserved.
     ///
-    /// Pre-2026-05-08: this function dropped EVERY same-phase entry. A
-    /// 2d retrain at leads {72,96,120} silently removed the existing 2d
-    /// at {12,24,48}. Symptom: spec page lost rows, home page lost
-    /// lead-12 tile predictions. The lead-set comparison fixes both.
+    /// History:
+    ///   * Pre-2026-05-08: dropped EVERY same-phase entry. A 2d retrain at
+    ///     {72,96,120} silently removed an existing 2d at {12,24,48}.
+    ///   * 2026-05-08 first attempt: lead-set EQUALITY check kept BOTH
+    ///     versions even when one's coverage strictly contained the
+    ///     other's, leading to duplicate predictions on shared leads.
+    ///   * 2026-05-08 final: lead-set OVERLAP check (this rule). Disjoint
+    ///     stays; overlap replaces.
     /// </summary>
     private static List<string> ComposeActive(
         IReadOnlyList<string> existing,
@@ -935,32 +952,34 @@ public static class ModelArtifact
             var phase = phaseOfVersion(v);
             if (phase is null || !string.Equals(phase, newPhase, StringComparison.Ordinal))
             {
-                // Different phase, or unknown — preserve.
                 preserved.Add(v);
                 continue;
             }
-            // Same phase. Drop only when lead-set is also equal (idempotent
-            // re-train). If either lead-set is unknown or they differ, keep
-            // the existing version.
+            // Same phase. Drop only when lead-sets OVERLAP. Disjoint
+            // lead-sets coexist (both versions emit at non-conflicting
+            // leads). Unknown lead-set on either side → preserve
+            // conservatively.
             var existingLeadSet = leadsOfVersion(v);
             if (newLeadSet is null || existingLeadSet is null
-                || !LeadSetsEqual(existingLeadSet, newLeadSet))
+                || !LeadSetsOverlap(existingLeadSet, newLeadSet))
             {
                 preserved.Add(v);
                 continue;
             }
-            // Same phase + same leads → caller intends a re-train of this
-            // exact configuration; drop the old version.
+            // Same phase + at least one shared lead → V_new supersedes
+            // V_old at the shared leads (would emit duplicate predictions
+            // otherwise). Drop V_old.
         }
         preserved.Add(newVersionName);
         return preserved;
     }
 
-    private static bool LeadSetsEqual(IReadOnlyList<int> a, IReadOnlyList<int> b)
+    private static bool LeadSetsOverlap(IReadOnlyList<int> a, IReadOnlyList<int> b)
     {
-        if (a.Count != b.Count) return false;
         var aSet = new HashSet<int>(a);
-        return aSet.SetEquals(b);
+        foreach (var l in b)
+            if (aSet.Contains(l)) return true;
+        return false;
     }
 
     /// <summary>
