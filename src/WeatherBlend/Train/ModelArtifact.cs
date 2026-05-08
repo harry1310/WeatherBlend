@@ -833,9 +833,8 @@ public static class ModelArtifact
     /// <summary>
     /// Promote a freshly-trained version to champion of a flat-target
     /// manifest (temperature, element_*). Sets <c>Current = newVersionName</c>;
-    /// in <c>Active</c>, replaces any existing entry whose Phase matches
-    /// <paramref name="newPhase"/> and appends the new version. Other
-    /// phases (challengers) survive untouched.
+    /// the Active list replacement uses lead-set-aware semantics — see
+    /// <see cref="ComposeActive"/>.
     /// </summary>
     public static void PromoteVersionAsChampion(
         string modelsRoot, string target, string newVersionName, string newPhase)
@@ -861,7 +860,7 @@ public static class ModelArtifact
 
     /// <summary>
     /// Per-station variant of <see cref="PromoteVersionAsChallenger"/>.
-    /// Same-phase replacement, no <c>Current</c> change.
+    /// Lead-set-aware replacement, no <c>Current</c> change.
     /// </summary>
     public static void PromoteStationVersionAsChallenger(
         string modelsRoot, string target, string station, string newVersionName, string newPhase)
@@ -870,18 +869,21 @@ public static class ModelArtifact
     private static void PromoteVersionFlat(
         string modelsRoot, string target, string newVersionName, string newPhase, bool asChampion)
     {
+        var newLeadSet = TryReadVersionLeads(Path.Combine(modelsRoot, target, newVersionName));
         MutateManifest(modelsRoot, target, m =>
         {
             if (asChampion) m.Current = newVersionName;
             if (!m.Versions.Contains(newVersionName)) m.Versions.Add(newVersionName);
-            m.Active = ComposeActive(m.Active, newVersionName, newPhase,
-                phaseOfVersion: v => TryReadVersionPhase(Path.Combine(modelsRoot, target, v)));
+            m.Active = ComposeActive(m.Active, newVersionName, newPhase, newLeadSet,
+                phaseOfVersion: v => TryReadVersionPhase(Path.Combine(modelsRoot, target, v)),
+                leadsOfVersion: v => TryReadVersionLeads(Path.Combine(modelsRoot, target, v)));
         });
     }
 
     private static void PromoteStationVersionInternal(
         string modelsRoot, string target, string station, string newVersionName, string newPhase, bool asChampion)
     {
+        var newLeadSet = TryReadVersionLeads(Path.Combine(modelsRoot, target, station, newVersionName));
         MutateManifest(modelsRoot, target, m =>
         {
             if (!m.Stations.TryGetValue(station, out var entry))
@@ -891,40 +893,104 @@ public static class ModelArtifact
             }
             if (asChampion) entry.Current = newVersionName;
             if (!entry.Versions.Contains(newVersionName)) entry.Versions.Add(newVersionName);
-            entry.Active = ComposeActive(entry.Active, newVersionName, newPhase,
-                phaseOfVersion: v => TryReadVersionPhase(Path.Combine(modelsRoot, target, station, v)));
+            entry.Active = ComposeActive(entry.Active, newVersionName, newPhase, newLeadSet,
+                phaseOfVersion: v => TryReadVersionPhase(Path.Combine(modelsRoot, target, station, v)),
+                leadsOfVersion: v => TryReadVersionLeads(Path.Combine(modelsRoot, target, station, v)));
         });
     }
 
     /// <summary>
-    /// Build the new Active list: drop entries whose Phase matches
-    /// <paramref name="newPhase"/>, append <paramref name="newVersionName"/>,
-    /// dedupe (preserving the first occurrence of each version). Phase
-    /// resolution is delegated so the same composition rule works for both
-    /// flat and station layouts. Versions whose metadata is unreadable
-    /// (missing dir, malformed JSON) are PRESERVED — we don't silently
-    /// retire something we can't introspect.
+    /// Build the new Active list with lead-set-aware replacement.
+    /// Replacement rule: drop an existing entry only when its phase matches
+    /// <paramref name="newPhase"/> AND its lead-set is exactly equal to
+    /// <paramref name="newLeadSet"/>. That handles re-train idempotency
+    /// (same phase, same leads → replace) without clobbering a sibling
+    /// version of the same phase that covers a DIFFERENT lead bucket
+    /// (e.g. 2d V_short for leads {12,24,48} alongside 2d V_long for
+    /// {72,96,120} — both stay Active, both emit predictions).
+    ///
+    /// Versions whose metadata is unreadable (missing dir, malformed JSON,
+    /// missing schema) are PRESERVED — we don't silently retire something
+    /// we can't introspect. Versions where lead-set is unknown but phase
+    /// matches are also preserved (conservative — operator can drop via
+    /// explicit edit if they really mean to).
+    ///
+    /// Pre-2026-05-08: this function dropped EVERY same-phase entry. A
+    /// 2d retrain at leads {72,96,120} silently removed the existing 2d
+    /// at {12,24,48}. Symptom: spec page lost rows, home page lost
+    /// lead-12 tile predictions. The lead-set comparison fixes both.
     /// </summary>
     private static List<string> ComposeActive(
         IReadOnlyList<string> existing,
         string newVersionName,
         string newPhase,
-        Func<string, string?> phaseOfVersion)
+        IReadOnlyList<int>? newLeadSet,
+        Func<string, string?> phaseOfVersion,
+        Func<string, IReadOnlyList<int>?> leadsOfVersion)
     {
         var preserved = new List<string>(existing.Count + 1);
         foreach (var v in existing)
         {
             if (string.Equals(v, newVersionName, StringComparison.Ordinal)) continue;  // dedupe later
             var phase = phaseOfVersion(v);
-            // Drop only when we can read the phase AND it matches. Unknown
-            // phase → leave it alone (caller can clean up explicitly via
-            // SetStationActive if they really mean to).
-            if (phase is not null && string.Equals(phase, newPhase, StringComparison.Ordinal))
+            if (phase is null || !string.Equals(phase, newPhase, StringComparison.Ordinal))
+            {
+                // Different phase, or unknown — preserve.
+                preserved.Add(v);
                 continue;
-            preserved.Add(v);
+            }
+            // Same phase. Drop only when lead-set is also equal (idempotent
+            // re-train). If either lead-set is unknown or they differ, keep
+            // the existing version.
+            var existingLeadSet = leadsOfVersion(v);
+            if (newLeadSet is null || existingLeadSet is null
+                || !LeadSetsEqual(existingLeadSet, newLeadSet))
+            {
+                preserved.Add(v);
+                continue;
+            }
+            // Same phase + same leads → caller intends a re-train of this
+            // exact configuration; drop the old version.
         }
         preserved.Add(newVersionName);
         return preserved;
+    }
+
+    private static bool LeadSetsEqual(IReadOnlyList<int> a, IReadOnlyList<int> b)
+    {
+        if (a.Count != b.Count) return false;
+        var aSet = new HashSet<int>(a);
+        return aSet.SetEquals(b);
+    }
+
+    /// <summary>
+    /// Read the integer-keyed leads from a version's
+    /// <c>feature_schema.json</c>. Used by <see cref="ComposeActive"/> to
+    /// distinguish a same-phase re-train (same lead set → replace) from a
+    /// same-phase complementary version (different lead set → coexist).
+    /// Returns null on missing dir / file / parse error so callers can
+    /// fall back to "preserve, don't risk silent removal".
+    /// </summary>
+    private static IReadOnlyList<int>? TryReadVersionLeads(string versionDir)
+    {
+        try
+        {
+            if (!Directory.Exists(versionDir)) return null;
+            var path = Path.Combine(versionDir, FeatureSchemaFileName);
+            if (!File.Exists(path)) return null;
+            var schema = ReadJson<FeatureSchema>(path);
+            if (schema is null) return null;
+            var leads = new List<int>(schema.Leads.Count);
+            foreach (var key in schema.Leads.Keys)
+                if (int.TryParse(key, System.Globalization.NumberStyles.Integer,
+                                 System.Globalization.CultureInfo.InvariantCulture, out var lead))
+                    leads.Add(lead);
+            return leads;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>

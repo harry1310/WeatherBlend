@@ -601,18 +601,36 @@ public sealed class TempTrainCommand
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
 
-        // Promote 2d as a challenger — 2b stays Current. ChampionByLead is
-        // the per-lead hook that promotes 2d at lead 12h ONLY; 24h stays
-        // with whatever Current resolves to (typically 2b). The challenger
-        // promote covers re-train idempotency: replaces any prior 2d entry
-        // in Active rather than appending duplicates.
+        // Promote 2d as a challenger — 2b stays Current. ChampionByLead pins
+        // 2d at lead 12 ONLY (where 2b doesn't train); 24+ falls through
+        // to Current (= 2b). PromoteVersionAsChallenger is lead-set-aware
+        // (post-2026-05-08) so a 2d retrain at e.g. {72,96,120} no longer
+        // clobbers a sibling 2d at {12,24,48}; both stay Active when their
+        // lead-sets differ.
+        //
+        // ChampionByLead pin is gated on whether THIS train run actually
+        // covered lead 12. Pre-2026-05-08 the trainer pinned 12 →
+        // versionName regardless, which left ChampionByLead.12 dangling
+        // at a version with no lead 12 in its schema (silently broke the
+        // home-page lead-12 tile filter).
+        const int Phase2dChampionLead = 12;
         ModelArtifact.PromoteVersionAsChallenger(modelsRoot, "temperature", versionName, newPhase: "2d");
-        ModelArtifact.SetChampionForLead(modelsRoot, "temperature", 12, versionName);
+        if (leads.Contains(Phase2dChampionLead))
+        {
+            ModelArtifact.SetChampionForLead(modelsRoot, "temperature", Phase2dChampionLead, versionName);
+        }
+        else
+        {
+            _log.LogInformation(
+                "Skipping ChampionByLead pin — this run did not train lead {Lead}h (leads: [{Leads}]).",
+                Phase2dChampionLead, string.Join(",", leads));
+        }
         var newActive = ModelArtifact.ResolveActive(modelsRoot, "temperature");
 
         _log.LogInformation("Phase 2d artefacts → {Dir}", versionDir);
         _log.LogInformation("Active versions now: [{Active}]", string.Join(", ", newActive));
-        _log.LogInformation("Champion for lead 12h: {V}", versionName);
+        if (leads.Contains(Phase2dChampionLead))
+            _log.LogInformation("Champion for lead {Lead}h: {V}", Phase2dChampionLead, versionName);
         _log.LogInformation("Summary — {Summary}",
             string.Join("; ", perLead.Select(kv =>
                 $"lead {kv.Key}h: blend MAE {kv.Value.BlendTestMae:0.000}°C vs {kv.Value.BestSingle} val MAE {kv.Value.BestSingleValMae:0.000}°C")));
@@ -1237,17 +1255,31 @@ public sealed class TempTrainCommand
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
 
         // Promote 3d as a station challenger — 3a stays Current. Per-station
-        // ChampionByLead pins 3d at lead 12 only; lead 24+ falls back to
-        // Current (typically 3a). Mirrors the 2d temperature ChampionByLead pin.
+        // ChampionByLead pins 3d at lead 12 ONLY (where 3a competes well too,
+        // but 3d's exact-runtime feature set wins on Brier). Lead-set-aware
+        // promote (post-2026-05-08) lets a 3d retrain at e.g. {96,120} coexist
+        // with a sibling 3d at {12,24,48,72} when their lead-sets differ.
+        // ChampionByLead pin gated on whether THIS run trained lead 12.
+        const int Phase3dChampionLead = 12;
         ModelArtifact.PromoteStationVersionAsChallenger(
             modelsRoot, "precipitation", stationSlug, versionName, newPhase: "3d");
-        ModelArtifact.SetStationChampionForLead(
-            modelsRoot, "precipitation", stationSlug, leadHours: 12, versionName);
+        if (leadsToTrain.Contains(Phase3dChampionLead))
+        {
+            ModelArtifact.SetStationChampionForLead(
+                modelsRoot, "precipitation", stationSlug, leadHours: Phase3dChampionLead, versionName);
+        }
+        else
+        {
+            _log.LogInformation(
+                "Skipping ChampionByLead pin for {Station} — this run did not train lead {Lead}h (leads: [{Leads}]).",
+                stationSlug, Phase3dChampionLead, string.Join(",", leadsToTrain));
+        }
         var newActive = ModelArtifact.ResolveStationActive(modelsRoot, "precipitation", stationSlug);
 
         _log.LogInformation("Phase 3d artefacts → {Dir}", versionDir);
         _log.LogInformation("Active versions for station {Station} now: [{Active}]", stationSlug, string.Join(", ", newActive));
-        _log.LogInformation("Champion for lead 12h ({Station}): {V}", stationSlug, versionName);
+        if (leadsToTrain.Contains(Phase3dChampionLead))
+            _log.LogInformation("Champion for lead {Lead}h ({Station}): {V}", Phase3dChampionLead, stationSlug, versionName);
         _log.LogInformation("Summary — {Summary}",
             string.Join("; ", perLead.Select(kv =>
                 $"lead {kv.Key}h: blend Brier {kv.Value.BlendTestMae:0.000} vs climatology Brier {kv.Value.BlendTestRmse:0.000}")));

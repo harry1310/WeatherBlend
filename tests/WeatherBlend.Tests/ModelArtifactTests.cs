@@ -492,7 +492,7 @@ public class ModelArtifactTests : IDisposable
     // challengers) untouched. Tests below pin both the same-phase replacement
     // rule and the "preserve other phases" invariant.
 
-    private static void WritePhaseMetadata(string dir, string version, string phase)
+    private static void WritePhaseMetadata(string dir, string version, string phase, params int[] leads)
     {
         Directory.CreateDirectory(dir);
         var meta = new ModelArtifact.TrainingMetadata
@@ -504,6 +504,21 @@ public class ModelArtifactTests : IDisposable
             TrainedAtUtc = DateTime.UtcNow,
         };
         ModelArtifact.SaveTrainingMetadata(dir, meta);
+        // Lead-set-aware promote (post-2026-05-08) reads the per-version
+        // feature_schema.json for its ComposeActive decision. Older tests
+        // that don't pass leads end up with an empty Leads dict, which the
+        // promote treats as "unknown lead set → preserve" — same behaviour
+        // as before, so legacy tests still pass without rewrites.
+        var specs = leads.ToDictionary(
+            l => l,
+            l => new BlenderSpec
+            {
+                Target = "temperature",
+                FeatureSet = "test",
+                LeadHours = l,
+                FeatureNames = new[] { "test_feature" },
+            });
+        ModelArtifact.SaveBlenderSpecs(dir, specs);
     }
 
     [Fact]
@@ -569,6 +584,81 @@ public class ModelArtifactTests : IDisposable
         manifest.Active.Should().BeEquivalentTo(new[] { "v_base", "v_2c_b" });
         // Versions accumulates both 2c entries (history is preserved).
         manifest.Versions.Should().Contain(new[] { "v_base", "v_2c_a", "v_2c_b" });
+    }
+
+    [Fact]
+    public void PromoteVersion_keeps_same_phase_versions_with_disjoint_lead_sets()
+    {
+        // Regression test for the 2026-05-08 trainer bug: ComposeActive
+        // dropped EVERY same-phase Active entry, so a 2d retrain at leads
+        // {72,96,120} silently removed the existing 2d at {12,24,48}. New
+        // semantics: same-phase entries with DIFFERENT lead sets coexist;
+        // only same-phase + same-lead-set replaces (re-train idempotency).
+        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base"), "v_base", "2b", 24, 48, 72);
+        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2d_short"), "v_2d_short", "2d", 12, 24, 48);
+        ModelArtifact.UpdateManifest(_root, "temperature", "v_base");
+        ModelArtifact.SetActive(_root, "temperature", new[] { "v_base", "v_2d_short" });
+
+        // Add a 2d at the OTHER lead bucket — no overlap with v_2d_short's
+        // {12,24,48}. Both 2d versions should survive Active.
+        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2d_long"), "v_2d_long", "2d", 72, 96, 120);
+        ModelArtifact.PromoteVersionAsChallenger(_root, "temperature", "v_2d_long", newPhase: "2d");
+
+        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
+            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
+
+        // Both 2d versions present. v_2d_short was NOT replaced because its
+        // lead set {12,24,48} differs from v_2d_long's {72,96,120}.
+        manifest.Active.Should().BeEquivalentTo(new[] { "v_base", "v_2d_short", "v_2d_long" });
+    }
+
+    [Fact]
+    public void PromoteVersion_replaces_same_phase_same_lead_set()
+    {
+        // Re-train idempotency: training the SAME (phase, lead-set) again
+        // replaces the prior entry — no duplicate Active rows for the same
+        // configuration. This is the only case ComposeActive treats as
+        // a same-config replacement.
+        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base"), "v_base", "2b", 24, 48, 72);
+        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2d_a"), "v_2d_a", "2d", 12, 24, 48);
+        ModelArtifact.UpdateManifest(_root, "temperature", "v_base");
+        ModelArtifact.SetActive(_root, "temperature", new[] { "v_base", "v_2d_a" });
+
+        // Re-train 2d on the SAME leads.
+        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2d_b"), "v_2d_b", "2d", 12, 24, 48);
+        ModelArtifact.PromoteVersionAsChallenger(_root, "temperature", "v_2d_b", newPhase: "2d");
+
+        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
+            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
+
+        // v_2d_a replaced by v_2d_b — same phase, same lead set.
+        manifest.Active.Should().BeEquivalentTo(new[] { "v_base", "v_2d_b" });
+    }
+
+    [Fact]
+    public void PromoteVersion_preserves_existing_when_new_version_lacks_schema()
+    {
+        // If we can't read the new version's lead set (no feature_schema.json),
+        // fall back to the conservative "preserve everything we can't compare"
+        // rule. Symmetrical to the unreadable-metadata behaviour: we don't
+        // silently retire something we can't introspect.
+        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base"), "v_base", "2b", 24, 48);
+        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2d_old"), "v_2d_old", "2d", 12, 24);
+        ModelArtifact.UpdateManifest(_root, "temperature", "v_base");
+        ModelArtifact.SetActive(_root, "temperature", new[] { "v_base", "v_2d_old" });
+
+        // New 2d version with phase metadata but no schema (i.e. zero leads
+        // declared on disk → TryReadVersionLeads returns an empty list, not
+        // null; that empty list compares unequal to the old's {12,24}, so
+        // the existing version stays).
+        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2d_new"), "v_2d_new", "2d");
+        ModelArtifact.PromoteVersionAsChallenger(_root, "temperature", "v_2d_new", newPhase: "2d");
+
+        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
+            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
+
+        manifest.Active.Should().Contain("v_2d_old");  // preserved despite shared phase
+        manifest.Active.Should().Contain("v_2d_new");  // appended
     }
 
     [Fact]
