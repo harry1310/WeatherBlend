@@ -672,7 +672,7 @@ ORDER BY ValidTimeUtc, Model;";
         var pivotByLeadValid = QueryExactForecastRows(
             _cfg.Storage.ForecastsPath,
             _cfg.Location.Name,
-            specLeads: specs.Keys.ToArray(),
+            specs: specs,
             earliestValid: windowStart,
             latestValid: windowEnd,
             asOfRunTime: anchor,
@@ -817,15 +817,16 @@ ORDER BY ValidTimeUtc, Model;";
     private Dictionary<(int Lead, DateTime ValidTime), ExactPivotRow> QueryExactForecastRows(
         string forecastsPath,
         string locationName,
-        IReadOnlyList<int> specLeads,
+        IReadOnlyDictionary<int, BlenderSpec> specs,
         DateTime earliestValid,
         DateTime latestValid,
         DateTime asOfRunTime,
         CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        if (specLeads.Count == 0) return new();
+        if (specs.Count == 0) return new();
 
+        var specLeads = specs.Keys.OrderBy(l => l).ToArray();
         var fcGlob = Path.Combine(forecastsPath, "**", "*.parquet").Replace('\\', '/').Replace("'", "''");
         var loc = locationName.Replace("'", "''");
         var modelInClause = "(" + string.Join(",",
@@ -833,23 +834,16 @@ ORDER BY ValidTimeUtc, Model;";
         var leadInClause = "(" + string.Join(",", specLeads) + ")";
         var hourInClause = "(" + string.Join(",", Phase3dValidHoursUtc) + ")";
 
-        var ukvUnionLegs = string.Join("\n        UNION ALL\n",
-            specLeads.Select(blenderLead => $@"        SELECT
-            ValidTimeUtc, {blenderLead} AS BlenderLead,
-            Precipitation AS ukv_precip, RunTimeUtc AS ukv_run_time,
-            ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn2
-        FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
-        WHERE LocationName = '{loc}'
-          AND Model = 'met_office_ukv'
-          AND RunTimeSource = 'exact'
-          AND Precipitation IS NOT NULL
-          AND HOUR(ValidTimeUtc) IN {hourInClause}
-          AND RunTimeUtc <= TIMESTAMP '{asOfRunTime:yyyy-MM-dd HH:mm:ss}'
-          AND ValidTimeUtc BETWEEN TIMESTAMP '{earliestValid:yyyy-MM-dd HH:mm:ss}'
-                               AND TIMESTAMP '{latestValid:yyyy-MM-dd HH:mm:ss}'
-          AND ({Exact12hFeatureBuilder.UkvPerVOrClause(blenderLead, Exact12hFeatureBuilder.UkvPickStrategy.Averaging)})"));
+        // Same UKV-leads gating as TempPredictCommand.QueryExactForecastRows
+        // — see the docstring there for the bug + fix history (2026-05-08
+        // production crash on no-UKV long-lead 3d versions).
+        var ukvLeads = specs
+            .Where(kv => kv.Value.FeatureNames.Contains("precip_ukv", StringComparer.Ordinal))
+            .Select(kv => kv.Key)
+            .OrderBy(l => l)
+            .ToArray();
 
-        var sql = $@"
+        var latestCte = $@"
 WITH latest AS (
     SELECT ValidTimeUtc, Model, LeadHours, RunTimeUtc, Precipitation,
            ROW_NUMBER() OVER (
@@ -866,7 +860,28 @@ WITH latest AS (
       AND RunTimeUtc <= TIMESTAMP '{asOfRunTime:yyyy-MM-dd HH:mm:ss}'
       AND ValidTimeUtc BETWEEN TIMESTAMP '{earliestValid:yyyy-MM-dd HH:mm:ss}'
                            AND TIMESTAMP '{latestValid:yyyy-MM-dd HH:mm:ss}'
-),
+)";
+
+        string sql;
+        if (ukvLeads.Length > 0)
+        {
+            var ukvUnionLegs = string.Join("\n        UNION ALL\n",
+                ukvLeads.Select(blenderLead => $@"        SELECT
+            ValidTimeUtc, {blenderLead} AS BlenderLead,
+            Precipitation AS ukv_precip, RunTimeUtc AS ukv_run_time,
+            ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn2
+        FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
+        WHERE LocationName = '{loc}'
+          AND Model = 'met_office_ukv'
+          AND RunTimeSource = 'exact'
+          AND Precipitation IS NOT NULL
+          AND HOUR(ValidTimeUtc) IN {hourInClause}
+          AND RunTimeUtc <= TIMESTAMP '{asOfRunTime:yyyy-MM-dd HH:mm:ss}'
+          AND ValidTimeUtc BETWEEN TIMESTAMP '{earliestValid:yyyy-MM-dd HH:mm:ss}'
+                               AND TIMESTAMP '{latestValid:yyyy-MM-dd HH:mm:ss}'
+          AND ({Exact12hFeatureBuilder.UkvPerVOrClause(blenderLead, Exact12hFeatureBuilder.UkvPickStrategy.Averaging)})"));
+
+            sql = $@"{latestCte},
 ukv AS (
     SELECT ValidTimeUtc, BlenderLead, ukv_precip, ukv_run_time
     FROM (
@@ -883,6 +898,17 @@ LEFT JOIN ukv u
 WHERE l.rn = 1
   AND l.RunTimeUtc <= l.ValidTimeUtc - (l.LeadHours * INTERVAL 1 HOUR)
 ORDER BY l.ValidTimeUtc, l.LeadHours, l.Model;";
+        }
+        else
+        {
+            sql = $@"{latestCte}
+SELECT l.ValidTimeUtc, l.Model, l.LeadHours, l.RunTimeUtc, l.Precipitation,
+       CAST(NULL AS DOUBLE) AS ukv_precip, CAST(NULL AS TIMESTAMP) AS ukv_run_time
+FROM latest l
+WHERE l.rn = 1
+  AND l.RunTimeUtc <= l.ValidTimeUtc - (l.LeadHours * INTERVAL 1 HOUR)
+ORDER BY l.ValidTimeUtc, l.LeadHours, l.Model;";
+        }
 
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();

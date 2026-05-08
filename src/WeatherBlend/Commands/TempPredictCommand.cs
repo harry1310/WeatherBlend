@@ -572,7 +572,7 @@ ORDER BY ValidTimeUtc, Model;";
         var pivotByLeadValid = QueryExactForecastRows(
             _cfg.Storage.ForecastsPath,
             _cfg.Location.Name,
-            specLeads: specs.Keys.ToArray(),
+            specs: specs,
             earliestValid: windowStart,
             latestValid: windowEnd,
             asOfRunTime: anchor,
@@ -732,21 +732,38 @@ ORDER BY ValidTimeUtc, Model;";
     private Dictionary<(int Lead, DateTime ValidTime), ExactPivotRow> QueryExactForecastRows(
         string forecastsPath,
         string locationName,
-        IReadOnlyList<int> specLeads,
+        IReadOnlyDictionary<int, BlenderSpec> specs,
         DateTime earliestValid,
         DateTime latestValid,
         DateTime asOfRunTime,
         CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        if (specLeads.Count == 0) return new();
+        if (specs.Count == 0) return new();
 
+        var specLeads = specs.Keys.OrderBy(l => l).ToArray();
         var fcGlob = Path.Combine(forecastsPath, "**", "*.parquet").Replace('\\', '/').Replace("'", "''");
         var loc = locationName.Replace("'", "''");
         var modelInClause = "(" + string.Join(",",
             Exact12hFeatureBuilder.CanonicalModelOrder.Select(m => $"'{m}'")) + ")";
         var leadInClause = "(" + string.Join(",", specLeads) + ")";
         var hourInClause = "(" + string.Join(",", Phase2dValidHoursUtc) + ")";
+
+        // Only build a UKV CTE leg for leads whose trained spec actually
+        // pulls UKV — the FeatureNames-contains-`temp_ukv` test is the
+        // codified train/predict contract (see Exact12hFeatureBuilder.cs:179
+        // + :439). Without this filter, calling UkvPerVOrClause for a no-UKV
+        // version's leads (e.g. v2026-05-08_060055_phase2d at 72/96/120)
+        // throws ArgumentException because the strict picker only defines
+        // tables at {12, 24, 48}. That's exactly how predict-and-render
+        // crashed in CI on 2026-05-08 09:18 UTC after the no-UKV long-lead
+        // 2d version got promoted. Fixed by skipping UKV legs for those
+        // leads. If NO lead uses UKV the entire CTE + LEFT JOIN drops too.
+        var ukvLeads = specs
+            .Where(kv => kv.Value.FeatureNames.Contains("temp_ukv", StringComparer.Ordinal))
+            .Select(kv => kv.Key)
+            .OrderBy(l => l)
+            .ToArray();
 
         // UKV CTE per blender lead — UKV's per-V-hour (cycle, lead) tuples
         // differ by target lead so the average UKV-effective-lead matches.
@@ -756,23 +773,7 @@ ORDER BY ValidTimeUtc, Model;";
         // 12h-ahead rule and lead-24 rows get UKV picked under the
         // 24h-ahead rule. Fixes the lead-24 leak the buggy single-CTE
         // version had (UKV at 12h-ahead while other inputs were at 24h).
-        var ukvUnionLegs = string.Join("\n        UNION ALL\n",
-            specLeads.Select(blenderLead => $@"        SELECT
-            ValidTimeUtc, {blenderLead} AS BlenderLead,
-            Temperature2m AS ukv_temp, RunTimeUtc AS ukv_run_time,
-            ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn2
-        FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
-        WHERE LocationName = '{loc}'
-          AND Model = 'met_office_ukv'
-          AND RunTimeSource = 'exact'
-          AND Temperature2m IS NOT NULL
-          AND HOUR(ValidTimeUtc) IN {hourInClause}
-          AND RunTimeUtc <= TIMESTAMP '{asOfRunTime:yyyy-MM-dd HH:mm:ss}'
-          AND ValidTimeUtc BETWEEN TIMESTAMP '{earliestValid:yyyy-MM-dd HH:mm:ss}'
-                               AND TIMESTAMP '{latestValid:yyyy-MM-dd HH:mm:ss}'
-          AND ({Exact12hFeatureBuilder.UkvPerVOrClause(blenderLead, Exact12hFeatureBuilder.UkvPickStrategy.Strict)})"));
-
-        var sql = $@"
+        var latestCte = $@"
 WITH latest AS (
     SELECT ValidTimeUtc, Model, LeadHours, RunTimeUtc, Temperature2m,
            ROW_NUMBER() OVER (
@@ -789,7 +790,29 @@ WITH latest AS (
       AND RunTimeUtc <= TIMESTAMP '{asOfRunTime:yyyy-MM-dd HH:mm:ss}'
       AND ValidTimeUtc BETWEEN TIMESTAMP '{earliestValid:yyyy-MM-dd HH:mm:ss}'
                            AND TIMESTAMP '{latestValid:yyyy-MM-dd HH:mm:ss}'
-),
+)";
+
+        string sql;
+        if (ukvLeads.Length > 0)
+        {
+            // At least one spec lead uses UKV — build legs for those leads only.
+            var ukvUnionLegs = string.Join("\n        UNION ALL\n",
+                ukvLeads.Select(blenderLead => $@"        SELECT
+            ValidTimeUtc, {blenderLead} AS BlenderLead,
+            Temperature2m AS ukv_temp, RunTimeUtc AS ukv_run_time,
+            ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn2
+        FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
+        WHERE LocationName = '{loc}'
+          AND Model = 'met_office_ukv'
+          AND RunTimeSource = 'exact'
+          AND Temperature2m IS NOT NULL
+          AND HOUR(ValidTimeUtc) IN {hourInClause}
+          AND RunTimeUtc <= TIMESTAMP '{asOfRunTime:yyyy-MM-dd HH:mm:ss}'
+          AND ValidTimeUtc BETWEEN TIMESTAMP '{earliestValid:yyyy-MM-dd HH:mm:ss}'
+                               AND TIMESTAMP '{latestValid:yyyy-MM-dd HH:mm:ss}'
+          AND ({Exact12hFeatureBuilder.UkvPerVOrClause(blenderLead, Exact12hFeatureBuilder.UkvPickStrategy.Strict)})"));
+
+            sql = $@"{latestCte},
 ukv AS (
     SELECT ValidTimeUtc, BlenderLead, ukv_temp, ukv_run_time
     FROM (
@@ -806,6 +829,20 @@ LEFT JOIN ukv u
 WHERE l.rn = 1
   AND l.RunTimeUtc <= l.ValidTimeUtc - (l.LeadHours * INTERVAL 1 HOUR)
 ORDER BY l.ValidTimeUtc, l.LeadHours, l.Model;";
+        }
+        else
+        {
+            // No spec lead uses UKV — drop the CTE + LEFT JOIN. Reader still
+            // expects 7 columns (ukv_temp + ukv_run_time at indices 5/6) so
+            // emit explicit NULLs of the right type to keep the schema stable.
+            sql = $@"{latestCte}
+SELECT l.ValidTimeUtc, l.Model, l.LeadHours, l.RunTimeUtc, l.Temperature2m,
+       CAST(NULL AS DOUBLE) AS ukv_temp, CAST(NULL AS TIMESTAMP) AS ukv_run_time
+FROM latest l
+WHERE l.rn = 1
+  AND l.RunTimeUtc <= l.ValidTimeUtc - (l.LeadHours * INTERVAL 1 HOUR)
+ORDER BY l.ValidTimeUtc, l.LeadHours, l.Model;";
+        }
 
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
