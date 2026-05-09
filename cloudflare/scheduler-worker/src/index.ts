@@ -343,7 +343,15 @@ async function listOpenCiFailureIssues(token: string, repo: string): Promise<Git
 
 async function createIssue(
   token: string, repo: string, title: string, body: string, labels: string[],
+  assignees: string[] = ["harry1310"],
 ): Promise<void> {
+  // Assign to the repo owner by default — GitHub fires a personal
+  // notification on `assigned` events (delivered to email + the
+  // notifications inbox) regardless of repo-watch settings, which is
+  // what we want for `[ci-fail]` issues. Without assignees, the worker
+  // creates the issue silently and the user only sees it if they're
+  // watching the repo for issue events. Override `assignees` per-call
+  // if other CI failures should ping someone else.
   const url = `https://api.github.com/repos/${repo}/issues`;
   const response = await fetch(url, {
     method: "POST",
@@ -354,7 +362,7 @@ async function createIssue(
       "User-Agent": "weatherblend-scheduler",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ title, body, labels }),
+    body: JSON.stringify({ title, body, labels, assignees }),
   });
   if (!response.ok) {
     const errText = await response.text();
