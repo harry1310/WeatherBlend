@@ -335,6 +335,27 @@ public static partial class SitePages
                     .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet))
                     .ToList();
                 probSeries.Add(new LineSeries(label, color, pts));
+
+                // 4a is the only LightGBM-tree-blender competitor to also
+                // emit per-row posterior quantiles (BART is Bayesian by
+                // construction). When its CI columns are populated, draw
+                // dashed Q05/Q95 lines in 4a's colour to show the 90% band
+                // tightly around the prediction line — gives the chart the
+                // "tight band = confident, wide = uncertain" eye-test for
+                // 4a directly, alongside 5a's standalone CI panel below.
+                if (phase == "4a" && phaseRows.Any(r => r.ProbWetQ05.HasValue && r.ProbWetQ95.HasValue))
+                {
+                    var q05Pts = phaseRows
+                        .Where(r => r.ProbWetQ05.HasValue)
+                        .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWetQ05!.Value))
+                        .ToList();
+                    var q95Pts = phaseRows
+                        .Where(r => r.ProbWetQ95.HasValue)
+                        .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWetQ95!.Value))
+                        .ToList();
+                    probSeries.Add(new LineSeries($"4a q95 (upper)", color, q95Pts, Dashed: true));
+                    probSeries.Add(new LineSeries($"4a q05 (lower)", color, q05Pts, Dashed: true));
+                }
             }
             // Climatology stays a single line — it's a station property, not
             // a blender output. Read off the champion-pooled rows above.

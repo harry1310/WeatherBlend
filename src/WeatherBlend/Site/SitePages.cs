@@ -565,7 +565,17 @@ public static partial class SitePages
         // conformal is "does the model commit at the requested coverage
         // guarantee?" (distribution-free). Both shown side-by-side in the
         // hourly-detail table. Null on legacy rows pre-conformal-fit.
-        string? ConformalSetTag = null);
+        string? ConformalSetTag = null,
+        // Bayesian-uncertainty quantiles (added 2026-05-09). Persisted by
+        // phases that compute a posterior per row — 4a (BART) writes them
+        // for live predictions; 5a writes them but the renderer reads 5a
+        // via QueryBayesianCi, not this record. Null on 3a/3c/3d/2x rows
+        // and on pre-2026-05-09 4a rows. Render path uses Q05/Q95 to draw
+        // a dashed band around the 4a champion's prediction line.
+        double? ProbWetQ05 = null,
+        double? ProbWetQ95 = null,
+        double? Ci80Width  = null,
+        double? Ci90Width  = null);
 
     /// <summary>
     /// Per-valid-hour aggregate of NWP fog / low-cloud forecasts. Counts

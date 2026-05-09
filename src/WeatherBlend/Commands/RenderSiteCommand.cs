@@ -83,7 +83,11 @@ public sealed class RenderSiteCommand
             PrecipAifs:      r.PrecipAifs,
             PrecipJma:       r.PrecipJma,
             AgreementWet01:  r.PrecipAgreementWet01,
-            ConformalSetTag: r.ConformalSetTag)).ToList();
+            ConformalSetTag: r.ConformalSetTag,
+            ProbWetQ05:      r.ProbWetQ05,
+            ProbWetQ95:      r.ProbWetQ95,
+            Ci80Width:       r.Ci80Width,
+            Ci90Width:       r.Ci90Width)).ToList();
         _log.LogInformation("Loaded {N} precipitation prediction rows.", precip.Count);
 
         var feelsLike = QueryFeelsLikePredictions(windowStart, predictionEnd, ct);
