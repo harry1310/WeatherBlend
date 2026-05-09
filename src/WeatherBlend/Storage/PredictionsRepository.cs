@@ -161,6 +161,12 @@ FROM {fromClause}
 WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
   AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+  -- 5a's lead-as-feature predict can write occasional null-band rows
+  -- (cycle×lead combos where Open-Meteo features were missing and the
+  -- predictor wrote nulls instead of skipping). MapPrecipRow's GetDouble(6)
+  -- assumes non-null and would throw — filter at SQL instead, mirrors the
+  -- guard QueryBayesianCi already had.
+  AND ProbWet IS NOT NULL
 ORDER BY TruthStation, ModelVersion, LeadHours, ValidTimeUtc";
 
         return ParquetReader.Query(sql, MapPrecipRow,
