@@ -24,17 +24,25 @@ compatibility_date = "2025-04-01"
 #   "45 2,8,14,20 * * *"  → collect.yml             Open-Meteo + ERA5 + METAR + EA + MO DataHub (WeatherBlend)
 #   "0 3,9,15,21 * * *"   → s3-collect.yml          Raw S3 cycles (GFS / IFS / AIFS / MO Global) for 2d (WeatherBlend)
 #                         + predict-5a.yml          Phase 5a Bayesian-logreg live predict (WeatherProbabilistic repo)
-#                                                   Both fire on the same tick — different repos, no shared lock,
-#                                                   distinct R2 partitions. Folded onto a single cron because
+#                         + predict-4a.yml          Phase 4a dbarts BART state-load + predict (WeatherProbabilistic)
+#                                                   All three on the same tick — different repos / disjoint R2
+#                                                   prefixes, no shared lock. Folded onto a single cron because
 #                                                   Cloudflare's free tier caps total cron triggers at 5.
-#                                                   (Renamed 2026-05-09 from predict-bayesian.yml when Phase 5 → 5a
-#                                                   moved from CI-only output to first-class predictions tree.)
+#                                                   (predict-5a renamed 2026-05-09 from predict-bayesian.yml when
+#                                                    Phase 5 → 5a moved from CI-only output to first-class
+#                                                    predictions tree. predict-4a moved here from "0 12 * * *"
+#                                                    on the same day once train and predict were split — see
+#                                                    train-4a.yml; predict-4a now just rehydrates a saved BART
+#                                                    state and runs in ~2 min, not the previous ~24 min combo.)
 #   "15 3,9,15,21 * * *"  → predict-and-render.yml  every 6h, 15 min after s3-collect (WeatherBlend)
 #   "0 12 * * *"          → era5-refresh.yml        daily at 12:00 UTC (WeatherBlend)
-#                         + predict-4a.yml          daily Phase 4a BART train-and-predict (WeatherProbabilistic)
-#                                                   Same tick — different repos, different R2 prefixes, no shared
-#                                                   lock. Folded onto the existing daily slot because Cloudflare's
-#                                                   free-tier cron-triggers cap is 5.
+#                         + previous-runs-refresh.yml  rolling 14-day OM previous_runs pull, keeps the
+#                                                   offset_day archive train-4a.yml depends on current.
+#                                                   Both share weatherblend-data lock; serialised writes.
+#                                                   (predict-4a removed from this tick 2026-05-09 — train+
+#                                                    predict were split, predict-4a moved to the 6-hourly
+#                                                    tick as a state-loader; previous-runs-refresh added
+#                                                    same day so on-demand retrains see fresh data.)
 #   "30 9 * * MON,THU"    → verify.yml              twice-weekly Mon + Thu 09:30 UTC (WeatherBlend)
 #                                                   (Cloudflare cron uses 1=Sunday,
 #                                                   not POSIX 0=Sunday — day names

@@ -2,8 +2,10 @@ name: era5-refresh
 
 # Daily ERA5 truth refresh. Open-Meteo's ERA5 feed mirrors ECMWF's release
 # cadence — roughly once a day with ~5-day lag — so polling more often is
-# wasted calls. We backfill a rolling 14-day window each refresh to catch
+# wasted calls. We backfill a rolling 7-day window each refresh to catch
 # any late-arriving days without assuming a single release timing.
+# (Window narrowed from 14 → 7 days 2026-05-09 — 14 was overkill given
+# Open-Meteo's typical 1-day publish cadence + ~5-day lag.)
 #
 # Schedule moved to Cloudflare 2026-05-01 (cloudflare/scheduler-worker/);
 # GitHub's `schedule:` trigger removed at the same time. The Cloudflare
@@ -19,7 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       start:
-        description: "Start date (yyyy-MM-dd, UTC). Default: today − 14 days."
+        description: "Start date (yyyy-MM-dd, UTC). Default: today − 7 days."
         required: false
         default: ""
       end:
@@ -73,7 +75,7 @@ jobs:
           START="${{ github.event.inputs.start }}"
           END="${{ github.event.inputs.end }}"
           if [ -z "$START" ]; then
-            START=$(date -u -d '14 days ago' +%Y-%m-%d)
+            START=$(date -u -d '7 days ago' +%Y-%m-%d)
           fi
           if [ -z "$END" ]; then
             END=$(date -u +%Y-%m-%d)

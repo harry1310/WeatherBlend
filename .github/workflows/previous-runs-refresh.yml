@@ -1,0 +1,145 @@
+name: previous-runs-refresh
+
+# Daily Open-Meteo previous_runs refresh. Open-Meteo's previous_runs
+# endpoint serves the rolling archive that BART (Phase 4a) trains on —
+# rows tagged RunTimeSource=offset_day with LeadHours in {24..168}. The
+# live `collect.yml` cycle does NOT touch this endpoint (it pulls only
+# the live forecast tagged RunTimeSource=reported), so without this
+# refresh the offset_day tree stops at whatever date the last manual
+# `backfill --source previous-runs` covered.
+#
+# Why this exists: train-4a.yml is workflow_dispatch-only and trains on
+# the offset_day archive. Without a daily incremental pull, an on-
+# demand retrain would regress to whatever stale data was last
+# backfilled. Refreshing daily means the on-demand button always sees
+# fresh training data, and a weekly auto-retrain cron (if/when added)
+# can fire without depending on a separate refresh having landed first.
+#
+# Window: rolling 7 days. Open-Meteo previous_runs publishes daily;
+# 7 days covers the longest lead (168h = 7d) plus settles late-arriving
+# data without doubling the pull. Each day's parquet is rewritten in
+# place (ParquetWriter.WritePreviousRunsAsync is idempotent), so re-
+# pulling the overlap days is safe and cheap. (Initial draft was 14d;
+# narrowed 2026-05-09 — overkill given OM's 1-day publish cadence.)
+#
+# Schedule: noon UTC alongside era5-refresh — same logic (past Open-
+# Meteo's publish window, never catches mid-publish nulls). Different
+# data trees (forecasts/ vs truth/era5/) so no R2 contention beyond the
+# weatherblend-data lock both share.
+#
+# Schedule lives in cloudflare/scheduler-worker/wrangler.toml +
+# WORKFLOW_FOR_CRON. Per the project-wide rule, NEVER add a
+# `schedule:` block here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "Start date (yyyy-MM-dd, UTC). Default: today − 7 days."
+        required: false
+        default: ""
+      end:
+        description: "End date (yyyy-MM-dd, UTC). Default: today."
+        required: false
+        default: ""
+      model:
+        description: "Optional single model id to refresh (default: all configured models)."
+        required: false
+        default: ""
+
+concurrency:
+  # Share the data-write lock with collect/backfill/era5-refresh so no
+  # two jobs try to push to R2 at the same time. cancel-in-progress=false
+  # so manual dispatches don't kill an in-flight scheduled run.
+  group: weatherblend-data
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    # 7 days × ~7 models × ~2-3s/day per model with the inter-call delay
+    # is well under 15 min in practice. Padded to 30 min in case Open-
+    # Meteo's previous_runs endpoint slows down on a refresh cycle.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+          dotnet-quality: preview
+
+      - name: Install rclone
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          rclone version
+
+      - name: Configure rclone for R2
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf <<EOF
+          [r2]
+          type = s3
+          provider = Cloudflare
+          access_key_id = ${R2_ACCESS_KEY_ID}
+          secret_access_key = ${R2_SECRET_ACCESS_KEY}
+          endpoint = ${R2_ENDPOINT}
+          acl = private
+          EOF
+
+      - name: Compute refresh window
+        id: window
+        run: |
+          START="${{ github.event.inputs.start }}"
+          END="${{ github.event.inputs.end }}"
+          if [ -z "$START" ]; then
+            START=$(date -u -d '7 days ago' +%Y-%m-%d)
+          fi
+          if [ -z "$END" ]; then
+            END=$(date -u +%Y-%m-%d)
+          fi
+          echo "start=$START" >> "$GITHUB_OUTPUT"
+          echo "end=$END"   >> "$GITHUB_OUTPUT"
+          echo "previous-runs refresh window: $START .. $END"
+
+      - name: Build
+        run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
+
+      - name: Refresh previous_runs
+        # Per-day parquets get rewritten in place — re-pulling overlap days
+        # is idempotent. Open-Meteo previous_runs returns leads {24..168}
+        # for each requested date, so the 14-day window writes ~14 daily
+        # partitions per model.
+        run: |
+          MODEL_ARG=""
+          if [ -n "${{ github.event.inputs.model }}" ]; then
+            MODEL_ARG="--model ${{ github.event.inputs.model }}"
+          fi
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            backfill --source previous-runs \
+            --start ${{ steps.window.outputs.start }} \
+            --end   ${{ steps.window.outputs.end }} \
+            $MODEL_ARG
+
+      - name: Push forecasts tree to R2
+        # rclone copy is incremental — only the modified date partitions
+        # in the rolling window get uploaded. Restricted to the location
+        # subtree to avoid surprising scans of unrelated paths.
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          rclone copy ./data/forecasts "r2:${R2_BUCKET}/data/forecasts" \
+            --fast-list --transfers 16 --checkers 32 --progress
+
+      - name: Upload logs as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: previous-runs-refresh-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 14
+          if-no-files-found: ignore

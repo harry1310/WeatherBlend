@@ -43,30 +43,40 @@ type Dispatch = { workflow: string; repo?: string };
  */
 const WORKFLOW_FOR_CRON: Record<string, Dispatch[]> = {
   "45 2,8,14,20 * * *": [{ workflow: "collect.yml" }],
-  // s3-collect (WeatherBlend) AND predict-5a (WeatherProbabilistic) share
-  // this tick. Both fire at HH+1:00; s3-collect uses the weatherblend-data
-  // lock while predict-5a reads Open-Meteo forecast data already pushed
-  // to R2 by collect.yml at HH:45 and writes to the standard precipitation
-  // predictions tree under model_version=*phase5a*. No shared lock, no
-  // race, both finish well before predict-and-render at HH+1:15. (Renamed
-  // 2026-05-09 from predict-bayesian.yml when Phase 5 → 5a re-cast it as
-  // a real model artefact rather than a CI-only sidecar.)
+  // s3-collect (WeatherBlend) + predict-5a + predict-4a (both
+  // WeatherProbabilistic) share this tick. All three fire at HH+1:00;
+  // s3-collect uses the weatherblend-data lock; predict-5a and
+  // predict-4a read forecasts pushed by collect.yml at HH:45 and write
+  // to disjoint precipitation prediction prefixes (*phase5a* /
+  // *phase4a*). No shared lock; all three finish well before
+  // predict-and-render at HH+1:15. (predict-5a renamed 2026-05-09 from
+  // predict-bayesian.yml; predict-4a moved here from the noon tick on
+  // the same day once train and predict were split — see train-4a.yml.)
   "0 3,9,15,21 * * *": [
     { workflow: "s3-collect.yml" },
     { workflow: "predict-5a.yml", repo: "harry1310/WeatherProbabilistic" },
+    { workflow: "predict-4a.yml", repo: "harry1310/WeatherProbabilistic" },
   ],
   "15 3,9,15,21 * * *": [{ workflow: "predict-and-render.yml" }],
-  // Daily 12:00 UTC tick fires era5-refresh AND predict-4a. Phase 4a's
-  // dbarts BART tree state can't survive cross-session serialize, so each
-  // run is a single train+predict (~24 min wall, lead-as-feature pooled
-  // across 6 leads × 3 stations). Daily cadence — predict-and-render at
-  // HH+1:15 reads the day's 4a parquet from R2; staleness peaks at ~20h
-  // relative to the 12:00 fit, acceptable for a 1000-draw × 500-tree
-  // posterior-mean blender. Different repo, different R2 prefix
-  // (data/predictions/precipitation/.../phase4a) so no shared lock.
+  // Noon UTC: ERA5 refresh + Open-Meteo previous_runs refresh. Both
+  // pull rolling 14-day windows from Open-Meteo (different endpoints,
+  // different data trees: truth/era5/ vs forecasts/) past Open-Meteo's
+  // publish window so neither lands on null partitions. They share the
+  // weatherblend-data lock so writes serialise; either ordering is
+  // safe. previous-runs-refresh keeps the offset_day archive that
+  // train-4a.yml feeds on current — without it, on-demand BART
+  // retrains would regress to whatever date the last manual backfill
+  // covered.
+  //
+  // Used to also fire predict-4a (daily train+predict combo, ~24 min
+  // wall) but that's gone — train-4a.yml is now workflow_dispatch only
+  // and predict-4a runs on the 6-hourly tick above as a state-loading-
+  // only step (~2 min wall). The split was unblocked once we verified
+  // dbarts state round-trips bit-exactly via storeState() + setState();
+  // see scripts/smoke_dbarts_roundtrip.py.
   "0 12 * * *":         [
     { workflow: "era5-refresh.yml" },
-    { workflow: "predict-4a.yml", repo: "harry1310/WeatherProbabilistic" },
+    { workflow: "previous-runs-refresh.yml" },
   ],
   "30 9 * * MON,THU":   [{ workflow: "verify.yml" }],
 };
