@@ -1001,8 +1001,12 @@ GROUP BY ValidTimeUtc";
         }
         // Glob across station partitions, filter to phase5a model_version
         // dirs only. Pull station_slug off the path partition; we map to
-        // PrettyStation later for chart joins.
-        var glob = ParquetReader.Glob(Path.Combine(subdir, "**", "model_version=*phase5a*", "**", "*.parquet"));
+        // PrettyStation later for chart joins. Single '*' per level (NOT
+        // multiple '**'): DuckDB's read_parquet rejects "multiple '**' in
+        // one path", and the tree depth is fixed at
+        // {station}/model_version=*/date=*/predictions.parquet so we don't
+        // need recursive glob anyway.
+        var glob = ParquetReader.Glob(Path.Combine(subdir, "*", "model_version=*phase5a*", "*", "*.parquet"));
         var sql = $@"
 WITH raw AS (
   SELECT
