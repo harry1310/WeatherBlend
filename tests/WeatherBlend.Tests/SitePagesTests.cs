@@ -532,6 +532,125 @@ public class SitePagesTests
         rainHtml.Should().NotContain("temp_v2b");
     }
 
+    [Fact]
+    public void RenderModels_merges_disjoint_leads_from_two_versions_of_same_phase_into_one_card()
+    {
+        // 2d temperature is trained as two separate models — short leads
+        // {12,24,48} in one version, long leads {72,96,120} in another.
+        // Both ship under Phase=2d. The card must show ALL six rows; the
+        // pre-fix renderer kept only the latest TrainedAt and silently
+        // dropped the other half of the lead range (Bellever rendered "+72h
+        // first row" because the long-leads version was newest).
+        var oldTrained = new DateTime(2026, 5, 8, 6, 0, 0, DateTimeKind.Utc);   // long-leads version
+        var newTrained = new DateTime(2026, 5, 8, 8, 52, 0, DateTimeKind.Utc); // short-leads version (newest)
+        var perLeadShort = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            [12] = new(12, "ifs", 0.50, 0.45, 0.444, 0.62, +0.01, 200, 3),
+            [24] = new(24, "ifs", 0.55, 0.50, 0.469, 0.65, +0.02, 200, 3),
+            [48] = new(48, "ifs", 0.62, 0.58, 0.569, 0.74, +0.03, 200, 3),
+        };
+        var perLeadLong = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            [72]  = new(72,  "ifs", 0.75, 0.72, 0.701, 0.85, +0.04, 200, 3),
+            [96]  = new(96,  "ifs", 0.88, 0.85, 0.835, 0.99, +0.05, 200, 3),
+            [120] = new(120, "ifs", 1.05, 1.00, 0.991, 1.16, +0.06, 200, 3),
+        };
+        var summaries = new[]
+        {
+            new SitePages.ModelSummary("temperature", "v_long_2d",  "2d", "exact-runtime", oldTrained, "Test MAE (°C)", perLeadLong),
+            new SitePages.ModelSummary("temperature", "v_short_2d", "2d", "exact-runtime", newTrained, "Test MAE (°C)", perLeadShort),
+        };
+        var input = MakeEmptyForecastInput() with { ModelSummaries = summaries };
+
+        var html = SitePages.RenderModels(input, "temperature");
+
+        // Every lead row appears — both halves are merged onto one card.
+        html.Should().Contain("+12h").And.Contain("+24h").And.Contain("+48h")
+            .And.Contain("+72h").And.Contain("+96h").And.Contain("+120h");
+        // Header version is the newest TrainedAt (short-leads version's
+        // 08:52, not the long-leads 06:00).
+        html.Should().Contain("v_short_2d");
+        // Each per-lead BlendTestScore renders (formatted to 3dp).
+        html.Should().Contain("0.444").And.Contain("0.469").And.Contain("0.569")
+            .And.Contain("0.701").And.Contain("0.835").And.Contain("0.991");
+    }
+
+    [Fact]
+    public void RenderModels_merges_per_station_phase_versions_for_precip_3d_split()
+    {
+        // 3d precipitation has the same short/long split per station — e.g.
+        // Bellever ships v_3d_short {12,24,48,72} alongside v_3d_long {96,120}.
+        // The merge groups by (Composite, Phase) where Composite includes
+        // station ("precipitation/ea_bellever_dartmoor"), so a per-station
+        // phase that's split across two artefacts still surfaces all six
+        // leads on one card.
+        var oldTrained = new DateTime(2026, 5, 8, 6, 15, 0, DateTimeKind.Utc);
+        var newTrained = new DateTime(2026, 5, 8, 6, 12, 0, DateTimeKind.Utc); // older actually
+        var perLeadShort = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            [12] = new(12, "gfs", 0.10, 0.09, 0.085, 0.30, 0.0, 200, 3),
+            [24] = new(24, "gfs", 0.12, 0.11, 0.105, 0.32, 0.0, 200, 3),
+            [48] = new(48, "gfs", 0.14, 0.13, 0.125, 0.34, 0.0, 200, 3),
+            [72] = new(72, "gfs", 0.16, 0.15, 0.145, 0.36, 0.0, 200, 3),
+        };
+        var perLeadLong = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            [96]  = new(96,  "gfs", 0.18, 0.17, 0.165, 0.38, 0.0, 200, 3),
+            [120] = new(120, "gfs", 0.20, 0.19, 0.185, 0.40, 0.0, 200, 3),
+        };
+        var summaries = new[]
+        {
+            new SitePages.ModelSummary($"precipitation/{Station}", "v_3d_short", "3d", "ea_hydrology", newTrained, "Test Brier", perLeadShort),
+            new SitePages.ModelSummary($"precipitation/{Station}", "v_3d_long",  "3d", "ea_hydrology", oldTrained, "Test Brier", perLeadLong),
+        };
+        var input = MakeEmptyForecastInput() with { ModelSummaries = summaries };
+
+        var html = SitePages.RenderModels(input, "precipitation");
+
+        html.Should().Contain("+12h").And.Contain("+24h").And.Contain("+48h")
+            .And.Contain("+72h").And.Contain("+96h").And.Contain("+120h");
+        // Long-leads metrics survive the merge (BlendTestScore at lead 96 + 120).
+        html.Should().Contain("0.165").And.Contain("0.185");
+        // Short-leads metrics survive the merge (BlendTestScore at lead 12).
+        html.Should().Contain("0.085");
+    }
+
+    [Fact]
+    public void RenderModels_freshest_version_wins_per_lead_when_two_versions_overlap()
+    {
+        // A retrain that re-emits an existing lead must supersede the older
+        // metric for that lead — the merged card should reflect the freshest
+        // PerLead entry, not blend two metrics or pick the older one.
+        var oldTrained = new DateTime(2026, 5, 1, 12, 0, 0, DateTimeKind.Utc);
+        var newTrained = new DateTime(2026, 5, 8, 12, 0, 0, DateTimeKind.Utc);
+        var perLeadOld = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            // Old version's lead 24 metric — should be SUPERSEDED by the
+            // freshest version's value, not appear in the rendered HTML.
+            [24] = new(24, "gfs", 1.00, 1.00, 9.876, 1.20, 0.0, 200, 3),
+        };
+        var perLeadNew = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            // Freshest version's lead 24 metric — this is the value the
+            // card should show.
+            [24] = new(24, "ifs", 0.50, 0.50, 0.444, 0.65, 0.0, 200, 3),
+            [48] = new(48, "ifs", 0.55, 0.55, 0.555, 0.70, 0.0, 200, 3),
+        };
+        var summaries = new[]
+        {
+            new SitePages.ModelSummary("temperature", "v_old_2b", "2b", "era5", oldTrained, "Test MAE (°C)", perLeadOld),
+            new SitePages.ModelSummary("temperature", "v_new_2b", "2b", "era5", newTrained, "Test MAE (°C)", perLeadNew),
+        };
+        var input = MakeEmptyForecastInput() with { ModelSummaries = summaries };
+
+        var html = SitePages.RenderModels(input, "temperature");
+
+        html.Should().Contain("0.444");   // freshest wins at lead 24
+        html.Should().Contain("0.555");   // lead 48 also from freshest
+        html.Should().NotContain("9.876"); // old metric must not leak
+        html.Should().Contain("v_new_2b"); // header carries the newest version
+    }
+
     [Theory]
     [InlineData(-10.0,  59,  76, 192)]  // below cold anchor → clamps to deep cobalt
     [InlineData( -5.0,  59,  76, 192)]  // cold anchor (matplotlib coolwarm 0.0)

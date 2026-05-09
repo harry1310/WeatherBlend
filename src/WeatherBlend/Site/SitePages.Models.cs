@@ -78,16 +78,27 @@ public static partial class SitePages
             return WrapPage(input, prettyTitle, "models", content.ToString());
         }
 
-        // Latest-only per (composite, phase), filtered to phases that are
-        // currently shipping. Demoted phases (3a_isotonic + 3d-calibrated were
-        // retired 2026-04-29 after PAV calibration didn't move test Brier;
-        // the one-off temperature 2b_redo retrain is also reference-only)
-        // still have prediction rows in the rolling window so they leak into
-        // ModelSummaries — IsActivePhase keeps the page focused on "what's
-        // actually being used right now".
+        // One card per (composite, phase). Phases like 2d and 3d are
+        // commonly split across multiple ModelSummaries because the
+        // short-leads and long-leads halves are trained as separate
+        // versions (e.g. 2d short → leads {12,24,48} in version A,
+        // 2d long → leads {72,96,120} in version B). Merge their PerLead
+        // dicts so the card shows the full lead range; the header carries
+        // the latest version's metadata (newest training wins for the
+        // version tag and TrainedAt label). Per lead, the freshest version
+        // containing that lead supplies the metric.
         var latestPerFamily = targetSummaries
             .GroupBy(m => (m.Composite, m.Phase), comparer: null!)
-            .Select(g => g.OrderByDescending(m => m.TrainedAtUtc).First())
+            .Select(g =>
+            {
+                var latest = g.OrderByDescending(m => m.TrainedAtUtc).First();
+                var mergedPerLead = g
+                    .OrderByDescending(s => s.TrainedAtUtc)
+                    .SelectMany(s => s.PerLead)
+                    .GroupBy(kv => kv.Key)
+                    .ToDictionary(grp => grp.Key, grp => grp.First().Value);
+                return latest with { PerLead = mergedPerLead };
+            })
             .GroupBy(m => m.Composite, StringComparer.Ordinal)
             .OrderBy(g => g.Key, StringComparer.Ordinal);
 
