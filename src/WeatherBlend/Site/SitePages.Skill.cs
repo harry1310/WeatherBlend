@@ -407,6 +407,12 @@ public static partial class SitePages
 
             var series = new List<LineSeries>();
             var palette = new[] { "#7c4dff", "#26a69a", "#ef5350", "#ffa726", "#42a5f5" };
+            var phaseColors = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["3a"] = "#7c4dff",
+                ["3c"] = "#26a69a",
+                ["3d"] = "#ef5350",
+            };
             for (int i = 0; i < phases.Count; i++)
             {
                 var p = phases[i];
@@ -416,7 +422,10 @@ public static partial class SitePages
                     .Select(r => (X: r.WindowEndUtc.ToOADate(), Y: r.BlendBrier))
                     .ToList();
                 if (pts.Count > 0)
-                    series.Add(new LineSeries($"Phase {p}", palette[i % palette.Length], pts));
+                {
+                    var color = phaseColors.TryGetValue(p, out var c) ? c : palette[i % palette.Length];
+                    series.Add(new LineSeries($"Phase {p}", color, pts));
+                }
             }
 
             content.Append(Ci, $"<h4>Lead +{lead}h</h4>");
