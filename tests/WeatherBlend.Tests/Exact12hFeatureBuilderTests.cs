@@ -23,11 +23,11 @@ public class Exact12hFeatureBuilderTests
     }
 
     [Fact]
-    public void AllTiers_T1_requires_all_4_models()
+    public void AllTiers_T1_requires_all_5_models()
     {
         var t1 = Exact12hFeatureBuilder.AllTiers.Single(t => t.Name == "T1");
         t1.Required.Should().BeEquivalentTo(
-            "gfs_ncep", "ecmwf_ifs_oper", "ecmwf_aifs_oper", "met_office_global");
+            "gfs_ncep", "ecmwf_ifs_oper", "ecmwf_aifs_oper", "met_office_global", "gefs_ncep_mean");
         t1.Optional.Should().BeEmpty();
     }
 
@@ -37,7 +37,7 @@ public class Exact12hFeatureBuilderTests
         var t3 = Exact12hFeatureBuilder.AllTiers.Single(t => t.Name == "T3");
         t3.Required.Should().BeEquivalentTo("gfs_ncep");
         t3.Optional.Should().BeEquivalentTo(
-            "ecmwf_ifs_oper", "ecmwf_aifs_oper", "met_office_global");
+            "ecmwf_ifs_oper", "ecmwf_aifs_oper", "met_office_global", "gefs_ncep_mean");
         t3.StartDate.Should().Be(new DateOnly(2023, 1, 18));
     }
 
@@ -54,13 +54,13 @@ public class Exact12hFeatureBuilderTests
         var spec = Exact12hFeatureBuilder.BuildSpec(TestTier);
         spec.Target.Should().Be("temperature");
         spec.LeadHours.Should().Be(12);
-        // T2 has all 4 models in its column vector (GFS+AIFS required, IFS+Global optional)
+        // T2 has all 5 models in its column vector (GFS+AIFS required, IFS+Global+GEFS optional)
         spec.Models.Should().BeEquivalentTo(
-            "gfs_ncep", "ecmwf_ifs_oper", "ecmwf_aifs_oper", "met_office_global");
+            "gfs_ncep", "ecmwf_ifs_oper", "ecmwf_aifs_oper", "met_office_global", "gefs_ncep_mean");
         // Single-lead column shape: temp_<model> (no _l suffix)
-        spec.FeatureNames.Should().StartWith(new[] { "temp_gfs", "temp_ifs", "temp_aifs", "temp_moglobal" });
-        // 4 per-model + 3 spread + 4 calendar = 11 features
-        spec.FeatureNames.Should().HaveCount(11);
+        spec.FeatureNames.Should().StartWith(new[] { "temp_gfs", "temp_ifs", "temp_aifs", "temp_moglobal", "temp_gefsmean" });
+        // 5 per-model + 3 spread + 4 calendar = 12 features
+        spec.FeatureNames.Should().HaveCount(12);
         spec.FeatureNames.Should().EndWith(new[] {
             "temp_mean", "temp_std", "temp_range",
             "hour_sin", "hour_cos", "doy_sin", "doy_cos"
@@ -79,8 +79,8 @@ public class Exact12hFeatureBuilderTests
     public void BuildSpec_multi_lead_columns_have_per_lead_suffixes()
     {
         var spec = Exact12hFeatureBuilder.BuildSpec(TestTier, targetLead: 12, inputLeads: new[] { 6, 12, 18 });
-        // 4 models × 3 leads = 12 model columns + 7 stats = 19 features
-        spec.FeatureNames.Should().HaveCount(19);
+        // 5 models × 3 leads = 15 model columns + 7 stats = 22 features
+        spec.FeatureNames.Should().HaveCount(22);
         spec.FeatureNames.Should().Contain("temp_gfs_l06");
         spec.FeatureNames.Should().Contain("temp_gfs_l12");
         spec.FeatureNames.Should().Contain("temp_gfs_l18");
@@ -116,8 +116,8 @@ public class Exact12hFeatureBuilderTests
     public void ComposeRow_produces_features_in_declared_order_with_correct_count()
     {
         var spec = Exact12hFeatureBuilder.BuildSpec(TestTier);
-        // perModelLeadValues = same shape as Models (4 entries) for single-lead
-        var values = new double[] { 9.5, 10.0, 9.8, 10.2 };
+        // perModelLeadValues = same shape as Models (5 entries) for single-lead
+        var values = new double[] { 9.5, 10.0, 9.8, 10.2, 9.6 };
         var row = Exact12hFeatureBuilder.ComposeRow(
             spec,
             new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc),
@@ -128,21 +128,22 @@ public class Exact12hFeatureBuilderTests
 
         row.Features.Should().HaveCount(spec.FeatureCount);
         row.Label.Should().Be(10.1f);
-        // Per-model values land in slots 0..3 in canonical order
-        row.Features[0].Should().Be(9.5f);  // gfs
-        row.Features[1].Should().Be(10.0f); // ifs
-        row.Features[2].Should().Be(9.8f);  // aifs
-        row.Features[3].Should().Be(10.2f); // moglobal
-        // Mean lands at slot 4 (= 9.875)
-        row.Features[4].Should().BeApproximately(9.875f, 1e-3f);
+        // Per-model values land in slots 0..4 in canonical order
+        row.Features[0].Should().Be(9.5f);   // gfs
+        row.Features[1].Should().Be(10.0f);  // ifs
+        row.Features[2].Should().Be(9.8f);   // aifs
+        row.Features[3].Should().Be(10.2f);  // moglobal
+        row.Features[4].Should().Be(9.6f);   // gefsmean
+        // Mean lands at slot 5 (= 9.82)
+        row.Features[5].Should().BeApproximately(9.82f, 1e-3f);
     }
 
     [Fact]
     public void ComposeRow_NaN_safe_spread_skips_missing_models()
     {
         var spec = Exact12hFeatureBuilder.BuildSpec(TestTier);
-        // Two of four models NaN — spread is computed across present-only
-        var values = new double[] { 9.5, double.NaN, 9.8, double.NaN };
+        // Three of five models NaN — spread is computed across present-only
+        var values = new double[] { 9.5, double.NaN, 9.8, double.NaN, double.NaN };
         var row = Exact12hFeatureBuilder.ComposeRow(
             spec,
             new DateTime(2025, 6, 15, 12, 0, 0, DateTimeKind.Utc),
@@ -150,10 +151,10 @@ public class Exact12hFeatureBuilderTests
             canonicalPerModel: values,
             windDirMeanDeg: double.NaN,
             era5Temp: 9.7);
-        // Mean across {9.5, 9.8} = 9.65
-        row.Features[4].Should().BeApproximately(9.65f, 1e-3f);
-        // Range = 9.8 - 9.5 = 0.3
-        row.Features[6].Should().BeApproximately(0.3f, 1e-3f);
+        // Mean across {9.5, 9.8} = 9.65 (lands at slot 5 after 5 per-model slots)
+        row.Features[5].Should().BeApproximately(9.65f, 1e-3f);
+        // Range = 9.8 - 9.5 = 0.3 (slot 7 = mean+std+range follows the per-model block)
+        row.Features[7].Should().BeApproximately(0.3f, 1e-3f);
     }
 
     [Fact]
@@ -164,8 +165,8 @@ public class Exact12hFeatureBuilderTests
         var v = new DateTime(2025, 3, 1, 12, 0, 0, DateTimeKind.Utc); // March 1 = doy 60
         var row = Exact12hFeatureBuilder.ComposeRow(
             spec, v,
-            perModelLeadValues: new double[] { 5, 5, 5, 5 },
-            canonicalPerModel:  new double[] { 5, 5, 5, 5 },
+            perModelLeadValues: new double[] { 5, 5, 5, 5, 5 },
+            canonicalPerModel:  new double[] { 5, 5, 5, 5, 5 },
             windDirMeanDeg: 0,
             era5Temp: 5);
         // hour_sin / hour_cos at noon (h=12, frac=0.5) → sin(π) ≈ 0, cos(π) = -1

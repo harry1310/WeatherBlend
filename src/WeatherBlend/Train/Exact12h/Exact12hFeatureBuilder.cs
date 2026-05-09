@@ -47,6 +47,7 @@ public static class Exact12hFeatureBuilder
         "ecmwf_ifs_oper",
         "ecmwf_aifs_oper",
         "met_office_global",
+        "gefs_ncep_mean",
     };
 
     /// <summary>Stable short suffix for feature column names (temp_gfs, ...).</summary>
@@ -56,6 +57,7 @@ public static class Exact12hFeatureBuilder
         "ecmwf_ifs_oper"    => "ifs",
         "ecmwf_aifs_oper"   => "aifs",
         "met_office_global" => "moglobal",
+        "gefs_ncep_mean"    => "gefsmean",
         _ => throw new ArgumentException($"Unknown modelId '{modelId}'", nameof(modelId)),
     };
 
@@ -74,22 +76,22 @@ public static class Exact12hFeatureBuilder
     {
         new TierSpec(
             Name: "T1",
-            Required: new[] { "gfs_ncep", "ecmwf_ifs_oper", "ecmwf_aifs_oper", "met_office_global" },
+            Required: new[] { "gfs_ncep", "ecmwf_ifs_oper", "ecmwf_aifs_oper", "met_office_global", "gefs_ncep_mean" },
             Optional: Array.Empty<string>(),
             StartDate: new DateOnly(2024, 5, 4),
-            Description: "All four models REQUIRED. Restricted to ValidTimes {00, 12} by IFS/Global cycle structure. Smallest, strictest tier."),
+            Description: "All five models REQUIRED. Restricted to ValidTimes {00, 12} by IFS/Global cycle structure. Smallest, strictest tier."),
 
         new TierSpec(
             Name: "T2",
             Required: new[] { "gfs_ncep", "ecmwf_aifs_oper" },
-            Optional: new[] { "ecmwf_ifs_oper", "met_office_global" },
+            Optional: new[] { "ecmwf_ifs_oper", "met_office_global", "gefs_ncep_mean" },
             StartDate: new DateOnly(2024, 2, 29),
-            Description: "GFS + AIFS required (the 4-cycle-publishing pair). IFS + Global optional. Captures all four ValidTimes; IFS/Global NaN at 06/18."),
+            Description: "GFS + AIFS required (the 4-cycle-publishing pair). IFS + Global + GEFS optional. Captures all four ValidTimes; IFS/Global NaN at 06/18; GEFS optional so GEFS-missing rows aren't dropped."),
 
         new TierSpec(
             Name: "T3",
             Required: new[] { "gfs_ncep" },
-            Optional: new[] { "ecmwf_ifs_oper", "ecmwf_aifs_oper", "met_office_global" },
+            Optional: new[] { "ecmwf_ifs_oper", "ecmwf_aifs_oper", "met_office_global", "gefs_ncep_mean" },
             StartDate: new DateOnly(2023, 1, 18),
             Description: "Only GFS required (its archive goes back furthest). Everything else optional, NaN before its bucket-start date."),
     };
