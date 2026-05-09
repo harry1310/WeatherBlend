@@ -125,7 +125,7 @@ jobs:
       - name: Verify dry-window
         # Independent exit code. 30-day default window matches precip; same drift
         # semantics. --window all walks every (station, window) entry in the
-        # dry_window manifest (Bellever + Princetown × 3/4/6h).
+        # dry_window manifest (every active station × 3/4/6h).
         id: verify_dry_window_run
         run: |
           AS_OF="${{ github.event.inputs.as_of }}"

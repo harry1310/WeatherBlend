@@ -21,7 +21,7 @@ namespace WeatherBlend.Models;
 /// canonical rule below matches the StringBuilder-based implementations
 /// (<c>StartHourVerifyCommand</c>, <c>PrecipReplayCommand</c>, etc.) and is
 /// equivalent to the LINQ-based ones on the current station name set
-/// (Bellever Dartmoor / Princetown / Dartmoor nr Hexworthy) — simpler chars,
+/// (Bellever Dartmoor / Bovey Tracey / Dartmoor nr Hexworthy) — simpler chars,
 /// same output.
 ///
 /// The <c>"ea_"</c> prefix is NOT added by <see cref="Of"/> — callers add it

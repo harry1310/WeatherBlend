@@ -52,7 +52,7 @@ also reasonable).
 2. **Phase 2:** temperature blender — LightGBM per lead-time bucket, trained on ERA5,
    verified on METAR; beats persistence/climatology/mean-of-models/best single. **Done (2b: rolling verify shipped).**
 3. **Phase 3a:** per-station P(wet ≥ 0.1mm/h) classifier on EA Hydrology gauges
-   (Bellever, Princetown). Per-lead, same temperature pipeline. **Done — predict + verify live.**
+   (Bellever, Bovey Tracey, Hexworthy). Per-lead, same temperature pipeline. **Done — predict + verify live.**
 4. **Phase 3b:** per-station, per-window dry-window classifier — P(at least one
    contiguous N-hour dry block in target UTC day) for N ∈ {3, 4, 6} at leads 24/48/72h.
    Replaces the original intensity-regressor plan after the user pivot to "is there

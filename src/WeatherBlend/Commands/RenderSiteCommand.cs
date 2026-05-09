@@ -243,8 +243,8 @@ public sealed class RenderSiteCommand
 
         Directory.CreateDirectory(outputDir);
         // Clean every .html in outputDir before writing the fresh set. Stale
-        // per-station files (dry-window-princetown.html etc. left over from a
-        // station swap) would otherwise stick around forever — Cloudflare
+        // per-station files (left over from a station swap) would otherwise
+        // stick around forever — Cloudflare
         // pages deploy is additive on what's in the source dir, not a wipe.
         // Non-HTML files (chart.js, styles.css) are overwritten in place by
         // the writers below; only the per-page HTML can become orphaned.
@@ -318,9 +318,8 @@ public sealed class RenderSiteCommand
         }
 
         // Dry-window page is per-station too. Same active-station filter as
-        // rain-skill — a station that was demoted from config (Princetown
-        // post 2026-05-04) shouldn't render just because its historical
-        // dry-window predictions are still on disk.
+        // rain-skill — a station demoted from config shouldn't render just
+        // because its historical dry-window predictions are still on disk.
         var activeSet = input.ActiveStationSlugs;
         var dryStations = input.DryWindowPredictions
             .Select(d => d.Station)
@@ -365,9 +364,8 @@ public sealed class RenderSiteCommand
         // window. Anything else is stale / experimental / deleted and the Models page
         // would list it with no corresponding forecast activity.
         // Per-station targets (precip + dry-window) are also filtered through
-        // activeStationSlugs so a demoted station (Princetown post 2026-05-04)
-        // doesn't get a Models card just because its historical predictions are
-        // still on disk.
+        // activeStationSlugs so a demoted station doesn't get a Models card
+        // just because its historical predictions are still on disk.
         var modelsRoot = _cfg.Storage.ModelsPath;
         var summaries = new List<SitePages.ModelSummary>();
 

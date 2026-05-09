@@ -12,7 +12,7 @@ namespace WeatherBlend.Commands;
 ///   - per-month label rate per (station, window)
 ///   - unusable-day rate
 ///   - window-length correlation (6h ⊂ 4h ⊂ 3h sanity check)
-///   - Bellever vs Princetown agreement
+///   - Pairwise station agreement (first two stations alphabetically)
 ///
 /// Output goes to <c>data/reports/phase3b_diagnostic_{yyyy-MM-dd_HHmmss}.md</c>.
 /// No model training, no artefacts — this command is purely for the human-in-the-
@@ -200,19 +200,19 @@ ORDER BY 1";
         }
         sb.AppendLine();
 
-        // ---- Section 4: Bellever vs Princetown agreement ----
+        // ---- Section 4: pairwise station agreement (first two stations alphabetically) ----
         if (perStation.Count >= 2)
         {
-            sb.AppendLine("## Bellever vs Princetown agreement");
+            var keys = perStation.Keys.OrderBy(k => k).ToArray();
+            var a = keys[0];
+            var b = keys[1];
+            sb.AppendLine($"## {a} vs {b} agreement");
             sb.AppendLine();
             sb.AppendLine("Fraction of shared usable days where both stations give the same label.");
             sb.AppendLine();
             sb.AppendLine("| Window | shared days | both=1 | both=0 | disagree | agreement |");
             sb.AppendLine("|---|---:|---:|---:|---:|---:|");
 
-            var keys = perStation.Keys.OrderBy(k => k).ToArray();
-            var a = keys[0];
-            var b = keys[1];
             var byDateA = perStation[a].Labels.ToLookup(l => (l.Date, l.WindowHours));
             var byDateB = perStation[b].Labels.ToLookup(l => (l.Date, l.WindowHours));
 

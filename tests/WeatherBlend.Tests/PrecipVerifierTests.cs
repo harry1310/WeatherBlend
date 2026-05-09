@@ -96,7 +96,7 @@ public class PrecipVerifierTests
         var preds = new[]
         {
             MakePrediction(AsOf.AddDays(-7), probWet: 0.5, clim: 0.25, station: "ea_bellever_dartmoor", version: V1, lead: 24),
-            MakePrediction(AsOf.AddDays(-7), probWet: 0.5, clim: 0.25, station: "ea_princetown",        version: V1, lead: 24),
+            MakePrediction(AsOf.AddDays(-7), probWet: 0.5, clim: 0.25, station: "ea_bovey_tracey",        version: V1, lead: 24),
             MakePrediction(AsOf.AddDays(-8), probWet: 0.5, clim: 0.25, station: "ea_bellever_dartmoor", version: V1, lead: 48),
         };
         var truth = new Dictionary<string, IReadOnlyDictionary<DateTime, double>>
@@ -106,7 +106,7 @@ public class PrecipVerifierTests
                 [preds[0].ValidTimeUtc] = 0.5,
                 [preds[2].ValidTimeUtc] = 0.0,
             },
-            ["ea_princetown"] = new Dictionary<DateTime, double>
+            ["ea_bovey_tracey"] = new Dictionary<DateTime, double>
             {
                 [preds[1].ValidTimeUtc] = 0.0,
             },
@@ -119,7 +119,7 @@ public class PrecipVerifierTests
             .Should().Equal(
                 ("ea_bellever_dartmoor", V1, 24),
                 ("ea_bellever_dartmoor", V1, 48),
-                ("ea_princetown",        V1, 24));
+                ("ea_bovey_tracey",        V1, 24));
     }
 
     [Fact]

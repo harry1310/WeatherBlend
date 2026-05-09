@@ -751,7 +751,7 @@ public class ModelArtifactTests : IDisposable
         // replaces only the 3a entry, leaves 3c — and doesn't touch the
         // OTHER station's manifest entry at all.
         var stationA = "ea_bellever_dartmoor";
-        var stationB = "ea_princetown";
+        var stationB = "ea_bovey_tracey";
 
         WritePhaseMetadata(Path.Combine(_root, "precipitation", stationA, "v_3a_old"), "v_3a_old", "3a");
         WritePhaseMetadata(Path.Combine(_root, "precipitation", stationA, "v_3c"),     "v_3c",     "3c");

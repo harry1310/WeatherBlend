@@ -204,21 +204,21 @@ public class ParquetWriterTests : IDisposable
         File.Exists(RainFileFor(new DateTime(2026, 4, 22))).Should().BeTrue();
 
         // Different station → different partition directory.
-        var princetown = new RainfallRow
+        var bovey = new RainfallRow
         {
             LocationName = "Bonehill Rocks",
-            StationId = "princetown",
-            StationName = "Princetown",
+            StationId = "bovey_tracey",
+            StationName = "Bovey Tracey",
             ObservedTimeUtc = new DateTime(2026, 4, 21, 10, 0, 0, DateTimeKind.Utc),
             Value15MinMm = 0.4,
             Quality = "Good",
             Completeness = "Complete",
         };
-        await ParquetWriter.WriteRainfallAsync(_root, new[] { princetown });
+        await ParquetWriter.WriteRainfallAsync(_root, new[] { bovey });
 
-        var princetownFile = Path.Combine(_root,
-            "location=Bonehill Rocks", "station=Princetown", "date=2026-04-21", "rainfall.parquet");
-        File.Exists(princetownFile).Should().BeTrue();
+        var boveyFile = Path.Combine(_root,
+            "location=Bonehill Rocks", "station=Bovey Tracey", "date=2026-04-21", "rainfall.parquet");
+        File.Exists(boveyFile).Should().BeTrue();
     }
 
     [Fact]

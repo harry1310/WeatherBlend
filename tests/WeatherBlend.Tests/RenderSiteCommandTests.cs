@@ -426,15 +426,15 @@ public class RenderSiteCommandTests : IDisposable
             Precip("ea_bellever_dartmoor", "v3a", 48, t, 0.55),
             Precip("ea_bellever_dartmoor", "v3c", 24, t, 0.65),
             Precip("ea_bellever_dartmoor", "v3c", 48, t, 0.50),
-            Precip("ea_princetown",        "v3a", 24, t, 0.40),
-            Precip("ea_princetown",        "v3a", 48, t, 0.45),
-            Precip("ea_princetown",        "v3c", 24, t, 0.42),
-            Precip("ea_princetown",        "v3c", 48, t, 0.48),
+            Precip("ea_bovey_tracey",        "v3a", 24, t, 0.40),
+            Precip("ea_bovey_tracey",        "v3a", 48, t, 0.45),
+            Precip("ea_bovey_tracey",        "v3c", 24, t, 0.42),
+            Precip("ea_bovey_tracey",        "v3c", 48, t, 0.48),
         };
         var truth = new Dictionary<string, IReadOnlyDictionary<DateTime, double>>
         {
             ["ea_bellever_dartmoor"] = new Dictionary<DateTime, double> { [t] = 0.5 },
-            ["ea_princetown"]        = new Dictionary<DateTime, double> { [t] = 0.0 },
+            ["ea_bovey_tracey"]        = new Dictionary<DateTime, double> { [t] = 0.0 },
         };
 
         var points = RenderSiteCommand.ComputeRollingBrier(preds, truth, PrecipPhases3a3c, windowDays: 30);
@@ -447,10 +447,10 @@ public class RenderSiteCommandTests : IDisposable
                 ("ea_bellever_dartmoor", "3a", 48),
                 ("ea_bellever_dartmoor", "3c", 24),
                 ("ea_bellever_dartmoor", "3c", 48),
-                ("ea_princetown",        "3a", 24),
-                ("ea_princetown",        "3a", 48),
-                ("ea_princetown",        "3c", 24),
-                ("ea_princetown",        "3c", 48),
+                ("ea_bovey_tracey",        "3a", 24),
+                ("ea_bovey_tracey",        "3a", 48),
+                ("ea_bovey_tracey",        "3c", 24),
+                ("ea_bovey_tracey",        "3c", 48),
             });
     }
 

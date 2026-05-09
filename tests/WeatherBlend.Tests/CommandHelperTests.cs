@@ -27,7 +27,7 @@ public class CommandHelperTests
     [InlineData("ea_bellever_dartmoor/window_3h",     "ea_bellever_dartmoor", 3)]
     [InlineData("ea_bellever_dartmoor/window_4h",     "ea_bellever_dartmoor", 4)]
     [InlineData("ea_bellever_dartmoor/window_6h",     "ea_bellever_dartmoor", 6)]
-    [InlineData("ea_princetown/window_12h",           "ea_princetown",        12)]
+    [InlineData("ea_bovey_tracey/window_12h",         "ea_bovey_tracey",      12)]
     [InlineData("ea_dartmoor_nr_hexworthy/window_6h", "ea_dartmoor_nr_hexworthy", 6)]
     public void ParseCompositeKey_extracts_slug_and_window_hours(string key, string expectedSlug, int expectedHours)
     {
@@ -62,15 +62,15 @@ public class CommandHelperTests
     [InlineData("ea_bellever_dartmoor", "bellever_dartmoor")]       // prefix-stripped
     [InlineData("ea_bellever_dartmoor", "Bellever Dartmoor")]       // human form
     [InlineData("ea_bellever_dartmoor", "bellever dartmoor")]       // case-insensitive
-    [InlineData("ea_princetown",         "Princetown")]
-    [InlineData("ea_princetown",         "princetown")]
+    [InlineData("ea_bovey_tracey",       "Bovey Tracey")]
+    [InlineData("ea_bovey_tracey",       "bovey_tracey")]
     public void SlugMatches_accepts_slug_variants_and_human_form(string slug, string arg)
     {
         DryWindowPredictCommand.SlugMatches(slug, arg).Should().BeTrue();
     }
 
     [Theory]
-    [InlineData("ea_bellever_dartmoor", "princetown")]              // wrong station
+    [InlineData("ea_bellever_dartmoor", "bovey_tracey")]            // wrong station
     [InlineData("ea_bellever_dartmoor", "")]                        // empty
     [InlineData("ea_bellever_dartmoor", "bellever")]                // partial → derived "bellever" ≠ "ea_bellever_dartmoor"
     public void SlugMatches_rejects_unrelated_arguments(string slug, string arg)

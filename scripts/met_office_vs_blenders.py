@@ -66,10 +66,10 @@ NWP_SHORT = {
     "blender": "Blender",
 }
 WET_THRESHOLD_MM = 0.1
-STATIONS = ("Bellever Dartmoor", "Princetown", "Dartmoor nr Hexworthy")
+STATIONS = ("Bellever Dartmoor", "Bovey Tracey", "Dartmoor nr Hexworthy")
 STATION_CODE = {
     "Bellever Dartmoor": "Bellever",
-    "Princetown": "Princetown",
+    "Bovey Tracey": "Bovey",
     "Dartmoor nr Hexworthy": "Hexworthy",
 }
 

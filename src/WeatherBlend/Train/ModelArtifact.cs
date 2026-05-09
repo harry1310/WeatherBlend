@@ -1096,10 +1096,10 @@ public static class ModelArtifact
     /// Returns empty when the manifest is absent or flat-layout.
     ///
     /// Was previously "every key in manifest.Stations" — that broke
-    /// PrecipPredictCommand on 2026-05-04 when the Princetown→Bovey swap
-    /// left a Princetown entry with <c>Current=""</c>: predict iterated all
+    /// PrecipPredictCommand on 2026-05-04 when a station-swap left a
+    /// demoted entry with <c>Current=""</c>: predict iterated all
     /// stations, then ResolveStationVersionDir threw "no current pointer
-    /// for station 'ea_princetown'". Filter at the source so every caller
+    /// for station '...'". Filter at the source so every caller
     /// (predict / verify / ablate) gets the demoted-archive semantics
     /// without each having to re-encode the rule.
     /// </summary>

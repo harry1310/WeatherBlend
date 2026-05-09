@@ -13,7 +13,7 @@ namespace WeatherBlend.Commands;
 
 /// <summary>
 /// Phase 3b trainer. Produces up to 18 LightGBM classifiers:
-/// {Bellever, Princetown} × {3h, 4h, 6h} × {24, 48, 72}.
+/// rainfall stations × {3h, 4h, 6h} × {24, 48, 72}.
 ///
 /// Artefact layout uses composite station keys (<c>ea_bellever_dartmoor/window_3h</c>)
 /// so <see cref="ModelArtifact"/> helpers apply unmodified. One version directory
@@ -33,11 +33,11 @@ public sealed class DryWindowTrainCommand
 
     private static readonly int[] DefaultLeads = Leads.Short;
     private static readonly int[] DefaultWindows = { 3, 4, 6 };
-    // Trained stations are now read from `_cfg.Location.Rainfall.Stations`. The
-    // hardcoded {Bellever, Princetown} list was set in Phase 3b before
-    // Hexworthy joined the rainfall config (2026-04-26) and never got
-    // updated, leaving the dry-window family with 2 stations while precip
-    // had 3. Reading from config eliminates that drift root cause.
+    // Trained stations are now read from `_cfg.Location.Rainfall.Stations`. A
+    // hardcoded two-station list was set in Phase 3b before Hexworthy joined
+    // the rainfall config (2026-04-26) and never got updated, leaving the
+    // dry-window family with 2 stations while precip had 3. Reading from
+    // config eliminates that drift root cause.
 
     public DryWindowTrainCommand(
         ILogger<DryWindowTrainCommand> log,

@@ -29,19 +29,19 @@ public class ModelArtifactStationTests
         try
         {
             ModelArtifact.UpdateStationManifest(root, "precipitation", "ea_bellever_dartmoor", "v2026-04-23_120000");
-            ModelArtifact.UpdateStationManifest(root, "precipitation", "ea_princetown",        "v2026-04-23_120500");
+            ModelArtifact.UpdateStationManifest(root, "precipitation", "ea_bovey_tracey",        "v2026-04-23_120500");
             ModelArtifact.UpdateStationManifest(root, "precipitation", "ea_bellever_dartmoor", "v2026-04-23_121000");
 
             ModelArtifact.ListStations(root, "precipitation")
-                .Should().BeEquivalentTo(new[] { "ea_bellever_dartmoor", "ea_princetown" });
+                .Should().BeEquivalentTo(new[] { "ea_bellever_dartmoor", "ea_bovey_tracey" });
 
             // Bellever now points to the second train, with both versions recorded.
             var bellDir = ModelArtifact.ResolveStationVersionDir(root, "precipitation", "ea_bellever_dartmoor", "current");
             Norm(bellDir).Should().EndWith("ea_bellever_dartmoor/v2026-04-23_121000");
 
-            // Princetown untouched by the second Bellever update.
-            var princetownDir = ModelArtifact.ResolveStationVersionDir(root, "precipitation", "ea_princetown", "current");
-            Norm(princetownDir).Should().EndWith("ea_princetown/v2026-04-23_120500");
+            // Bovey Tracey untouched by the second Bellever update.
+            var boveyDir = ModelArtifact.ResolveStationVersionDir(root, "precipitation", "ea_bovey_tracey", "current");
+            Norm(boveyDir).Should().EndWith("ea_bovey_tracey/v2026-04-23_120500");
         }
         finally
         {
@@ -55,11 +55,11 @@ public class ModelArtifactStationTests
         var root = FreshRoot();
         try
         {
-            ModelArtifact.UpdateStationManifest(root, "precipitation", "ea_princetown", "v2026-04-23_120000");
+            ModelArtifact.UpdateStationManifest(root, "precipitation", "ea_bovey_tracey", "v2026-04-23_120000");
 
-            var dir = ModelArtifact.ResolveStationVersionDir(root, "precipitation", "ea_princetown", "v2026-04-22_090000");
+            var dir = ModelArtifact.ResolveStationVersionDir(root, "precipitation", "ea_bovey_tracey", "v2026-04-22_090000");
 
-            Norm(dir).Should().EndWith("ea_princetown/v2026-04-22_090000");
+            Norm(dir).Should().EndWith("ea_bovey_tracey/v2026-04-22_090000");
         }
         finally
         {
@@ -72,7 +72,7 @@ public class ModelArtifactStationTests
     {
         var root = FreshRoot();
 
-        var act = () => ModelArtifact.ResolveStationVersionDir(root, "precipitation", "ea_princetown", "current");
+        var act = () => ModelArtifact.ResolveStationVersionDir(root, "precipitation", "ea_bovey_tracey", "current");
 
         act.Should().Throw<InvalidOperationException>();
     }
@@ -144,11 +144,11 @@ public class ModelArtifactStationTests
         var root = FreshRoot();
         try
         {
-            ModelArtifact.UpdateStationManifest(root, "precipitation", "ea_princetown", "v_legacy");
+            ModelArtifact.UpdateStationManifest(root, "precipitation", "ea_bovey_tracey", "v_legacy");
             // Simulate a legacy manifest: clear Active so we fall back to [Current].
-            ModelArtifact.SetStationActive(root, "precipitation", "ea_princetown", Array.Empty<string>());
+            ModelArtifact.SetStationActive(root, "precipitation", "ea_bovey_tracey", Array.Empty<string>());
 
-            ModelArtifact.ResolveStationActive(root, "precipitation", "ea_princetown")
+            ModelArtifact.ResolveStationActive(root, "precipitation", "ea_bovey_tracey")
                 .Should().Equal("v_legacy");
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
@@ -176,11 +176,11 @@ public class ModelArtifactStationTests
         var root = FreshRoot();
         try
         {
-            ModelArtifact.AppendStationVersion(root, "precipitation", "ea_princetown", "v_future_challenger");
+            ModelArtifact.AppendStationVersion(root, "precipitation", "ea_bovey_tracey", "v_future_challenger");
 
-            ModelArtifact.ResolveStationActive(root, "precipitation", "ea_princetown")
+            ModelArtifact.ResolveStationActive(root, "precipitation", "ea_bovey_tracey")
                 .Should().BeEmpty();
-            var act = () => ModelArtifact.ResolveStationVersionDir(root, "precipitation", "ea_princetown", "current");
+            var act = () => ModelArtifact.ResolveStationVersionDir(root, "precipitation", "ea_bovey_tracey", "current");
             act.Should().Throw<InvalidOperationException>();
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }

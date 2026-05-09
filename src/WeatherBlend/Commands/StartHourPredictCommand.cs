@@ -96,8 +96,8 @@ public sealed class StartHourPredictCommand
                 skipped++; continue;
             }
 
-            // Demoted dry-window stations (Current="" — e.g. Princetown post
-            // 2026-05-04) skip silently; predict skipped them already.
+            // Demoted dry-window stations (Current="") skip silently;
+            // predict skipped them already.
             var dryVersion = dryEntry.Current;
             if (string.IsNullOrEmpty(dryVersion))
             {

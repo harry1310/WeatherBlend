@@ -40,10 +40,10 @@ WINDOW_START = "2024-09-01"
 LEADS = (24, 48, 72)
 WET_THRESHOLD_MM = 0.1
 TEST_FRACTION = 0.2
-STATIONS = ("Bellever Dartmoor", "Princetown", "Dartmoor nr Hexworthy")
+STATIONS = ("Bellever Dartmoor", "Bovey Tracey", "Dartmoor nr Hexworthy")
 STATION_CODES = {
     "Bellever Dartmoor": "Bellever",
-    "Princetown": "Princetown",
+    "Bovey Tracey": "Bovey",
     "Dartmoor nr Hexworthy": "Hexworthy",
 }
 

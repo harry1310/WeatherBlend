@@ -1,7 +1,7 @@
 """
 Build a Phase 3a evaluation report in markdown.
 
-Loads both station training artefacts (Bellever + Princetown), replays each
+Loads both station training artefacts (Bellever + Bovey Tracey), replays each
 per-lead blender against the held-out test set, and writes a comprehensive
 markdown report to data/reports/phase3a_<timestamp>.md.
 
@@ -237,7 +237,7 @@ def station_section(station: str, station_slug: str) -> str:
 
 
 def cross_station_agreement() -> str:
-    """Compare Bellever vs Princetown hourly truth (not blender outputs)."""
+    """Compare Bellever vs Bovey Tracey hourly truth (not blender outputs)."""
     rainfall_glob = str(REPO / "data" / "truth" / "rainfall" / "**" / "*.parquet").replace("\\", "/")
     sql = f"""
     WITH hourly AS (
@@ -247,16 +247,16 @@ def cross_station_agreement() -> str:
         GROUP BY 1, 2 HAVING COUNT(*) = 4
     ),
     pairs AS (
-        SELECT b.h, b.mm AS bellever, p.mm AS princetown
-        FROM hourly b JOIN hourly p ON b.h = p.h AND p.StationName='Princetown'
+        SELECT b.h, b.mm AS bellever, p.mm AS bovey
+        FROM hourly b JOIN hourly p ON b.h = p.h AND p.StationName='Bovey Tracey'
         WHERE b.StationName='Bellever Dartmoor'
     )
     SELECT COUNT(*) AS paired,
-      SUM(CASE WHEN bellever>=0.1 AND princetown>=0.1 THEN 1 ELSE 0 END) AS both_wet,
-      SUM(CASE WHEN bellever<0.1  AND princetown<0.1  THEN 1 ELSE 0 END) AS both_dry,
-      SUM(CASE WHEN bellever>=0.1 AND princetown<0.1  THEN 1 ELSE 0 END) AS b_only,
-      SUM(CASE WHEN bellever<0.1  AND princetown>=0.1 THEN 1 ELSE 0 END) AS p_only,
-      CORR(bellever, princetown) AS r
+      SUM(CASE WHEN bellever>=0.1 AND bovey>=0.1 THEN 1 ELSE 0 END) AS both_wet,
+      SUM(CASE WHEN bellever<0.1  AND bovey<0.1  THEN 1 ELSE 0 END) AS both_dry,
+      SUM(CASE WHEN bellever>=0.1 AND bovey<0.1  THEN 1 ELSE 0 END) AS b_only,
+      SUM(CASE WHEN bellever<0.1  AND bovey>=0.1 THEN 1 ELSE 0 END) AS p_only,
+      CORR(bellever, bovey) AS r
     FROM pairs
     """
     row = duckdb.sql(sql).df().iloc[0]
@@ -274,7 +274,7 @@ def cross_station_agreement() -> str:
         "### Station agreement (truth vs truth)",
         "",
         f"Over {paired:,} paired hours ({both_wet} both-wet, {both_dry} both-dry, "
-        f"{b_only} Bellever-only wet, {p_only} Princetown-only wet):",
+        f"{b_only} Bellever-only wet, {p_only} Bovey-only wet):",
         "",
         f"- Pearson r on hourly mm: **{row['r']:.3f}**",
         f"- Cohen's κ on 0.1mm wet/dry: **{kappa:.3f}** (substantial agreement)",
@@ -282,7 +282,7 @@ def cross_station_agreement() -> str:
         "",
         "Consistent blender skill between the two stations (BSS within ±0.04) is "
         "expected given this level of truth-level agreement — if Bellever's blender "
-        "far outperformed Princetown's it would flag overfitting to one microclimate.",
+        "far outperformed Bovey's it would flag overfitting to one microclimate.",
         "",
     ]
     return "\n".join(lines)
@@ -334,8 +334,8 @@ def class_balance_section() -> str:
 
 def main():
     bellever_root = MODELS_ROOT / "ea_bellever_dartmoor"
-    princetown_root = MODELS_ROOT / "ea_princetown"
-    if not bellever_root.exists() or not princetown_root.exists():
+    bovey_root = MODELS_ROOT / "ea_bovey_tracey"
+    if not bellever_root.exists() or not bovey_root.exists():
         print("Missing station artefacts — run `train --target precipitation --station <name>` first.", file=sys.stderr)
         sys.exit(2)
 
@@ -373,7 +373,7 @@ def main():
     parts.append("## Results per station")
     parts.append("")
     parts.append(station_section("Bellever Dartmoor", "ea_bellever_dartmoor"))
-    parts.append(station_section("Princetown", "ea_princetown"))
+    parts.append(station_section("Bovey Tracey", "ea_bovey_tracey"))
 
     parts.append("## Deviations from brief")
     parts.append("")

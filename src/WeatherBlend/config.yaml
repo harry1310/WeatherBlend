@@ -15,7 +15,7 @@ location:
   # METAR truth sources. Exeter is nearest but lowland (~30km SE, ~30m elev).
   # Yeovilton is further but more frequent reports.
   # TODO: replace with Met Office DataHub station closer to the moor
-  #       (e.g. Princetown, 414m) for precip training in phase 2.
+  #       for precip training in phase 2.
   metar:
     primary: "EGTE"    # Exeter Airport
     fallback: "EGDY"   # RNAS Yeovilton
@@ -28,12 +28,11 @@ location:
   # complement. `id` is the EA measure prefix — for versioned stations it
   # includes the wiskiID suffix (e.g. `_363307`).
   #
-  # 2026-05-04: Princetown (14.6km WSW, 414m elevation) dropped in favour of
-  # Bovey Tracey. Princetown was 2× the distance of the other moor stations
-  # and skewed all 3 stations to the western flank of Dartmoor. Bovey gives
-  # Bonehill near-equilateral triangulation (~5-10km radius). Princetown
-  # historical parquets + predictions remain on disk for archival reference;
-  # not loaded by config so live train/predict/verify ignore them.
+  # 2026-05-04: a more distant western-flank station was dropped in favour
+  # of Bovey Tracey, which gives Bonehill near-equilateral triangulation
+  # (~5-10km radius). Historical parquets + predictions for the dropped
+  # station remain on disk for archival reference; not loaded by config so
+  # live train/predict/verify ignore them.
   rainfall:
     stations:
       - id: "723a8fc4-908b-4430-91c7-9990be86540a_363307"
@@ -360,8 +359,8 @@ dryWindow:
     tz: "Europe/London"
   # Per-station PAV calibration opt-in. Bellever's raw blender ran with
   # frequency bias 1.2–1.5 (over-predicts dry); PAV corrects this and
-  # delivers Brier −4 to −11% on every (window × lead). Princetown and
-  # Hexworthy started near bias 1.0 — applying PAV there overfits the
+  # delivers Brier −4 to −11% on every (window × lead). Other stations
+  # started near bias 1.0 — applying PAV there overfits the
   # ~125-row validation set and makes Brier WORSE by +5 to +25% on
   # average. Empirically validated 2026-04-29.
   calibrationStations:

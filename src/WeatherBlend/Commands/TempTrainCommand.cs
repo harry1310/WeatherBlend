@@ -697,8 +697,8 @@ public sealed class TempTrainCommand
 
         // Each station gets its own subtree under data/models/precipitation/{station}/v{ts}/
         // so the manifest can track a separate "current" pointer per truth source.
-        // Slug is prefixed with the provider ("ea_") so a future Met Office Princetown
-        // collector can live alongside the EA one without colliding.
+        // Slug is prefixed with the provider ("ea_") so a future Met Office
+        // collector for the same site can live alongside the EA one without colliding.
         var stationSlug = StationSlug.WithEaPrefix(primaryStation);
         var now = DateTime.UtcNow;
         var modelsRoot = _cfg.Storage.ModelsPath;
@@ -829,7 +829,7 @@ public sealed class TempTrainCommand
             {
                 "Intensity regressor not trained in this artefact — occurrence classifier only. Two-stage precip blender (Brier-tuned classifier × E[mm|wet] regressor) is tracked as Phase 3b follow-up.",
                 "Threshold classifiers at 1/5/10 mm not trained — only 0.1 mm (WetBinary). Higher-threshold classifiers need more positive samples than Bellever's 2.3 years provides for robust val/test at 10mm (7 events).",
-                "Princetown and Dartmoor-nr-Hexworthy stations not trained. Bellever is the brief's primary truth; the two secondaries remain available for cross-station verification in the evaluation report.",
+                "Secondary rainfall stations not trained in this artefact. Bellever is the brief's primary truth; secondaries remain available for cross-station verification in the evaluation report.",
                 "PerLeadStats fields repurposed: BlendTestMae=blend Brier, BlendTestRmse=climatology Brier, BlendTestBias=frequency bias at p=0.5, BestSingleValMae=best-single Brier on val. Artefact schema unchanged to avoid breaking Phase 2b loaders.",
                 "Microsoft.ML.LightGbm 4.0 constraints: no explicit class-weight option beyond UnbalancedSets=true; no monotone constraints. Recorded per Phase 2b pattern.",
             },

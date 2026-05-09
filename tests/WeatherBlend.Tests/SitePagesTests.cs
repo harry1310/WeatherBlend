@@ -1031,7 +1031,7 @@ public class SitePagesTests
         html.Should().Contain("any measurable precip");
     }
     
-    [InlineData("ea_princetown", "princetown")]
+    [InlineData("ea_bovey_tracey", "bovey")]
     [InlineData("ea_dartmoor_nr_hexworthy", "hexworthy")]
     public void StationSlug_maps_known_stations_to_short_urls(string station, string expected)
     {
@@ -1055,10 +1055,10 @@ public class SitePagesTests
         // The first station's link is the canonical page (matches the top-nav entry),
         // so it must not have a slug suffix. Non-first stations carry `{page}-{slug}.html`.
         var html = SitePages.RenderStationSubNav("skill",
-            new[] { "ea_bellever_dartmoor", "ea_princetown" }, "ea_princetown");
+            new[] { "ea_bellever_dartmoor", "ea_bovey_tracey" }, "ea_bovey_tracey");
 
         html.Should().Contain("href=\"skill.html\"");
-        html.Should().Contain("href=\"skill-princetown.html\"");
+        html.Should().Contain("href=\"skill-bovey.html\"");
     }
 
     [Fact]
@@ -1066,9 +1066,9 @@ public class SitePagesTests
     {
         // The active class powers the visual "you are here" indicator on the sub-nav.
         var html = SitePages.RenderStationSubNav("dry-window",
-            new[] { "ea_bellever_dartmoor", "ea_princetown" }, "ea_princetown");
+            new[] { "ea_bellever_dartmoor", "ea_bovey_tracey" }, "ea_bovey_tracey");
 
-        html.Should().Contain("href=\"dry-window-princetown.html\" class=\"active\"");
+        html.Should().Contain("href=\"dry-window-bovey.html\" class=\"active\"");
         html.Should().NotContain("href=\"dry-window.html\" class=\"active\"");
     }
 
@@ -1085,7 +1085,7 @@ public class SitePagesTests
                 "ea_bellever_dartmoor", "v3a", generatedAt, validTime, 24, 0.4, 0.2,
                 null, null, null, null, null, null, null, null),
             new SitePages.PrecipForecastPoint(
-                "ea_princetown", "v3a", generatedAt, validTime, 24, 0.5, 0.2,
+                "ea_bovey_tracey", "v3a", generatedAt, validTime, 24, 0.5, 0.2,
                 null, null, null, null, null, null, null, null),
         };
         var input = MakeEmptyForecastInput() with
@@ -1096,14 +1096,14 @@ public class SitePagesTests
         };
 
         var bellever = SitePages.RenderRainSkill(input, null);
-        var princetown = SitePages.RenderRainSkill(input, "princetown");
+        var bovey = SitePages.RenderRainSkill(input, "bovey");
 
         // The chart card heading (<h4>Station name</h4>) is the one that's per-station.
         // The sub-nav always mentions every station, so we look for the chart heading
         // specifically to confirm which station's chart was rendered.
         bellever.Should().Contain("<h4>Bellever Dartmoor</h4>")
-            .And.NotContain("<h4>Princetown</h4>");
-        princetown.Should().Contain("<h4>Princetown</h4>")
+            .And.NotContain("<h4>Bovey Tracey</h4>");
+        bovey.Should().Contain("<h4>Bovey Tracey</h4>")
             .And.NotContain("<h4>Bellever Dartmoor</h4>");
     }
 
@@ -1120,7 +1120,7 @@ public class SitePagesTests
                 "ea_bellever_dartmoor", "v3a", generatedAt, validTime, 24, 0.4, 0.2,
                 null, null, null, null, null, null, null, null),
             new SitePages.PrecipForecastPoint(
-                "ea_princetown", "v3a", generatedAt, validTime, 24, 0.5, 0.2,
+                "ea_bovey_tracey", "v3a", generatedAt, validTime, 24, 0.5, 0.2,
                 null, null, null, null, null, null, null, null),
         };
         var input = MakeEmptyForecastInput() with
@@ -1133,7 +1133,7 @@ public class SitePagesTests
         var html = SitePages.RenderRainSkill(input, null);
 
         html.Should().Contain("skill-rainfall.html")
-            .And.Contain("skill-rainfall-princetown.html");
+            .And.Contain("skill-rainfall-bovey.html");
     }
 
     [Fact]
@@ -1191,7 +1191,7 @@ public class SitePagesTests
                 "ea_bellever_dartmoor", "v3a", generatedAt, validTime, 24, 0.4, 0.2,
                 null, null, null, null, null, null, null, null),
             new SitePages.PrecipForecastPoint(
-                "ea_princetown", "v3a", generatedAt, validTime, 24, 0.5, 0.2,
+                "ea_bovey_tracey", "v3a", generatedAt, validTime, 24, 0.5, 0.2,
                 null, null, null, null, null, null, null, null),
         };
         var input = MakeEmptyForecastInput() with
@@ -1203,7 +1203,7 @@ public class SitePagesTests
 
         var html = SitePages.RenderTempSkill(input);
 
-        html.Should().NotContain("skill-rainfall-princetown.html");
+        html.Should().NotContain("skill-rainfall-bovey.html");
         html.Should().NotContain("<h4>Bellever Dartmoor</h4>");
     }
 
@@ -1219,7 +1219,7 @@ public class SitePagesTests
             new SitePages.DryWindowForecastPoint(
                 "ea_bellever_dartmoor", 3, "v3b", generatedAt, targetDate, 24, 0.6, 0.5, null),
             new SitePages.DryWindowForecastPoint(
-                "ea_princetown", 3, "v3b", generatedAt, targetDate, 24, 0.7, 0.5, null),
+                "ea_bovey_tracey", 3, "v3b", generatedAt, targetDate, 24, 0.7, 0.5, null),
         };
         var input = MakeEmptyForecastInput() with
         {
@@ -1229,13 +1229,13 @@ public class SitePagesTests
         };
 
         var bellever = SitePages.RenderDryWindow(input, null);
-        var princetown = SitePages.RenderDryWindow(input, "princetown");
+        var bovey = SitePages.RenderDryWindow(input, "bovey");
 
         // The station heading (<h3>Station name</h3>) is the one that's per-station.
         // The sub-nav always mentions every station, so we anchor on the h3 heading.
         bellever.Should().Contain("<h3>Bellever Dartmoor</h3>")
-            .And.NotContain("<h3>Princetown</h3>");
-        princetown.Should().Contain("<h3>Princetown</h3>")
+            .And.NotContain("<h3>Bovey Tracey</h3>");
+        bovey.Should().Contain("<h3>Bovey Tracey</h3>")
             .And.NotContain("<h3>Bellever Dartmoor</h3>");
     }
 

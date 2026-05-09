@@ -22,7 +22,7 @@ public class StartHourPredictCommandTests
     [Theory]
     [InlineData("ea_bellever_dartmoor/window_3h",  "ea_bellever_dartmoor", 3)]
     [InlineData("ea_bellever_dartmoor/window_6h",  "ea_bellever_dartmoor", 6)]
-    [InlineData("ea_princetown/window_4h",          "ea_princetown",        4)]
+    [InlineData("ea_bovey_tracey/window_4h",        "ea_bovey_tracey",      4)]
     [InlineData("ea_dartmoor_nr_hexworthy/window_6h", "ea_dartmoor_nr_hexworthy", 6)]
     public void ParseDryComposite_extracts_station_and_hours(string key, string slug, int hours)
     {

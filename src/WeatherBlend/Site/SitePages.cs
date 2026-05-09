@@ -267,8 +267,8 @@ public static partial class SitePages
         /// Currently-active EA station slugs from config (rainfall.stations →
         /// ea-prefixed slugs). The renderer filters per-station tabs +
         /// pages to this set so a station demoted from the rotation
-        /// (e.g. Princetown after the 2026-05-04 Bovey swap) doesn't render
-        /// just because its historical parquets are still on disk. Empty
+        /// doesn't render just because its historical parquets are still
+        /// on disk. Empty
         /// set falls back to "render everything seen in the predictions"
         /// for backward-compat with older drives.
         /// </summary>
@@ -512,7 +512,7 @@ public static partial class SitePages
     /// "Dartmoor nr Hexworthy") — the join key the C# render path uses
     /// against <see cref="PrettyStation"/>(slug). <c>StationCode</c> is
     /// the short label the Bayesian model uses internally
-    /// (Bellever / Princetown / Hexworthy), kept for provenance display.
+    /// (Bellever / Hexworthy), kept for provenance display.
     ///
     /// Parquet schema lives at
     /// data/predictions/precipitation_bayesian_ci/location=*/station=*/
@@ -1126,7 +1126,6 @@ public static partial class SitePages
     internal static string StationSlug(string station) => station switch
     {
         "ea_bellever_dartmoor" => "bellever",
-        "ea_princetown" => "princetown",     // legacy — Princetown is no longer in active config (2026-05-04)
         "ea_dartmoor_nr_hexworthy" => "hexworthy",
         "ea_bovey_tracey" => "bovey",
         _ => station,
