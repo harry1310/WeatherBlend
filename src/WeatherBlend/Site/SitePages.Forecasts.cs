@@ -321,49 +321,27 @@ public static partial class SitePages
             for (int i = 0; i < orderedPrecipPhases.Count; i++)
             {
                 var phase = orderedPrecipPhases[i];
+                // 4a renders in its own standalone panel below
+                // (RenderPhase4aPanel) — keeping the main P(wet) chart to
+                // 3a/3c/3d + climatology + per-NWP PoP. With 4a inline the
+                // chart had 3 prediction lines + 8 NWP overlays + 4a's
+                // dashed Q05/Q95 = 13+ series, unreadable.
+                if (phase == "4a") continue;
                 if (!precipByPhase.TryGetValue(phase, out var phaseRows) || phaseRows.Count == 0) continue;
-                // Color rules — every phase needs a distinct line so the
-                // chart legend is readable:
+                // Color rules:
                 //   champion (i==0)       → NwpPalette.Blend (brand purple)
                 //   exact-runtime (2d/3d) → NwpPalette.BlendExactChallenger (magenta)
-                //   4a (BART, Bayesian)   → its own amber (PrecipPhases.Phase4a.Color)
-                //                           — without this, 4a collided with 3c's
-                //                           BlendChallenger and rendered invisibly
-                //                           on top.
                 //   other challengers     → NwpPalette.BlendChallenger (lighter purple)
                 var color = i == 0
                     ? NwpPalette.Blend
                     : phase == "2d" || phase == "3d"
                         ? NwpPalette.BlendExactChallenger
-                        : phase == "4a"
-                            ? PrecipPhases.Phase4a.Color
-                            : NwpPalette.BlendChallenger;
+                        : NwpPalette.BlendChallenger;
                 var label = i == 0 ? $"P(wet) ({phase} champion)" : $"P(wet) ({phase} challenger)";
                 var pts = phaseRows
                     .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet))
                     .ToList();
                 probSeries.Add(new LineSeries(label, color, pts));
-
-                // 4a is the only LightGBM-tree-blender competitor to also
-                // emit per-row posterior quantiles (BART is Bayesian by
-                // construction). When its CI columns are populated, draw
-                // dashed Q05/Q95 lines in 4a's colour to show the 90% band
-                // tightly around the prediction line — gives the chart the
-                // "tight band = confident, wide = uncertain" eye-test for
-                // 4a directly, alongside 5a's standalone CI panel below.
-                if (phase == "4a" && phaseRows.Any(r => r.ProbWetQ05.HasValue && r.ProbWetQ95.HasValue))
-                {
-                    var q05Pts = phaseRows
-                        .Where(r => r.ProbWetQ05.HasValue)
-                        .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWetQ05!.Value))
-                        .ToList();
-                    var q95Pts = phaseRows
-                        .Where(r => r.ProbWetQ95.HasValue)
-                        .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWetQ95!.Value))
-                        .ToList();
-                    probSeries.Add(new LineSeries($"4a q95 (upper)", color, q95Pts, Dashed: true));
-                    probSeries.Add(new LineSeries($"4a q05 (lower)", color, q05Pts, Dashed: true));
-                }
             }
             // Climatology stays a single line — it's a station property, not
             // a blender output. Read off the champion-pooled rows above.
@@ -407,6 +385,7 @@ public static partial class SitePages
 
             s.Append(RenderPrecipDailySummaryTable(latestPerValid));
             s.Append(RenderPrecipHourlyConfidenceTable(latestPerValid, station, input.PrecipConformalTau));
+            s.Append(RenderPhase4aPanel(input, station, lead));
             s.Append(RenderBayesianCiPanel(input, station, lead, minValid, maxValid));
         }
 
@@ -481,6 +460,60 @@ public static partial class SitePages
     /// model hasn't been retrained for yet), or (b) the lead isn't in
     /// the trained set.
     /// </summary>
+    /// <summary>
+    /// Standalone 4a panel — pulled out of the main P(wet) chart 2026-05-09
+    /// because adding 4a's median + dashed Q05/Q95 on top of 3a/3c/3d + 4
+    /// per-NWP PoP overlays + climatology made the chart visually
+    /// unreadable. Mirrors <see cref="RenderBayesianCiPanel"/>'s shape.
+    /// Silent skip if no 4a rows for this (station, lead) pair (e.g. before
+    /// the first predict-4a.yml fire).
+    /// </summary>
+    private static string RenderPhase4aPanel(
+        SiteInputs input, string stationSlug, int lead)
+    {
+        var rows = input.PrecipPredictions
+            .Where(r => string.Equals(r.Station, stationSlug, StringComparison.OrdinalIgnoreCase)
+                        && r.LeadHours == lead
+                        && input.PhaseByVersion.TryGetValue(r.Version, out var ph)
+                        && string.Equals(ph, "4a", StringComparison.Ordinal))
+            .GroupBy(r => r.ValidTimeUtc)
+            .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
+            .OrderBy(r => r.ValidTimeUtc)
+            .ToList();
+        if (rows.Count == 0) return "";
+
+        var color = PrecipPhases.Phase4a.Color;
+        var medianPts = rows.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet)).ToList();
+        var series = new List<LineSeries> { new("P(wet) (4a)", color, medianPts) };
+        if (rows.Any(r => r.ProbWetQ05.HasValue && r.ProbWetQ95.HasValue))
+        {
+            var q05Pts = rows.Where(r => r.ProbWetQ05.HasValue)
+                             .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWetQ05!.Value))
+                             .ToList();
+            var q95Pts = rows.Where(r => r.ProbWetQ95.HasValue)
+                             .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWetQ95!.Value))
+                             .ToList();
+            series.Add(new LineSeries("q95 (upper)", color, q95Pts, Dashed: true));
+            series.Add(new LineSeries("q05 (lower)", color, q05Pts, Dashed: true));
+        }
+
+        var s = new StringBuilder();
+        s.Append("<h4>Phase 4a — BART posterior P(wet) + 90% band</h4>");
+        s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
+        {
+            Title = $"Phase 4a P(wet) — {PrettyStation(stationSlug)} — +{lead}h",
+            XLabel = "Valid time (UTC)",
+            YLabel = "Probability",
+            Series = series,
+            Height = 180,
+            FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
+            FormatY = v => v.ToString("0.00", Ci),
+            TodayLineX = input.GeneratedAtUtc.ToOADate(),
+            XMin = ForecastChartXMin(input),
+        }));
+        return s.ToString();
+    }
+
     private static string RenderBayesianCiPanel(
         SiteInputs input, string stationSlug, int lead,
         DateTime minValid, DateTime maxValid)
