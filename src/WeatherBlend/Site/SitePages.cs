@@ -507,24 +507,25 @@ public static partial class SitePages
     /// confidence signal next to 3a's deterministic ProbWet on the precip
     /// forecast page — narrow CI80 → high confidence, wide CI80 → low.
     ///
-    /// <c>StationFullName</c> is the human-readable name extracted from
-    /// the parquet's hive partition (e.g. "Bellever Dartmoor",
-    /// "Dartmoor nr Hexworthy") — the join key the C# render path uses
-    /// against <see cref="PrettyStation"/>(slug). <c>StationCode</c> is
-    /// the short label the Bayesian model uses internally
-    /// (Bellever / Hexworthy), kept for provenance display.
+    /// <c>StationSlug</c> is the path-partition key
+    /// (<c>ea_bellever_dartmoor</c>, <c>ea_bovey_tracey</c>,
+    /// <c>ea_dartmoor_nr_hexworthy</c>) the renderer uses to join 5a's
+    /// CI band against the per-lead precip page. <c>PredictedAtUtc</c>
+    /// is the timestamp embedded in <c>ModelVersion</c> for picking the
+    /// freshest cycle when multiple have predicted the same (valid, lead).
     ///
     /// Parquet schema lives at
-    /// data/predictions/precipitation_bayesian_ci/location=*/station=*/
-    /// anchor=*/widths.parquet — written by the predict-bayesian.yml
-    /// workflow on every HH+1:00 cron tick (was HH:45 until 2026-05-07).
+    /// data/predictions/precipitation/{station_slug}/
+    /// model_version=v..._phase5a/date=*/predictions.parquet — written by
+    /// the predict-5a.yml workflow on every HH+1:00 cron tick.
+    /// (Renamed 2026-05-09 from precipitation_bayesian_ci/widths.parquet
+    /// when Phase 5 → 5a moved to first-class predictions tree.)
     /// </summary>
     public sealed record BayesianCiPoint(
-        string StationFullName,
-        string StationCode,
+        string StationSlug,
         DateTime ValidTimeUtc,
         int LeadHours,
-        DateTime AnchorDate,
+        DateTime PredictedAtUtc,
         double PWetMean,
         double PWetStd,
         double PWetQ05,

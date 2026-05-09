@@ -139,6 +139,14 @@ ORDER BY ModelVersion, LeadHours, ValidTimeUtc";
 
         // ConformalSetTag persisted only since precip-conformal-fit (2026-05-03).
         // union_by_name in the read clause silently fills NULL for older parquets.
+        //
+        // Phase 5a's parquet schema is intentionally narrower (no
+        // ClimatologyPWet, no per-NWP Precip* columns — 5a is a Bayesian
+        // logreg whose only output is ProbWet + CI bands, consumed by the
+        // confidence panel via QueryBayesianCi). Exclude 5a versions from
+        // this scanner so the strict-schema reader doesn't trip on the
+        // missing columns. 5a is fed into render via the dedicated CI
+        // query path, not this one.
         var sql = $@"
 SELECT LocationName, TruthStation, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
        ProbWet, ClimatologyPWet,
@@ -150,6 +158,7 @@ FROM {fromClause}
 WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
   AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+  AND ModelVersion NOT LIKE '%phase5a%'
 ORDER BY TruthStation, ModelVersion, LeadHours, ValidTimeUtc";
 
         return ParquetReader.Query(sql, MapPrecipRow,

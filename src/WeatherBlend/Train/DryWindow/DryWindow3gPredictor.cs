@@ -560,14 +560,15 @@ public static class DryWindow3gPredictor
     public static double TryLoadBayesianCi80Width(
         string predictionsRoot, string stationSlug, int leadHours, DateTime targetDateUtc)
     {
-        var bayesianRoot = Path.Combine(
-            predictionsRoot, "precipitation_bayesian_ci", "location=bonehill_rocks");
-        if (!Directory.Exists(bayesianRoot)) return 0.0;
+        // Phase 5a CI lives in the standard predictions tree under
+        // model_version=*phase5a* (renamed 2026-05-09 from the legacy
+        // precipitation_bayesian_ci/widths.parquet hive). Path glob:
+        //   data/predictions/precipitation/{slug}/model_version=*phase5a*/date=*/predictions.parquet
+        var stationDir = Path.Combine(
+            predictionsRoot, "precipitation", stationSlug);
+        if (!Directory.Exists(stationDir)) return 0.0;
 
-        var stationDir = FindBayesianStationDir(bayesianRoot, stationSlug);
-        if (stationDir is null) return 0.0;
-
-        var glob = Path.Combine(stationDir, "anchor=*", "widths.parquet")
+        var glob = Path.Combine(stationDir, "model_version=*phase5a*", "date=*", "predictions.parquet")
             .Replace('\\', '/').Replace("'", "''");
         var dayStart = new DateTime(
             targetDateUtc.Year, targetDateUtc.Month, targetDateUtc.Day, 0, 0, 0, DateTimeKind.Utc);
@@ -578,11 +579,11 @@ public static class DryWindow3gPredictor
         // but possible at lead 24 for stations whose cycle availability
         // sometimes leaves the day empty), return 0 → no perturbation.
         var sql = $@"
-SELECT max(""ci80_width"") AS w
+SELECT max(Ci80Width) AS w
 FROM read_parquet('{glob}')
-WHERE lead = {leadHours}
-  AND valid_time >= TIMESTAMP '{dayStart:yyyy-MM-dd HH:mm:ss}'
-  AND valid_time <  TIMESTAMP '{dayEnd:yyyy-MM-dd HH:mm:ss}'";
+WHERE LeadHours = {leadHours}
+  AND ValidTimeUtc >= TIMESTAMP '{dayStart:yyyy-MM-dd HH:mm:ss}'
+  AND ValidTimeUtc <  TIMESTAMP '{dayEnd:yyyy-MM-dd HH:mm:ss}'";
 
         try
         {
@@ -601,21 +602,6 @@ WHERE lead = {leadHours}
             // whole predict run. Caller short-circuits on σ=0.
             return 0.0;
         }
-    }
-
-    private static string? FindBayesianStationDir(string bayesianRoot, string stationSlug)
-    {
-        var trimmed = stationSlug.StartsWith("ea_", StringComparison.Ordinal) ? stationSlug[3..] : stationSlug;
-        var slugAsName = string.Join(' ', trimmed.Split('_', StringSplitOptions.RemoveEmptyEntries));
-        foreach (var dir in Directory.EnumerateDirectories(bayesianRoot, "station=*"))
-        {
-            var name = Path.GetFileName(dir);
-            if (name.StartsWith("station=", StringComparison.Ordinal))
-                name = name["station=".Length..];
-            if (string.Equals(name, slugAsName, StringComparison.OrdinalIgnoreCase))
-                return dir;
-        }
-        return null;
     }
 
     private static Dictionary<DateTime, double> ReadValidTimeProbWet(string sql)

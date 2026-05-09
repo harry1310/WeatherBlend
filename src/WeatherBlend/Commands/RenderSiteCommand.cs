@@ -121,8 +121,8 @@ public sealed class RenderSiteCommand
         var nwpPrecipRates = QueryNwpPrecipRates(windowStart, predictionEnd, ct);
         var nwpTemperatures = QueryNwpTemperatures(windowStart, predictionEnd, ct);
         var bayesianCi = QueryBayesianCi(windowStart, predictionEnd, ct);
-        _log.LogInformation("Loaded {N} Bayesian CI rows ({S} stations).",
-            bayesianCi.Count, bayesianCi.Select(p => p.StationCode).Distinct().Count());
+        _log.LogInformation("Loaded {N} Phase 5a CI rows ({S} stations).",
+            bayesianCi.Count, bayesianCi.Select(p => p.StationSlug).Distinct().Count());
         var lowCloudByValid = QueryLowCloudSignals(windowStart, predictionEnd, ct);
         _log.LogInformation("Loaded low-cloud / mist signal for {N} valid hours.", lowCloudByValid.Count);
         _log.LogInformation("Loaded {N} per-NWP precipitation-probability rows ({M} models).",
@@ -973,70 +973,73 @@ GROUP BY ValidTimeUtc";
     }
 
     /// <summary>
-    /// Phase 2b live Bayesian P(wet) credible-interval rows from
-    /// WeatherProbabilistic. Hive layout
-    ///   data/predictions/precipitation_bayesian_ci/location=*/station=*/
-    ///   anchor=*/widths.parquet
-    /// Picks the LATEST anchor per (station, valid_time, lead) — multiple
-    /// anchors may have predicted the same (valid, lead) tuple if the
-    /// cron has run more than once for it; the freshest anchor is the
-    /// one whose forecast inputs are most recent.
+    /// Phase 5a live Bayesian-logreg P(wet) + credible-interval rows from
+    /// WeatherProbabilistic. Reads from the standard predictions tree:
+    ///   data/predictions/precipitation/{station_slug}/
+    ///   model_version=v..._phase5a/date=*/predictions.parquet
+    /// (Renamed 2026-05-09 from the legacy precipitation_bayesian_ci hive
+    /// when Phase 5 → 5a moved to first-class model-artefact treatment.)
+    /// 5a is intentionally NOT in <see cref="Models.ActivePhasePolicy"/> —
+    /// it surfaces only as a confidence band, never as a prediction line.
+    /// Picks the latest model_version per (station, valid_time, lead).
     /// </summary>
     private IReadOnlyList<SitePages.BayesianCiPoint> QueryBayesianCi(
         DateTime start, DateTime end, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        var subdir = Path.Combine(_cfg.Storage.PredictionsPath, "precipitation_bayesian_ci");
+        var subdir = Path.Combine(_cfg.Storage.PredictionsPath, "precipitation");
         if (!Directory.Exists(subdir))
         {
             _log.LogInformation(
-                "Bayesian CI tree at {Dir} not present yet — confidence panel will be absent until WeatherProbabilistic's predict-bayesian.yml has fired at least once.",
+                "Predictions tree at {Dir} not present yet — confidence panel will be absent until WeatherProbabilistic's predict-5a.yml has fired at least once.",
                 subdir);
             return Array.Empty<SitePages.BayesianCiPoint>();
         }
-        var glob = ParquetReader.Glob(Path.Combine(subdir, "**", "*.parquet"));
-        // Latest anchor per (station_full, valid_time, lead). Pull the full
-        // station name straight off the hive partition via filename=true so
-        // the C# join against precip slugs has a string that lines up with
-        // PrettyStation's output (case-insensitive). Avoids a hardcoded
-        // slug→code switch table that silently drops anything not pre-listed.
-        // Quoted dotted column names ("p_wet_q0.1" etc) — DuckDB supports
-        // double-quoted identifiers.
+        // Glob across station partitions, filter to phase5a model_version
+        // dirs only. Pull station_slug off the path partition; we map to
+        // PrettyStation later for chart joins.
+        var glob = ParquetReader.Glob(Path.Combine(subdir, "**", "model_version=*phase5a*", "**", "*.parquet"));
         var sql = $@"
 WITH raw AS (
-  SELECT station, valid_time, lead, anchor,
-         regexp_extract(filename, 'station=([^/\\]+)', 1) AS station_full,
-         p_wet_mean, p_wet_std,
-         ""p_wet_q0.05"" AS q05,
-         ""p_wet_q0.1""  AS q10,
-         ""p_wet_q0.5""  AS q50,
-         ""p_wet_q0.9""  AS q90,
-         ""p_wet_q0.95"" AS q95,
-         ci80_width, ci90_width
+  SELECT
+    regexp_extract(filename, 'precipitation[/\\]([^/\\]+)[/\\]model_version=', 1) AS station_slug,
+    ValidTimeUtc                                  AS valid_time,
+    LeadHours                                     AS lead,
+    PredictionMadeAtUtc                           AS predicted_at,
+    ModelVersion                                  AS model_version,
+    ProbWet                                       AS p_wet_mean,
+    ProbWetStd                                    AS p_wet_std,
+    ProbWetQ05                                    AS q05,
+    ProbWetQ10                                    AS q10,
+    ProbWetQ50                                    AS q50,
+    ProbWetQ90                                    AS q90,
+    ProbWetQ95                                    AS q95,
+    Ci80Width                                     AS ci80_width,
+    Ci90Width                                     AS ci90_width
   FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true, filename = true)
-  WHERE valid_time >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
-    AND valid_time <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
-    -- Phase 5's lead-as-feature predict can write occasional null-band rows
-    -- (e.g. cycle×lead combos where the Open-Meteo features were missing
-    -- and the predictor wrote nulls instead of skipping). The C# reader
-    -- expects non-null doubles, so filter them out at SQL — the chart can't
-    -- plot a null band anyway.
-    AND p_wet_mean IS NOT NULL
+  WHERE ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
+    AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+    -- 5a's lead-as-feature predict can write occasional null-band rows
+    -- (cycle×lead combos where Open-Meteo features were missing and the
+    -- predictor wrote nulls instead of skipping). The C# reader expects
+    -- non-null doubles, so filter at SQL — chart can't plot a null band.
+    AND ProbWet IS NOT NULL
 ),
 ranked AS (
-  SELECT *, row_number() OVER (PARTITION BY station_full, valid_time, lead ORDER BY anchor DESC) AS rn
+  SELECT *, row_number() OVER (PARTITION BY station_slug, valid_time, lead ORDER BY predicted_at DESC) AS rn
   FROM raw
 )
-SELECT station_full, station, valid_time, lead, anchor, p_wet_mean, p_wet_std,
-       q05, q10, q50, q90, q95, ci80_width, ci90_width
-FROM ranked WHERE rn = 1 ORDER BY station_full, valid_time, lead";
+SELECT station_slug, valid_time, lead, predicted_at, model_version,
+       p_wet_mean, p_wet_std, q05, q10, q50, q90, q95, ci80_width, ci90_width
+FROM ranked WHERE rn = 1 ORDER BY station_slug, valid_time, lead";
 
         return ParquetReader.Query(sql, r => new SitePages.BayesianCiPoint(
-            StationFullName: r.GetString(0),
-            StationCode:     r.IsDBNull(1) ? "" : r.GetString(1),
-            ValidTimeUtc:    r.GetDateTime(2),
-            LeadHours:       (int)r.GetInt64(3),
-            AnchorDate:      r.GetDateTime(4),
+            StationSlug:     r.GetString(0),
+            ValidTimeUtc:    r.GetDateTime(1),
+            LeadHours:       (int)r.GetInt64(2),
+            PredictedAtUtc:  r.GetDateTime(3),
+            // index 4 = model_version, kept in SQL for the latest-cycle
+            // ranking, not needed in the record.
             PWetMean:        r.GetDouble(5),
             PWetStd:         r.GetDouble(6),
             PWetQ05:         r.GetDouble(7),

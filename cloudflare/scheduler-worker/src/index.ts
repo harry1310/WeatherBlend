@@ -43,16 +43,17 @@ type Dispatch = { workflow: string; repo?: string };
  */
 const WORKFLOW_FOR_CRON: Record<string, Dispatch[]> = {
   "45 2,8,14,20 * * *": [{ workflow: "collect.yml" }],
-  // s3-collect (WeatherBlend) AND predict-bayesian (WeatherProbabilistic)
-  // share this tick. Both fire at HH+1:00; s3-collect uses the
-  // weatherblend-data lock while predict-bayesian reads Open-Meteo
-  // forecast data already pushed to R2 by collect.yml at HH:45 and writes
-  // to its own R2 prefix (data/predictions/precipitation_bayesian_ci/).
-  // No shared lock, no race, both finish well before
-  // predict-and-render at HH+1:15.
+  // s3-collect (WeatherBlend) AND predict-5a (WeatherProbabilistic) share
+  // this tick. Both fire at HH+1:00; s3-collect uses the weatherblend-data
+  // lock while predict-5a reads Open-Meteo forecast data already pushed
+  // to R2 by collect.yml at HH:45 and writes to the standard precipitation
+  // predictions tree under model_version=*phase5a*. No shared lock, no
+  // race, both finish well before predict-and-render at HH+1:15. (Renamed
+  // 2026-05-09 from predict-bayesian.yml when Phase 5 → 5a re-cast it as
+  // a real model artefact rather than a CI-only sidecar.)
   "0 3,9,15,21 * * *": [
     { workflow: "s3-collect.yml" },
-    { workflow: "predict-bayesian.yml", repo: "harry1310/WeatherProbabilistic" },
+    { workflow: "predict-5a.yml", repo: "harry1310/WeatherProbabilistic" },
   ],
   "15 3,9,15,21 * * *": [{ workflow: "predict-and-render.yml" }],
   // Daily 12:00 UTC tick fires era5-refresh AND predict-4a. Phase 4a's

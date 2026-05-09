@@ -438,18 +438,19 @@ public static partial class SitePages
     ///
     /// Sits below the existing per-station P(wet) chart on the precip
     /// forecast page. The Bayesian model is from the WeatherProbabilistic
-    /// sibling repo (Phase 4 partial-pooling on 5 NWP precip features) —
-    /// distinct model from 3a's LightGBM, so the median line is a real
-    /// independent second opinion, not a re-rendering of the headline.
-    /// What we use it for is the WIDTH (CI80) per row: Phase 4's bake-off
-    /// found narrow-CI rows have ~5x lower Brier than wide-CI rows, so
-    /// CI80 transfers as a forecast-skill flag downstream.
+    /// sibling repo (Phase 5a — hierarchical Bayesian logistic regression
+    /// with lead-as-feature, partial-pooling across stations, 5 NWP precip
+    /// features) — distinct model from 3a's LightGBM, so the median line
+    /// is a real independent second opinion, not a re-rendering of the
+    /// headline. What we use it for is the WIDTH (CI80) per row: the
+    /// 2026-04 Phase 4 bake-off found narrow-CI rows have ~5x lower Brier
+    /// than wide-CI rows, so CI80 transfers as a forecast-skill flag
+    /// downstream.
     ///
     /// Silent skip if (a) no rows for this (station, lead) pair (e.g.
-    /// before the first predict-bayesian.yml fire, or for stations the
-    /// Bayesian doesn't cover — Bovey Tracey is not in the trained
-    /// hierarchy), or (b) the lead isn't one of {24, 48, 72} the
-    /// Bayesian was trained on.
+    /// before the first predict-5a.yml fire, or for stations the 5a
+    /// model hasn't been retrained for yet), or (b) the lead isn't in
+    /// the trained set.
     /// </summary>
     private static string RenderBayesianCiPanel(
         SiteInputs input, string stationSlug, int lead,
@@ -457,24 +458,18 @@ public static partial class SitePages
     {
         if (input.BayesianCi.Count == 0) return "";
 
-        // Match Bayesian rows to the precip station via full-name string
-        // compare against PrettyStation. The Bayesian artefact's hive
-        // partition stores station=<full_name> (e.g. "Dartmoor nr
-        // Hexworthy") which RenderSiteCommand parses off the filename and
-        // surfaces as StationFullName. PrettyStation(slug) gives us
-        // "Dartmoor Nr Hexworthy" — case-insensitive compare bridges the
-        // capitalisation difference. Stations the Bayesian doesn't cover
-        // (e.g. ea_bovey_tracey before the model retrains) just produce 0
-        // matches and skip silently. No hardcoded slug→code switch table
-        // to keep in sync.
-        var prettyName = PrettyStation(stationSlug);
-
+        // Match Phase 5a CI rows to the precip station via slug — both
+        // sides share the same key (BayesianCiPoint.StationSlug is parsed
+        // off the predictions parquet path partition; stationSlug here is
+        // the page's station). Stations the 5a model hasn't been retrained
+        // for yet just produce 0 matches and skip silently.
+        //
         // No now-1h floor: showing past hours alongside future gives eye-
         // context ("model said X for last day, says Y now") and the
         // renderer's outer windowStart still bounds the dataset.
         //
         // Filter on a ±12h band around the page's nominal lead rather than
-        // strict equality. Phase 5 (lead-as-feature) emits one row per
+        // strict equality. Phase 5a (lead-as-feature) emits one row per
         // (cycle, lead) pair with the ACTUAL run-to-valid offset; strict
         // `LeadHours == 24` would only catch cycles at HH ∈ {0,6,12,18}
         // landing on 00/06/12/18Z valid_times — same cycle-grid bottleneck
@@ -483,10 +478,10 @@ public static partial class SitePages
         // letting hourly cycle output fill the chart densely. Bands tile
         // cleanly: [12,36], [36,60], [60,84] for the three pages.
         var rows = input.BayesianCi
-            .Where(p => string.Equals(p.StationFullName, prettyName, StringComparison.OrdinalIgnoreCase)
+            .Where(p => string.Equals(p.StationSlug, stationSlug, StringComparison.OrdinalIgnoreCase)
                         && p.LeadHours >= lead - 12 && p.LeadHours < lead + 12)
             .GroupBy(p => p.ValidTimeUtc)
-            .Select(g => g.OrderByDescending(p => p.AnchorDate)
+            .Select(g => g.OrderByDescending(p => p.PredictedAtUtc)
                           .ThenByDescending(p => p.LeadHours)
                           .First())
             .OrderBy(p => p.ValidTimeUtc)
