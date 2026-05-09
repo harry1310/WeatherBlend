@@ -322,14 +322,22 @@ public static partial class SitePages
             {
                 var phase = orderedPrecipPhases[i];
                 if (!precipByPhase.TryGetValue(phase, out var phaseRows) || phaseRows.Count == 0) continue;
-                // Exact-runtime phases (2d temp, 3d precip) get a distinct
-            // magenta — different blender family from the offset_day-trained
-            // 2c/3c challengers, so visually pop OUT of the purple family.
-            var color = i == 0
-                ? NwpPalette.Blend
-                : (phase == "2d" || phase == "3d"
-                    ? NwpPalette.BlendExactChallenger
-                    : NwpPalette.BlendChallenger);
+                // Color rules — every phase needs a distinct line so the
+                // chart legend is readable:
+                //   champion (i==0)       → NwpPalette.Blend (brand purple)
+                //   exact-runtime (2d/3d) → NwpPalette.BlendExactChallenger (magenta)
+                //   4a (BART, Bayesian)   → its own amber (PrecipPhases.Phase4a.Color)
+                //                           — without this, 4a collided with 3c's
+                //                           BlendChallenger and rendered invisibly
+                //                           on top.
+                //   other challengers     → NwpPalette.BlendChallenger (lighter purple)
+                var color = i == 0
+                    ? NwpPalette.Blend
+                    : phase == "2d" || phase == "3d"
+                        ? NwpPalette.BlendExactChallenger
+                        : phase == "4a"
+                            ? PrecipPhases.Phase4a.Color
+                            : NwpPalette.BlendChallenger;
                 var label = i == 0 ? $"P(wet) ({phase} champion)" : $"P(wet) ({phase} challenger)";
                 var pts = phaseRows
                     .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet))
