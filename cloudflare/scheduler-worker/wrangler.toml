@@ -29,6 +29,10 @@ compatibility_date = "2025-04-01"
 #                                                   Cloudflare's free tier caps total cron triggers at 5.
 #   "15 3,9,15,21 * * *"  → predict-and-render.yml  every 6h, 15 min after s3-collect (WeatherBlend)
 #   "0 12 * * *"          → era5-refresh.yml        daily at 12:00 UTC (WeatherBlend)
+#                         + predict-4a.yml          daily Phase 4a BART train-and-predict (WeatherProbabilistic)
+#                                                   Same tick — different repos, different R2 prefixes, no shared
+#                                                   lock. Folded onto the existing daily slot because Cloudflare's
+#                                                   free-tier cron-triggers cap is 5.
 #   "30 9 * * MON,THU"    → verify.yml              twice-weekly Mon + Thu 09:30 UTC (WeatherBlend)
 #                                                   (Cloudflare cron uses 1=Sunday,
 #                                                   not POSIX 0=Sunday — day names

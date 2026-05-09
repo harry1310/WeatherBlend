@@ -55,10 +55,18 @@ public static class PrecipPhases
         ChampionVsChallengerLabel: "Phase 3d (exact-runtime)",
         Color: "#26a69a");
 
-    /// <summary>Canonical render order: 3a → 3c → 3d.</summary>
+    public static readonly PrecipPhase Phase4a = new(
+        Key: "4a",
+        LongTitle: "Phase 4a — dbarts BART (Bayesian additive regression trees)",
+        ShortTitle: "Phase 4a (BART)",
+        Description: "Bayesian Additive Regression Trees blender (R dbarts via rpy2). Same 22-feature 3a base + 3 synoptic flow features. Trained + predicted in WeatherProbabilistic, written to the same predictions tree as 3a/3c/3d.",
+        ChampionVsChallengerLabel: "Phase 4a (BART)",
+        Color: "#ffa726");
+
+    /// <summary>Canonical render order: 3a → 3c → 3d → 4a.</summary>
     public static readonly IReadOnlyList<PrecipPhase> All = new[]
     {
-        Phase3a, Phase3c, Phase3d,
+        Phase3a, Phase3c, Phase3d, Phase4a,
     };
 
     /// <summary>Phases that participate in the +24h overlay — currently both.</summary>

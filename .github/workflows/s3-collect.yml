@@ -1,8 +1,11 @@
 name: s3-collect
 
-# Live refresh of the five exact-runtime forecast sources used by the 2d
-# temperature blender (productionised 2026-05-05+):
+# Live refresh of the six exact-runtime forecast sources used by the 2d
+# temperature blender + 3d precip blender (productionised 2026-05-05+):
 #   - GFS              (NOAA noaa-gfs-bdp-pds, ~3-4h publication latency)
+#   - GEFS ensemble    (NOAA noaa-gefs-pds, ~3-4h, geavg.t*z 31-member mean.
+#                       Wired in 2026-05-09 after 2d/3d bake-offs validated
+#                       GEFS as a feature column.)
 #   - ECMWF IFS oper   (ECMWF ecmwf-forecasts, ~7-8h ← slowest)
 #   - ECMWF AIFS oper  (same bucket, ~5-7h)
 #   - Met Office Global (Met Office AWS, ~3-6h, NetCDF via Python subprocess)
@@ -38,7 +41,7 @@ on:
   workflow_dispatch:
     inputs:
       sources:
-        description: "Comma-list of sources (default all). Valid: gfs, ifs, aifs, mo-global, ukv"
+        description: "Comma-list of sources (default all). Valid: gfs, gefs, ifs, aifs, mo-global, ukv"
         required: false
         default: ""
 

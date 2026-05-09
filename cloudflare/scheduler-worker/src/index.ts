@@ -55,7 +55,18 @@ const WORKFLOW_FOR_CRON: Record<string, Dispatch[]> = {
     { workflow: "predict-bayesian.yml", repo: "harry1310/WeatherProbabilistic" },
   ],
   "15 3,9,15,21 * * *": [{ workflow: "predict-and-render.yml" }],
-  "0 12 * * *":         [{ workflow: "era5-refresh.yml" }],
+  // Daily 12:00 UTC tick fires era5-refresh AND predict-4a. Phase 4a's
+  // dbarts BART tree state can't survive cross-session serialize, so each
+  // run is a single train+predict (~24 min wall, lead-as-feature pooled
+  // across 6 leads × 3 stations). Daily cadence — predict-and-render at
+  // HH+1:15 reads the day's 4a parquet from R2; staleness peaks at ~20h
+  // relative to the 12:00 fit, acceptable for a 1000-draw × 500-tree
+  // posterior-mean blender. Different repo, different R2 prefix
+  // (data/predictions/precipitation/.../phase4a) so no shared lock.
+  "0 12 * * *":         [
+    { workflow: "era5-refresh.yml" },
+    { workflow: "predict-4a.yml", repo: "harry1310/WeatherProbabilistic" },
+  ],
   "30 9 * * MON,THU":   [{ workflow: "verify.yml" }],
 };
 

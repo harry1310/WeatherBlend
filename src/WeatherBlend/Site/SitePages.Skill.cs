@@ -412,6 +412,7 @@ public static partial class SitePages
                 ["3a"] = "#7c4dff",
                 ["3c"] = "#26a69a",
                 ["3d"] = "#ef5350",
+                ["4a"] = "#ffa726",  // amber — dbarts BART blender, added 2026-05-09
             };
             for (int i = 0; i < phases.Count; i++)
             {

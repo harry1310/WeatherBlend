@@ -212,10 +212,10 @@ public static class Program
                 // pairs with the live data landing pattern (NOAA ~3-4h,
                 // ECMWF ~7-8h, MO ~3-6h).
                 services.AddTransient<GfsArchiveCollector>();
-                // GefsArchiveCollector exists for parity with the others but
-                // isn't yet wired into S3CollectCommand — flip on once the
-                // historical backfill has produced enough rows for a 2d/3d
-                // bake-off to validate GEFS as a feature column.
+                // GEFS wired into S3CollectCommand 2026-05-09 after the 2d/3d
+                // bake-offs validated GEFS as a feature column (3d wins or
+                // ties in all 12 (station, lead, tier) cells; 2d gains at
+                // every lead except 72).
                 services.AddTransient<GefsArchiveCollector>();
                 services.AddTransient<EcmwfArchiveCollector>();
                 services.AddTransient<MetOfficeGlobalArchiveCollector>();
