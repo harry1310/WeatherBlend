@@ -92,19 +92,89 @@ Two workflows per repo, grouped by trainer language so failures isolate cleanly.
 - `retrain-python.yml` — runs `train_4a.py` + `train_5a.py` sequentially, each guarded.
 - Estimated wall: ~25 min for 4a + however long 5a takes (PyMC sampling — likely 10-30 min).
 
-### 2b. Cloudflare scheduler wiring
+### 2b. Sequencing — Cloudflare gates Sunday, refresh chains retrain
 
-Currently at the 5-cron Cloudflare free-tier cap. Two options:
+The original plan said to fire retrain on the same noon Cloudflare tick as
+the daily refresh workflows. That's a race — both refreshes take 5–10 min,
+retrain depends on their R2 output, and firing all three on the same tick
+means retrain might start before refreshes have finished writing.
 
-- **Option A**: add a 6th cron `0 6 * * SUN` (Sunday 06:00 UTC). Requires moving off free tier.
-- **Option B (recommended)**: piggyback on the existing daily noon tick (`0 12 * * *`). Worker checks `event.scheduledTime.getUTCDay() === 0` (Sunday) and only dispatches retrain workflows on Sundays. Adds ~10 lines to `src/index.ts`, no infra changes. Free.
+A 2026-05-10 review explored a workflow_run + co-located-gate design but
+ran into the cross-repo wrinkle: `workflow_run` only triggers within a
+single repo, and `previous-runs-refresh` lives in WeatherBlend while
+`retrain-python` lives in WeatherProbabilistic. Plus the Cloudflare free
+tier caps cron triggers at 5, so adding a 6th Sunday-only tick wasn't an
+option.
 
-Sunday timing: 12:00 UTC retrain → finishes by ~13:00 UTC → Mon 09:30 UTC verify scores predictions made through the rest of the day. Fresh model is in service for ~20 hours before its first verify pass.
+**Adopted design (revised 2026-05-10 evening):** Cloudflare keeps cadence,
+WeatherBlend's `previous-runs-refresh` chains retrain on its own
+completion. The "is it Sunday?" decision lives in the worker; the workflow
+just acts on a passed input. Three pieces:
+
+1. **Cloudflare worker** branches the noon tick — fires
+   `previous-runs-refresh.yml` with `inputs.train_after_refresh = true` on
+   Sundays, false otherwise. No new cron added (still at the 5-cron
+   free-tier cap).
+2. **`previous-runs-refresh.yml`** gains the boolean input. Final step
+   (gated on `inputs.train_after_refresh == 'true' && success()`) mints a
+   GitHub App installation token via `actions/create-github-app-token`
+   and fires `repository_dispatch` at WeatherProbabilistic's
+   `retrain-python.yml` (and later WeatherBlend's `retrain-blenders.yml`
+   for the .NET side). Payload carries `phases: 'all'` and
+   `add_spread_features` once promoted.
+3. **`retrain-python.yml`** adds `on: repository_dispatch: types: [retrain]`
+   alongside the existing `workflow_dispatch` (manual). The day-of-week
+   gate goes — Cloudflare already gated cadence; manual dispatches use
+   `force=true` (default) to override.
+
+Why this shape over the earlier proposals:
+
+- **No race**: retrain literally cannot start until refresh completes
+  successfully. The workflow_run path had the same property within one
+  repo; repository_dispatch extends it cross-repo via the existing GitHub
+  App auth path Cloudflare already trusts.
+- **No Sunday-checking duplication**: cadence rule lives in ONE place
+  (the worker). Workflows act on signals, not on calendar lookups.
+- **Free-tier safe**: piggybacks on the existing `0 12 * * *` cron, no
+  6th cron needed.
+- **Manual override stays clean**: `gh workflow run retrain-python.yml`
+  fires via `workflow_dispatch` and bypasses the chain entirely.
+
+Setup cost: the GitHub App that Cloudflare already uses needs its
+`app-id` and `private-key` exposed as repo secrets in WeatherBlend
+(workflow secrets, not Cloudflare secrets — separate scope). One-time
+~5 min config.
+
+Sunday timing: noon UTC refresh → completes ~12:10 UTC → repository_dispatch
+fires → retrain starts ~12:11 UTC → 5a finishes by ~15:00 UTC → fresh
+model live for ~20h before Mon 09:30 UTC verify.
+
+(For brevity the YAML / TS snippets are in the slice-3 implementation
+commits — see `cloudflare/scheduler-worker/src/index.ts` for the worker
+branch and `.github/workflows/previous-runs-refresh.yml` for the chain
+step.)
 
 ### 2c. Retrain ordering / parallelism
 
-- Sunday tick fires `retrain-blenders.yml` (WB) and `retrain-python.yml` (WP) in parallel — different repos, no shared lock, disjoint R2 prefixes.
-- Within each workflow, targets run sequentially so a single workflow runner does the whole sweep without runner-cap contention.
+- previous-runs-refresh's final step fires repository_dispatch for BOTH
+  retrain workflows on the Sunday tick (slice 1 = retrain-python only,
+  slice 4 adds retrain-blenders). They run in parallel as independent
+  workflow runs — different repos, no shared lock, disjoint R2 prefixes.
+- Within each workflow, targets run sequentially via the `phases` input
+  flow so a single workflow runner does the whole sweep without runner-
+  cap contention.
+
+### 2d. Stale workflow_run / co-located-gate proposal (NOT adopted)
+
+Earlier this thread iterated through:
+- piggyback on the same Cloudflare tick (race condition)
+- workflow_run trigger + co-located day-of-week gate (cross-repo limit)
+- standalone Sunday cron (free-tier 5-cron cap)
+
+The Cloudflare-gates-Sunday design (section 2b above) resolved all three
+by moving the Sunday-check to the only place that knows what day it is at
+dispatch time (the worker) and using repository_dispatch (cross-repo
+capable) instead of workflow_run (same-repo only).
 
 ## Phase 3 — Verify-side rolling Brier drift alerting (~1 day)
 
