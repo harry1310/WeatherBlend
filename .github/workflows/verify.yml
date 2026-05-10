@@ -200,7 +200,20 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
-      - name: Flag drift in job summary
+      - name: Flag drift in job summary + alert
+        # Phase 3 of AUTO_RETRAIN_PLAN.md — drift flips the workflow to
+        # non-zero exit so the existing GH App webhook auto-files a
+        # [ci-fail] verify issue. Pre-2026-05-10 drift was a `::warning::`
+        # only, which left the orange pill in the run list but never
+        # surfaced as an issue — easy to miss on a Mon+Thu cadence.
+        #
+        # Cooldown / re-issue suppression is handled by the GH App's
+        # built-in de-dupe (matches by run-failure signature). If verify
+        # sees the same drift on the next run we'd file a new issue;
+        # in practice the App's bot threads them on the same conversation
+        # so the noise stays manageable. Per-cell hash de-dupe (drift on
+        # a NEW (target, station, lead) but the previous one is still
+        # open) can be added later via state JSON in R2 if it gets noisy.
         if: always()
         run: |
           T_EXIT="${{ steps.verify_run.outputs.exit }}"
@@ -210,24 +223,44 @@ jobs:
           E_FAIL="${{ steps.verify_elements_run.outputs.fail }}"
           drift=0
           fail=0
+          drifted_targets=()
           case "$T_EXIT" in
             0) ;;
-            4) echo "::warning::Temperature drift detected — see verify report."; drift=1 ;;
+            4) echo "::error::Temperature drift detected — see verify report."; drift=1; drifted_targets+=("temperature") ;;
             *) echo "::error::Temperature verify step exited $T_EXIT (non-drift failure)."; fail=1 ;;
           esac
           case "$P_EXIT" in
             0) ;;
-            4) echo "::warning::Precipitation drift detected — see verify report."; drift=1 ;;
+            4) echo "::error::Precipitation drift detected — see verify report."; drift=1; drifted_targets+=("precipitation") ;;
             *) echo "::error::Precipitation verify step exited $P_EXIT (non-drift failure)."; fail=1 ;;
           esac
           case "$D_EXIT" in
             0) ;;
-            4) echo "::warning::Dry-window drift detected — see verify report."; drift=1 ;;
+            4) echo "::error::Dry-window drift detected — see verify report."; drift=1; drifted_targets+=("dry-window") ;;
             *) echo "::error::Dry-window verify step exited $D_EXIT (non-drift failure)."; fail=1 ;;
           esac
-          if [ "$E_DRIFT" = "1" ]; then drift=1; fi
+          if [ "$E_DRIFT" = "1" ]; then
+            drift=1
+            drifted_targets+=("element")
+            echo "::error::Element drift detected — see verify report."
+          fi
           if [ "$E_FAIL" = "1" ]; then fail=1; fi
+
           if [ "$drift" = "1" ]; then
-            echo "**Drift detected.** See attached \`verify_*.md\` report(s)." >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "## Drift detected"
+              echo ""
+              echo "Drifted target(s): ${drifted_targets[*]}"
+              echo ""
+              echo "Per-cell (station × lead) breakdown is in the \`verify_*.md\` reports under \`data/reports/\` (uploaded as a workflow artifact)."
+              echo ""
+              echo "Action: open the per-target report, identify the cells, and triage. Common causes:"
+              echo "  - upstream model dropping rows / changing schema → look at the matching RetrainGuard last-run log"
+              echo "  - truth-source change (gauge clog, ERA5 schema bump) → check the truth tree's Pull step in the latest collect run"
+              echo "  - real climate / regime shift → wait for next retrain (Sunday) to absorb"
+            } >> "$GITHUB_STEP_SUMMARY"
+            # Non-zero exit fires the [ci-fail] verify issue via the
+            # existing webhook handler.
+            exit 4
           fi
           if [ "$fail" = "1" ]; then exit 1; fi
