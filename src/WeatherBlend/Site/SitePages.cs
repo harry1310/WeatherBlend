@@ -105,10 +105,10 @@ public static partial class SitePages
         public const string BayesianMedian = "#01579b";
 
         /// <summary>Light shade of <see cref="BayesianMedian"/> for the
-        /// q10/q90 credible-interval bracket lines. Same hue family so the
-        /// reader pairs them with the median line; saturation difference
-        /// reads as "edges of the same uncertainty band". Material
-        /// light-blue-300.</summary>
+        /// q05/q95 credible-interval bracket lines (90% band, aligned with
+        /// 4a's panel). Same hue family so the reader pairs them with the
+        /// median line; saturation difference reads as "edges of the same
+        /// uncertainty band". Material light-blue-300.</summary>
         public const string BayesianBand = "#4fc3f7";
     }
 

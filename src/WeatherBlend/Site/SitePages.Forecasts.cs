@@ -438,7 +438,8 @@ public static partial class SitePages
     /// <summary>
     /// Bayesian credible-interval panel — Phase 2e. Renders a small line
     /// chart with three series: posterior median P(wet) (solid, dark
-    /// blue) plus q10 and q90 (dashed, light blue) bracketing the median.
+    /// blue) plus q05 and q95 (dashed, light blue) bracketing the median
+    /// (90% band, matching 4a's panel — was 80% / q10–q90 before 2026-05-10).
     /// Above the chart, a one-line summary giving median P(wet) average
     /// and CI80 width average across the rendered hours, plus a tier
     /// label (high / medium / low confidence) so the eye can read it
@@ -551,8 +552,8 @@ public static partial class SitePages
         if (rows.Count == 0) return "";
 
         var medianPts = rows.Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.PWetQ50)).ToList();
-        var q10Pts = rows.Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.PWetQ10)).ToList();
-        var q90Pts = rows.Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.PWetQ90)).ToList();
+        var q05Pts = rows.Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.PWetQ05)).ToList();
+        var q95Pts = rows.Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.PWetQ95)).ToList();
 
         var s = new StringBuilder();
         s.Append("<h4>Bayesian credible interval — independent confidence signal</h4>");
@@ -560,20 +561,23 @@ public static partial class SitePages
         // confident, wide band = uncertain. An averaged tier was tried
         // 2026-05-06 and reverted on user feedback ("why a single value?")
         // because it smeared per-hour variability the chart already shows.
+        // Band aligned to 4a's 90% (q05/q95) on 2026-05-10 — the prior
+        // 80% was an inheritance from the bayesian_ci era; matching 4a
+        // makes the two confidence panels visually comparable.
         s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
         {
-            Title = $"Bayesian P(wet) median + 80% CI — {PrettyStation(stationSlug)} — +{lead}h",
+            Title = $"Bayesian P(wet) median + 90% CI — {PrettyStation(stationSlug)} — +{lead}h",
             XLabel = "Valid time (UTC)",
             YLabel = "Probability",
-            // Median solid; q10/q90 dashed so the legend reads them as
+            // Median solid; q05/q95 dashed so the legend reads them as
             // "band edges" not as independent forecast lines, even though
             // they share the BayesianBand swatch (semantically symmetric —
             // both are the same posterior's quantile bracket).
             Series = new List<LineSeries>
             {
-                new("q90 (upper)", NwpPalette.BayesianBand, q90Pts, Dashed: true),
+                new("q95 (upper)", NwpPalette.BayesianBand, q95Pts, Dashed: true),
                 new("Median",      NwpPalette.BayesianMedian, medianPts),
-                new("q10 (lower)", NwpPalette.BayesianBand, q10Pts, Dashed: true),
+                new("q05 (lower)", NwpPalette.BayesianBand, q05Pts, Dashed: true),
             },
             Height = 180,
             FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
