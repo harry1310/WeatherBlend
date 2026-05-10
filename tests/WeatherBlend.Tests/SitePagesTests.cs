@@ -380,6 +380,148 @@ public class SitePagesTests
     }
 
     [Fact]
+    public void RenderModels_shows_training_delta_badge_when_two_versions_present()
+    {
+        // Phase 4 of AUTO_RETRAIN_PLAN.md — when the same (composite, phase)
+        // has a previous-train ModelSummary on disk, the card header gets a
+        // green badge if the latest improved (avg BlendTestScore went down).
+        var perLeadLatest = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            [24] = new(24, "gfs", 1.10, 1.05, 0.900, 1.30, 0.02, 400, 6),
+            [48] = new(48, "gfs", 1.20, 1.15, 1.000, 1.45, 0.03, 400, 6),
+        };
+        var perLeadPrev = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            [24] = new(24, "gfs", 1.15, 1.10, 0.950, 1.35, 0.02, 400, 6),
+            [48] = new(48, "gfs", 1.25, 1.20, 1.050, 1.50, 0.03, 400, 6),
+        };
+        var latest = new SitePages.ModelSummary(
+            Composite: "temperature", Version: "v2026-05-10_120000",
+            Phase: "2b", DataSource: "era5",
+            TrainedAtUtc: new DateTime(2026, 5, 10, 12, 0, 0, DateTimeKind.Utc),
+            MetricLabel: "Test MAE (°C)", PerLead: perLeadLatest);
+        var previous = new SitePages.ModelSummary(
+            Composite: "temperature", Version: "v2026-05-03_120000",
+            Phase: "2b", DataSource: "era5",
+            TrainedAtUtc: new DateTime(2026, 5, 3, 12, 0, 0, DateTimeKind.Utc),
+            MetricLabel: "Test MAE (°C)", PerLead: perLeadPrev);
+
+        var input = MakeEmptyForecastInput() with
+        {
+            ModelSummaries = new[] { latest, previous },
+        };
+
+        var html = SitePages.RenderModels(input, "temperature");
+
+        // Average over leads {24, 48}: latest = (0.9 + 1.0)/2 = 0.95;
+        // previous = (0.95 + 1.05)/2 = 1.00; delta = -0.050 → green.
+        html.Should().Contain("delta-badge");
+        html.Should().Contain("delta-good");
+        html.Should().Contain("-0.050");
+        html.Should().Contain("vs prev train");
+    }
+
+    [Fact]
+    public void RenderModels_shows_red_training_delta_badge_when_latest_regressed()
+    {
+        // Same shape as the green-badge test but the latest version's
+        // BlendTestScore is HIGHER → red badge (regressed vs previous).
+        var perLeadLatest = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            [24] = new(24, "gfs", 1.10, 1.05, 1.100, 1.30, 0.02, 400, 6),
+        };
+        var perLeadPrev = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            [24] = new(24, "gfs", 1.15, 1.10, 1.000, 1.35, 0.02, 400, 6),
+        };
+        var latest = new SitePages.ModelSummary(
+            Composite: "temperature", Version: "v2026-05-10_120000",
+            Phase: "2b", DataSource: "era5",
+            TrainedAtUtc: new DateTime(2026, 5, 10, 12, 0, 0, DateTimeKind.Utc),
+            MetricLabel: "Test MAE (°C)", PerLead: perLeadLatest);
+        var previous = new SitePages.ModelSummary(
+            Composite: "temperature", Version: "v2026-05-03_120000",
+            Phase: "2b", DataSource: "era5",
+            TrainedAtUtc: new DateTime(2026, 5, 3, 12, 0, 0, DateTimeKind.Utc),
+            MetricLabel: "Test MAE (°C)", PerLead: perLeadPrev);
+
+        var input = MakeEmptyForecastInput() with
+        {
+            ModelSummaries = new[] { latest, previous },
+        };
+
+        var html = SitePages.RenderModels(input, "temperature");
+
+        // delta = 1.100 - 1.000 = +0.100 → red.
+        html.Should().Contain("delta-badge");
+        html.Should().Contain("delta-bad");
+        html.Should().Contain("+0.100");
+    }
+
+    [Fact]
+    public void RenderModels_omits_training_delta_badge_when_only_one_version()
+    {
+        // First-ever training of a phase — no previous version on disk to
+        // compare against, badge must not render.
+        var perLead = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            [24] = new(24, "gfs", 1.10, 1.05, 0.900, 1.30, 0.02, 400, 6),
+        };
+        var only = new SitePages.ModelSummary(
+            Composite: "temperature", Version: "v2026-05-10_120000",
+            Phase: "2b", DataSource: "era5",
+            TrainedAtUtc: new DateTime(2026, 5, 10, 12, 0, 0, DateTimeKind.Utc),
+            MetricLabel: "Test MAE (°C)", PerLead: perLead);
+
+        var input = MakeEmptyForecastInput() with
+        {
+            ModelSummaries = new[] { only },
+        };
+
+        var html = SitePages.RenderModels(input, "temperature");
+
+        // .NotContain("delta-badge") would match the CSS block in the
+        // shared style header; check the span attribute instead.
+        html.Should().NotContain("class=\"delta-badge");
+        html.Should().NotContain("vs prev train");
+    }
+
+    [Fact]
+    public void RenderModels_omits_training_delta_badge_when_lead_sets_disjoint()
+    {
+        // Split-version phase guard: previous version covered leads {12, 24};
+        // latest covers leads {72, 96}. No overlap → can't average a delta on
+        // shared leads → badge skipped.
+        var perLeadLatest = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            [72] = new(72, "gfs", 1.40, 1.30, 1.100, 1.55, 0.04, 400, 6),
+        };
+        var perLeadPrev = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            [24] = new(24, "gfs", 1.10, 1.05, 0.900, 1.30, 0.02, 400, 6),
+        };
+        var latest = new SitePages.ModelSummary(
+            Composite: "temperature", Version: "v2026-05-10_120000",
+            Phase: "2b", DataSource: "era5",
+            TrainedAtUtc: new DateTime(2026, 5, 10, 12, 0, 0, DateTimeKind.Utc),
+            MetricLabel: "Test MAE (°C)", PerLead: perLeadLatest);
+        var previous = new SitePages.ModelSummary(
+            Composite: "temperature", Version: "v2026-05-03_120000",
+            Phase: "2b", DataSource: "era5",
+            TrainedAtUtc: new DateTime(2026, 5, 3, 12, 0, 0, DateTimeKind.Utc),
+            MetricLabel: "Test MAE (°C)", PerLead: perLeadPrev);
+
+        var input = MakeEmptyForecastInput() with
+        {
+            ModelSummaries = new[] { latest, previous },
+        };
+
+        var html = SitePages.RenderModels(input, "temperature");
+
+        html.Should().NotContain("class=\"delta-badge");
+    }
+
+    [Fact]
     public void RenderModels_renders_per_card_verify_history_when_matching_phase_present()
     {
         // Verify history table appears below the per-card test-score table

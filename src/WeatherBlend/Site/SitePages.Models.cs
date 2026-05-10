@@ -87,19 +87,40 @@ public static partial class SitePages
         // the latest version's metadata (newest training wins for the
         // version tag and TrainedAt label). Per lead, the freshest version
         // containing that lead supplies the metric.
+        //
+        // Also tracks the previous-train ModelSummary per family for the
+        // "Δ vs previous train" badge (Phase 4 of AUTO_RETRAIN_PLAN.md).
+        // "Previous" = the latest version whose TrainedAtUtc.Date differs
+        // from the freshest's; the date boundary dedupes split-version
+        // training where short+long halves land on the same calendar day.
         var latestPerFamily = targetSummaries
             .GroupBy(m => (m.Composite, m.Phase), comparer: null!)
             .Select(g =>
             {
-                var latest = g.OrderByDescending(m => m.TrainedAtUtc).First();
-                var mergedPerLead = g
-                    .OrderByDescending(s => s.TrainedAtUtc)
+                var ordered = g.OrderByDescending(m => m.TrainedAtUtc).ToList();
+                var latest = ordered[0];
+                var mergedPerLead = ordered
                     .SelectMany(s => s.PerLead)
                     .GroupBy(kv => kv.Key)
                     .ToDictionary(grp => grp.Key, grp => grp.First().Value);
-                return latest with { PerLead = mergedPerLead };
+                var previous = ordered
+                    .Where(m => m.TrainedAtUtc.Date != latest.TrainedAtUtc.Date)
+                    .FirstOrDefault();
+                // The badge compares THIS train cycle's raw per-lead scores
+                // against the previous cycle's, before merge — so a phase
+                // whose lead-set changed between trainings (e.g. retired one
+                // lead and added another) correctly produces an empty intersect
+                // and skips the badge. Using the merged PerLead would silently
+                // backfill last cycle's scores into "latest" and hide the
+                // disjoint-set case.
+                var latestRaw = latest;
+                return (
+                    Composite: latest.Composite,
+                    LatestForDisplay: latest with { PerLead = mergedPerLead },
+                    LatestRaw: latestRaw,
+                    Previous: previous);
             })
-            .GroupBy(m => m.Composite, StringComparer.Ordinal)
+            .GroupBy(t => t.Composite, StringComparer.Ordinal)
             .OrderBy(g => g.Key, StringComparer.Ordinal);
 
         foreach (var group in latestPerFamily)
@@ -109,11 +130,12 @@ public static partial class SitePages
             // by champion → challenger so a glance at the page reads "lean first,
             // rich underneath".
             var ordered = group
-                .OrderBy(m => PhasePriority(group.Key, m.Phase))
-                .ThenByDescending(m => m.TrainedAtUtc)
+                .OrderBy(t => PhasePriority(group.Key, t.LatestForDisplay.Phase))
+                .ThenByDescending(t => t.LatestForDisplay.TrainedAtUtc)
                 .ToList();
-            foreach (var m in ordered)
-                content.Append(RenderBlenderCard(group.Key, m, input.VerifyHistory));
+            foreach (var t in ordered)
+                content.Append(RenderBlenderCard(group.Key, t.LatestForDisplay,
+                    t.LatestRaw, t.Previous, input.VerifyHistory));
         }
 
         content.Append("</section>");
@@ -168,10 +190,17 @@ public static partial class SitePages
     }
 
     private static string RenderBlenderCard(string composite, ModelSummary m,
+        ModelSummary latestRaw,
+        ModelSummary? previous,
         IReadOnlyList<WeatherBlend.Models.VerifyHistoryFile> verifyHistory)
     {
         var description = PhaseDescription(composite, m.Phase);
         var phaseLabel = string.IsNullOrEmpty(m.Phase) ? "—" : m.Phase;
+        // Badge takes the un-merged latest so a disjoint-lead-set retrain
+        // (lead scope changed between cycles) correctly suppresses the
+        // badge. The merged ModelSummary `m` continues to drive the
+        // table below for its existing fill-from-older-versions behaviour.
+        var deltaBadge = RenderTrainingDeltaBadge(latestRaw, previous);
 
         var tbody = new StringBuilder();
         // ForecastsTempRain (= Leads.Full + lead 12) so 2d/3d's lead-12 row
@@ -217,7 +246,7 @@ public static partial class SitePages
             <article class="blender-card">
               <header>
                 <hgroup>
-                  <h4>Phase {Escape(phaseLabel)} <small>· <code>{Escape(m.Version)}</code></small></h4>
+                  <h4>Phase {Escape(phaseLabel)} <small>· <code>{Escape(m.Version)}</code></small> {deltaBadge}</h4>
                   <p class="skill-line">{Escape(description)} Trained {m.TrainedAtUtc:yyyy-MM-dd}. Metric: {Escape(m.MetricLabel)}.</p>
                 </hgroup>
               </header>
@@ -236,6 +265,52 @@ public static partial class SitePages
               {historyHtml}
             </article>
             """;
+    }
+
+    /// <summary>
+    /// "Δ vs previous train" badge for the blender card header. Compares
+    /// the latest training run's average BlendTestScore against the
+    /// previous training run's, on the SAME set of leads (intersection of
+    /// PerLead keys present in both versions). Renders empty when:
+    ///
+    /// - <paramref name="previous"/> is null (first-ever train of this
+    ///   phase, or only one version on disk).
+    /// - The lead-sets are disjoint — guard against split-version phases
+    ///   like 2d/3d where short and long halves train independently and
+    ///   the previous-version snapshot might cover only one half.
+    /// - Either side has a NaN BlendTestScore (legacy artefact prior to
+    ///   the metric being persisted).
+    ///
+    /// Tooltip warns the reader the comparison is on the training-time
+    /// test slice (which shifts each retrain) — verify history is the
+    /// place to read real-world skill drift.
+    ///
+    /// Phase 4 of AUTO_RETRAIN_PLAN.md.
+    /// </summary>
+    private static string RenderTrainingDeltaBadge(ModelSummary latest, ModelSummary? previous)
+    {
+        if (previous is null) return "";
+
+        var sharedLeads = latest.PerLead.Keys
+            .Intersect(previous.PerLead.Keys)
+            .Where(L => !double.IsNaN(latest.PerLead[L].BlendTestScore)
+                     && !double.IsNaN(previous.PerLead[L].BlendTestScore))
+            .ToList();
+        if (sharedLeads.Count == 0) return "";
+
+        var latestAvg = sharedLeads.Average(L => latest.PerLead[L].BlendTestScore);
+        var previousAvg = sharedLeads.Average(L => previous.PerLead[L].BlendTestScore);
+        var delta = latestAvg - previousAvg;
+
+        // Lower metric = better (MAE for temp, Brier for precip, both are
+        // 0-up scales). delta < 0 → latest improved → green; delta > 0 →
+        // regressed → red.
+        var cls = delta < 0 ? "delta-good" : "delta-bad";
+        var sign = delta >= 0 ? "+" : "";
+        var tooltip = "Training-slice delta — test window shifts each retrain; "
+                      + "see verify history for real-world skill trend.";
+
+        return $"""<span class="delta-badge {cls}" title="{Escape(tooltip)}">Δ {sign}{delta.ToString("0.000", Ci)} vs prev train</span>""";
     }
 
     /// <summary>
@@ -329,7 +404,26 @@ public static partial class SitePages
                 .ToDictionary(
                     g => g.Key,
                     g => g.OrderByDescending(r => r.ModelVersion, StringComparer.Ordinal).First());
-            var driftAny = byLead.Values.Any(r => r.DriftFlag);
+            var driftAnyBlend = byLead.Values.Any(r => r.DriftFlag);
+            // Track best-NWP drift across leads in this run, computed the
+            // same way the per-cell highlight does. Aggregates to a row-
+            // level signal so the right-hand drift column can show blend
+            // and best-NWP indicators stacked — without that split the
+            // user couldn't tell whether the row's ⚠ meant the blender
+            // had degraded or the underlying weather was hard.
+            var driftAnyBest = false;
+            foreach (var (lead, r) in byLead)
+            {
+                if (!r.BestSingleMetric.HasValue) continue;
+                if (!trainedSummary.PerLead.TryGetValue(lead, out var pl)) continue;
+                var baseline = pl.BestSingleTestMae;
+                if (double.IsNaN(baseline) || baseline <= 0) continue;
+                if (r.BestSingleMetric.Value > 1.5 * baseline)
+                {
+                    driftAnyBest = true;
+                    break;
+                }
+            }
 
             // Distinct versions scored across all leads in this run. Usually
             // one (the active version of this phase at verify-time), but a
@@ -384,9 +478,20 @@ public static partial class SitePages
                 }
             }
 
-            var driftCell = driftAny
-                ? "<td class=\"num delta-bad\">⚠</td>"
-                : "<td class=\"num delta-good\">✓</td>";
+            // Stacked drift cell: blend on top, best-NWP underneath, each
+            // with its own ⚠/✓. Labels make it explicit which line the
+            // indicator refers to (the prior single-icon cell only flagged
+            // blend drift but the lead cells highlighted best-NWP drift
+            // independently — readers couldn't tell what the row-level
+            // icon was claiming about). Same layout as the per-lead cell:
+            // headline metric on top, best-NWP small underneath.
+            var blendIcon = driftAnyBlend
+                ? "<span class=\"delta-bad\">⚠</span>"
+                : "<span class=\"delta-good\">✓</span>";
+            var bestIcon = driftAnyBest
+                ? "<span class=\"delta-bad\">⚠</span>"
+                : "<span class=\"delta-good\">✓</span>";
+            var driftCell = $"""<td class="num">blend {blendIcon}<br><small>NWP {bestIcon}</small></td>""";
 
             tbody.Append(Ci, $"""
                 <tr>
