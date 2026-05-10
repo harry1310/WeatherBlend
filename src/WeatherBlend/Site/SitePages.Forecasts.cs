@@ -541,9 +541,22 @@ public static partial class SitePages
     /// Silent skip if no 4a rows for this (station, lead) pair (e.g. before
     /// the first predict-4a.yml fire).
     /// </summary>
+    /// <summary>
+    /// Leads where the 4a (BART) panel should render. Mirrors LEADS in
+    /// WeatherProbabilistic/scripts/{train_4a,predict_4a}.py — 12 dropped
+    /// 2026-05-10 (offset_day archive coverage gap; TestRows=0 in training
+    /// metadata, predictions were extrapolation along the lead axis).
+    /// Historical lead-12 rows still exist on R2 from before the predict
+    /// scope was tightened, so the renderer needs its own gate; otherwise
+    /// the +12h tab keeps showing the 4a panel from stale data.
+    /// </summary>
+    private static readonly HashSet<int> Phase4aDisplayLeads = new() { 24, 48, 72, 96, 120 };
+
     private static string RenderPhase4aPanel(
         SiteInputs input, string stationSlug, int lead, double xMin, double xMax)
     {
+        if (!Phase4aDisplayLeads.Contains(lead)) return "";
+
         var rows = input.PrecipPredictions
             .Where(r => string.Equals(r.Station, stationSlug, StringComparison.OrdinalIgnoreCase)
                         && r.LeadHours == lead
