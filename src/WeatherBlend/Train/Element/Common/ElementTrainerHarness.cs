@@ -158,7 +158,7 @@ public static class ElementTrainerHarness
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
         var firstLeadElement = leads.Length > 0 ? leads[0] : 0;
-        TrainingSummaryBuilder.BuildAndSave(
+        var guardResultEl = RetrainGuard.BuildCheckAndSave(log,
             versionDir,
             composite: inputs.Target.CliName,
             phase: inputs.Target.PhaseTag,
@@ -168,6 +168,13 @@ public static class ElementTrainerHarness
             trainFeatures: firstLeadTrainFeatures,
             featureNames: specsPerLead.TryGetValue(firstLeadElement, out var spEl)
                 ? spEl.FeatureNames.ToList() : Array.Empty<string>());
+        if (!guardResultEl.Passed)
+        {
+            log.LogError(
+                "Aborting Element ({Target}) retrain — sanity guard failed. Orphan dir {Dir} not promoted.",
+                inputs.Target.CliName, versionDir);
+            return 4;
+        }
         // Promote: replaces any prior entry with the same Phase in Active and
         // sets Current. Element targets currently have a single phase each
         // (lean-wind / lean-humidity / lean-shortwave-radiation / lean-cloud-cover)

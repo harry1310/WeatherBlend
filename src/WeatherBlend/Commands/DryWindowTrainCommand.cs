@@ -299,7 +299,7 @@ public sealed class DryWindowTrainCommand
                       }
                     : null;
                 var firstLead3b = leads.Length > 0 ? leads[0] : 0;
-                TrainingSummaryBuilder.BuildAndSave(
+                var guardResult3b = RetrainGuard.BuildCheckAndSave(_log,
                     versionDir,
                     composite: $"dry_window/{stationSlug3b}/window_{window}h",
                     phase: phase, version: versionName,
@@ -309,6 +309,19 @@ public sealed class DryWindowTrainCommand
                     featureNames: specsPerLead.TryGetValue(firstLead3b, out var sp3b)
                         ? sp3b.FeatureNames.ToList() : Array.Empty<string>(),
                     labelRates: labelRates3b);
+                if (!guardResult3b.Passed)
+                {
+                    // Single-(station, window) guard fail aborts JUST this
+                    // combo's promotion + conformal fit; the outer sweep
+                    // continues training other (station, window) cells. Bumps
+                    // modelsSkipped so the final summary log still reflects
+                    // partial success.
+                    _log.LogError(
+                        "Aborting Phase {Phase} promotion for ({Station}, {W}h) — sanity guard failed. Orphan dir {Dir} not promoted; previous version stays Current.",
+                        phase, stationName, window, versionDir);
+                    modelsSkipped++;
+                    continue;
+                }
                 // Promote the new 3b version: replace any prior 3b entry in
                 // Active with this one and set Current = newVersion. Any
                 // OTHER active phases (3g challengers today) survive.

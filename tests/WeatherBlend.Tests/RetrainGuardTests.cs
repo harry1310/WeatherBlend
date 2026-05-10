@@ -1,4 +1,6 @@
 using FluentAssertions;
+using Microsoft.Extensions.Logging.Abstractions;
+using WeatherBlend.Train;
 using WeatherBlend.Train.Common;
 using Xunit;
 
@@ -158,6 +160,190 @@ public class RetrainGuardTests
 
         // Other checks still run; rowsTrain check no-ops.
         result.Breaches.Should().NotContain(b => b.Field == "rowsTrain");
+    }
+
+    // ---- BuildCheckAndSave end-to-end -------------------------------------
+    //
+    // The trainer-facing entry point. Each of the 8 .NET trainer sites
+    // calls this helper post-SaveTrainingMetadata and uses the returned
+    // GuardResult.Passed to gate Promote*. Tests below stub the on-disk
+    // version-dir layout (parent + previous version with summary) and
+    // assert the helper does the right thing on pass, fail, and the
+    // first-ever-train path.
+
+    private static string MakeTempVersionDir(string composite, string phase, string label)
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"wb-guard-{Guid.NewGuid():N}");
+        var parent = Path.Combine(root, composite.Replace('/', Path.DirectorySeparatorChar));
+        var versionDir = Path.Combine(parent, $"v-{label}");
+        Directory.CreateDirectory(versionDir);
+        return versionDir;
+    }
+
+    private static void WritePreviousSummary(
+        string parentDir, string previousVersionName, TrainingSummary summary,
+        string phase)
+    {
+        var prevDir = Path.Combine(parentDir, previousVersionName);
+        Directory.CreateDirectory(prevDir);
+        // Both training_metadata.json (so TryLoadPreviousSummary finds it
+        // by phase match) AND training_summary.json must exist for the
+        // helper to pick it up.
+        ModelArtifact.SaveTrainingMetadata(prevDir, new ModelArtifact.TrainingMetadata
+        {
+            Version = previousVersionName,
+            Target = summary.Composite.Split('/')[0],
+            Phase = phase,
+            DataSource = "test",
+            TrainedAtUtc = summary.ComputedAtUtc.AddDays(-7),
+            Hyperparameters = new(),
+            TestMae = new(),
+            PerLead = new(),
+            DeviationsFromBrief = new(),
+        });
+        ModelArtifact.SaveTrainingSummary(prevDir, summary);
+    }
+
+    [Fact]
+    public void BuildCheckAndSave_writes_summary_and_passes_when_no_previous_baseline()
+    {
+        // First-ever-train path: TryLoadPreviousSummary returns null,
+        // Check returns Passed=true with the no-baseline note, helper
+        // writes the new summary to disk as the new baseline.
+        var versionDir = MakeTempVersionDir("temperature", "2b", "current");
+        try
+        {
+            var features = Enumerable.Range(0, 100)
+                .Select(_ => new[] { 1f, 2f, 3f })
+                .ToList();
+
+            var result = RetrainGuard.BuildCheckAndSave(
+                NullLogger.Instance,
+                versionDir,
+                composite: "temperature", phase: "2b", version: "v-current",
+                computedAtUtc: DateTime.UtcNow,
+                rowsTrain: 100, rowsVal: 20, rowsTest: 20,
+                trainFeatures: features,
+                featureNames: new[] { "a", "b", "c" });
+
+            result.Passed.Should().BeTrue();
+            result.Note.Should().Contain("First-ever train");
+            File.Exists(Path.Combine(versionDir, ModelArtifact.TrainingSummaryFileName))
+                .Should().BeTrue("guard PASS must write the new summary to disk");
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(Path.GetDirectoryName(versionDir)!)!, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void BuildCheckAndSave_writes_summary_when_within_tolerance()
+    {
+        // Healthy retrain: previous + current both exist, all bands within
+        // tolerance, helper writes the new summary AND returns Passed=true.
+        var versionDir = MakeTempVersionDir("temperature", "2b", "new");
+        var parent = Path.GetDirectoryName(versionDir)!;
+        try
+        {
+            var prev = MakeSummary(trainRows: 10_000, valRows: 2_000, testRows: 2_000, features: 3);
+            prev.Phase = "2b";
+            prev.Composite = "temperature";
+            WritePreviousSummary(parent, "v-old", prev, phase: "2b");
+
+            var features = Enumerable.Range(0, 10_500)
+                .Select(_ => new[] { 1f, 2f, 3f })
+                .ToList();
+
+            var result = RetrainGuard.BuildCheckAndSave(
+                NullLogger.Instance,
+                versionDir,
+                composite: "temperature", phase: "2b", version: "v-new",
+                computedAtUtc: DateTime.UtcNow,
+                rowsTrain: 10_500, rowsVal: 1_950, rowsTest: 2_050,
+                trainFeatures: features,
+                featureNames: new[] { "a", "b", "c" });
+
+            result.Passed.Should().BeTrue();
+            result.Breaches.Should().BeEmpty();
+            File.Exists(Path.Combine(versionDir, ModelArtifact.TrainingSummaryFileName))
+                .Should().BeTrue();
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(parent)!, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void BuildCheckAndSave_does_NOT_write_summary_on_guard_fail()
+    {
+        // Critical contract: a failed guard must NOT overwrite the previous
+        // summary on disk. Otherwise the next retrain would chase a partial
+        // baseline and the alert chain would lose its reference point.
+        var versionDir = MakeTempVersionDir("temperature", "2b", "new");
+        var parent = Path.GetDirectoryName(versionDir)!;
+        try
+        {
+            // Previous = 10k rows; current = 4k rows → past the 30% relative
+            // tolerance, guard fires.
+            var prev = MakeSummary(trainRows: 10_000, features: 3);
+            prev.Phase = "2b";
+            prev.Composite = "temperature";
+            WritePreviousSummary(parent, "v-old", prev, phase: "2b");
+
+            var features = Enumerable.Range(0, 4_000)
+                .Select(_ => new[] { 1f, 2f, 3f })
+                .ToList();
+
+            var result = RetrainGuard.BuildCheckAndSave(
+                NullLogger.Instance,
+                versionDir,
+                composite: "temperature", phase: "2b", version: "v-new",
+                computedAtUtc: DateTime.UtcNow,
+                rowsTrain: 4_000, rowsVal: 800, rowsTest: 800,
+                trainFeatures: features,
+                featureNames: new[] { "a", "b", "c" });
+
+            result.Passed.Should().BeFalse();
+            result.Breaches.Should().Contain(b => b.Field == "rowsTrain");
+            File.Exists(Path.Combine(versionDir, ModelArtifact.TrainingSummaryFileName))
+                .Should().BeFalse("guard FAIL must NOT write the new summary — preserves previous baseline for the next retrain");
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(parent)!, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void BuildCheckAndSave_skips_guard_and_summary_when_features_empty()
+    {
+        // Degraded path: trainer reached the helper but had no buffered
+        // features (e.g. zero leads trained). Helper short-circuits with a
+        // Passed=true result and writes nothing — same as the pre-guard
+        // BuildAndSave's empty-features no-op.
+        var versionDir = MakeTempVersionDir("temperature", "2b", "current");
+        try
+        {
+            var result = RetrainGuard.BuildCheckAndSave(
+                NullLogger.Instance,
+                versionDir,
+                composite: "temperature", phase: "2b", version: "v-current",
+                computedAtUtc: DateTime.UtcNow,
+                rowsTrain: 0, rowsVal: 0, rowsTest: 0,
+                trainFeatures: new List<float[]>(),
+                featureNames: Array.Empty<string>());
+
+            result.Passed.Should().BeTrue();
+            result.Note.Should().Contain("Empty train slice");
+            File.Exists(Path.Combine(versionDir, ModelArtifact.TrainingSummaryFileName))
+                .Should().BeFalse("empty-feature degraded path writes nothing");
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(Path.GetDirectoryName(versionDir)!)!, recursive: true);
+        }
     }
 
     [Fact]

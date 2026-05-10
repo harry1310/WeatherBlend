@@ -324,10 +324,13 @@ public sealed class TempTrainCommand
             },
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
-        // training_summary.json sidecar (Phase 1a of AUTO_RETRAIN_PLAN.md).
-        // Per-feature stats from first lead's train slice (avoids lead-axis
-        // blur); row counts aggregated across all leads.
-        TrainingSummaryBuilder.BuildAndSave(
+        // RetrainGuard (Phase 1b/1c of AUTO_RETRAIN_PLAN.md): build the
+        // training_summary, compare against the previous 2b run's, and
+        // abort BEFORE promotion if any tolerance band breached. Per-lead
+        // bundles are already on disk by this point but the manifest
+        // doesn't reference them until PromoteVersionAsChampion runs —
+        // the orphan dir on guard-fail is invisible to predict + verify.
+        var guardResult2b = RetrainGuard.BuildCheckAndSave(_log,
             versionDir,
             composite: "temperature", phase: "2b", version: versionName,
             computedAtUtc: now,
@@ -335,6 +338,11 @@ public sealed class TempTrainCommand
             trainFeatures: firstLeadTrainFeatures,
             featureNames: specsPerLead.TryGetValue(leads[0], out var sp0)
                 ? sp0.FeatureNames.ToList() : Array.Empty<string>());
+        if (!guardResult2b.Passed)
+        {
+            _log.LogError("Aborting Phase 2b retrain — sanity guard failed. Orphan dir {Dir} not promoted.", versionDir);
+            return 4;
+        }
         // Promote 2b: replaces any prior 2b entry in Active and sets Current.
         // Any active 2c challenger survives untouched.
         ModelArtifact.PromoteVersionAsChampion(modelsRoot, "temperature", versionName, newPhase: "2b");
@@ -475,7 +483,7 @@ public sealed class TempTrainCommand
             },
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
-        TrainingSummaryBuilder.BuildAndSave(
+        var guardResult2c = RetrainGuard.BuildCheckAndSave(_log,
             versionDir,
             composite: "temperature", phase: "2c", version: versionName,
             computedAtUtc: now,
@@ -483,6 +491,11 @@ public sealed class TempTrainCommand
             trainFeatures: firstLeadTrainFeatures,
             featureNames: specsPerLead.TryGetValue(leads[0], out var sp2c)
                 ? sp2c.FeatureNames.ToList() : Array.Empty<string>());
+        if (!guardResult2c.Passed)
+        {
+            _log.LogError("Aborting Phase 2c retrain — sanity guard failed. Orphan dir {Dir} not promoted.", versionDir);
+            return 4;
+        }
 
         // Promote 2c as a challenger: replaces any prior 2c entry in Active
         // (so re-training is idempotent) and leaves Current = 2b champion.
@@ -661,7 +674,7 @@ public sealed class TempTrainCommand
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
         var firstLead2d = leads.Length > 0 ? leads[0] : 0;
-        TrainingSummaryBuilder.BuildAndSave(
+        var guardResult2d = RetrainGuard.BuildCheckAndSave(_log,
             versionDir,
             composite: "temperature", phase: "2d", version: versionName,
             computedAtUtc: now,
@@ -669,6 +682,11 @@ public sealed class TempTrainCommand
             trainFeatures: firstLeadTrainFeatures,
             featureNames: specsPerLead.TryGetValue(firstLead2d, out var sp2d)
                 ? sp2d.FeatureNames.ToList() : Array.Empty<string>());
+        if (!guardResult2d.Passed)
+        {
+            _log.LogError("Aborting Phase 2d retrain — sanity guard failed. Orphan dir {Dir} not promoted; ChampionByLead retains the previous 2d pin (manifest unchanged).", versionDir);
+            return 4;
+        }
 
         // Promote 2d as a challenger — 2b stays Current. ChampionByLead pins
         // 2d at lead 12 ONLY (where 2b doesn't train); 24+ falls through
@@ -910,7 +928,7 @@ public sealed class TempTrainCommand
                   [stationSlug] = firstLeadTrainLabels.Count(l => l) / (double)firstLeadTrainLabels.Count,
               }
             : null;
-        TrainingSummaryBuilder.BuildAndSave(
+        var guardResult3a = RetrainGuard.BuildCheckAndSave(_log,
             versionDir,
             composite: $"precipitation/{stationSlug}", phase: "3a", version: versionName,
             computedAtUtc: now,
@@ -919,6 +937,11 @@ public sealed class TempTrainCommand
             featureNames: specsPerLead.TryGetValue(leads[0], out var sp3a)
                 ? sp3a.FeatureNames.ToList() : Array.Empty<string>(),
             labelRates: labelRates3a);
+        if (!guardResult3a.Passed)
+        {
+            _log.LogError("Aborting Phase 3a retrain ({Station}) — sanity guard failed. Orphan dir {Dir} not promoted.", stationSlug, versionDir);
+            return 4;
+        }
         // Promote 3a: replaces any prior 3a entry in the per-station Active
         // and sets Current. Any active 3c challenger survives untouched.
         ModelArtifact.PromoteStationVersionAsChampion(
@@ -1133,7 +1156,7 @@ public sealed class TempTrainCommand
                   [stationSlug] = firstLeadTrainLabels.Count(l => l) / (double)firstLeadTrainLabels.Count,
               }
             : null;
-        TrainingSummaryBuilder.BuildAndSave(
+        var guardResult3c = RetrainGuard.BuildCheckAndSave(_log,
             versionDir,
             composite: $"precipitation/{stationSlug}", phase: "3c", version: versionName,
             computedAtUtc: now,
@@ -1142,6 +1165,11 @@ public sealed class TempTrainCommand
             featureNames: specsPerLead.TryGetValue(leads[0], out var sp3c)
                 ? sp3c.FeatureNames.ToList() : Array.Empty<string>(),
             labelRates: labelRates3c);
+        if (!guardResult3c.Passed)
+        {
+            _log.LogError("Aborting Phase 3c retrain ({Station}) — sanity guard failed. Orphan dir {Dir} not promoted.", stationSlug, versionDir);
+            return 4;
+        }
 
         // Promote 3c as a challenger: replaces any prior 3c entry in Active
         // (idempotent re-train) and leaves Current = 3a champion. Any other
@@ -1391,7 +1419,7 @@ public sealed class TempTrainCommand
               }
             : null;
         var firstLead3d = leadsToTrain.Length > 0 ? leadsToTrain[0] : 0;
-        TrainingSummaryBuilder.BuildAndSave(
+        var guardResult3d = RetrainGuard.BuildCheckAndSave(_log,
             versionDir,
             composite: $"precipitation/{stationSlug}", phase: "3d", version: versionName,
             computedAtUtc: now,
@@ -1400,6 +1428,11 @@ public sealed class TempTrainCommand
             featureNames: specsPerLead.TryGetValue(firstLead3d, out var sp3d)
                 ? sp3d.FeatureNames.ToList() : Array.Empty<string>(),
             labelRates: labelRates3d);
+        if (!guardResult3d.Passed)
+        {
+            _log.LogError("Aborting Phase 3d retrain ({Station}) — sanity guard failed. Orphan dir {Dir} not promoted; ChampionByLead retains the previous 3d pin (manifest unchanged).", stationSlug, versionDir);
+            return 4;
+        }
 
         // Promote 3d as a station challenger — 3a stays Current. Per-station
         // ChampionByLead pins 3d at lead 12 ONLY (where 3a competes well too,

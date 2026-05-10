@@ -1,3 +1,6 @@
+using Microsoft.Extensions.Logging;
+using WeatherBlend.Train;
+
 namespace WeatherBlend.Train.Common;
 
 /// <summary>
@@ -141,6 +144,96 @@ public static class RetrainGuard
                 Threshold: pctTolerance,
                 Reason: $"row count changed by {delta:P1} (tolerance {pctTolerance:P1}) — large drift this size at one retrain interval signals an upstream collector / refresh issue"));
         }
+    }
+
+    /// <summary>
+    /// Build a TrainingSummary for the in-progress run, find the previous
+    /// summary in the same (composite, phase) lineage, run the guard, and
+    /// on pass write the new summary alongside training_metadata.json.
+    ///
+    /// Returns the <see cref="GuardResult"/> so the caller can decide
+    /// whether to abort (typically `if (!result.Passed) return 4;` BEFORE
+    /// the Promote* call — that keeps the orphan version dir on disk but
+    /// out of the manifest, so predict + verify never see it).
+    ///
+    /// Note: per-lead model zips are typically already written by the
+    /// time this fires (they happen inside the trainer's lead loop). The
+    /// guard's "abort the bundle write" guarantee is enforced via the
+    /// promotion skip — without a manifest update, the orphan dir is
+    /// invisible to the rest of the pipeline. A future refinement could
+    /// stage to a tmp dir and rename on guard-pass, but that's a bigger
+    /// trainer-flow change.
+    ///
+    /// <paramref name="trainFeatures"/> may be empty (e.g. a degraded run
+    /// that produced no usable rows); the helper returns a "no baseline"
+    /// passing result without writing a summary, mirroring the existing
+    /// <see cref="TrainingSummaryBuilder.BuildAndSave"/> degraded-mode
+    /// behaviour.
+    /// </summary>
+    public static GuardResult BuildCheckAndSave(
+        ILogger log,
+        string versionDir,
+        string composite, string phase, string version,
+        DateTime computedAtUtc,
+        int rowsTrain, int rowsVal, int rowsTest,
+        IReadOnlyList<float[]>? trainFeatures,
+        IReadOnlyList<string> featureNames,
+        Dictionary<string, double>? labelRates = null,
+        GuardTolerances? tolerances = null)
+    {
+        // Degraded path: empty features → can't compute stats, can't
+        // guard. Don't write a summary; the next run will see "no
+        // previous" and pass with the no-baseline note. Same posture as
+        // BuildAndSave's pre-existing empty-features short-circuit.
+        if (trainFeatures is null || trainFeatures.Count == 0
+            || featureNames.Count == 0)
+        {
+            log.LogWarning(
+                "Retrain guard skipped for {Composite}/{Phase} {Version} — buffered train slice was empty (no summary written, no guard check).",
+                composite, phase, version);
+            return new GuardResult(
+                Passed: true,
+                Breaches: Array.Empty<GuardBreach>(),
+                Note: "Empty train slice — guard skipped, no summary written.");
+        }
+
+        var summary = TrainingSummaryBuilder.Build(
+            composite, phase, version, computedAtUtc,
+            rowsTrain, rowsVal, rowsTest,
+            trainFeatures, featureNames, labelRates);
+
+        var parentDir = Path.GetDirectoryName(versionDir)
+            ?? throw new InvalidOperationException(
+                $"versionDir '{versionDir}' has no parent — can't locate previous summary.");
+
+        var previous = TryLoadPreviousSummary(parentDir, phase, excludeVersion: Path.GetFileName(versionDir)!);
+        var result = Check(summary, previous, tolerances ?? Defaults);
+
+        if (!result.Passed)
+        {
+            log.LogError(
+                "Retrain guard FAIL for {Composite}/{Phase} {Version}: {Note}",
+                composite, phase, version, result.Note);
+            foreach (var breach in result.Breaches)
+            {
+                log.LogError(
+                    "  {Field}: previous={Previous}, current={Current}, threshold={Threshold} — {Reason}",
+                    breach.Field, breach.Previous, breach.Current, breach.Threshold, breach.Reason);
+            }
+            // Don't write the summary on fail — leaving the previous
+            // training_summary.json in place means the next attempt's
+            // guard sees the same baseline rather than chasing a
+            // partial/corrupted summary from this run.
+            return result;
+        }
+
+        ModelArtifact.SaveTrainingSummary(versionDir, summary);
+        log.LogInformation(
+            "Retrain guard PASS for {Composite}/{Phase} {Version} — train={RowsTrain} val={RowsVal} test={RowsTest} features={Features}{PrevNote}",
+            composite, phase, version,
+            summary.RowsTrain, summary.RowsVal, summary.RowsTest, summary.FeaturesEffective,
+            previous is null ? " (no previous baseline; this becomes the new baseline)" : "");
+        return result;
     }
 
     /// <summary>
