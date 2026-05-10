@@ -228,6 +228,15 @@ public static partial class SitePages
         return s.ToString();
     }
 
+    /// <summary>
+    /// History days for the rain forecast tab's shared X axis. Wider than
+    /// <see cref="ForecastChartHistoryDays"/> (3) because the rain page has
+    /// stacked panels (top P(wet) + 4a + 5a + NWP rate) and the eye benefits
+    /// from a wider context window when comparing them top-to-bottom.
+    /// User-set 2026-05-10 alongside the per-tab axis-unification work.
+    /// </summary>
+    private const int RainChartHistoryDays = 7;
+
     private static string RenderPrecipSection(SiteInputs input, int lead)
     {
         var s = new StringBuilder();
@@ -256,6 +265,36 @@ public static partial class SitePages
         // one entry will do.
         var latestPerValidByStation = new Dictionary<string, IReadOnlyList<PrecipForecastPoint>>(StringComparer.Ordinal);
 
+        // Pre-compute the latest-per-(station, valid) lists up front so we
+        // can derive the page-wide X axis window before rendering any chart.
+        // Every chart on this lead-tab (top P(wet), per-station 4a, per-station
+        // 5a, page-level NWP precip rate) shares the same (xMin, xMax) so the
+        // reader can scan top-to-bottom on a fixed time grid. Window is:
+        //   xMin = now − RainChartHistoryDays (currently 7d)
+        //   xMax = furthest valid_time present in OUR top P(wet) chart's data
+        // Per the 2026-05-10 user direction: the NWP precip rate often
+        // extends further forward (raw forecast tree, hourly to +168h) but
+        // the page's anchor is OUR blend forecast — subordinate panels +
+        // the NWP rate chart get clipped to that horizon so the eye reads
+        // a single consistent forward edge across the tab.
+        foreach (var station in stations)
+        {
+            var latestPerValid = input.PrecipPredictions
+                .Where(r => r.Station == station && r.LeadHours == lead)
+                .GroupBy(r => r.ValidTimeUtc)
+                .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
+                .OrderBy(r => r.ValidTimeUtc)
+                .ToList();
+            latestPerValidByStation[station] = latestPerValid;
+        }
+        var pageXMin = input.GeneratedAtUtc.AddDays(-RainChartHistoryDays).ToOADate();
+        var pageXMax = latestPerValidByStation.Values
+            .Where(rows => rows.Count > 0)
+            .Select(rows => rows[^1].ValidTimeUtc)
+            .DefaultIfEmpty(input.GeneratedAtUtc)
+            .Max()
+            .ToOADate();
+
         foreach (var station in stations)
         {
             // Pool across blender versions before picking freshest per ValidTime.
@@ -267,15 +306,10 @@ public static partial class SitePages
             // future-of-now rows per anchor. Filtering to future-only
             // emptied the chart for entire half-days. Show historical
             // points in context — the outer windowStart (~30d back) still
-            // bounds the data, and xMax/xMin in the chart spec keep the
-            // visible window at 14d.
-            var latestPerValid = input.PrecipPredictions
-                .Where(r => r.Station == station && r.LeadHours == lead)
-                .GroupBy(r => r.ValidTimeUtc)
-                .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
-                .OrderBy(r => r.ValidTimeUtc)
-                .ToList();
-            latestPerValidByStation[station] = latestPerValid;
+            // bounds the data, and xMin/xMax in the chart spec keep the
+            // visible window at the page-wide rain window (see pageXMin/
+            // pageXMax computed above).
+            var latestPerValid = latestPerValidByStation[station];
 
             s.Append(Ci, $"<h4>{Escape(PrettyStation(station))}</h4>");
 
@@ -380,13 +414,14 @@ public static partial class SitePages
                 FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
                 FormatY = v => v.ToString("0.00", Ci),
                 TodayLineX = input.GeneratedAtUtc.ToOADate(),
-                XMin = ForecastChartXMin(input),
+                XMin = pageXMin,
+                XMax = pageXMax,
             }));
 
             s.Append(RenderPrecipDailySummaryTable(latestPerValid));
             s.Append(RenderPrecipHourlyConfidenceTable(latestPerValid, station, input.PrecipConformalTau));
-            s.Append(RenderPhase4aPanel(input, station, lead));
-            s.Append(RenderBayesianCiPanel(input, station, lead, minValid, maxValid));
+            s.Append(RenderPhase4aPanel(input, station, lead, pageXMin, pageXMax));
+            s.Append(RenderBayesianCiPanel(input, station, lead, pageXMin, pageXMax));
         }
 
         // Per-NWP precip rate (mm/h) — point forecast at Bonehill, hoisted
@@ -427,7 +462,8 @@ public static partial class SitePages
                     FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
                     FormatY = v => v.ToString("0.0", Ci),
                     TodayLineX = input.GeneratedAtUtc.ToOADate(),
-                    XMin = ForecastChartXMin(input),
+                    XMin = pageXMin,
+                    XMax = pageXMax,
                 }));
             }
         }
@@ -470,7 +506,7 @@ public static partial class SitePages
     /// the first predict-4a.yml fire).
     /// </summary>
     private static string RenderPhase4aPanel(
-        SiteInputs input, string stationSlug, int lead)
+        SiteInputs input, string stationSlug, int lead, double xMin, double xMax)
     {
         var rows = input.PrecipPredictions
             .Where(r => string.Equals(r.Station, stationSlug, StringComparison.OrdinalIgnoreCase)
@@ -510,14 +546,15 @@ public static partial class SitePages
             FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
             FormatY = v => v.ToString("0.00", Ci),
             TodayLineX = input.GeneratedAtUtc.ToOADate(),
-            XMin = ForecastChartXMin(input),
+            XMin = xMin,
+            XMax = xMax,
         }));
         return s.ToString();
     }
 
     private static string RenderBayesianCiPanel(
         SiteInputs input, string stationSlug, int lead,
-        DateTime minValid, DateTime maxValid)
+        double xMin, double xMax)
     {
         if (input.BayesianCi.Count == 0) return "";
 
@@ -583,7 +620,8 @@ public static partial class SitePages
             FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
             FormatY = v => v.ToString("0.00", Ci),
             TodayLineX = input.GeneratedAtUtc.ToOADate(),
-            XMin = ForecastChartXMin(input),
+            XMin = xMin,
+            XMax = xMax,
         }));
         return s.ToString();
     }
