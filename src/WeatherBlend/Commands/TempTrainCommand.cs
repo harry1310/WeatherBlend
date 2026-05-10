@@ -208,6 +208,12 @@ public sealed class TempTrainCommand
         var perLead = new Dictionary<string, ModelArtifact.PerLeadStats>();
         var importanceByLead = new Dictionary<int, IEnumerable<(string Name, double Gain)>>();
         var specsPerLead = new Dictionary<int, BlenderSpec>();
+        // Buffer the first-lead train slice for training_summary.json
+        // (Phase 1a of AUTO_RETRAIN_PLAN.md). Single-lead avoids mixing
+        // lead-axis variability into the per-feature distribution bands
+        // the retrain guard reads. Row counts ARE aggregated across leads.
+        List<float[]>? firstLeadTrainFeatures = null;
+        int totalTrainRows = 0, totalValRows = 0, totalTestRows = 0;
 
         foreach (var lead in leads)
         {
@@ -242,6 +248,13 @@ public sealed class TempTrainCommand
                 ds.Train.Count, ds.TrainStart, ds.TrainEnd,
                 ds.Val.Count,   ds.ValStart,   ds.ValEnd,
                 ds.Test.Count,  ds.TestStart,  ds.TestEnd);
+            // Accumulate row counts across all leads (aggregate signal); buffer
+            // the FIRST lead's train features for per-feature stats so the
+            // distribution bands aren't blurred by per-lead variability.
+            totalTrainRows += ds.Train.Count;
+            totalValRows   += ds.Val.Count;
+            totalTestRows  += ds.Test.Count;
+            firstLeadTrainFeatures ??= ds.Train.Select(r => r.Features).ToList();
 
             var trained = TempTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
 
@@ -311,6 +324,27 @@ public sealed class TempTrainCommand
             },
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
+        // training_summary.json sidecar (Phase 1a of AUTO_RETRAIN_PLAN.md).
+        // Holds row counts + per-feature distributional stats + label rates,
+        // read at the next retrain by the upcoming RetrainGuard to abort if
+        // the data drifted outside its tolerance bands. Single summary per
+        // version, computed off the first lead's train slice for per-feature
+        // stats with row counts aggregated across all leads in this run.
+        if (firstLeadTrainFeatures is { Count: > 0 } && specsPerLead.Count > 0)
+        {
+            var firstSpec = specsPerLead[leads[0]];
+            var summary = TrainingSummaryBuilder.Build(
+                composite: "temperature",
+                phase: "2b",
+                version: versionName,
+                computedAtUtc: now,
+                rowsTrain: totalTrainRows,
+                rowsVal: totalValRows,
+                rowsTest: totalTestRows,
+                trainFeatures: firstLeadTrainFeatures,
+                featureNames: firstSpec.FeatureNames.ToList());
+            ModelArtifact.SaveTrainingSummary(versionDir, summary);
+        }
         // Promote 2b: replaces any prior 2b entry in Active and sets Current.
         // Any active 2c challenger survives untouched.
         ModelArtifact.PromoteVersionAsChampion(modelsRoot, "temperature", versionName, newPhase: "2b");

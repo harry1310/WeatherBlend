@@ -22,6 +22,7 @@ public static class ModelArtifact
     public const string ManifestFileName = "MANIFEST.json";
     public const string FeatureSchemaFileName = "feature_schema.json";
     public const string TrainingMetadataFileName = "training_metadata.json";
+    public const string TrainingSummaryFileName = "training_summary.json";
     public const string FeatureImportanceFileName = "feature_importance.json";
     public const string ClimatologyFileName = "climatology.json";
 
@@ -454,6 +455,25 @@ public static class ModelArtifact
     public static TrainingMetadata LoadTrainingMetadata(string versionDir)
         => ReadJson<TrainingMetadata>(Path.Combine(versionDir, TrainingMetadataFileName))
            ?? throw new InvalidOperationException($"Missing training metadata in {versionDir}");
+
+    /// <summary>Persist a <see cref="WeatherBlend.Train.Common.TrainingSummary"/>
+    /// alongside training_metadata.json. Called by the trainers right after
+    /// SaveTrainingMetadata so the two files land atomically (best-effort —
+    /// no transactional write across the two paths). Read by the upcoming
+    /// retrain guard (Phase 1b of AUTO_RETRAIN_PLAN.md).</summary>
+    public static void SaveTrainingSummary(string versionDir, WeatherBlend.Train.Common.TrainingSummary summary)
+        => WriteJson(Path.Combine(versionDir, TrainingSummaryFileName), summary);
+
+    /// <summary>Load a TrainingSummary if present. Returns null when the
+    /// version dir has none (legacy artefacts written before Phase 1a, or
+    /// trainers that haven't been wired yet). Caller should treat null as
+    /// "first-ever summary; no prior baseline to compare against".</summary>
+    public static WeatherBlend.Train.Common.TrainingSummary? TryLoadTrainingSummary(string versionDir)
+    {
+        var path = Path.Combine(versionDir, TrainingSummaryFileName);
+        if (!File.Exists(path)) return null;
+        return ReadJson<WeatherBlend.Train.Common.TrainingSummary>(path);
+    }
 
     /// <summary>
     /// Write/update MANIFEST.json under data/models/{target}/. Atomic:
