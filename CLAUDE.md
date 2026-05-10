@@ -83,6 +83,53 @@ also reasonable).
 - **Verification rules pre-committed:** time-based splits only; walk-forward
   validation; report per lead time; Brier + reliability for precip alongside MAE.
 
+## Auto-retrain (Sunday weekly sweep)
+
+`Config/phases.yaml` is the canonical active-phase registry; `PhaseRegistry`
+loads it at startup and `ActivePhasePolicy` is a thin static façade for
+back-compat. The site, train workflows, and predict/verify all read from
+the same list — adding a new phase (e.g. 5b) is mostly one entry there.
+
+**Cadence.** Sunday 12:00 UTC noon-tick on the Cloudflare worker fires
+`previous-runs-refresh.yml` with `train_after_refresh=true`. On its
+success it mints a GitHub App installation token (App is installed on
+both repos) and `repository_dispatch`es retrain-python in
+WeatherProbabilistic + retrain-blenders self-dispatch in WeatherBlend.
+They run in parallel (different runners, disjoint R2 prefixes). Manual
+override: `gh workflow run retrain-python.yml -f phases=4a` or similar
+on either workflow with `force=true` (default).
+
+**Pre-train sanity gate (RetrainGuard).** Each trainer (TempTrainCommand,
+DryWindowTrainCommand, ElementTrainerHarness on the .NET side; train_4a.py
++ run_phase5_bayesian.py on the Python side) computes a
+`training_summary.json` post-fit and compares against the previous run's
+on disk. Defaults: rows ±30%, NaN% absolute 0.20, label-rate 0.10,
+features-effective 0 (any change aborts). Fail = log structured breach,
+exit 4, skip the manifest promotion. Orphan version dirs sit on disk
+but never become live (predict + verify never see them).
+
+**Drift alerting.** `verify.yml` exits 4 on any `DriftFlag=true` row in
+the freshly-emitted history; the existing GH App webhook auto-files
+`[ci-fail] verify` issues. Cooldown = App's built-in run-failure-signature
+de-dupe.
+
+**On-call playbook.**
+- `[ci-fail] retrain-python` or `[ci-fail] retrain-blenders` issue: open
+  the failed run's logs, find the "Retrain guard FAIL" line. Triage
+  options: real upstream issue (collector failed → fix and re-run),
+  legitimate distribution shift (raise the tolerance band for that cell
+  via `data/models/retrain_tolerances.json` overrides — once that's
+  shipped), or schema change (update phases.yaml + the trainer's
+  feature builder).
+- `[ci-fail] verify` issue: open `data/reports/verify_*.md` from the
+  workflow artifact, identify the (target, station, lead) cells that
+  drifted. If only one cell, likely a data-side issue (truth source,
+  upstream model). If many cells across one target, suspect a real
+  regime shift — wait for next Sunday retrain to absorb.
+- A **partial retrain** (some phases pass, others fail) still pushes
+  the passing bundles to R2. The previous version stays Current for the
+  failing phases; verify the next day will scope-down the issue.
+
 ## Known limitations
 
 - Lowland METAR (EGTE / EGDY) as verification truth for a 393m tor — systematic

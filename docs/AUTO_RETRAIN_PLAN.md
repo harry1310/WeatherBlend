@@ -244,6 +244,26 @@ Total wall: ~6 days of focused work, splittable across sessions.
 - Each Models card header shows a "Δ vs previous train" badge (green/red, with tooltip) once the second weekly retrain has landed.
 - `CLAUDE.md` documents the cadence + on-call playbook.
 
+## Status: implemented 2026-05-10
+
+All five phases shipped this thread. Living docs:
+- **What's deployed + on-call playbook**: see CLAUDE.md "Auto-retrain" section.
+- **Phase config**: `src/WeatherBlend/Config/phases.yaml` is the canonical list.
+- **Guard helper (.NET)**: `src/WeatherBlend/Train/Common/RetrainGuard.cs`
+- **Guard helper (Python)**: `WeatherProbabilistic/src/retrain_guard.py`
+- **Workflows**: `retrain-blenders.yml`, `WeatherProbabilistic/.github/workflows/retrain-python.yml`,
+  Sunday-trigger chain in `previous-runs-refresh.yml`, drift alerting in `verify.yml`.
+
+Known follow-ups (not blockers):
+- Per-(target, phase) tolerance overrides via `data/models/retrain_tolerances.json` —
+  if any cell fires a guard band that turns out to be a legitimate shift, raise its band there
+  rather than the global default.
+- Element retrain steps in `retrain-blenders.yml` are hardcoded (not from phases.yaml) because
+  element targets don't fit the per-PHASE schema. If a per-element challenger ever ships,
+  fold that into phases.yaml.
+- Per-cell `[ci-fail] verify` cooldown via state JSON in R2 if the GH App's run-signature
+  de-dupe turns out to be too noisy on Mon+Thu cadence.
+
 ## Files to read first when picking this up
 
 - `src/WeatherBlend/Train/Common/ModelArtifact.cs` — versioning + manifest patterns this work plugs into.
