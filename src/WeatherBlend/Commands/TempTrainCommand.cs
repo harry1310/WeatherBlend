@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Parquet.Serialization;
 using WeatherBlend.Config;
 using WeatherBlend.Evaluate.Temp;
 using WeatherBlend.Evaluate.Precip;
@@ -796,6 +797,11 @@ public sealed class TempTrainCommand
         List<float[]>? firstLeadTrainFeatures = null;
         IReadOnlyList<bool>? firstLeadTrainLabels = null;
         int totalTrainRows = 0, totalValRows = 0, totalTestRows = 0;
+        // Per-row held-out test predictions for downstream bake-offs (e.g.
+        // 3a + 4a linear pool). Schema mirrors 5a's test_predictions.parquet
+        // so a single bake-off script can inner-join across phases. Buffered
+        // across the lead loop, written after.
+        var testPredictionRows = new List<TestPredictionRow>();
 
         foreach (var lead in leads)
         {
@@ -849,6 +855,20 @@ public sealed class TempTrainCommand
             var truthTest = ds.Test.Select(r => r.Label ? 1.0 : 0.0).ToArray();
             var blendProb = PrecipOccurrenceTrainer.PredictVectorProbability(trained.Ml, trained.Model, spec, ds.Test);
             var blendBrier = PrecipMetrics.Brier(blendProb, truthTest);
+
+            // Buffer per-row test predictions for the bake-off parquet.
+            // ds.Test is in row-order; blendProb is index-aligned.
+            for (int i = 0; i < ds.Test.Count; i++)
+            {
+                testPredictionRows.Add(new TestPredictionRow
+                {
+                    valid_time   = ds.Test[i].ValidTimeUtc,
+                    station      = stationSlug,
+                    lead         = lead,
+                    p_wet        = blendProb[i],
+                    observed_wet = (byte)(ds.Test[i].Label ? 1 : 0),
+                });
+            }
 
             var best = PrecipBaselines.BestSingle(spec, ds.Val);
             var bestValBrier = PrecipMetrics.Brier(
@@ -921,6 +941,17 @@ public sealed class TempTrainCommand
             },
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
+        // test_predictions.parquet — per-row held-out probabilities for
+        // downstream bake-offs (e.g. 3a + 4a linear pool). Same schema as
+        // 5a's test_predictions.parquet (valid_time, station, lead, p_wet,
+        // observed_wet) so a single bake-off script can inner-join across
+        // phases without per-phase schema branches.
+        if (testPredictionRows.Count > 0)
+        {
+            await ParquetSerializer.SerializeAsync(
+                testPredictionRows, Path.Combine(versionDir, "test_predictions.parquet"),
+                cancellationToken: ct);
+        }
         // training_summary with per-station label rate (binary classifier).
         var labelRates3a = firstLeadTrainLabels is { Count: > 0 }
             ? new Dictionary<string, double>
