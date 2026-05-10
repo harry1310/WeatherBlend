@@ -862,8 +862,20 @@ public static partial class SitePages
 
         table td.num, table th.num { text-align: right; font-variant-numeric: tabular-nums; }
         table td.num.strong { font-weight: 700; color: var(--brand); }
-        table td.num.delta-good { color: #2e7d32; }
-        table td.num.delta-bad  { color: #c62828; }
+        /* Drift colouring works on either a table cell or a bare span;
+           the verify-history row stacks blend + best-NWP metrics in one
+           cell with a span on each, and the prior td-only selector
+           dropped the highlight from those spans. Generic class applies
+           anywhere the marker class is used. */
+        .delta-good { color: #2e7d32; }
+        .delta-bad  { color: #c62828; }
+        /* Δ vs previous train badge in blender-card header. Same colour
+           semantics as the table-cell delta classes (green = improved,
+           red = regressed) but rendered as a pill alongside the version
+           tag rather than inside a table cell. */
+        .delta-badge { display: inline-block; font-size: 0.72rem; font-weight: 600; padding: 0.1rem 0.45rem; border-radius: 999px; margin-left: 0.4rem; vertical-align: middle; }
+        .delta-badge.delta-good { background: rgba(46,125,50,0.12); color: #2e7d32; }
+        .delta-badge.delta-bad  { background: rgba(198,40,40,0.12); color: #c62828; }
         table small { color: var(--pico-muted-color); }
         article.blender-card { padding: 1rem 1.25rem; margin: 0.75rem 0 1.25rem; }
         article.blender-card > header { margin-bottom: 0.5rem; }
@@ -995,7 +1007,7 @@ public static partial class SitePages
               }
             }
 
-            new Chart(canvas, {
+            const chart = new Chart(canvas, {
               type: 'line',
               data: { datasets },
               options: {
@@ -1009,6 +1021,22 @@ public static partial class SitePages
                   annotation: { annotations: annoCfg },
                   title: { display: !!cfg.title, text: cfg.title || '', font: { size: 14, weight: '600' }, padding: { top: 4, bottom: 8 } },
                   legend: { position: 'top', align: 'end', labels: { boxWidth: 12, boxHeight: 12, usePointStyle: false, font: { size: 11 } } },
+                  // X-axis zoom + pan via chartjs-plugin-zoom. Wheel zoom
+                  // and drag-pan; pinch zoom on touch. Y axis stays
+                  // auto-scaled — zooming the time axis is what's useful
+                  // here. Double-click resets to the chart's initial
+                  // (xMin..xMax) window.
+                  zoom: {
+                    pan:  { enabled: true,  mode: 'x', modifierKey: null },
+                    zoom: {
+                      wheel: { enabled: true },
+                      pinch: { enabled: true },
+                      mode: 'x',
+                    },
+                    limits: cfg.xMin != null && cfg.xMax != null
+                      ? { x: { min: oaToMs(cfg.xMin), max: oaToMs(cfg.xMax) } }
+                      : undefined,
+                  },
                   tooltip: {
                     backgroundColor: 'rgba(20,20,30,0.92)',
                     titleColor: '#fff', bodyColor: '#fff',
@@ -1048,6 +1076,12 @@ public static partial class SitePages
                 },
               },
             });
+
+            // Double-click → reset zoom to the server-supplied (xMin, xMax)
+            // window. Without this the only way back from a zoomed-in view
+            // was page reload. Touch users get pinch-out which the plugin
+            // already handles natively.
+            canvas.addEventListener('dblclick', () => chart.resetZoom());
           }
 
           function init() {
@@ -1074,6 +1108,8 @@ public static partial class SitePages
               <link rel="stylesheet" href="styles.css">
               <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
               <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.1.0/dist/chartjs-plugin-annotation.min.js"></script>
+              <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
+              <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0/dist/chartjs-plugin-zoom.min.js"></script>
               <script src="chart.js" defer></script>
             </head>
             <body>

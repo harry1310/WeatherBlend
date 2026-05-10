@@ -69,6 +69,13 @@ public static class PrecipPhases
         ChampionVsChallengerLabel: "Phase 4a (BART)",
         Color: "#ffa726");
 
+    /// <summary>Light shade of Phase 4a's amber for the q05/q95 credible
+    /// interval bracket lines on the BART panel. Mirrors the
+    /// median-vs-band shade split used for 5a (BayesianMedian/BayesianBand)
+    /// — same hue family as the median, saturation difference reads as
+    /// "edges of the same uncertainty band". Material amber-200.</summary>
+    public const string Phase4aBand = "#ffcc80";
+
     /// <summary>
     /// Look up a phase colour by key string. Used by render paths that
     /// receive a phase string directly (e.g. rolling Brier rows from the

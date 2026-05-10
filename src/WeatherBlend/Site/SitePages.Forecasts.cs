@@ -568,19 +568,35 @@ public static partial class SitePages
             .ToList();
         if (rows.Count == 0) return "";
 
+        // Visual consistency with 5a: CI brackets render in
+        // PrecipPhases.Phase4aBand (lighter amber), main line in
+        // PrecipPhases.Phase4a.Color (full amber). Series order
+        // q95 → main → q05 mirrors 5a so the chart tooltip reads
+        // top-to-bottom 95% / centre / 5%. NB the "centre line" here is
+        // ProbWet (posterior MEAN), not Q50 (median) — 4a's parquet
+        // exposes both but the panel has always plotted the mean as the
+        // headline. 5a plots Q50 by convention; we don't unify the
+        // headline source because they're meaningfully different
+        // summaries and the existing labels reflect that.
         var color = PrecipPhases.Phase4a.Color;
-        var medianPts = rows.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet)).ToList();
-        var series = new List<LineSeries> { new("P(wet) (4a)", color, medianPts) };
-        if (rows.Any(r => r.ProbWetQ05.HasValue && r.ProbWetQ95.HasValue))
+        var bandColor = PrecipPhases.Phase4aBand;
+        var meanPts = rows.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet)).ToList();
+        var series = new List<LineSeries>();
+        var hasBand = rows.Any(r => r.ProbWetQ05.HasValue && r.ProbWetQ95.HasValue);
+        if (hasBand)
+        {
+            var q95Pts = rows.Where(r => r.ProbWetQ95.HasValue)
+                             .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWetQ95!.Value))
+                             .ToList();
+            series.Add(new LineSeries("q95 (upper)", bandColor, q95Pts, Dashed: true));
+        }
+        series.Add(new LineSeries("P(wet) (4a)", color, meanPts));
+        if (hasBand)
         {
             var q05Pts = rows.Where(r => r.ProbWetQ05.HasValue)
                              .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWetQ05!.Value))
                              .ToList();
-            var q95Pts = rows.Where(r => r.ProbWetQ95.HasValue)
-                             .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWetQ95!.Value))
-                             .ToList();
-            series.Add(new LineSeries("q95 (upper)", color, q95Pts, Dashed: true));
-            series.Add(new LineSeries("q05 (lower)", color, q05Pts, Dashed: true));
+            series.Add(new LineSeries("q05 (lower)", bandColor, q05Pts, Dashed: true));
         }
 
         var s = new StringBuilder();
