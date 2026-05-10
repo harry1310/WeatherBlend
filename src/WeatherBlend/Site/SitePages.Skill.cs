@@ -773,7 +773,18 @@ public static partial class SitePages
                     .Select(g => g.OrderByDescending(d => d.PredictedAtUtc).First())
                     .ToList();
 
-                var dates = latest.Select(d => d.TargetDateUtc).Distinct().OrderBy(d => d).ToList();
+                // Drop rows for today and future target-dates: the Observed
+                // column is computed from completed-day rainfall truth, so
+                // today's row would always show "—" until the day finishes
+                // and EA gauges land (~3-5d ingest latency). User-set
+                // 2026-05-10 — the dangling "—" rows added noise without
+                // information; predictions for today/future are visible on
+                // the dry-window forecasts page where they belong.
+                var todayUtc = input.GeneratedAtUtc.Date;
+                var dates = latest.Select(d => d.TargetDateUtc).Distinct()
+                    .Where(d => d < todayUtc)
+                    .OrderBy(d => d).ToList();
+                if (dates.Count == 0) continue;
 
                 var tbody = new StringBuilder();
                 foreach (var date in dates)
