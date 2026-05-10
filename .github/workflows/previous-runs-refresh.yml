@@ -46,6 +46,17 @@ on:
         description: "Optional single model id to refresh (default: all configured models)."
         required: false
         default: ""
+      train_after_refresh:
+        # Set to true by the Cloudflare scheduler-worker on the Sunday
+        # noon tick; false on Mon–Sat. Phase 2b of AUTO_RETRAIN_PLAN.md
+        # — the worker holds the cadence rule (which day is it?), this
+        # workflow holds the action (chain retrains on success). Manual
+        # dispatches default to false so a one-off refresh doesn't
+        # accidentally fire a 3-hour retrain.
+        description: "Chain retrain workflows on successful completion (set true by the Sunday cron, false otherwise)."
+        required: false
+        default: "false"
+        type: string
 
 concurrency:
   # Share the data-write lock with collect/backfill/era5-refresh so no
@@ -134,6 +145,41 @@ jobs:
         run: |
           rclone copy ./data/forecasts "r2:${R2_BUCKET}/data/forecasts" \
             --fast-list --transfers 16 --checkers 32 --progress
+
+      # ---- Sunday retrain chain (Phase 2b of AUTO_RETRAIN_PLAN.md) ------
+      # The Cloudflare scheduler-worker passes inputs.train_after_refresh =
+      # "true" only on the Sunday noon tick. When set, mint a GitHub App
+      # installation token (same App as Cloudflare uses for cron-dispatch)
+      # and fire repository_dispatch at WeatherProbabilistic's
+      # retrain-python.yml. Future slice adds retrain-blenders.yml dispatch
+      # for the .NET side. The chain is success-gated so a failed refresh
+      # never triggers a retrain on stale data.
+
+      - name: Get GitHub App installation token (Sunday only)
+        if: success() && inputs.train_after_refresh == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: harry1310
+          repositories: WeatherProbabilistic
+
+      - name: Fire repository_dispatch for retrain-python (Sunday only)
+        if: success() && inputs.train_after_refresh == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          # event_type matches retrain-python.yml's
+          # `on: repository_dispatch: types: [retrain]` listener.
+          # client_payload.phases lets a future enhancement send a phase
+          # subset (e.g., just 5a) from the worker — for now Sunday
+          # always fires the full sweep.
+          gh api repos/harry1310/WeatherProbabilistic/dispatches \
+            -f event_type=retrain \
+            -F "client_payload[phases]=all" \
+            -F "client_payload[trigger]=sunday-cron"
+          echo "::notice::Dispatched retrain-python in WeatherProbabilistic (phases=all)"
 
       - name: Upload logs as artifact
         if: always()
