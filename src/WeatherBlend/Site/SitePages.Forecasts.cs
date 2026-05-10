@@ -441,8 +441,21 @@ public static partial class SitePages
                 XMax = pageXMax,
             }));
 
-            s.Append(RenderPrecipDailySummaryTable(latestPerValid));
-            s.Append(RenderPrecipHourlyConfidenceTable(latestPerValid, station, input.PrecipConformalTau));
+            // Clip the daily-summary + hourly-confidence tables to the
+            // same time window as the chart on the tab. Without this they
+            // listed every row in latestPerValid (which extends back to
+            // windowStart ~30d for historical context) — flooding the
+            // tables with weeks of past rows the chart doesn't show.
+            // Convert page xMin/xMax (OADate) back to DateTime once, then
+            // reuse for both tables.
+            var visibleStart = DateTime.FromOADate(pageXMin);
+            var visibleEnd = DateTime.FromOADate(pageXMax);
+            var visiblePerValid = latestPerValid
+                .Where(r => r.ValidTimeUtc >= visibleStart && r.ValidTimeUtc <= visibleEnd)
+                .ToList();
+
+            s.Append(RenderPrecipDailySummaryTable(visiblePerValid));
+            s.Append(RenderPrecipHourlyConfidenceTable(visiblePerValid, station, input.PrecipConformalTau));
             s.Append(RenderPhase4aPanel(input, station, lead, pageXMin, pageXMax));
             s.Append(RenderBayesianCiPanel(input, station, lead, pageXMin, pageXMax));
         }
