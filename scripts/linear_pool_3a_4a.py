@@ -92,6 +92,47 @@ def _optimal_w(a, b, y):
     return float(np.clip(w, 0.0, 1.0))
 
 
+# ----- log-linear (logit) pool -----------------------------------------
+#
+# logit(P_blend) = w · logit(P_3a) + (1 - w) · logit(P_4a)
+#
+# No closed form for the Brier-optimal w (the loss is non-quadratic in w),
+# so 1D bounded Brent search on [0, 1]. Same chronological 70/30 split as
+# the linear pool — fit on the older 70%, score on the newer 30%.
+
+_EPS = 1e-6
+
+
+def _logit(p):
+    p = np.clip(p, _EPS, 1 - _EPS)
+    return np.log(p / (1 - p))
+
+
+def _sigmoid(z):
+    return 1.0 / (1.0 + np.exp(-z))
+
+
+def _logit_blend(a, b, w):
+    return _sigmoid(w * _logit(a) + (1 - w) * _logit(b))
+
+
+def _optimal_w_logit(a, b, y):
+    """Brent search for the Brier-minimising w in the logit pool. Bounded
+    to [0, 1] — same convex-combination semantics as the linear pool."""
+    from scipy.optimize import minimize_scalar
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    al = _logit(a)
+    bl = _logit(b)
+    def loss(w):
+        p = _sigmoid(w * al + (1 - w) * bl)
+        return float(np.mean((p - y) ** 2))
+    res = minimize_scalar(loss, bounds=(0.0, 1.0), method="bounded",
+                          options={"xatol": 1e-4})
+    return float(res.x)
+
+
 def main() -> None:
     if not MODELS_PRECIP.is_dir():
         print(f"No models tree at {MODELS_PRECIP}. Pull from R2 first.")
@@ -168,6 +209,9 @@ def main() -> None:
         w_star = _optimal_w(a_fit, b_fit, y_fit)
         p_blend = w_star * a_test + (1 - w_star) * b_test
         p_5050  = 0.5 * a_test + 0.5 * b_test
+        # Logit-pool: separate w fit on logit-of-prob loss surface.
+        w_logit = _optimal_w_logit(a_fit, b_fit, y_fit)
+        p_logit = _logit_blend(a_test, b_test, w_logit)
 
         results.append({
             "station": station, "lead": lead,
@@ -176,51 +220,61 @@ def main() -> None:
             "test_dates": f"{records[split_idx][0].date()} → {records[-1][0].date()}",
             "wet_rate_test": float(y_test.mean()),
             "w_star":     w_star,
+            "w_logit":    w_logit,
             "brier_3a":   _brier(a_test, y_test),
             "brier_4a":   _brier(b_test, y_test),
             "brier_5050": _brier(p_5050, y_test),
             "brier_blend":_brier(p_blend, y_test),
+            "brier_logit":_brier(p_logit, y_test),
         })
 
-    # Per-cell table.
-    print(f"{'station':<28} {'lead':>4} {'n_test':>7} {'wet%':>5} {'w*':>5} "
-          f"{'B(3a)':>7} {'B(4a)':>7} {'B(5050)':>8} {'B(blend)':>9} {'Δ vs 4a':>9}")
-    print("-" * 105)
+    # Per-cell table — adds B(logit) + w_logit alongside the linear-pool
+    # columns so logit vs linear is easy to read off at a glance.
+    print(f"{'station':<28} {'lead':>4} {'n_test':>7} {'wet%':>5} "
+          f"{'w*':>5} {'wL':>5} "
+          f"{'B(3a)':>7} {'B(4a)':>7} {'B(5050)':>8} {'B(lin)':>7} {'B(log)':>7} "
+          f"{'Δlin/4a':>8} {'Δlog/4a':>8}")
+    print("-" * 125)
     for r in results:
-        delta_pct = (100.0 * (r["brier_blend"] - r["brier_4a"]) / r["brier_4a"]) if r["brier_4a"] > 0 else 0.0
+        d_lin = (100.0 * (r["brier_blend"] - r["brier_4a"]) / r["brier_4a"]) if r["brier_4a"] > 0 else 0.0
+        d_log = (100.0 * (r["brier_logit"] - r["brier_4a"]) / r["brier_4a"]) if r["brier_4a"] > 0 else 0.0
         print(
             f"{r['station']:<28} {r['lead']:>4} {r['n_test']:>7,} "
-            f"{100*r['wet_rate_test']:>4.1f}% {r['w_star']:>5.2f} "
+            f"{100*r['wet_rate_test']:>4.1f}% "
+            f"{r['w_star']:>5.2f} {r['w_logit']:>5.2f} "
             f"{r['brier_3a']:>7.4f} {r['brier_4a']:>7.4f} "
-            f"{r['brier_5050']:>8.4f} {r['brier_blend']:>9.4f} "
-            f"{delta_pct:>+8.1f}%"
+            f"{r['brier_5050']:>8.4f} {r['brier_blend']:>7.4f} {r['brier_logit']:>7.4f} "
+            f"{d_lin:>+7.1f}% {d_log:>+7.1f}%"
         )
 
-    # n-weighted aggregate.
+    # n-weighted aggregate including logit pool.
     total_n = sum(r["n_test"] for r in results)
     if total_n > 0:
         agg = {k: sum(r[k] * r["n_test"] for r in results) / total_n
-               for k in ("brier_3a", "brier_4a", "brier_5050", "brier_blend")}
-        agg_w = sum(r["w_star"] * r["n_test"] for r in results) / total_n
-        print("-" * 105)
+               for k in ("brier_3a", "brier_4a", "brier_5050", "brier_blend", "brier_logit")}
+        agg_w     = sum(r["w_star"]  * r["n_test"] for r in results) / total_n
+        agg_wlog  = sum(r["w_logit"] * r["n_test"] for r in results) / total_n
+        print("-" * 125)
         print(
-            f"{'AGGREGATE (n-weighted)':<28} {'':>4} {total_n:>7,} {'':>5} {agg_w:>5.2f} "
+            f"{'AGGREGATE (n-weighted)':<28} {'':>4} {total_n:>7,} {'':>5} "
+            f"{agg_w:>5.2f} {agg_wlog:>5.2f} "
             f"{agg['brier_3a']:>7.4f} {agg['brier_4a']:>7.4f} "
-            f"{agg['brier_5050']:>8.4f} {agg['brier_blend']:>9.4f} "
-            f"{100*(agg['brier_blend']-agg['brier_4a'])/agg['brier_4a']:>+8.1f}%"
+            f"{agg['brier_5050']:>8.4f} {agg['brier_blend']:>7.4f} {agg['brier_logit']:>7.4f} "
+            f"{100*(agg['brier_blend']-agg['brier_4a'])/agg['brier_4a']:>+7.1f}% "
+            f"{100*(agg['brier_logit']-agg['brier_4a'])/agg['brier_4a']:>+7.1f}%"
         )
-        print(f"\n  Naive 50/50 vs 4a: "
-              f"{100*(agg['brier_5050']-agg['brier_4a'])/agg['brier_4a']:+.1f}% Brier")
-        print(f"  Fitted w   vs 4a: "
-              f"{100*(agg['brier_blend']-agg['brier_4a'])/agg['brier_4a']:+.1f}% Brier")
-        print(f"  Fitted w   vs 3a: "
-              f"{100*(agg['brier_blend']-agg['brier_3a'])/agg['brier_3a']:+.1f}% Brier")
+        print(f"\n  Naive 50/50  vs 4a: {100*(agg['brier_5050']-agg['brier_4a'])/agg['brier_4a']:+.1f}% Brier")
+        print(f"  Linear pool  vs 4a: {100*(agg['brier_blend']-agg['brier_4a'])/agg['brier_4a']:+.1f}% Brier")
+        print(f"  Logit pool   vs 4a: {100*(agg['brier_logit']-agg['brier_4a'])/agg['brier_4a']:+.1f}% Brier")
+        print(f"  Linear pool  vs 3a: {100*(agg['brier_blend']-agg['brier_3a'])/agg['brier_3a']:+.1f}% Brier")
+        print(f"  Logit pool   vs 3a: {100*(agg['brier_logit']-agg['brier_3a'])/agg['brier_3a']:+.1f}% Brier")
 
-    # CSV out.
+    # CSV out (now includes logit columns).
     csv_path = REPORT_DIR / "results.csv"
     with csv_path.open("w", encoding="utf-8") as f:
         cols = ["station", "lead", "n_total", "n_fit", "n_test", "fit_dates", "test_dates",
-                "wet_rate_test", "w_star", "brier_3a", "brier_4a", "brier_5050", "brier_blend"]
+                "wet_rate_test", "w_star", "w_logit",
+                "brier_3a", "brier_4a", "brier_5050", "brier_blend", "brier_logit"]
         f.write(",".join(cols) + "\n")
         for r in results:
             f.write(",".join(str(r[c]) for c in cols) + "\n")
