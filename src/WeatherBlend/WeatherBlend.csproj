@@ -14,6 +14,9 @@
     <None Update="config.yaml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Update="Config\phases.yaml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <InternalsVisibleTo Include="WeatherBlend.Tests" />
   </ItemGroup>
 
@@ -28,6 +31,10 @@
     <!-- Config + DI + logging -->
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.0" />
     <PackageReference Include="NetEscapades.Configuration.Yaml" Version="3.1.0" />
+    <!-- Direct YamlDotNet reference for PhaseRegistry's typed deserialiser.
+         Already transitively present via NetEscapades; pinning here so the
+         registry loader doesn't break if the transitive ever drops. -->
+    <PackageReference Include="YamlDotNet" Version="13.0.1" />
     <PackageReference Include="Serilog.Extensions.Hosting" Version="8.0.0" />
     <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
     <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />

@@ -1,69 +1,46 @@
 namespace WeatherBlend.Models;
 
 /// <summary>
-/// Single source of truth for "which model phases is the codebase actively
-/// shipping right now?". Same allowlist used to:
+/// Static back-compat façade over <see cref="PhaseRegistry.Default"/>.
+/// Pre-2026-05-10 this class was the source of truth (a hardcoded
+/// <c>ByTarget</c> dict); the canonical list now lives in
+/// <c>config/phases.yaml</c> and <see cref="PhaseRegistry"/> loads it.
+/// All call sites in the codebase still use <c>ActivePhasePolicy.IsActive</c>
+/// / <c>.Priority</c> / <c>.ByTarget</c>, so this façade keeps them
+/// untouched while the YAML drives the contents.
 ///
+/// The same allowlist is used to:
 ///   * gate which phases get a card on the Models page (and in what order),
 ///   * filter the rolling-MAE / rolling-Brier skill charts so a retired
 ///     phase like <c>3a_isotonic</c> doesn't keep appearing as a stale line,
 ///   * judge whether a verify-history row matches the card it's rendering
 ///     under (the card's phase must be in the active list).
 ///
-/// Phases NOT in this list (e.g. <c>"2b_redo"</c>, <c>"3a_isotonic"</c>,
+/// Phases NOT in the YAML (e.g. <c>"2b_redo"</c>, <c>"3a_isotonic"</c>,
 /// <c>"3d_shape"</c>, <c>"3d_calibrated"</c>, <c>"3e"</c>, <c>"3f"</c>) still
 /// have parquet rows on disk because their predict trees aged into the rolling
 /// window before being retired. The renderer drops them — they're reference-only.
 ///
-/// Keys are the values that <c>training_metadata.Phase</c> stores
-/// (case-sensitive, ordinal compare). Add a phase here when shipping it;
-/// remove when retiring. Anywhere in the codebase that asks "is this phase
-/// live?" should call <see cref="IsActive"/> rather than re-encoding the rule.
+/// Confidence-role phases (5a) are also excluded from this façade — they
+/// render as a credible-band overlay, not a prediction line. Train workflows
+/// reach them via <see cref="PhaseRegistry.AllPhases"/>.
 /// </summary>
 public static class ActivePhasePolicy
 {
     /// <summary>
-    /// Champion-first ordering per target. The first entry is the production
-    /// champion; subsequent entries are challengers. Renderers use this for
-    /// sort order (lean → rich) so the Models page reads top-to-bottom as
-    /// "what's promoted, then what's competing". When a target has only one
-    /// active phase, the per-phase header is suppressed (sites: dry-window).
+    /// Champion-first ID lists per target, from <c>phases.yaml</c>.
+    /// Confidence-role phases are excluded — see class summary.
     /// </summary>
-    public static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> ByTarget =
-        new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
-        {
-            // 2d ships as champion at lead 12h only (per-lead champion in
-            // TemperatureManifest.ChampionByLead); 2b stays Current for 24/48/
-            // 72/96/120 where 2d isn't trained. 2c keeps its challenger slot.
-            ["temperature"]   = new[] { "2b", "2c", "2d" },
-            // 3d ships as champion at lead 12h only (per-station ChampionByLead
-            // in StationEntry); 3a stays Current for 24/48/72/96/120 where 3d
-            // isn't trained. 3c keeps its challenger slot. 4a (dbarts BART,
-            // trained + predicted in WeatherProbabilistic, written to the
-            // same predictions tree) added 2026-05-09 as a cross-lead
-            // challenger; beats deployed 3a in all 9 (station × lead) cells
-            // tested (avg −5.7% Brier).
-            ["precipitation"] = new[] { "3a", "3c", "3d", "4a" },
-            // 3g (parameter-free MC over Phase 3a hourly P(wet) marginals)
-            // is the 3b challenger; cross-window monotonicity P(N=3) ≥ P(N=4)
-            // ≥ P(N=6) holds by construction. 3d-shape (no Brier gain), 3e
-            // (B2 cascade — 3g supersedes structurally for all windows, not
-            // just the 3h↔4h pair), and 3f (62-feature failed attempt) were
-            // all retired 2026-05-04 along with their training paths.
-            ["dry_window"]    = new[] { "3b", "3g" },
-        };
+    public static IReadOnlyDictionary<string, IReadOnlyList<string>> ByTarget
+        => PhaseRegistry.Default.ByTarget;
 
     /// <summary>
-    /// True iff the (target, phase) pair is in the shipping lineup. Empty /
-    /// null phase strings are never active — callers needing a phase string
-    /// should treat unknown phases the same way (drop, don't render).
+    /// True iff the (target, phase) pair is in the shipping lineup AS A
+    /// PREDICTION LINE — champion or challenger, not confidence-role.
+    /// Empty / null phase strings are never active.
     /// </summary>
     public static bool IsActive(string target, string? phase)
-    {
-        if (string.IsNullOrEmpty(phase)) return false;
-        return ByTarget.TryGetValue(target, out var allowed)
-               && allowed.Contains(phase, StringComparer.Ordinal);
-    }
+        => PhaseRegistry.Default.IsActive(target, phase);
 
     /// <summary>
     /// Index of <paramref name="phase"/> in <paramref name="target"/>'s
@@ -72,10 +49,5 @@ public static class ActivePhasePolicy
     /// can sort with the rest of their data without special-casing nulls.
     /// </summary>
     public static int Priority(string target, string phase)
-    {
-        if (!ByTarget.TryGetValue(target, out var ordered)) return int.MaxValue;
-        for (int i = 0; i < ordered.Count; i++)
-            if (string.Equals(ordered[i], phase, StringComparison.Ordinal)) return i;
-        return int.MaxValue;
-    }
+        => PhaseRegistry.Default.Priority(target, phase);
 }

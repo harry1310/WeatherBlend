@@ -1,0 +1,85 @@
+# WeatherBlend canonical active-phase registry.
+#
+# Single source of truth for "which model phases is the codebase actively
+# shipping right now?". Consumed by:
+#   - .NET site rendering (Models.PhaseRegistry loads at startup;
+#     ActivePhasePolicy is a thin static wrapper over it for back-compat),
+#   - WeatherProbabilistic's retrain-python.yml (fetches via R2,
+#     derives the run-list — defaults to "all impl=python phases"),
+#   - retrain-blenders.yml (slice 4) for the .NET phases.
+#
+# Adding a new phase = edit ONLY this file. Champion-first ordering per
+# target drives Models page sort order and the ActivePhasePolicy.Priority
+# scalar.
+#
+# Roles (one of):
+#   champion    — first-in-list per target; predict/site treat as Current
+#   challenger  — competing model that gets a card alongside champion
+#   confidence  — trained + predicted but renders only as a credible-band
+#                 overlay on top of another phase's prediction line
+#                 (Phase 5a fits this — Bayesian P(wet) CI overlay on 4a)
+#
+# Impls (one of):
+#   dotnet      — trained by WeatherBlend (Microsoft.ML / LightGBM)
+#   python      — trained by WeatherProbabilistic (rpy2 / pymc / blackjax)
+#
+# IsActive() / Models-page filtering EXCLUDES role=confidence so 5a doesn't
+# render as a prediction line. Train workflows include role=confidence so
+# the Sunday auto-retrain catches it.
+
+targets:
+  temperature:
+    phases:
+      # 2d ships as champion at lead 12h only (per-lead champion in
+      # TemperatureManifest.ChampionByLead); 2b stays Current for 24/48/
+      # 72/96/120 where 2d isn't trained. 2c keeps its challenger slot.
+      - id: "2b"
+        role: champion
+        impl: dotnet
+      - id: "2c"
+        role: challenger
+        impl: dotnet
+      - id: "2d"
+        role: challenger
+        impl: dotnet
+
+  precipitation:
+    phases:
+      # 3d ships as champion at lead 12h only (per-station ChampionByLead in
+      # StationEntry); 3a stays Current for 24/48/72/96/120 where 3d isn't
+      # trained. 3c keeps its challenger slot. 4a (dbarts BART, trained +
+      # predicted in WeatherProbabilistic, written to the same predictions
+      # tree) added 2026-05-09 as a cross-lead challenger; beats deployed
+      # 3a in all 9 (station × lead) cells tested (avg −5.7% Brier). 5a
+      # (Bayesian logreg) is role=confidence — overlays as a credible
+      # band on the 4a line, no separate Models card.
+      - id: "3a"
+        role: champion
+        impl: dotnet
+      - id: "3c"
+        role: challenger
+        impl: dotnet
+      - id: "3d"
+        role: challenger
+        impl: dotnet
+      - id: "4a"
+        role: challenger
+        impl: python
+      - id: "5a"
+        role: confidence
+        impl: python
+
+  dry_window:
+    phases:
+      # 3g (parameter-free MC over Phase 3a hourly P(wet) marginals) is the
+      # 3b challenger; cross-window monotonicity P(N=3) ≥ P(N=4) ≥ P(N=6)
+      # holds by construction. 3d-shape (no Brier gain), 3e (B2 cascade —
+      # 3g supersedes structurally for all windows, not just the 3h↔4h
+      # pair), and 3f (62-feature failed attempt) were retired 2026-05-04
+      # along with their training paths.
+      - id: "3b"
+        role: champion
+        impl: dotnet
+      - id: "3g"
+        role: challenger
+        impl: dotnet
