@@ -127,6 +127,11 @@ public sealed class DryWindowTrainCommand
                 var specsPerLead = new Dictionary<int, BlenderSpec>();
                 DryWindowClimatology? climatology = null;
                 bool anyLeadTrained = false;
+                // training_summary buffers (Phase 1a). Per-(station, window)
+                // since each combo writes its own versionDir + metadata.
+                List<float[]>? firstLeadTrainFeatures = null;
+                IReadOnlyList<bool>? firstLeadTrainLabels = null;
+                int totalTrainRows = 0, totalValRows = 0, totalTestRows = 0;
 
                 foreach (var lead in leads)
                 {
@@ -174,6 +179,11 @@ public sealed class DryWindowTrainCommand
                     _log.LogInformation("Date ranges — train {T0:yyyy-MM-dd}..{T1:yyyy-MM-dd}, " +
                                         "val {V0:yyyy-MM-dd}..{V1:yyyy-MM-dd}, test {E0:yyyy-MM-dd}..{E1:yyyy-MM-dd}",
                         ds.TrainStart, ds.TrainEnd, ds.ValStart, ds.ValEnd, ds.TestStart, ds.TestEnd);
+                    totalTrainRows += ds.Train.Count;
+                    totalValRows   += ds.Val.Count;
+                    totalTestRows  += ds.Test.Count;
+                    firstLeadTrainFeatures ??= ds.Train.Select(r => r.Features).ToList();
+                    firstLeadTrainLabels   ??= ds.Train.Select(r => r.Label).ToList();
 
                     var trained = DryWindowTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
                     var calibrationEnabled = _cfg.DryWindow.ShouldCalibrate(stationName);
@@ -281,6 +291,24 @@ public sealed class DryWindowTrainCommand
                     },
                 };
                 ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
+                var stationSlug3b = StationSlug.WithEaPrefix(stationName);
+                var labelRates3b = firstLeadTrainLabels is { Count: > 0 }
+                    ? new Dictionary<string, double>
+                      {
+                          [stationSlug3b] = firstLeadTrainLabels.Count(l => l) / (double)firstLeadTrainLabels.Count,
+                      }
+                    : null;
+                var firstLead3b = leads.Length > 0 ? leads[0] : 0;
+                TrainingSummaryBuilder.BuildAndSave(
+                    versionDir,
+                    composite: $"dry_window/{stationSlug3b}/window_{window}h",
+                    phase: phase, version: versionName,
+                    computedAtUtc: now,
+                    rowsTrain: totalTrainRows, rowsVal: totalValRows, rowsTest: totalTestRows,
+                    trainFeatures: firstLeadTrainFeatures,
+                    featureNames: specsPerLead.TryGetValue(firstLead3b, out var sp3b)
+                        ? sp3b.FeatureNames.ToList() : Array.Empty<string>(),
+                    labelRates: labelRates3b);
                 // Promote the new 3b version: replace any prior 3b entry in
                 // Active with this one and set Current = newVersion. Any
                 // OTHER active phases (3g challengers today) survive.

@@ -51,6 +51,11 @@ public static class ElementTrainerHarness
         var perLead = new Dictionary<string, ModelArtifact.PerLeadStats>();
         var importanceByLead = new Dictionary<int, IEnumerable<(string Name, double Gain)>>();
         var specsPerLead = new Dictionary<int, BlenderSpec>();
+        // training_summary buffers (Phase 1a). Element blenders are
+        // regression — no labelRates. First lead's train slice supplies
+        // per-feature stats; row counts aggregate across leads.
+        List<float[]>? firstLeadTrainFeatures = null;
+        int totalTrainRows = 0, totalValRows = 0, totalTestRows = 0;
 
         foreach (var lead in leads)
         {
@@ -83,6 +88,10 @@ public static class ElementTrainerHarness
                 ds.Train.Count, ds.TrainStart, ds.TrainEnd,
                 ds.Val.Count,   ds.ValStart,   ds.ValEnd,
                 ds.Test.Count,  ds.TestStart,  ds.TestEnd);
+            totalTrainRows += ds.Train.Count;
+            totalValRows   += ds.Val.Count;
+            totalTestRows  += ds.Test.Count;
+            firstLeadTrainFeatures ??= ds.Train.Select(r => r.Features).ToList();
 
             var trained = TempTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
 
@@ -148,6 +157,17 @@ public static class ElementTrainerHarness
             DeviationsFromBrief = inputs.DeviationsFromBrief.ToList(),
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
+        var firstLeadElement = leads.Length > 0 ? leads[0] : 0;
+        TrainingSummaryBuilder.BuildAndSave(
+            versionDir,
+            composite: inputs.Target.CliName,
+            phase: inputs.Target.PhaseTag,
+            version: versionName,
+            computedAtUtc: now,
+            rowsTrain: totalTrainRows, rowsVal: totalValRows, rowsTest: totalTestRows,
+            trainFeatures: firstLeadTrainFeatures,
+            featureNames: specsPerLead.TryGetValue(firstLeadElement, out var spEl)
+                ? spEl.FeatureNames.ToList() : Array.Empty<string>());
         // Promote: replaces any prior entry with the same Phase in Active and
         // sets Current. Element targets currently have a single phase each
         // (lean-wind / lean-humidity / lean-shortwave-radiation / lean-cloud-cover)

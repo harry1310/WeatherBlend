@@ -145,4 +145,36 @@ public static class TrainingSummaryBuilder
             LabelRates = labelRates ?? new Dictionary<string, double>(),
         };
     }
+
+    /// <summary>
+    /// One-liner the trainers call right after SaveTrainingMetadata — does
+    /// the Build + SaveTrainingSummary pair atomically. Silently no-ops
+    /// when the buffered features are empty (e.g. a partial dataset that
+    /// failed validation but still reached this point); the missing
+    /// summary on disk is treated as "first-ever train" by the upcoming
+    /// retrain guard, which is the correct degraded behaviour.
+    ///
+    /// versionDir is the same dir SaveTrainingMetadata writes into;
+    /// summary lands as training_summary.json alongside.
+    /// </summary>
+    public static void BuildAndSave(
+        string versionDir,
+        string composite, string phase, string version,
+        DateTime computedAtUtc,
+        int rowsTrain, int rowsVal, int rowsTest,
+        IReadOnlyList<float[]>? trainFeatures,
+        IReadOnlyList<string> featureNames,
+        Dictionary<string, double>? labelRates = null)
+    {
+        if (trainFeatures is null || trainFeatures.Count == 0
+            || featureNames.Count == 0)
+        {
+            return;
+        }
+        var summary = Build(
+            composite, phase, version, computedAtUtc,
+            rowsTrain, rowsVal, rowsTest,
+            trainFeatures, featureNames, labelRates);
+        WeatherBlend.Train.ModelArtifact.SaveTrainingSummary(versionDir, summary);
+    }
 }

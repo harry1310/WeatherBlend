@@ -325,26 +325,16 @@ public sealed class TempTrainCommand
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
         // training_summary.json sidecar (Phase 1a of AUTO_RETRAIN_PLAN.md).
-        // Holds row counts + per-feature distributional stats + label rates,
-        // read at the next retrain by the upcoming RetrainGuard to abort if
-        // the data drifted outside its tolerance bands. Single summary per
-        // version, computed off the first lead's train slice for per-feature
-        // stats with row counts aggregated across all leads in this run.
-        if (firstLeadTrainFeatures is { Count: > 0 } && specsPerLead.Count > 0)
-        {
-            var firstSpec = specsPerLead[leads[0]];
-            var summary = TrainingSummaryBuilder.Build(
-                composite: "temperature",
-                phase: "2b",
-                version: versionName,
-                computedAtUtc: now,
-                rowsTrain: totalTrainRows,
-                rowsVal: totalValRows,
-                rowsTest: totalTestRows,
-                trainFeatures: firstLeadTrainFeatures,
-                featureNames: firstSpec.FeatureNames.ToList());
-            ModelArtifact.SaveTrainingSummary(versionDir, summary);
-        }
+        // Per-feature stats from first lead's train slice (avoids lead-axis
+        // blur); row counts aggregated across all leads.
+        TrainingSummaryBuilder.BuildAndSave(
+            versionDir,
+            composite: "temperature", phase: "2b", version: versionName,
+            computedAtUtc: now,
+            rowsTrain: totalTrainRows, rowsVal: totalValRows, rowsTest: totalTestRows,
+            trainFeatures: firstLeadTrainFeatures,
+            featureNames: specsPerLead.TryGetValue(leads[0], out var sp0)
+                ? sp0.FeatureNames.ToList() : Array.Empty<string>());
         // Promote 2b: replaces any prior 2b entry in Active and sets Current.
         // Any active 2c challenger survives untouched.
         ModelArtifact.PromoteVersionAsChampion(modelsRoot, "temperature", versionName, newPhase: "2b");
@@ -376,6 +366,10 @@ public sealed class TempTrainCommand
         var perLead = new Dictionary<string, ModelArtifact.PerLeadStats>();
         var importanceByLead = new Dictionary<int, IEnumerable<(string Name, double Gain)>>();
         var specsPerLead = new Dictionary<int, BlenderSpec>();
+        // Buffers for training_summary.json — same pattern as 2b. See
+        // TrainingSummaryBuilder.BuildAndSave call after the loop.
+        List<float[]>? firstLeadTrainFeatures = null;
+        int totalTrainRows = 0, totalValRows = 0, totalTestRows = 0;
 
         foreach (var lead in leads)
         {
@@ -410,6 +404,10 @@ public sealed class TempTrainCommand
                 ds.Train.Count, ds.TrainStart, ds.TrainEnd,
                 ds.Val.Count,   ds.ValStart,   ds.ValEnd,
                 ds.Test.Count,  ds.TestStart,  ds.TestEnd);
+            totalTrainRows += ds.Train.Count;
+            totalValRows   += ds.Val.Count;
+            totalTestRows  += ds.Test.Count;
+            firstLeadTrainFeatures ??= ds.Train.Select(r => r.Features).ToList();
 
             var trained = TempTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
 
@@ -477,6 +475,14 @@ public sealed class TempTrainCommand
             },
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
+        TrainingSummaryBuilder.BuildAndSave(
+            versionDir,
+            composite: "temperature", phase: "2c", version: versionName,
+            computedAtUtc: now,
+            rowsTrain: totalTrainRows, rowsVal: totalValRows, rowsTest: totalTestRows,
+            trainFeatures: firstLeadTrainFeatures,
+            featureNames: specsPerLead.TryGetValue(leads[0], out var sp2c)
+                ? sp2c.FeatureNames.ToList() : Array.Empty<string>());
 
         // Promote 2c as a challenger: replaces any prior 2c entry in Active
         // (so re-training is idempotent) and leaves Current = 2b champion.
@@ -542,6 +548,11 @@ public sealed class TempTrainCommand
         var perLead = new Dictionary<string, ModelArtifact.PerLeadStats>();
         var importanceByLead = new Dictionary<int, IEnumerable<(string Name, double Gain)>>();
         var specsPerLead = new Dictionary<int, BlenderSpec>();
+        // training_summary buffers (Phase 1a). 2d uses exact-runtime cycles
+        // but the dataset shape + features are otherwise the same regression
+        // as 2b/2c — same buffer-and-aggregate pattern.
+        List<float[]>? firstLeadTrainFeatures = null;
+        int totalTrainRows = 0, totalValRows = 0, totalTestRows = 0;
 
         foreach (var lead in leads)
         {
@@ -578,6 +589,10 @@ public sealed class TempTrainCommand
                 ds.Train.Count, ds.TrainStart, ds.TrainEnd,
                 ds.Val.Count,   ds.ValStart,   ds.ValEnd,
                 ds.Test.Count,  ds.TestStart,  ds.TestEnd);
+            totalTrainRows += ds.Train.Count;
+            totalValRows   += ds.Val.Count;
+            totalTestRows  += ds.Test.Count;
+            firstLeadTrainFeatures ??= ds.Train.Select(r => r.Features).ToList();
 
             var trained = TempTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
 
@@ -645,6 +660,15 @@ public sealed class TempTrainCommand
             },
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
+        var firstLead2d = leads.Length > 0 ? leads[0] : 0;
+        TrainingSummaryBuilder.BuildAndSave(
+            versionDir,
+            composite: "temperature", phase: "2d", version: versionName,
+            computedAtUtc: now,
+            rowsTrain: totalTrainRows, rowsVal: totalValRows, rowsTest: totalTestRows,
+            trainFeatures: firstLeadTrainFeatures,
+            featureNames: specsPerLead.TryGetValue(firstLead2d, out var sp2d)
+                ? sp2d.FeatureNames.ToList() : Array.Empty<string>());
 
         // Promote 2d as a challenger — 2b stays Current. ChampionByLead pins
         // 2d at lead 12 ONLY (where 2b doesn't train); 24+ falls through
@@ -749,6 +773,11 @@ public sealed class TempTrainCommand
         var importanceByLead = new Dictionary<int, IEnumerable<(string Name, double Gain)>>();
         var specsPerLead = new Dictionary<int, BlenderSpec>();
         PrecipClimatology? climatology = null;
+        // training_summary buffers (Phase 1a). Binary classification — also
+        // track first-lead train labels for the per-station label rate.
+        List<float[]>? firstLeadTrainFeatures = null;
+        IReadOnlyList<bool>? firstLeadTrainLabels = null;
+        int totalTrainRows = 0, totalValRows = 0, totalTestRows = 0;
 
         foreach (var lead in leads)
         {
@@ -791,6 +820,11 @@ public sealed class TempTrainCommand
             _log.LogInformation("Time ranges — train {T0:yyyy-MM-dd}..{T1:yyyy-MM-dd}, " +
                                 "val {V0:yyyy-MM-dd}..{V1:yyyy-MM-dd}, test {E0:yyyy-MM-dd}..{E1:yyyy-MM-dd}",
                 ds.TrainStart, ds.TrainEnd, ds.ValStart, ds.ValEnd, ds.TestStart, ds.TestEnd);
+            totalTrainRows += ds.Train.Count;
+            totalValRows   += ds.Val.Count;
+            totalTestRows  += ds.Test.Count;
+            firstLeadTrainFeatures ??= ds.Train.Select(r => r.Features).ToList();
+            firstLeadTrainLabels   ??= ds.Train.Select(r => r.Label).ToList();
 
             var trained = PrecipOccurrenceTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
 
@@ -869,6 +903,22 @@ public sealed class TempTrainCommand
             },
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
+        // training_summary with per-station label rate (binary classifier).
+        var labelRates3a = firstLeadTrainLabels is { Count: > 0 }
+            ? new Dictionary<string, double>
+              {
+                  [stationSlug] = firstLeadTrainLabels.Count(l => l) / (double)firstLeadTrainLabels.Count,
+              }
+            : null;
+        TrainingSummaryBuilder.BuildAndSave(
+            versionDir,
+            composite: $"precipitation/{stationSlug}", phase: "3a", version: versionName,
+            computedAtUtc: now,
+            rowsTrain: totalTrainRows, rowsVal: totalValRows, rowsTest: totalTestRows,
+            trainFeatures: firstLeadTrainFeatures,
+            featureNames: specsPerLead.TryGetValue(leads[0], out var sp3a)
+                ? sp3a.FeatureNames.ToList() : Array.Empty<string>(),
+            labelRates: labelRates3a);
         // Promote 3a: replaces any prior 3a entry in the per-station Active
         // and sets Current. Any active 3c challenger survives untouched.
         ModelArtifact.PromoteStationVersionAsChampion(
@@ -953,6 +1003,10 @@ public sealed class TempTrainCommand
         var importanceByLead = new Dictionary<int, IEnumerable<(string Name, double Gain)>>();
         var specsPerLead = new Dictionary<int, BlenderSpec>();
         PrecipClimatology? climatology = null;
+        // training_summary buffers (Phase 1a). Same shape as 3a.
+        List<float[]>? firstLeadTrainFeatures = null;
+        IReadOnlyList<bool>? firstLeadTrainLabels = null;
+        int totalTrainRows = 0, totalValRows = 0, totalTestRows = 0;
 
         foreach (var lead in leads)
         {
@@ -993,6 +1047,11 @@ public sealed class TempTrainCommand
             _log.LogInformation("Time ranges — train {T0:yyyy-MM-dd}..{T1:yyyy-MM-dd}, " +
                                 "val {V0:yyyy-MM-dd}..{V1:yyyy-MM-dd}, test {E0:yyyy-MM-dd}..{E1:yyyy-MM-dd}",
                 ds.TrainStart, ds.TrainEnd, ds.ValStart, ds.ValEnd, ds.TestStart, ds.TestEnd);
+            totalTrainRows += ds.Train.Count;
+            totalValRows   += ds.Val.Count;
+            totalTestRows  += ds.Test.Count;
+            firstLeadTrainFeatures ??= ds.Train.Select(r => r.Features).ToList();
+            firstLeadTrainLabels   ??= ds.Train.Select(r => r.Label).ToList();
 
             var trained = PrecipOccurrenceTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
 
@@ -1068,6 +1127,21 @@ public sealed class TempTrainCommand
             },
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
+        var labelRates3c = firstLeadTrainLabels is { Count: > 0 }
+            ? new Dictionary<string, double>
+              {
+                  [stationSlug] = firstLeadTrainLabels.Count(l => l) / (double)firstLeadTrainLabels.Count,
+              }
+            : null;
+        TrainingSummaryBuilder.BuildAndSave(
+            versionDir,
+            composite: $"precipitation/{stationSlug}", phase: "3c", version: versionName,
+            computedAtUtc: now,
+            rowsTrain: totalTrainRows, rowsVal: totalValRows, rowsTest: totalTestRows,
+            trainFeatures: firstLeadTrainFeatures,
+            featureNames: specsPerLead.TryGetValue(leads[0], out var sp3c)
+                ? sp3c.FeatureNames.ToList() : Array.Empty<string>(),
+            labelRates: labelRates3c);
 
         // Promote 3c as a challenger: replaces any prior 3c entry in Active
         // (idempotent re-train) and leaves Current = 3a champion. Any other
@@ -1180,6 +1254,10 @@ public sealed class TempTrainCommand
         var importanceByLead = new Dictionary<int, IEnumerable<(string Name, double Gain)>>();
         var specsPerLead = new Dictionary<int, BlenderSpec>();
         PrecipClimatology? climatology = null;
+        // training_summary buffers (Phase 1a). Same shape as 3a/3c.
+        List<float[]>? firstLeadTrainFeatures = null;
+        IReadOnlyList<bool>? firstLeadTrainLabels = null;
+        int totalTrainRows = 0, totalValRows = 0, totalTestRows = 0;
 
         foreach (var lead in leadsToTrain)
         {
@@ -1226,6 +1304,11 @@ public sealed class TempTrainCommand
                 ds.Train.Count, ds.TrainWet,
                 ds.Val.Count,   ds.ValWet,
                 ds.Test.Count,  ds.TestWet);
+            totalTrainRows += ds.Train.Count;
+            totalValRows   += ds.Val.Count;
+            totalTestRows  += ds.Test.Count;
+            firstLeadTrainFeatures ??= ds.Train.Select(r => r.Features).ToList();
+            firstLeadTrainLabels   ??= ds.Train.Select(r => r.Label).ToList();
 
             var trained = PrecipOccurrenceTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
 
@@ -1301,6 +1384,22 @@ public sealed class TempTrainCommand
             },
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
+        var labelRates3d = firstLeadTrainLabels is { Count: > 0 }
+            ? new Dictionary<string, double>
+              {
+                  [stationSlug] = firstLeadTrainLabels.Count(l => l) / (double)firstLeadTrainLabels.Count,
+              }
+            : null;
+        var firstLead3d = leadsToTrain.Length > 0 ? leadsToTrain[0] : 0;
+        TrainingSummaryBuilder.BuildAndSave(
+            versionDir,
+            composite: $"precipitation/{stationSlug}", phase: "3d", version: versionName,
+            computedAtUtc: now,
+            rowsTrain: totalTrainRows, rowsVal: totalValRows, rowsTest: totalTestRows,
+            trainFeatures: firstLeadTrainFeatures,
+            featureNames: specsPerLead.TryGetValue(firstLead3d, out var sp3d)
+                ? sp3d.FeatureNames.ToList() : Array.Empty<string>(),
+            labelRates: labelRates3d);
 
         // Promote 3d as a station challenger — 3a stays Current. Per-station
         // ChampionByLead pins 3d at lead 12 ONLY (where 3a competes well too,
