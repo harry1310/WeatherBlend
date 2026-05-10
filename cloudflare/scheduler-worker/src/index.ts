@@ -31,8 +31,13 @@
  * fire workflows across multiple repos without duplicating GH App auth —
  * the same App can be installed on each target repo and the same
  * Installation ID covers them all.
+ *
+ * `inputs` are workflow_dispatch inputs (string-typed in the GH API
+ * regardless of the workflow's declared types). Used by the noon tick
+ * to pass `train_after_refresh` to previous-runs-refresh — see the
+ * Sunday branch in scheduled() below.
  */
-type Dispatch = { workflow: string; repo?: string };
+type Dispatch = { workflow: string; repo?: string; inputs?: Record<string, string> };
 
 /** Each cron can dispatch ONE OR MORE workflows. Multi-workflow tick lets
  * us stay within Cloudflare's free-tier limit of 5 cron triggers per
@@ -98,13 +103,28 @@ export interface Env {
 
 export default {
   async scheduled(event: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
-    const targets = WORKFLOW_FOR_CRON[event.cron];
+    let targets = WORKFLOW_FOR_CRON[event.cron];
     if (!targets || targets.length === 0) {
       // Unknown cron string means wrangler.toml and this file have drifted
       // out of sync. Throwing surfaces it as a failed Cloudflare scheduled
       // run instead of a silent miss.
       throw new Error(
         `unknown cron expression: '${event.cron}'. Update WORKFLOW_FOR_CRON in src/index.ts.`,
+      );
+    }
+    // Sunday-only retrain chain (Phase 2b of AUTO_RETRAIN_PLAN.md):
+    // on the noon tick, attach train_after_refresh=true to the
+    // previous-runs-refresh dispatch when the schedule fires on a Sunday.
+    // The workflow's final step reads that input and (on success) fires
+    // repository_dispatch at the WeatherProbabilistic retrain workflows.
+    // No new cron triggers added — stays within the 5-trigger free-tier
+    // cap by piggybacking the existing noon refresh tick.
+    if (event.cron === "0 12 * * *") {
+      const isSunday = new Date(event.scheduledTime).getUTCDay() === 0;
+      targets = targets.map((t) =>
+        t.workflow === "previous-runs-refresh.yml"
+          ? { ...t, inputs: { train_after_refresh: isSunday ? "true" : "false" } }
+          : t,
       );
     }
     // Fire all dispatches in parallel — they go to (potentially) different
@@ -114,11 +134,12 @@ export default {
     const results = await Promise.allSettled(
       targets.map((t) => {
         const repo = t.repo ?? env.GH_REPO;
+        const inputsLog = t.inputs ? ` inputs=${JSON.stringify(t.inputs)}` : "";
         console.log(
-          `scheduled: cron='${event.cron}' → ${repo}/${t.workflow} ` +
+          `scheduled: cron='${event.cron}' → ${repo}/${t.workflow}${inputsLog} ` +
           `(scheduledTime=${new Date(event.scheduledTime).toISOString()})`,
         );
-        return dispatchWorkflow(env, t.workflow, repo);
+        return dispatchWorkflow(env, t.workflow, repo, t.inputs);
       }),
     );
     const failures = results
@@ -487,11 +508,21 @@ function bytesToHex(bytes: Uint8Array): string {
 
 // ---- workflow dispatch ----------------------------------------------------
 
-async function dispatchWorkflow(env: Env, workflowFile: string, repo: string): Promise<void> {
+async function dispatchWorkflow(
+  env: Env,
+  workflowFile: string,
+  repo: string,
+  inputs?: Record<string, string>,
+): Promise<void> {
   const jwt = await mintAppJwt(env.GH_APP_ID, env.GH_APP_PRIVATE_KEY);
   const installationToken = await exchangeForInstallationToken(jwt, env.GH_APP_INSTALLATION_ID);
 
   const url = `https://api.github.com/repos/${repo}/actions/workflows/${workflowFile}/dispatches`;
+  // GH API requires `inputs` values to be strings even when the workflow
+  // declares them as boolean / number — the serialiser on the workflow
+  // side coerces back. Caller passes Record<string, string> already.
+  const body: { ref: string; inputs?: Record<string, string> } = { ref: env.GH_REF };
+  if (inputs && Object.keys(inputs).length > 0) body.inputs = inputs;
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -501,7 +532,7 @@ async function dispatchWorkflow(env: Env, workflowFile: string, repo: string): P
       "User-Agent": "weatherblend-scheduler",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ ref: env.GH_REF }),
+    body: JSON.stringify(body),
   });
 
   // GitHub returns 204 No Content on a successful dispatch — anything else is
