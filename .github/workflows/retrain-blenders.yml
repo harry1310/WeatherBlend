@@ -1,0 +1,360 @@
+name: retrain-blenders
+
+# Phase 2 of AUTO_RETRAIN_PLAN.md — .NET-side retrain workflow.
+# Mirror of WeatherProbabilistic's retrain-python.yml: same trigger
+# shape (repository_dispatch from Sunday previous-runs-refresh +
+# manual workflow_dispatch), same "phases=all" expansion driven by
+# Config/phases.yaml impl=dotnet entries, same per-phase opt-in via
+# the comma-separated phases input.
+#
+# Each phase runs as its own step with continue-on-error: true so
+# a single guard failure on one phase doesn't cascade and skip the
+# rest of the sweep. The trainers themselves carry the RetrainGuard
+# (slice 1c) which writes training_summary.json on pass and bails
+# with exit 4 on fail; this workflow's job-level success is gated
+# on whether ANY step exited non-zero (final aggregator step).
+#
+# Cost ballpark on ubuntu-latest (4 vCPU):
+#   - all 11 phases sequentially: ~30-60 min total
+#   - Per-phase wall: 2b/2c/2d/3a/3c/3d ~3-5 min each;
+#     3b ~5-8 min (per-station per-window); element 4 × ~2 min.
+#
+# Adding a new .NET phase (e.g. 2e):
+#   1. Add to Config/phases.yaml with role=challenger, impl=dotnet
+#   2. Add a `Train 2e` step here mirroring the existing pattern
+#   3. Add a run_2e flag emit in "Decide which phases to run"
+# (Same one-place-rule applies: phases.yaml drives the "all"
+# expansion + input validation; per-phase steps are unavoidable
+# because each phase has its own --feature-set / --target args.)
+
+on:
+  # Sunday auto-trigger from previous-runs-refresh.yml. Same event
+  # type as retrain-python's listener so a single Sunday gate fires
+  # both retrains in parallel (different repos, no shared lock,
+  # disjoint R2 prefixes).
+  repository_dispatch:
+    types: [retrain]
+  workflow_dispatch:
+    inputs:
+      phases:
+        description: "Comma-separated phases to retrain. 'all' = every impl=dotnet phase in Config/phases.yaml. Examples: '2d', '3a,3c'."
+        required: false
+        default: "all"
+        type: string
+      force:
+        description: "Run regardless of trigger source (manual override). Default true."
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  # Distinct group from previous-runs-refresh / collect / backfill so
+  # the heavy-data writers don't queue against retrain. Different R2
+  # paths anyway (data/models/ vs data/forecasts/).
+  group: weatherblend-retrain-${{ inputs.phases }}
+  cancel-in-progress: false
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    # 90 min ceiling. The whole sweep fits in 30-60 min on a healthy
+    # runner; padding covers a slow R2 pull or runner cold-start.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decide whether to proceed
+        id: gate
+        run: |
+          EVENT="${{ github.event_name }}"
+          if [ "$EVENT" = "repository_dispatch" ]; then
+            echo "Triggered via repository_dispatch (Sunday auto-trigger from previous-runs-refresh) — proceeding."
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          elif [ "$EVENT" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
+            echo "Manual dispatch with force=true — proceeding."
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::workflow_dispatch with force=false — exiting cleanly (no training)."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-dotnet@v4
+        if: steps.gate.outputs.proceed == 'true'
+        with:
+          dotnet-version: "10.0.x"
+          dotnet-quality: preview
+
+      - name: Install rclone
+        if: steps.gate.outputs.proceed == 'true'
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          rclone version
+
+      - name: Configure rclone for R2
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf <<EOF
+          [r2]
+          type = s3
+          provider = Cloudflare
+          access_key_id = ${R2_ACCESS_KEY_ID}
+          secret_access_key = ${R2_SECRET_ACCESS_KEY}
+          endpoint = ${R2_ENDPOINT}
+          acl = private
+          EOF
+
+      - name: Decide which phases to run
+        # phases.yaml is in the checked-out source — no R2 fetch needed.
+        # Same yq logic as retrain-python.yml but filtered to impl=dotnet.
+        id: phases
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          PHASES_DISPATCH: ${{ inputs.phases }}
+          PHASES_PAYLOAD: ${{ github.event.client_payload.phases }}
+        run: |
+          DOTNET_PHASES=$(yq -r '
+            [.targets | to_entries[].value.phases[] | select(.impl == "dotnet") | .id] | join(",")
+          ' src/WeatherBlend/Config/phases.yaml)
+          echo "impl=dotnet phases from phases.yaml: $DOTNET_PHASES"
+
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            INPUT="${PHASES_PAYLOAD:-all}"
+          else
+            INPUT="${PHASES_DISPATCH:-all}"
+          fi
+          if [ "$INPUT" = "all" ]; then INPUT="$DOTNET_PHASES"; fi
+          echo "Resolved phase list: $INPUT"
+
+          # Per-phase run flags. Add a new flag here when wiring a new
+          # phase's run block below.
+          run_2b=false; run_2c=false; run_2d=false
+          run_3a=false; run_3c=false; run_3d=false
+          run_3b=false; run_3g=false
+          case ",$INPUT," in *,2b,*) run_2b=true ;; esac
+          case ",$INPUT," in *,2c,*) run_2c=true ;; esac
+          case ",$INPUT," in *,2d,*) run_2d=true ;; esac
+          case ",$INPUT," in *,3a,*) run_3a=true ;; esac
+          case ",$INPUT," in *,3c,*) run_3c=true ;; esac
+          case ",$INPUT," in *,3d,*) run_3d=true ;; esac
+          case ",$INPUT," in *,3b,*) run_3b=true ;; esac
+          case ",$INPUT," in *,3g,*) run_3g=true ;; esac
+          for v in 2b 2c 2d 3a 3c 3d 3b 3g; do
+            echo "run_${v}=$(eval echo \$run_${v})" >> "$GITHUB_OUTPUT"
+          done
+
+          # Validate against phases.yaml — typo / missing-from-yaml
+          # catches pre-emptive 5b before it's actually registered.
+          IFS=',' read -ra REQUESTED <<< "$INPUT"
+          IFS=',' read -ra KNOWN <<< "$DOTNET_PHASES"
+          for p in "${REQUESTED[@]}"; do
+            found=false
+            for k in "${KNOWN[@]}"; do
+              if [ "$p" = "$k" ]; then found=true; break; fi
+            done
+            if [ "$found" = "false" ]; then
+              echo "::error::Phase '$p' is not in phases.yaml's impl=dotnet list (have: $DOTNET_PHASES). Add it to phases.yaml first."
+              exit 1
+            fi
+          done
+
+      - name: Pull data trees from R2
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          # Forecasts (all configured models): blender input.
+          mkdir -p data/forecasts/location=bonehill_rocks
+          for m in gfs_seamless ecmwf_ifs025 icon_seamless meteofrance_seamless gem_seamless ukmo_seamless ecmwf_aifs025_single jma_seamless; do
+            rclone copy "r2:${R2_BUCKET}/data/forecasts/location=bonehill_rocks/model=$m" \
+              "data/forecasts/location=bonehill_rocks/model=$m" \
+              --fast-list --transfers 16 --checkers 32 || true
+          done
+          # ERA5 truth (training).
+          mkdir -p data/truth/era5/location=bonehill_rocks
+          rclone copy "r2:${R2_BUCKET}/data/truth/era5/location=bonehill_rocks" \
+            data/truth/era5/location=bonehill_rocks \
+            --fast-list --transfers 16 --checkers 32 || true
+          # METAR truth (verify) + EA rainfall truth (precip + dry-window).
+          mkdir -p data/truth/metar
+          rclone copy "r2:${R2_BUCKET}/data/truth/metar" data/truth/metar \
+            --fast-list --transfers 16 --checkers 32 || true
+          mkdir -p data/truth/rainfall
+          rclone copy "r2:${R2_BUCKET}/data/truth/rainfall" data/truth/rainfall \
+            --fast-list --transfers 16 --checkers 32 || true
+          # Existing models tree (RetrainGuard reads previous summaries).
+          mkdir -p data/models
+          rclone copy "r2:${R2_BUCKET}/data/models" data/models \
+            --fast-list --transfers 16 --checkers 32 || true
+
+      - name: Build
+        if: steps.gate.outputs.proceed == 'true'
+        run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
+
+      # ---- per-phase train steps ----------------------------------------
+      # continue-on-error so a guard failure on one phase doesn't cascade.
+      # Each step's exit code is captured; the aggregator at the end
+      # decides the workflow's overall outcome.
+
+      - name: Train 2b (temperature lean)
+        id: train_2b
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_2b == 'true'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target temperature
+
+      - name: Train 2c (temperature rich)
+        id: train_2c
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_2c == 'true'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target temperature --feature-set rich
+
+      - name: Train 2d (temperature exact-runtime)
+        id: train_2d
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_2d == 'true'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target temperature --feature-set exact
+
+      - name: Train 3a (precipitation lean)
+        id: train_3a
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3a == 'true'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target precipitation
+
+      - name: Train 3c (precipitation rich)
+        id: train_3c
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3c == 'true'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target precipitation --feature-set rich
+
+      - name: Train 3d (precipitation exact-runtime)
+        id: train_3d
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3d == 'true'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target precipitation --feature-set exact
+
+      - name: Train 3b (dry-window)
+        id: train_3b
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3b == 'true'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target dry-window
+
+      # 3g is parameter-free (MC over 3a marginals at predict time);
+      # nothing to retrain. The phases.yaml entry exists so the site
+      # renders 3g as a challenger; no train block here. If yq lists
+      # 3g in "all", we silently no-op via the if-guard not matching
+      # any train step (the aggregator then sees no failures from 3g).
+
+      # ---- Element blenders (wind, humidity, radiation, cloud-cover) ----
+      # NOT in phases.yaml today (they're per-VARIABLE rather than
+      # per-PHASE; one champion each, no challenger axis). Hardcoded
+      # here so the Sunday sweep retrains them too. Include them with
+      # any non-empty `phases` input — they're cheap (~2 min each)
+      # and orthogonal to the temp/precip phase competition. Skip
+      # entirely with phases="2b" etc to avoid a partial sweep
+      # accidentally bumping element bundles.
+
+      - name: Train element wind
+        id: train_wind
+        if: steps.gate.outputs.proceed == 'true' && (inputs.phases == 'all' || github.event.client_payload.phases == 'all' || github.event.client_payload.phases == '')
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target wind
+
+      - name: Train element humidity
+        id: train_humidity
+        if: steps.gate.outputs.proceed == 'true' && (inputs.phases == 'all' || github.event.client_payload.phases == 'all' || github.event.client_payload.phases == '')
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target humidity
+
+      - name: Train element shortwave-radiation
+        id: train_radiation
+        if: steps.gate.outputs.proceed == 'true' && (inputs.phases == 'all' || github.event.client_payload.phases == 'all' || github.event.client_payload.phases == '')
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target shortwave-radiation
+
+      - name: Train element cloud-cover
+        id: train_cloud
+        if: steps.gate.outputs.proceed == 'true' && (inputs.phases == 'all' || github.event.client_payload.phases == 'all' || github.event.client_payload.phases == '')
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target cloud-cover
+
+      - name: Aggregate train results
+        # Reads each step's outcome; if any failed, fails the job so
+        # the [ci-fail] retrain-blenders issue auto-files. Phases that
+        # weren't selected (run_X = false) report empty outcome — those
+        # don't count as failures.
+        if: steps.gate.outputs.proceed == 'true' && always()
+        run: |
+          declare -A outcomes=(
+            [2b]="${{ steps.train_2b.outcome }}"
+            [2c]="${{ steps.train_2c.outcome }}"
+            [2d]="${{ steps.train_2d.outcome }}"
+            [3a]="${{ steps.train_3a.outcome }}"
+            [3c]="${{ steps.train_3c.outcome }}"
+            [3d]="${{ steps.train_3d.outcome }}"
+            [3b]="${{ steps.train_3b.outcome }}"
+            [wind]="${{ steps.train_wind.outcome }}"
+            [humidity]="${{ steps.train_humidity.outcome }}"
+            [radiation]="${{ steps.train_radiation.outcome }}"
+            [cloud]="${{ steps.train_cloud.outcome }}"
+          )
+          failed=()
+          succeeded=()
+          for phase in "${!outcomes[@]}"; do
+            o="${outcomes[$phase]}"
+            if [ "$o" = "failure" ]; then failed+=("$phase"); fi
+            if [ "$o" = "success" ]; then succeeded+=("$phase"); fi
+          done
+          echo "Succeeded: ${succeeded[*]:-(none)}"
+          echo "Failed:    ${failed[*]:-(none)}"
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "::error::Retrain failed for phase(s): ${failed[*]}. RetrainGuard typically blames upstream-data drift; inspect each phase's logs for breach details."
+            exit 1
+          fi
+
+      - name: Push updated models to R2
+        # Always push on partial success — successful phases' bundles
+        # should land even if other phases failed. R2 sync is incremental
+        # so this is cheap when nothing changed.
+        if: steps.gate.outputs.proceed == 'true' && always()
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          rclone copy ./data/models "r2:${R2_BUCKET}/data/models" \
+            --fast-list --transfers 16 --checkers 32 --s3-no-check-bucket
+
+      - name: Upload run logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrain-blenders-logs-${{ github.run_id }}
+          path: |
+            *.log
+            logs/
+          retention-days: 14
+          if-no-files-found: ignore

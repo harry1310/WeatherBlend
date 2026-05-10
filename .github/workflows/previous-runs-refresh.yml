@@ -178,7 +178,13 @@ jobs:
           app-id: ${{ secrets.GH_APP_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
           owner: harry1310
-          repositories: WeatherProbabilistic
+          # Both repos: WP for retrain-python dispatch, WB for retrain-
+          # blenders self-dispatch. The App needs to be installed on
+          # both — same installation token covers both since they share
+          # an owner.
+          repositories: |
+            WeatherProbabilistic
+            WeatherBlend
 
       - name: Fire repository_dispatch for retrain-python (Sunday only)
         if: success() && inputs.train_after_refresh == 'true'
@@ -195,6 +201,23 @@ jobs:
             -F "client_payload[phases]=all" \
             -F "client_payload[trigger]=sunday-cron"
           echo "::notice::Dispatched retrain-python in WeatherProbabilistic (phases=all)"
+
+      - name: Fire repository_dispatch for retrain-blenders (Sunday only)
+        if: success() && inputs.train_after_refresh == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          # Self-dispatch within WeatherBlend — same GitHub App auth path
+          # we use for the cross-repo trigger. Could also be a workflow_run
+          # trigger (same-repo so it works) but using repository_dispatch
+          # for both keeps the Sunday-trigger pattern uniform across both
+          # retrain workflows. Runs in parallel with retrain-python on a
+          # separate runner since they're disjoint work.
+          gh api repos/harry1310/WeatherBlend/dispatches \
+            -f event_type=retrain \
+            -F "client_payload[phases]=all" \
+            -F "client_payload[trigger]=sunday-cron"
+          echo "::notice::Dispatched retrain-blenders in WeatherBlend (phases=all)"
 
       - name: Upload logs as artifact
         if: always()
