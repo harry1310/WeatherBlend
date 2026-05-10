@@ -213,6 +213,23 @@ public static partial class SitePages
             series.Add(new LineSeries(label, color, pts));
         }
 
+        // Forward bound = furthest blend valid_time at this lead. Without
+        // an XMax the chart was identical across lead tabs visually,
+        // because input.NwpTemperatures is the raw hourly forecast tree
+        // (no lead filter) so its forward horizon is the same on every
+        // tab; the lead-specific blend lines were a handful of points
+        // visually swamped by ~1000-point per-NWP overlays. Clipping the
+        // X axis to the lead's blend horizon gives each tab a distinct
+        // visible window matching what the +Xh blend forecast covers,
+        // and the eye can compare blend vs NWPs on the relevant slice.
+        // Mirror of the rain-page change shipped 3c7eea0.
+        //
+        // Floor at GeneratedAtUtc so a stale prediction tree (e.g. predict
+        // workflow failed for several days) doesn't produce an inverted
+        // axis (xMax < xMin); the chart degrades to "history only, no
+        // forward" rather than rendering empty.
+        var blendMaxValid = poolFuture[^1].ValidTimeUtc;
+        if (blendMaxValid < input.GeneratedAtUtc) blendMaxValid = input.GeneratedAtUtc;
         s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
         {
             Title = $"Temperature — +{lead}h",
@@ -224,6 +241,7 @@ public static partial class SitePages
             FormatY = v => v.ToString("0.#", Ci) + "°",
             TodayLineX = input.GeneratedAtUtc.ToOADate(),
             XMin = ForecastChartXMin(input),
+            XMax = blendMaxValid.ToOADate(),
         }));
         return s.ToString();
     }
@@ -288,12 +306,17 @@ public static partial class SitePages
             latestPerValidByStation[station] = latestPerValid;
         }
         var pageXMin = input.GeneratedAtUtc.AddDays(-RainChartHistoryDays).ToOADate();
-        var pageXMax = latestPerValidByStation.Values
+        var pageXMaxValid = latestPerValidByStation.Values
             .Where(rows => rows.Count > 0)
             .Select(rows => rows[^1].ValidTimeUtc)
             .DefaultIfEmpty(input.GeneratedAtUtc)
-            .Max()
-            .ToOADate();
+            .Max();
+        // Floor at GeneratedAtUtc so a stale prediction tree (e.g. predict
+        // workflow failed for several days) doesn't produce an inverted
+        // axis (xMax < xMin); chart degrades to "history only" rather than
+        // rendering empty.
+        if (pageXMaxValid < input.GeneratedAtUtc) pageXMaxValid = input.GeneratedAtUtc;
+        var pageXMax = pageXMaxValid.ToOADate();
 
         foreach (var station in stations)
         {
