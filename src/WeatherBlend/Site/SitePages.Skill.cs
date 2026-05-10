@@ -31,11 +31,70 @@ public static partial class SitePages
         content.Append("<h3>Vs truth</h3>");
         content.Append(RenderTempVsTruthBlock(input));
 
+        content.Append("<h3>Phase comparison — +24h lead</h3>");
+        content.Append(RenderTempPhaseComparisonBlock(input));
+
         content.Append("<hr/><h3>Rolling MAE</h3>");
         content.Append(RenderRollingMaeBlock(input));
 
         content.Append("</section>");
         return WrapPage(input, "Skill — temperature", "skill", content.ToString());
+    }
+
+    /// <summary>
+    /// Mirror of the rain skill page's +24h phase-comparison chart, for
+    /// temperature blenders. One series per active temp phase
+    /// (<see cref="ActivePhasePolicy"/> ByTarget["temperature"]), each in
+    /// its <see cref="TempPhases"/> colour so a phase reads the same hue
+    /// on this chart and on the rolling-MAE panel below. No truth line —
+    /// matches the rain version's shape; the per-phase eyeball charts
+    /// above show vs-truth context. Rendered only when at least two
+    /// phases have data at +24h, otherwise the chart says nothing the
+    /// vs-truth panels don't.
+    /// </summary>
+    private static string RenderTempPhaseComparisonBlock(SiteInputs input)
+    {
+        const int leadHours = 24;
+        var (xMin, xMax) = TempSectionRange(input);
+
+        var series = new List<LineSeries>();
+        foreach (var phaseKey in ActivePhasePolicy.ByTarget["temperature"])
+        {
+            var versions = input.PhaseByVersion
+                .Where(kv => kv.Value == phaseKey)
+                .Select(kv => kv.Key)
+                .ToHashSet(StringComparer.Ordinal);
+            if (versions.Count == 0) continue;
+
+            var pts = input.Predictions
+                .Where(p => p.LeadHours == leadHours
+                            && versions.Contains(p.ModelVersion)
+                            && p.ValidTimeUtc >= input.WindowStartUtc)
+                .GroupBy(p => p.ValidTimeUtc)
+                .Select(g => g.OrderByDescending(p => p.PredictionMadeAtUtc).First())
+                .OrderBy(p => p.ValidTimeUtc)
+                .Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.BlendTemperature))
+                .ToList();
+            if (pts.Count > 0)
+                series.Add(new LineSeries($"Phase {phaseKey}", TempPhases.ColorFor(phaseKey), pts));
+        }
+
+        if (series.Count < 2)
+            return "<p class=\"skill-line\"><em>Phase comparison needs ≥ 2 active phases with predictions at +24h — currently fewer.</em></p>";
+
+        return LineChartRenderer.RenderChartJs(new LineChartSpec
+        {
+            Title = $"Temperature blender phase comparison — +{leadHours}h",
+            XLabel = "Time (UTC)",
+            YLabel = "Temperature (°C)",
+            Series = series,
+            Height = 280,
+            FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
+            FormatY = v => v.ToString("0.#", Ci) + "°",
+            TodayLineX = input.GeneratedAtUtc.ToOADate(),
+            XMin = xMin,
+            XMax = xMax,
+        });
     }
 
     /// <summary>
@@ -406,14 +465,6 @@ public static partial class SitePages
                 .Select(r => r.Phase).Distinct().OrderBy(p => p, StringComparer.Ordinal).ToList();
 
             var series = new List<LineSeries>();
-            var palette = new[] { "#7c4dff", "#26a69a", "#ef5350", "#ffa726", "#42a5f5" };
-            var phaseColors = new Dictionary<string, string>(StringComparer.Ordinal)
-            {
-                ["3a"] = "#7c4dff",
-                ["3c"] = "#26a69a",
-                ["3d"] = "#ef5350",
-                ["4a"] = "#ffa726",  // amber — dbarts BART blender, added 2026-05-09
-            };
             for (int i = 0; i < phases.Count; i++)
             {
                 var p = phases[i];
@@ -423,10 +474,7 @@ public static partial class SitePages
                     .Select(r => (X: r.WindowEndUtc.ToOADate(), Y: r.BlendBrier))
                     .ToList();
                 if (pts.Count > 0)
-                {
-                    var color = phaseColors.TryGetValue(p, out var c) ? c : palette[i % palette.Length];
-                    series.Add(new LineSeries($"Phase {p}", color, pts));
-                }
+                    series.Add(new LineSeries($"Phase {p}", PrecipPhases.ColorFor(p), pts));
             }
 
             content.Append(Ci, $"<h4>Lead +{lead}h</h4>");
@@ -484,7 +532,6 @@ public static partial class SitePages
                 .Select(r => r.Phase).Distinct().OrderBy(p => p, StringComparer.Ordinal).ToList();
 
             var series = new List<LineSeries>();
-            var palette = new[] { "#7c4dff", "#26a69a", "#ef5350", "#ffa726", "#42a5f5" };
             for (int i = 0; i < phases.Count; i++)
             {
                 var p = phases[i];
@@ -494,7 +541,7 @@ public static partial class SitePages
                     .Select(r => (X: r.WindowEndUtc.ToOADate(), Y: r.BlendMae))
                     .ToList();
                 if (pts.Count > 0)
-                    series.Add(new LineSeries($"Phase {p}", palette[i % palette.Length], pts));
+                    series.Add(new LineSeries($"Phase {p}", TempPhases.ColorFor(p), pts));
             }
 
             content.Append(Ci, $"<h4>Lead +{lead}h</h4>");

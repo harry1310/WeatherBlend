@@ -31,13 +31,19 @@ public sealed record PrecipPhase(
 /// </summary>
 public static class PrecipPhases
 {
+    // Colors are aligned with the rolling-Brier panel on the rain skill
+    // page (purple champion, teal challenger, red exact-runtime, amber
+    // BART) so a phase reads the same colour wherever it appears: vs-truth
+    // eyeball, +24h phase comparison, rolling Brier per lead. Aligned
+    // 2026-05-10 — previously the phase comparison and rolling-Brier panels
+    // used different palettes, hard to scan top-to-bottom.
     public static readonly PrecipPhase Phase3a = new(
         Key: "3a",
         LongTitle: "Phase 3a — lean (27 features)",
         ShortTitle: "Phase 3a (lean)",
         Description: "27-feature lean. Champion.",
         ChampionVsChallengerLabel: "Phase 3a (champion)",
-        Color: "#90a4ae");
+        Color: "#7c4dff");
 
     public static readonly PrecipPhase Phase3c = new(
         Key: "3c",
@@ -45,7 +51,7 @@ public static class PrecipPhases
         ShortTitle: "Phase 3c (rich)",
         Description: "55-feature rich (adds humidity, pressure, EA persistence). Challenger.",
         ChampionVsChallengerLabel: "Phase 3c (challenger)",
-        Color: "#7c4dff");
+        Color: "#26a69a");
 
     public static readonly PrecipPhase Phase3d = new(
         Key: "3d",
@@ -53,7 +59,7 @@ public static class PrecipPhases
         ShortTitle: "Phase 3d (exact-runtime)",
         Description: "Exact-runtime blender (GFS + IFS oper + AIFS + MO Global + UKV from raw S3). Champion at +12h, challenger at +24h. Per-station EA gauge truth.",
         ChampionVsChallengerLabel: "Phase 3d (exact-runtime)",
-        Color: "#26a69a");
+        Color: "#ef5350");
 
     public static readonly PrecipPhase Phase4a = new(
         Key: "4a",
@@ -62,6 +68,21 @@ public static class PrecipPhases
         Description: "Bayesian Additive Regression Trees blender (R dbarts via rpy2). Same 22-feature 3a base + 3 synoptic flow features. Trained + predicted in WeatherProbabilistic, written to the same predictions tree as 3a/3c/3d.",
         ChampionVsChallengerLabel: "Phase 4a (BART)",
         Color: "#ffa726");
+
+    /// <summary>
+    /// Look up a phase colour by key string. Used by render paths that
+    /// receive a phase string directly (e.g. rolling Brier rows from the
+    /// verify pipeline) rather than a typed <see cref="PrecipPhase"/>
+    /// reference. Returns a neutral grey when the phase isn't one of the
+    /// active four — silently keeps a stale row visible without misleading
+    /// the eye into matching it to a known phase.
+    /// </summary>
+    public static string ColorFor(string phaseKey)
+    {
+        foreach (var p in All)
+            if (string.Equals(phaseKey, p.Key, StringComparison.Ordinal)) return p.Color;
+        return "#9e9e9e";
+    }
 
     /// <summary>Canonical render order: 3a → 3c → 3d → 4a.</summary>
     public static readonly IReadOnlyList<PrecipPhase> All = new[]
