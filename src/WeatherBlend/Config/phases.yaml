@@ -65,6 +65,15 @@ targets:
       - id: "4a"
         role: challenger
         impl: python
+      # Per-cell BART (one fit per (station, lead) — matches 3a's
+      # architecture). Aligned-row bake-off 2026-05-10 showed -4.0%
+      # aggregate Brier vs per-cell 3a, beating lead-pooled 4a by
+      # ~6%. Ships as a challenger alongside lead-pooled 4a during
+      # the transition; once verified live, the lead-pooled entry
+      # comes out in a follow-up. See WB/docs/PER_CELL_4A_PLAN.md.
+      - id: "4a_percell"
+        role: challenger
+        impl: python
       - id: "5a"
         role: confidence
         impl: python
