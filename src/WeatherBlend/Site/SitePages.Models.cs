@@ -211,7 +211,7 @@ public static partial class SitePages
                 """);
         }
 
-        var historyHtml = RenderVerifyHistorySection(composite, m.Phase, verifyHistory);
+        var historyHtml = RenderVerifyHistorySection(composite, m.Phase, verifyHistory, m);
 
         return $"""
             <article class="blender-card">
@@ -257,7 +257,8 @@ public static partial class SitePages
     /// clean for fresh-deploy / pre-first-verify states.
     /// </summary>
     private static string RenderVerifyHistorySection(string composite, string phase,
-        IReadOnlyList<WeatherBlend.Models.VerifyHistoryFile> verifyHistory)
+        IReadOnlyList<WeatherBlend.Models.VerifyHistoryFile> verifyHistory,
+        ModelSummary trainedSummary)
     {
         if (verifyHistory.Count == 0 || string.IsNullOrEmpty(phase)) return "";
         var (target, station, windowHours) = ParseCompositeForHistory(composite);
@@ -351,7 +352,31 @@ public static partial class SitePages
                 if (byLead.TryGetValue(lead, out var r))
                 {
                     var driftCls = r.DriftFlag ? " delta-bad" : "";
-                    leadCells.Append(Ci, $"""<td class="num{driftCls}">{r.BlendMetric.ToString("0.000", Ci)}</td>""");
+                    // Best-NWP realtime metric stacked under the blend so the
+                    // reader can compare drift in like units. Sourced from the
+                    // verify command's per-row BestSingleName/Metric (live
+                    // truth window, same NWPs the blender feeds on). Drift
+                    // ratio uses the active phase's training baseline from
+                    // ModelSummary.PerLead[lead].BestSingleTestMae — same
+                    // 1.5× threshold as the blend's own DriftFlag, so a lit
+                    // best-NWP cell means "the best raw NWP is also
+                    // struggling vs. its training-time baseline" (i.e. weather
+                    // is hard, not just the blender degrading).
+                    string bestLine;
+                    if (r.BestSingleMetric.HasValue && !string.IsNullOrEmpty(r.BestSingleName))
+                    {
+                        var trainedBaseline = trainedSummary.PerLead.TryGetValue(lead, out var pl)
+                            ? pl.BestSingleTestMae : double.NaN;
+                        var bestDrifted = !double.IsNaN(trainedBaseline) && trainedBaseline > 0
+                            && r.BestSingleMetric.Value > 1.5 * trainedBaseline;
+                        var bestCls = bestDrifted ? " delta-bad" : "";
+                        bestLine = $"<small class=\"{bestCls}\">{Escape(r.BestSingleName!)}: {r.BestSingleMetric.Value.ToString("0.000", Ci)}</small>";
+                    }
+                    else
+                    {
+                        bestLine = "<small>—</small>";
+                    }
+                    leadCells.Append(Ci, $"""<td class="num"><span class="{driftCls.Trim()}">{r.BlendMetric.ToString("0.000", Ci)}</span><br>{bestLine}</td>""");
                 }
                 else
                 {
