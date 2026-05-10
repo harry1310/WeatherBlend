@@ -1,4 +1,12 @@
-# Per-cell 4a deployment plan (deferred — pick up once 5a training is sorted)
+# Per-cell 4a deployment plan (SHIPPED 2026-05-11)
+
+> **Status update 2026-05-11:** shipped. User decision late in the same
+> session as the plan was drafted: "make the per cell 4a the one and
+> only 4a and then kick off a retrain on it" — so per-cell REPLACED
+> lead-pooled 4a outright rather than coexisting as a separate
+> `4a_percell` challenger as originally planned. Phase tag stays
+> plain `4a`. The plan text below is preserved as historical context;
+> the bits that diverged from execution are flagged inline.
 
 ## Why
 
