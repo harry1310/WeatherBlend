@@ -55,23 +55,57 @@ public static partial class SitePages
     }
 
     public static string RenderForecastsRain(SiteInputs input, int lead)
+        => RenderForecastsRain(input, lead, locationName: null);
+
+    /// <summary>
+    /// Rain forecast page for the given lead. <paramref name="locationName"/>
+    /// picks which configured location's stations to render — null/empty
+    /// means primary (legacy single-location behaviour preserved). The
+    /// location sub-nav (Bonehill / Membury / …) only renders when more
+    /// than one location has rainfall stations configured.
+    /// </summary>
+    public static string RenderForecastsRain(SiteInputs input, int lead, string? locationName)
     {
+        var primary = input.Locations.FirstOrDefault(l => l.IsPrimary);
+        var active = ResolveActiveLocation(input.Locations, locationName) ?? primary;
+        var activeName = active?.Name ?? "";
+
         var body = new StringBuilder();
         body.Append("<section>");
         body.Append(RenderForecastsSubNav("rain"));
-        body.Append(RenderLeadSubNav("forecasts-rain", lead));
+        body.Append(RenderRainLocationSubNav("forecasts-rain", input.Locations, activeName, lead));
+        var leadNavBase = active is null || active.IsPrimary
+            ? "forecasts-rain"
+            : $"forecasts-rain-{active.Name}";
+        body.Append(RenderLeadSubNav(leadNavBase, lead));
 
+        var heading = active is null || active.IsPrimary
+            ? "Rain"
+            : $"Rain — {active.DisplayName}";
         body.Append(Ci, $"""
               <hgroup>
-                <h2>Rain +{lead}h</h2>
-                <p>Per-station P(wet ≥ 0.1 mm/h) — 3a solid, 3c lighter — plus per-NWP precip rate (one chart, point forecast for Bonehill).</p>
+                <h2>{Escape(heading)} +{lead}h</h2>
+                <p>Per-station P(wet ≥ 0.1 mm/h) — 3a solid, 3c lighter — plus per-NWP precip rate (one chart, point forecast).</p>
               </hgroup>
             """);
 
-        body.Append(RenderPrecipSection(input, lead));
+        body.Append(RenderPrecipSection(input, lead, active));
 
         body.Append("</section>");
-        return WrapPage(input, $"Rain forecast +{lead}h", "forecasts", body.ToString());
+        var pageTitle = active is null || active.IsPrimary
+            ? $"Rain forecast +{lead}h"
+            : $"Rain forecast — {active.DisplayName} +{lead}h";
+        return WrapPage(input, pageTitle, "forecasts", body.ToString());
+    }
+
+    private static LocationDescriptor? ResolveActiveLocation(
+        IReadOnlyList<LocationDescriptor> locations, string? locationName)
+    {
+        if (locations.Count == 0) return null;
+        if (string.IsNullOrEmpty(locationName))
+            return locations.FirstOrDefault(l => l.IsPrimary) ?? locations[0];
+        return locations.FirstOrDefault(l =>
+            l.Name.Equals(locationName, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
@@ -256,6 +290,17 @@ public static partial class SitePages
     private const int RainChartHistoryDays = 7;
 
     private static string RenderPrecipSection(SiteInputs input, int lead)
+        => RenderPrecipSection(input, lead, activeLocation: null);
+
+    /// <summary>
+    /// Per-station rain panels for one lead. When <paramref name="activeLocation"/>
+    /// is non-null, the station list is intersected with that location's
+    /// rainfall slugs so the Bonehill tab only shows Bonehill stations and
+    /// the Membury tab only shows Membury stations. Null = legacy
+    /// "all active stations" behaviour for the single-location callers
+    /// (tests + pre-2026-05-11 drives).
+    /// </summary>
+    private static string RenderPrecipSection(SiteInputs input, int lead, LocationDescriptor? activeLocation)
     {
         var s = new StringBuilder();
         s.Append("<h3>Precipitation — P(wet ≥ 0.1 mm/h)</h3>");
@@ -266,6 +311,16 @@ public static partial class SitePages
             .Select(p => p.Station).Distinct()
             .Where(s => input.ActiveStationSlugs.Count == 0 || input.ActiveStationSlugs.Contains(s))
             .OrderBy(st => st, StringComparer.Ordinal).ToList();
+
+        // When an active location is set, restrict to that location's
+        // configured rainfall slugs. The Membury tab reads from
+        // activeLocation.RainStationSlugs so a Bonehill station can never
+        // bleed into the Membury panel and vice versa.
+        if (activeLocation is not null)
+        {
+            var locationSlugs = activeLocation.RainStationSlugs.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            stations = stations.Where(locationSlugs.Contains).ToList();
+        }
 
         if (stations.Count == 0)
         {

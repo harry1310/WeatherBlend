@@ -144,12 +144,38 @@ public static partial class SitePages
             new("JMA",   NwpPalette.Jma,   p => p.PrecipJma),
         };
 
+    /// <summary>
+    /// Per-location descriptor surfaced on the site so the Rain forecast +
+    /// Rain skill pages can show a Bonehill/Membury tab without leaking
+    /// AppConfig into the rendering layer. Populated from
+    /// <c>AppConfig.Locations</c> by <c>RenderSiteCommand</c>; consumed by
+    /// the location sub-nav helpers + per-station filters in
+    /// <c>SitePages.Forecasts</c> and <c>SitePages.Skill</c>.
+    /// </summary>
+    /// <param name="Name">Config slug (e.g. <c>bonehill_rocks</c>) — also the URL slug for non-primary location pages.</param>
+    /// <param name="DisplayName">Human-facing label for the tab pill (e.g. <c>Bonehill Rocks, Dartmoor</c>).</param>
+    /// <param name="RainStationSlugs">EA-prefixed station slugs from this location's rainfall config (e.g. <c>ea_bellever_dartmoor</c>).</param>
+    /// <param name="IsPrimary">First location in config — its pages keep the legacy URLs (<c>forecasts-rain-{lead}h.html</c>) so existing links continue to work.</param>
+    public sealed record LocationDescriptor(
+        string Name,
+        string DisplayName,
+        IReadOnlyList<string> RainStationSlugs,
+        bool IsPrimary);
+
     public sealed record SiteInputs
     {
         public required string LocationDisplay { get; init; }
         public required double Latitude { get; init; }
         public required double Longitude { get; init; }
         public required double ElevationMeters { get; init; }
+
+        /// <summary>
+        /// Configured locations, primary first. Empty list = no Rain
+        /// location sub-nav rendered (legacy single-location behaviour
+        /// preserved for tests / older drives that don't populate it).
+        /// </summary>
+        public IReadOnlyList<LocationDescriptor> Locations { get; init; }
+            = Array.Empty<LocationDescriptor>();
 
         /// <summary>ICAO of the primary METAR station (for the chart legend). Empty → no METAR.</summary>
         public required string MetarStation { get; init; }
@@ -1194,6 +1220,44 @@ public static partial class SitePages
             var href = i == 0 ? $"{pageBase}.html" : $"{pageBase}-{StationSlug(s)}.html";
             var cls = s == currentStation ? " class=\"active\"" : "";
             items.Append(Ci, $"""<li><a href="{href}"{cls}>{Escape(PrettyStation(s))}</a></li>""");
+        }
+        return $"""<nav class="lead-nav"><ul>{items}</ul></nav>""";
+    }
+
+    /// <summary>
+    /// Per-location pill nav (Bonehill | Membury) for the Rain forecast +
+    /// Rain skill pages. Hidden when only one location is configured —
+    /// matches <see cref="RenderStationSubNav"/>'s "one item adds nothing"
+    /// rule. The primary location renders at the legacy URL
+    /// (<c>{pageBase}-{lead}h.html</c> or <c>{pageBase}.html</c>); non-primary
+    /// locations get a slug-prefixed URL (<c>{pageBase}-{location}-{lead}h.html</c>
+    /// or <c>{pageBase}-{location}.html</c>) so existing inbound links stay
+    /// pointed at Bonehill.
+    /// </summary>
+    internal static string RenderRainLocationSubNav(
+        string pageBase,
+        IReadOnlyList<LocationDescriptor> locations,
+        string activeLocationName,
+        int? lead)
+    {
+        // Render only when at least one non-primary location actually has
+        // rainfall stations — else the tab adds nothing (and might confuse
+        // a tester running with a single-location config).
+        var renderable = locations.Where(l => l.RainStationSlugs.Count > 0).ToList();
+        if (renderable.Count <= 1) return "";
+
+        var items = new StringBuilder();
+        foreach (var loc in renderable)
+        {
+            string href;
+            if (loc.IsPrimary)
+                href = lead.HasValue ? $"{pageBase}-{lead.Value}h.html" : $"{pageBase}.html";
+            else
+                href = lead.HasValue
+                    ? $"{pageBase}-{loc.Name}-{lead.Value}h.html"
+                    : $"{pageBase}-{loc.Name}.html";
+            var cls = loc.Name == activeLocationName ? " class=\"active\"" : "";
+            items.Append(Ci, $"""<li><a href="{href}"{cls}>{Escape(loc.DisplayName)}</a></li>""");
         }
         return $"""<nav class="lead-nav"><ul>{items}</ul></nav>""";
     }

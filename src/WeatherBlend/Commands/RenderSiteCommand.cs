@@ -197,9 +197,23 @@ public sealed class RenderSiteCommand
                     .ThenBy(kv => kv.Key.LeadHours)
                     .Select(kv => $"{kv.Key.Station}@+{kv.Key.LeadHours}h→{kv.Value}")));
 
+        // ActiveStationSlugs is the union across ALL configured locations —
+        // a Membury station has to be in this set or RenderPrecipSection's
+        // outer filter (line 267 of SitePages.Forecasts.cs) silently drops
+        // its predictions. The per-tab filter (LocationDescriptor.RainStation
+        // Slugs) then narrows back down to one location's stations.
         var activeStationSlugs = new HashSet<string>(
-            _cfg.Location.Rainfall.Stations.Select(s => StationSlug.WithEaPrefix(s.Name)),
+            _cfg.Locations.SelectMany(loc => loc.Rainfall.Stations.Select(s => StationSlug.WithEaPrefix(s.Name))),
             StringComparer.Ordinal);
+        // Per-location descriptors for the Rain forecast / Rain skill tabs.
+        // Primary first; URL-slug = config Name (e.g. `bonehill_rocks`,
+        // `membury_devon`). Skipped silently for locations that have no
+        // rainfall config (e.g. a future temp-only secondary).
+        var locationDescriptors = _cfg.Locations.Select((loc, idx) => new SitePages.LocationDescriptor(
+            Name: loc.Name,
+            DisplayName: string.IsNullOrWhiteSpace(loc.DisplayName) ? loc.Name : loc.DisplayName,
+            RainStationSlugs: loc.Rainfall.Stations.Select(s => StationSlug.WithEaPrefix(s.Name)).ToList(),
+            IsPrimary: idx == 0)).ToList();
         var modelSummaries = LoadModelSummaries(predictions, precip, dryWindow, activeStationSlugs);
         _log.LogInformation("Loaded {N} model summaries for Models page.", modelSummaries.Count);
         var featureSpecRows = LoadFeatureSpecRows(predictions, precip, dryWindow, activeStationSlugs, modelSummaries);
@@ -233,6 +247,7 @@ public sealed class RenderSiteCommand
             PrecipCurrentByStation = precipCurrentByStation,
             PrecipChampionByStationLead = precipChampionByStationLead,
             ActiveStationSlugs = activeStationSlugs,
+            Locations = locationDescriptors,
             ModelSummaries = modelSummaries,
             FeatureSpecRows = featureSpecRows,
             FeelsLikePredictions = feelsLike,
@@ -274,6 +289,21 @@ public sealed class RenderSiteCommand
             await File.WriteAllTextAsync(Path.Combine(outputDir, $"forecasts-rain-{lead}h.html"),
                 SitePages.RenderForecastsRain(input, lead), ct);
         }
+        // Per-location Rain forecast pages (Phase C of the Membury ship plan).
+        // Primary location uses the legacy URL above (no slug). Each non-primary
+        // location with rainfall stations gets its own per-lead set:
+        //   forecasts-rain-{location}-{lead}h.html
+        // The location sub-nav (Bonehill | Membury | …) wires itself up via
+        // RenderRainLocationSubNav inside RenderForecastsRain.
+        foreach (var loc in input.Locations.Where(l => !l.IsPrimary && l.RainStationSlugs.Count > 0))
+        {
+            foreach (var lead in Leads.ForecastsTempRain)
+            {
+                await File.WriteAllTextAsync(
+                    Path.Combine(outputDir, $"forecasts-rain-{loc.Name}-{lead}h.html"),
+                    SitePages.RenderForecastsRain(input, lead, loc.Name), ct);
+            }
+        }
         // Models page split into 3 (per target) on 2026-05-04 — see
         // SitePages.RenderModels for the per-target intro copy. The legacy
         // models.html route was retired in the same change; the nav points
@@ -298,15 +328,41 @@ public sealed class RenderSiteCommand
         // Rain skill is per-station — one canonical file plus one per non-first station.
         // Stations set is the union of precip + dry-window stations, so even if a station
         // has only one of the two, it gets its own tab.
-        var rainStations = SitePages.GetRainSkillStations(input);
+        // Skill — rain pages, primary location: legacy URL preserved.
+        // GetRainSkillStations(input) WITHOUT location filter would now
+        // include Membury stations (because activeStationSlugs is the
+        // union); pass the primary descriptor so the legacy URL surfaces
+        // only Bonehill stations.
+        var primaryLoc = input.Locations.FirstOrDefault(l => l.IsPrimary);
+        var rainStations = SitePages.GetRainSkillStations(input, primaryLoc);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "skill-rainfall.html"),
-            SitePages.RenderRainSkill(input, null), ct);
+            SitePages.RenderRainSkill(input, null, locationName: null), ct);
         for (int i = 1; i < rainStations.Count; i++)
         {
             var slug = SitePages.StationSlug(rainStations[i]);
             await File.WriteAllTextAsync(
                 Path.Combine(outputDir, $"skill-rainfall-{slug}.html"),
-                SitePages.RenderRainSkill(input, slug), ct);
+                SitePages.RenderRainSkill(input, slug, locationName: null), ct);
+        }
+        // Per-location Skill — rain pages (Phase C). Each non-primary
+        // location with rainfall stations gets:
+        //   skill-rainfall-{location}.html               (default station)
+        //   skill-rainfall-{location}-{station}.html     (per-station)
+        // Non-primary pages render Rolling Brier only — eyeball P(wet) vs
+        // observed block omitted per the user's MVP scope (2026-05-11).
+        foreach (var loc in input.Locations.Where(l => !l.IsPrimary && l.RainStationSlugs.Count > 0))
+        {
+            var locStations = SitePages.GetRainSkillStations(input, loc);
+            await File.WriteAllTextAsync(
+                Path.Combine(outputDir, $"skill-rainfall-{loc.Name}.html"),
+                SitePages.RenderRainSkill(input, null, loc.Name), ct);
+            for (int i = 1; i < locStations.Count; i++)
+            {
+                var slug = SitePages.StationSlug(locStations[i]);
+                await File.WriteAllTextAsync(
+                    Path.Combine(outputDir, $"skill-rainfall-{loc.Name}-{slug}.html"),
+                    SitePages.RenderRainSkill(input, slug, loc.Name), ct);
+            }
         }
 
         // Dry-window skill — split out from rain-skill on 2026-05-04 so each

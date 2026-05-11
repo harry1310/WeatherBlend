@@ -166,31 +166,82 @@ public static partial class SitePages
     /// <c>skill-rainfall-{slug}.html</c>.
     /// </summary>
     public static string RenderRainSkill(SiteInputs input, string? stationSlug = null)
+        => RenderRainSkill(input, stationSlug, locationName: null);
+
+    /// <summary>
+    /// Rain skill page. <paramref name="locationName"/> picks which configured
+    /// location's stations to show — null/empty means primary (legacy
+    /// behaviour). The location sub-nav (Bonehill / Membury / …) renders
+    /// only when more than one location has rainfall stations.
+    ///
+    /// For non-primary locations the page renders **only the rolling Brier
+    /// block** — the eyeball P(wet) vs observed block is omitted because
+    /// the user's MVP scope (2026-05-11) is "rolling brier only" for the
+    /// Membury tab. The eyeball block is computationally fine for Membury
+    /// once predictions land but adds page weight without skill insight
+    /// the rolling Brier doesn't already give.
+    /// </summary>
+    public static string RenderRainSkill(SiteInputs input, string? stationSlug, string? locationName)
     {
-        var stations = GetRainSkillStations(input);
+        var active = ResolveSkillLocation(input.Locations, locationName);
+        var activeName = active?.Name ?? "";
+        var stations = GetRainSkillStations(input, active);
         var currentStation = ResolveStationFromSlug(stations, stationSlug);
 
         var content = new StringBuilder();
         content.Append("<section>");
         content.Append(RenderSkillSubNav("rain"));
-        content.Append("""
+        content.Append(RenderRainLocationSubNav("skill-rainfall", input.Locations, activeName, lead: null));
+
+        var heading = active is null || active.IsPrimary ? "rain" : $"rain — {active.DisplayName}";
+        var intro = active is null || active.IsPrimary
+            ? "P(wet) vs observed wet hours, then rolling Brier per phase."
+            : "Rolling Brier per phase. (P(wet)-vs-observed eyeball block deferred for non-primary locations.)";
+        content.Append(Ci, $"""
               <hgroup>
-                <h2>Skill — rain</h2>
-                <p>P(wet) vs observed wet hours, then rolling Brier per phase.</p>
+                <h2>Skill — {Escape(heading)}</h2>
+                <p>{Escape(intro)}</p>
               </hgroup>
             """);
 
+        // Per-station sub-nav lives BELOW the location sub-nav. Page slug
+        // base shifts when on a non-primary location so the per-station
+        // links don't punt the reader back to the primary location.
         if (currentStation is not null)
-            content.Append(RenderStationSubNav("skill-rainfall", stations, currentStation));
+        {
+            var stationNavBase = active is null || active.IsPrimary
+                ? "skill-rainfall"
+                : $"skill-rainfall-{active.Name}";
+            content.Append(RenderStationSubNav(stationNavBase, stations, currentStation));
+        }
 
-        content.Append("<h3>P(wet) vs observed wet-hour</h3>");
-        content.Append(RenderPrecipVsTruthBlock(input, currentStation));
-
-        content.Append("<hr/><h3>Rolling Brier (P(wet))</h3>");
+        if (active is null || active.IsPrimary)
+        {
+            content.Append("<h3>P(wet) vs observed wet-hour</h3>");
+            content.Append(RenderPrecipVsTruthBlock(input, currentStation));
+            content.Append("<hr/><h3>Rolling Brier (P(wet))</h3>");
+        }
+        else
+        {
+            content.Append("<h3>Rolling Brier (P(wet))</h3>");
+        }
         content.Append(RenderRollingBrierBlock(input, currentStation));
 
         content.Append("</section>");
-        return WrapPage(input, "Skill — rain", "skill", content.ToString());
+        var pageTitle = active is null || active.IsPrimary
+            ? "Skill — rain"
+            : $"Skill — rain — {active.DisplayName}";
+        return WrapPage(input, pageTitle, "skill", content.ToString());
+    }
+
+    private static LocationDescriptor? ResolveSkillLocation(
+        IReadOnlyList<LocationDescriptor> locations, string? locationName)
+    {
+        if (locations.Count == 0) return null;
+        if (string.IsNullOrEmpty(locationName))
+            return locations.FirstOrDefault(l => l.IsPrimary) ?? locations[0];
+        return locations.FirstOrDefault(l =>
+            l.Name.Equals(locationName, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
@@ -199,6 +250,15 @@ public static partial class SitePages
     /// if one of the two sections has no data for it.
     /// </summary>
     internal static IReadOnlyList<string> GetRainSkillStations(SiteInputs input)
+        => GetRainSkillStations(input, activeLocation: null);
+
+    /// <summary>
+    /// <inheritdoc cref="GetRainSkillStations(SiteInputs)"/>
+    /// When <paramref name="activeLocation"/> is non-null, the result is
+    /// further intersected with that location's <c>RainStationSlugs</c> so
+    /// the Membury skill page only lists Membury stations and vice versa.
+    /// </summary>
+    internal static IReadOnlyList<string> GetRainSkillStations(SiteInputs input, LocationDescriptor? activeLocation)
     {
         var set = new HashSet<string>(StringComparer.Ordinal);
         foreach (var p in input.PrecipPredictions) set.Add(p.Station);
@@ -208,6 +268,8 @@ public static partial class SitePages
         // behaviour for legacy callers / tests that don't populate it.
         if (input.ActiveStationSlugs.Count > 0)
             set.IntersectWith(input.ActiveStationSlugs);
+        if (activeLocation is not null)
+            set.IntersectWith(activeLocation.RainStationSlugs);
         return set.OrderBy(s => s, StringComparer.Ordinal).ToList();
     }
 
