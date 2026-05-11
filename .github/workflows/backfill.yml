@@ -18,8 +18,18 @@ on:
         default: ""
 
 concurrency:
-  # Share the lock with `collect` so the two can't write to R2 simultaneously.
-  group: weatherblend-data
+  # Per-(source, start-date) groups so yearly-chunked dispatches run in
+  # PARALLEL — mass-firing 3-4 chunks at once doesn't queue them. Each
+  # chunk writes to disjoint date partitions inside the R2 forecasts/
+  # rainfall trees so concurrent rclone copies are safe (each parquet
+  # path is unique to its (location, model, date) tuple).
+  #
+  # Previously this shared `weatherblend-data` with `collect` to avoid
+  # any R2-write collision, but the partition disjointness means that
+  # was over-cautious; the per-chunk concurrency style matches
+  # archive-backfill.yml's design (see its concurrency block for the
+  # GitHub-cancels-3rd-pending rationale).
+  group: weatherblend-backfill-${{ inputs.source }}-${{ inputs.start }}
   cancel-in-progress: false
 
 jobs:

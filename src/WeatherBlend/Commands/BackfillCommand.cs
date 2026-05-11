@@ -88,29 +88,42 @@ public sealed class BackfillCommand
                 modelFilter, string.Join(", ", _cfg.Models.Select(m => m.Id)));
             return 1;
         }
-        foreach (var model in models)
+        // Multi-location 2026-05-11: iterate every configured location.
+        // Open-Meteo previous_runs is keyed by (lat, lon) so different
+        // locations get independently keyed parquet partitions
+        // (location=<name>/model=<id>/date=*/run=*.parquet). The token-
+        // bucket rate limit is per-API-key not per-location, so the
+        // existing PreviousRunsBackfillDelaySeconds knob still applies
+        // across the combined fetch volume.
+        var locations = _cfg.Locations.Count > 0 ? _cfg.Locations : new List<LocationConfig> { _cfg.Location };
+        foreach (var location in locations)
         {
-            var cursor = start;
-            while (cursor <= end)
+            _log.LogInformation("previous-runs backfill: location={Name} ({Lat:0.0000}, {Lon:0.0000})",
+                location.Name, location.Latitude, location.Longitude);
+            foreach (var model in models)
             {
-                var chunkEnd = cursor.AddMonths(1).AddDays(-1);
-                if (chunkEnd > end) chunkEnd = end;
-                try
+                var cursor = start;
+                while (cursor <= end)
                 {
-                    var rows = await _forecasts.FetchPreviousRunsAsync(
-                        _cfg.Location, model.Id, _cfg.Variables.Forecast, cursor, chunkEnd, ct);
-                    await ParquetWriter.WritePreviousRunsAsync(_cfg.Storage.ForecastsPath, rows, ct);
-                    _log.LogInformation("  previous-runs/{Model} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd}: {Rows} rows",
-                        model.Id, cursor, chunkEnd, rows.Count);
+                    var chunkEnd = cursor.AddMonths(1).AddDays(-1);
+                    if (chunkEnd > end) chunkEnd = end;
+                    try
+                    {
+                        var rows = await _forecasts.FetchPreviousRunsAsync(
+                            location, model.Id, _cfg.Variables.Forecast, cursor, chunkEnd, ct);
+                        await ParquetWriter.WritePreviousRunsAsync(_cfg.Storage.ForecastsPath, rows, ct);
+                        _log.LogInformation("  previous-runs/{Name}/{Model} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd}: {Rows} rows",
+                            location.Name, model.Id, cursor, chunkEnd, rows.Count);
+                    }
+                    catch (Exception ex)
+                    {
+                        errors++;
+                        _log.LogError(ex, "  previous-runs/{Name}/{Model} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} FAILED",
+                            location.Name, model.Id, cursor, chunkEnd);
+                    }
+                    await Task.Delay(TimeSpan.FromSeconds(_cfg.Http.PreviousRunsBackfillDelaySeconds), ct);
+                    cursor = chunkEnd.AddDays(1);
                 }
-                catch (Exception ex)
-                {
-                    errors++;
-                    _log.LogError(ex, "  previous-runs/{Model} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} FAILED",
-                        model.Id, cursor, chunkEnd);
-                }
-                await Task.Delay(TimeSpan.FromSeconds(_cfg.Http.PreviousRunsBackfillDelaySeconds), ct);
-                cursor = chunkEnd.AddDays(1);
             }
         }
         return errors;
@@ -196,29 +209,49 @@ public sealed class BackfillCommand
     private async Task<int> BackfillRainfallAsync(DateOnly start, DateOnly end, CancellationToken ct)
     {
         var errors = 0;
-        foreach (var station in _cfg.Location.Rainfall.Stations)
+        // Multi-location 2026-05-11: each location has its own stations
+        // list (e.g. Bonehill = 3 Dartmoor gauges, Membury = 3 East Devon
+        // gauges). Parquet partitions on (location, station) so the
+        // rainfall tree fans out as
+        // data/truth/rainfall/location=<name>/station=<n>/date=*/observations.parquet
+        // — no collision risk across locations even if a station name
+        // happens to coincide. Locations missing the rainfall block
+        // (.Stations empty) are silently skipped.
+        var locations = _cfg.Locations.Count > 0 ? _cfg.Locations : new List<LocationConfig> { _cfg.Location };
+        foreach (var location in locations)
         {
-            var cursor = start;
-            while (cursor <= end)
+            if (location.Rainfall.Stations.Count == 0)
             {
-                var chunkEnd = cursor.AddMonths(1).AddDays(-1);
-                if (chunkEnd > end) chunkEnd = end;
-                try
+                _log.LogInformation("rainfall backfill: location={Name} has no rainfall stations configured — skipping",
+                    location.Name);
+                continue;
+            }
+            _log.LogInformation("rainfall backfill: location={Name} — {N} stations",
+                location.Name, location.Rainfall.Stations.Count);
+            foreach (var station in location.Rainfall.Stations)
+            {
+                var cursor = start;
+                while (cursor <= end)
                 {
-                    var rows = await _rainfall.FetchAsync(
-                        _cfg.Location.Name, station, cursor, chunkEnd, ct);
-                    await ParquetWriter.WriteRainfallAsync(_cfg.Storage.RainfallPath, rows, ct);
-                    _log.LogInformation("  rainfall/{Station} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd}: {Rows} rows",
-                        station.Name, cursor, chunkEnd, rows.Count);
+                    var chunkEnd = cursor.AddMonths(1).AddDays(-1);
+                    if (chunkEnd > end) chunkEnd = end;
+                    try
+                    {
+                        var rows = await _rainfall.FetchAsync(
+                            location.Name, station, cursor, chunkEnd, ct);
+                        await ParquetWriter.WriteRainfallAsync(_cfg.Storage.RainfallPath, rows, ct);
+                        _log.LogInformation("  rainfall/{Name}/{Station} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd}: {Rows} rows",
+                            location.Name, station.Name, cursor, chunkEnd, rows.Count);
+                    }
+                    catch (Exception ex)
+                    {
+                        errors++;
+                        _log.LogError(ex, "  rainfall/{Name}/{Station} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} FAILED",
+                            location.Name, station.Name, cursor, chunkEnd);
+                    }
+                    await Task.Delay(TimeSpan.FromSeconds(1), ct);
+                    cursor = chunkEnd.AddDays(1);
                 }
-                catch (Exception ex)
-                {
-                    errors++;
-                    _log.LogError(ex, "  rainfall/{Station} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} FAILED",
-                        station.Name, cursor, chunkEnd);
-                }
-                await Task.Delay(TimeSpan.FromSeconds(1), ct);
-                cursor = chunkEnd.AddDays(1);
             }
         }
         return errors;

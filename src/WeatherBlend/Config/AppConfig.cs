@@ -2,7 +2,35 @@ namespace WeatherBlend.Config;
 
 public sealed class AppConfig
 {
-    public LocationConfig Location { get; set; } = new();
+    /// <summary>
+    /// Configured locations the system can target. YAML key: <c>locations:</c>
+    /// (a list). Backfill + Collect iterate all entries; train/predict/site
+    /// commands currently operate on the FIRST (primary) location only via
+    /// the back-compat <see cref="Location"/> accessor — adding a second
+    /// location to the YAML doesn't break those single-location code paths,
+    /// it just makes data available under the new <c>location=&lt;n&gt;</c>
+    /// partitions so a future per-location predict/site can pick it up.
+    ///
+    /// Default: empty list. The YAML binder will populate when the file is
+    /// loaded; tests / unit-tests of LocationConfig itself don't depend on
+    /// this list being non-empty.
+    /// </summary>
+    public List<LocationConfig> Locations { get; set; } = new();
+
+    /// <summary>
+    /// Back-compat accessor for the historical single-location field. Returns
+    /// the FIRST configured location (the primary). 29+ call sites across
+    /// Commands/, Storage/, Train/ continue to use <c>_cfg.Location.X</c>;
+    /// keeping this as a computed property over <see cref="Locations"/>
+    /// keeps them all working unchanged after the 2026-05-11 multi-location
+    /// shift. New code that needs ALL locations (Backfill, Collect) iterates
+    /// <c>Locations</c> directly.
+    /// </summary>
+    public LocationConfig Location
+        => Locations.Count > 0 ? Locations[0] : _emptyLocation;
+
+    private static readonly LocationConfig _emptyLocation = new();
+
     public List<ModelConfig> Models { get; set; } = new();
     public VariablesConfig Variables { get; set; } = new();
     public int ForecastDays { get; set; } = 7;
