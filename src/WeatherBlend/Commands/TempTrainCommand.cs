@@ -45,6 +45,17 @@ public sealed class TempTrainCommand
     // own train commands set DefaultLeads = Leads.Short).
     private static readonly int[] DefaultLeads = Leads.Full;
 
+    // Env var escape hatch for bake-off + research training where the
+    // post-train conformal fit (~5 min/lead × 5 leads = ~25 min per
+    // station) is dead weight. Set WB_SKIP_CONFORMAL=1 to skip the
+    // FitOneAsync call after a 3a/3c train. Production retrain workflows
+    // never set this — they want the conformal sidecar so live predict
+    // can emit ConformalSetTag. Local exploratory train command-lines
+    // (which is most of what fires this) get the speedup.
+    private readonly bool _skipConformal =
+        string.Equals(Environment.GetEnvironmentVariable("WB_SKIP_CONFORMAL"),
+            "1", StringComparison.Ordinal);
+
     public TempTrainCommand(
         ILogger<TempTrainCommand> log,
         AppConfig cfg,
@@ -1020,10 +1031,17 @@ public sealed class TempTrainCommand
             string.Join("; ", perLead.Select(kv =>
                 $"lead {kv.Key}h: blend Brier {kv.Value.BlendTestMae:0.000} vs climatology Brier {kv.Value.BlendTestRmse:0.000}")));
 
-        var (cf, cs) = await _precipConformal.FitOneAsync(
-            stationSlug, versionName, PrecipConformalFitCommand.DefaultAlpha, ct);
-        _log.LogInformation("Auto-conformal: fitted {F} leads ({S} skipped) for {S2}/{V}",
-            cf, cs, stationSlug, versionName);
+        if (_skipConformal)
+        {
+            _log.LogInformation("Auto-conformal: SKIPPED (WB_SKIP_CONFORMAL=1)");
+        }
+        else
+        {
+            var (cf, cs) = await _precipConformal.FitOneAsync(
+                stationSlug, versionName, PrecipConformalFitCommand.DefaultAlpha, ct);
+            _log.LogInformation("Auto-conformal: fitted {F} leads ({S} skipped) for {S2}/{V}",
+                cf, cs, stationSlug, versionName);
+        }
         return 0;
     }
 
@@ -1099,6 +1117,12 @@ public sealed class TempTrainCommand
         List<float[]>? firstLeadTrainFeatures = null;
         IReadOnlyList<bool>? firstLeadTrainLabels = null;
         int totalTrainRows = 0, totalValRows = 0, totalTestRows = 0;
+        // Per-row held-out test predictions for the bake-off parquet —
+        // same canonical schema 3a/3e/4a/5a write so a single stacking
+        // analysis can inner-join across phases. Added 2026-05-11
+        // (3c was previously missing test_predictions, blocking
+        // 3c-vs-3e-vs-4a stacking work).
+        var testPredictionRows = new List<TestPredictionRow>();
 
         foreach (var lead in leads)
         {
@@ -1193,12 +1217,34 @@ public sealed class TempTrainCommand
             _log.LogInformation(
                 "Lead {Lead}h headline — blend Brier={Brier:0.000}, clim={Clim:0.000}, BSS={Bss:+0.000;-0.000;0.000}, fbias={Fb:0.00}, best[{Best}] test Brier={BestT:0.000} (val {BestV:0.000}), Δ {Delta:+0.0;-0.0;0.0}%",
                 lead, blendBrier, climBrier, bss, fbias, best, bestTestBrierR, bestValBrier, deltaPctR);
+
+            // Per-row test predictions for the bake-off parquet (2026-05-11
+            // — was missing from 3c, blocking 3c/3e/4a stacking analysis).
+            for (int i = 0; i < ds.Test.Count; i++)
+            {
+                testPredictionRows.Add(new TestPredictionRow
+                {
+                    valid_time   = ds.Test[i].ValidTimeUtc,
+                    station      = stationSlug,
+                    lead         = lead,
+                    p_wet        = blendProb[i],
+                    observed_wet = (byte)(ds.Test[i].Label ? 1 : 0),
+                });
+            }
         }
 
         ModelArtifact.SaveBlenderSpecs(versionDir, specsPerLead);
         ModelArtifact.SavePerLeadFeatureImportance(versionDir, importanceByLead);
         if (climatology is not null)
             climatology.SaveTo(Path.Combine(versionDir, ModelArtifact.ClimatologyFileName));
+        if (testPredictionRows.Count > 0)
+        {
+            var testPredPath = Path.Combine(versionDir, "test_predictions.parquet");
+            await Parquet.Serialization.ParquetSerializer.SerializeAsync(
+                testPredictionRows, testPredPath, cancellationToken: ct);
+            _log.LogInformation("Wrote {N} test prediction rows → {Path}",
+                testPredictionRows.Count, testPredPath);
+        }
 
         var metadata = new ModelArtifact.TrainingMetadata
         {
@@ -1253,10 +1299,17 @@ public sealed class TempTrainCommand
             string.Join("; ", perLead.Select(kv =>
                 $"lead {kv.Key}h: blend Brier {kv.Value.BlendTestMae:0.000} vs climatology Brier {kv.Value.BlendTestRmse:0.000}")));
 
-        var (cf, cs) = await _precipConformal.FitOneAsync(
-            stationSlug, versionName, PrecipConformalFitCommand.DefaultAlpha, ct);
-        _log.LogInformation("Auto-conformal: fitted {F} leads ({S} skipped) for {S2}/{V}",
-            cf, cs, stationSlug, versionName);
+        if (_skipConformal)
+        {
+            _log.LogInformation("Auto-conformal: SKIPPED (WB_SKIP_CONFORMAL=1)");
+        }
+        else
+        {
+            var (cf, cs) = await _precipConformal.FitOneAsync(
+                stationSlug, versionName, PrecipConformalFitCommand.DefaultAlpha, ct);
+            _log.LogInformation("Auto-conformal: fitted {F} leads ({S} skipped) for {S2}/{V}",
+                cf, cs, stationSlug, versionName);
+        }
         return 0;
     }
 

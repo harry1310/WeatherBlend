@@ -223,41 +223,71 @@ public sealed class MlpTrainer
         return Sequential(layers.ToArray());
     }
 
-    /// <summary>Per-feature mean + scale on TRAIN ONLY.
-    /// scale clamped at 1e-6 to avoid divide-by-zero on constant features.</summary>
+    /// <summary>Per-feature mean + scale on TRAIN ONLY, NaN-aware.
+    ///
+    /// Critical for the rich (3c-shape) feature vector: persistence
+    /// features (eaRainPrev24h/72h, wet/dry hours) are NaN at the start
+    /// of the time series; per-model NWP fields are NaN when an optional
+    /// model is absent (e.g. AIFS pre-2026-04-27, JMA pre-2026-04-28).
+    /// LightGBM handles NaN natively, so 3a/3c never had to care; MLPs
+    /// propagate NaN → BCE of NaN → NaN gradient → all weights NaN, then
+    /// every val Brier is NaN/∞, early stop never sees improvement, and
+    /// the model collapses to the random init (verified failure mode on
+    /// Hexworthy 2026-05-11). Skip NaN values when computing per-column
+    /// mean + variance; columns with no observed values fall back to
+    /// (mean=0, scale=1) so post-standardisation they're still 0.
+    ///
+    /// Scale clamped at 1e-6 to avoid divide-by-zero on constant
+    /// features (e.g. an integer-coded feature that's the same across
+    /// the whole train slice).</summary>
     private static (float[] Mean, float[] Scale) ComputeStandardiser(
         IReadOnlyList<BinaryTrainingRow> train, int d_in)
     {
         var n = train.Count;
-        var mean = new float[d_in];
-        var sumSq = new double[d_in];
-
-        // Two-pass: mean, then variance. Welford's would be one-pass but the
-        // dataset's small enough that the simpler form is plenty fast.
-        for (int i = 0; i < n; i++)
-        {
-            var f = train[i].Features;
-            for (int k = 0; k < d_in; k++) mean[k] += f[k];
-        }
-        for (int k = 0; k < d_in; k++) mean[k] /= n;
+        var sum = new double[d_in];
+        var count = new int[d_in];
 
         for (int i = 0; i < n; i++)
         {
             var f = train[i].Features;
             for (int k = 0; k < d_in; k++)
             {
+                if (float.IsNaN(f[k])) continue;
+                sum[k] += f[k];
+                count[k]++;
+            }
+        }
+        var mean = new float[d_in];
+        for (int k = 0; k < d_in; k++)
+            mean[k] = count[k] > 0 ? (float)(sum[k] / count[k]) : 0f;
+
+        var sumSq = new double[d_in];
+        for (int i = 0; i < n; i++)
+        {
+            var f = train[i].Features;
+            for (int k = 0; k < d_in; k++)
+            {
+                if (float.IsNaN(f[k])) continue;
                 var d = f[k] - mean[k];
                 sumSq[k] += d * d;
             }
         }
         var scale = new float[d_in];
         for (int k = 0; k < d_in; k++)
-            scale[k] = Math.Max((float)Math.Sqrt(sumSq[k] / Math.Max(1, n - 1)), 1e-6f);
+        {
+            if (count[k] > 1)
+                scale[k] = Math.Max((float)Math.Sqrt(sumSq[k] / (count[k] - 1)), 1e-6f);
+            else
+                scale[k] = 1f;
+        }
 
         return (mean, scale);
     }
 
-    /// <summary>Standardise rows + pack into a [N, d_in] float32 tensor.</summary>
+    /// <summary>Standardise rows + pack into a [N, d_in] float32 tensor.
+    /// NaN inputs are imputed to 0 POST-standardisation (= the
+    /// per-column mean) so they contribute a neutral signal rather
+    /// than poisoning the forward pass.</summary>
     private static Tensor MakeStandardisedTensor(
         IReadOnlyList<BinaryTrainingRow> rows, float[] mean, float[] scale, int d_in)
     {
@@ -268,7 +298,12 @@ public sealed class MlpTrainer
             var f = rows[i].Features;
             var off = i * d_in;
             for (int k = 0; k < d_in; k++)
-                flat[off + k] = (f[k] - mean[k]) / scale[k];
+            {
+                if (float.IsNaN(f[k]))
+                    flat[off + k] = 0f;          // = post-standardisation mean
+                else
+                    flat[off + k] = (f[k] - mean[k]) / scale[k];
+            }
         }
         return torch.tensor(flat, new long[] { n, d_in }, ScalarType.Float32);
     }
