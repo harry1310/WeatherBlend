@@ -240,9 +240,15 @@ jobs:
             *) echo "::error::Dry-window verify step exited $D_EXIT (non-drift failure)."; fail=1 ;;
           esac
           if [ "$E_DRIFT" = "1" ]; then
-            drift=1
-            drifted_targets+=("element")
-            echo "::error::Element drift detected — see verify report."
+            # Element drift is informational only — does NOT trip the
+            # build red. The 4 element blenders (wind / humidity /
+            # shortwave-radiation / cloud-cover) are pre-PoC support
+            # data, not the user-facing forecast lines, and their drift
+            # signal is noisier (no per-cell tolerance bands yet).
+            # Surfaces as a warning so it's visible in the run summary
+            # without paging via [ci-fail] verify. Hard step failures
+            # (E_FAIL=1, anything that's not 0 or 4) still fail.
+            echo "::warning::Element drift detected — see verify report (not failing the build, see verify.yml:242)."
           fi
           if [ "$E_FAIL" = "1" ]; then fail=1; fi
 
