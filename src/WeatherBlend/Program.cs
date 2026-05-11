@@ -577,9 +577,13 @@ public static class Program
             name: "--cycles",
             description: "Exact-runtime only: IFS-specific cycle filter — comma-separated RunTime cycle hours that the ecmwf_ifs_oper feature column may draw from (default null = all IFS cycles on disk). Other models pass through unfiltered. Use --cycles 0,12 for an oper-only IFS bake-off vs the default which includes the 06/18 scda cycles.",
             getDefaultValue: () => null);
+        var trainLocationOpt = new Option<string?>(
+            name: "--location",
+            description: "Override the primary location for precipitation training (3a/3c). Must match a name in config.yaml's `locations:` list (e.g. 'membury_devon'). Default = primary location (Bonehill). Other targets ignore this flag for now.",
+            getDefaultValue: () => null);
         var train = new Command("train", "Train the blender (phase 2b temperature / phase 3a precipitation / phase 3b dry-window)")
         {
-            targetOpt, leadOpt, stationOpt, windowOpt, featureSetOpt, tierOpt, includeUkvOpt, exactLeadsOpt, cyclesOpt,
+            targetOpt, leadOpt, stationOpt, windowOpt, featureSetOpt, tierOpt, includeUkvOpt, exactLeadsOpt, cyclesOpt, trainLocationOpt,
         };
         train.SetHandler(async (ctx) =>
         {
@@ -596,8 +600,9 @@ public static class Program
             var cyclesStr = ctx.ParseResult.GetValueForOption(cyclesOpt);
             int[]? cycles = string.IsNullOrWhiteSpace(cyclesStr) ? null
                 : cyclesStr.Split(',').Select(s => int.Parse(s.Trim(), System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+            var locationOverride = ctx.ParseResult.GetValueForOption(trainLocationOpt);
             var cmd = host.Services.GetRequiredService<TempTrainCommand>();
-            ctx.ExitCode = await cmd.RunAsync(target, lead, station, window, featureSet, tier, includeUkv, exactLeads, cycles, ctx.GetCancellationToken());
+            ctx.ExitCode = await cmd.RunAsync(target, lead, station, window, featureSet, tier, includeUkv, exactLeads, cycles, locationOverride, ctx.GetCancellationToken());
         });
         root.AddCommand(train);
 

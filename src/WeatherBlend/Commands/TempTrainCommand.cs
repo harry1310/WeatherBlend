@@ -60,21 +60,26 @@ public sealed class TempTrainCommand
     }
 
     public Task<int> RunAsync(string target, string lead, string? station, string? window, string featureSet, CancellationToken ct)
-        => RunAsync(target, lead, station, window, featureSet, tier: null, includeUkv: null, exactLeads: null, cycles: null, ct);
+        => RunAsync(target, lead, station, window, featureSet, tier: null, includeUkv: null, exactLeads: null, cycles: null, locationOverride: null, ct);
 
     public Task<int> RunAsync(
         string target, string lead, string? station, string? window, string featureSet,
         string? tier, bool? includeUkv, CancellationToken ct)
-        => RunAsync(target, lead, station, window, featureSet, tier, includeUkv, exactLeads: null, cycles: null, ct);
+        => RunAsync(target, lead, station, window, featureSet, tier, includeUkv, exactLeads: null, cycles: null, locationOverride: null, ct);
 
     public Task<int> RunAsync(
         string target, string lead, string? station, string? window, string featureSet,
         string? tier, bool? includeUkv, int[]? exactLeads, CancellationToken ct)
-        => RunAsync(target, lead, station, window, featureSet, tier, includeUkv, exactLeads, cycles: null, ct);
+        => RunAsync(target, lead, station, window, featureSet, tier, includeUkv, exactLeads, cycles: null, locationOverride: null, ct);
+
+    public Task<int> RunAsync(
+        string target, string lead, string? station, string? window, string featureSet,
+        string? tier, bool? includeUkv, int[]? exactLeads, int[]? cycles, CancellationToken ct)
+        => RunAsync(target, lead, station, window, featureSet, tier, includeUkv, exactLeads, cycles, locationOverride: null, ct);
 
     public async Task<int> RunAsync(
         string target, string lead, string? station, string? window, string featureSet,
-        string? tier, bool? includeUkv, int[]? exactLeads, int[]? cycles, CancellationToken ct)
+        string? tier, bool? includeUkv, int[]? exactLeads, int[]? cycles, string? locationOverride, CancellationToken ct)
     {
         // tier + includeUkv + exactLeads are exact-runtime levers (Phase 2d /
         // 3d). Defaults (null, null, null) preserve historical behaviour: 2d
@@ -149,6 +154,28 @@ public sealed class TempTrainCommand
             leads = leads.Where(l => l != 96 && l != 120).ToArray();
         }
 
+        // Resolve --location for the precipitation 3a/3c paths. Other targets
+        // ignore it for now — those trainers still hardcode _cfg.Location
+        // (the primary). When/if temperature or dry-window need multi-location
+        // support, thread `location` through the same way.
+        Config.LocationConfig? location = _cfg.Location;
+        if (!string.IsNullOrWhiteSpace(locationOverride))
+        {
+            location = _cfg.Locations.FirstOrDefault(l =>
+                l.Name.Equals(locationOverride, StringComparison.OrdinalIgnoreCase));
+            if (location is null)
+            {
+                _log.LogError("Location '{Name}' not found in config.yaml's `locations:` list. Available: [{All}]",
+                    locationOverride,
+                    string.Join(", ", _cfg.Locations.Select(l => l.Name)));
+                return 2;
+            }
+            if (t != "precipitation")
+            {
+                _log.LogWarning("--location only affects precipitation 3a/3c today; ignoring for target '{T}'.", t);
+            }
+        }
+
         return t switch
         {
             "temperature"   => fs switch
@@ -159,9 +186,9 @@ public sealed class TempTrainCommand
             },
             "precipitation" => fs switch
             {
-                "rich"  => await RunPhase3cAsync(leads, station, ct),
+                "rich"  => await RunPhase3cAsync(leads, station, location, ct),
                 "exact" => await RunPhase3dAsync(station, tier, includeUkv, exactLeads, cycles, ct),
-                _       => await RunPhase3aAsync(leads, station, ct),
+                _       => await RunPhase3aAsync(leads, station, location, ct),
             },
             // dry-window: lean → Phase 3b (53 features),
             //             independence-mc → Phase 3g (parameter-free MC over 3a marginals).
@@ -746,27 +773,27 @@ public sealed class TempTrainCommand
 
     // ---- Phase 3a: precipitation occurrence classifier ----------------------------
 
-    private async Task<int> RunPhase3aAsync(int[] leads, string? stationOverride, CancellationToken ct)
+    private async Task<int> RunPhase3aAsync(int[] leads, string? stationOverride, Config.LocationConfig location, CancellationToken ct)
     {
-        if (_cfg.Location.Rainfall.Stations.Count == 0)
+        if (location.Rainfall.Stations.Count == 0)
         {
-            _log.LogError("No rainfall stations configured — cannot train precipitation blender.");
+            _log.LogError("No rainfall stations configured for location '{Loc}' — cannot train precipitation blender.", location.Name);
             return 2;
         }
 
         string primaryStation;
         if (string.IsNullOrWhiteSpace(stationOverride))
         {
-            primaryStation = _cfg.Location.Rainfall.Stations[0].Name;
+            primaryStation = location.Rainfall.Stations[0].Name;
         }
         else
         {
-            var match = _cfg.Location.Rainfall.Stations
+            var match = location.Rainfall.Stations
                 .FirstOrDefault(s => s.Name.Equals(stationOverride, StringComparison.OrdinalIgnoreCase));
             if (match is null)
             {
-                _log.LogError("Station '{Station}' not found in config. Available: {Available}",
-                    stationOverride, string.Join(", ", _cfg.Location.Rainfall.Stations.Select(s => s.Name)));
+                _log.LogError("Station '{Station}' not found in location '{Loc}' config. Available: {Available}",
+                    stationOverride, location.Name, string.Join(", ", location.Rainfall.Stations.Select(s => s.Name)));
                 return 2;
             }
             primaryStation = match.Name;
@@ -815,7 +842,7 @@ public sealed class TempTrainCommand
             var rows = PrecipFeatureBuilder.BuildForLead(
                 _cfg.Storage.ForecastsPath,
                 _cfg.Storage.RainfallPath,
-                _cfg.Location.Name,
+                location.Name,
                 primaryStation,
                 spec,
                 ct);
@@ -992,11 +1019,11 @@ public sealed class TempTrainCommand
 
     // ---- Phase 3c: rich-feature precip occurrence blender (champion/challenger) ----
 
-    private async Task<int> RunPhase3cAsync(int[] leads, string? stationOverride, CancellationToken ct)
+    private async Task<int> RunPhase3cAsync(int[] leads, string? stationOverride, Config.LocationConfig location, CancellationToken ct)
     {
-        if (_cfg.Location.Rainfall.Stations.Count == 0)
+        if (location.Rainfall.Stations.Count == 0)
         {
-            _log.LogError("No rainfall stations configured — cannot train precipitation blender.");
+            _log.LogError("No rainfall stations configured for location '{Loc}' — cannot train precipitation blender.", location.Name);
             return 2;
         }
 
@@ -1006,16 +1033,16 @@ public sealed class TempTrainCommand
         IReadOnlyList<string> stationsToTrain;
         if (string.IsNullOrWhiteSpace(stationOverride))
         {
-            stationsToTrain = _cfg.Location.Rainfall.Stations.Select(s => s.Name).ToList();
+            stationsToTrain = location.Rainfall.Stations.Select(s => s.Name).ToList();
         }
         else
         {
-            var match = _cfg.Location.Rainfall.Stations
+            var match = location.Rainfall.Stations
                 .FirstOrDefault(s => s.Name.Equals(stationOverride, StringComparison.OrdinalIgnoreCase));
             if (match is null)
             {
-                _log.LogError("Station '{Station}' not found in config. Available: {Available}",
-                    stationOverride, string.Join(", ", _cfg.Location.Rainfall.Stations.Select(s => s.Name)));
+                _log.LogError("Station '{Station}' not found in location '{Loc}' config. Available: {Available}",
+                    stationOverride, location.Name, string.Join(", ", location.Rainfall.Stations.Select(s => s.Name)));
                 return 2;
             }
             stationsToTrain = new[] { match.Name };
@@ -1024,8 +1051,8 @@ public sealed class TempTrainCommand
         var modelsRoot = _cfg.Storage.ModelsPath;
         var hp = new PrecipOccurrenceTrainer.Hyperparameters();
 
-        _log.LogInformation("Phase 3c — rich-feature precip blender, stations=[{Stations}], leads=[{Leads}]",
-            string.Join(", ", stationsToTrain), string.Join(",", leads));
+        _log.LogInformation("Phase 3c — rich-feature precip blender, location='{Loc}', stations=[{Stations}], leads=[{Leads}]",
+            location.Name, string.Join(", ", stationsToTrain), string.Join(",", leads));
         _log.LogInformation("Hyperparameters: iter={Iter} lr={Lr} leaves={Leaves} esr={Esr} seed={Seed} (identical to Phase 3a — feature richness is the only variable)",
             hp.NumberOfIterations, hp.LearningRate, hp.NumberOfLeaves, hp.EarlyStoppingRound, hp.Seed);
 
@@ -1033,7 +1060,7 @@ public sealed class TempTrainCommand
         foreach (var station in stationsToTrain)
         {
             ct.ThrowIfCancellationRequested();
-            var rc = await TrainPhase3cStationAsync(station, leads, modelsRoot, hp, ct);
+            var rc = await TrainPhase3cStationAsync(station, leads, modelsRoot, hp, location, ct);
             if (rc != 0) anyFail = true;
         }
         return anyFail ? 3 : 0;
@@ -1044,6 +1071,7 @@ public sealed class TempTrainCommand
         int[] leads,
         string modelsRoot,
         PrecipOccurrenceTrainer.Hyperparameters hp,
+        Config.LocationConfig location,
         CancellationToken ct)
     {
         var stationSlug = StationSlug.WithEaPrefix(primaryStation);
@@ -1074,7 +1102,7 @@ public sealed class TempTrainCommand
             var rows = PrecipRichFeatureBuilder.BuildForLead(
                 _cfg.Storage.ForecastsPath,
                 _cfg.Storage.RainfallPath,
-                _cfg.Location.Name,
+                location.Name,
                 primaryStation,
                 spec,
                 ct);
