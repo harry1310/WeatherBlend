@@ -62,6 +62,15 @@ targets:
       - id: "3d"
         role: challenger
         impl: dotnet
+      # 3e (TorchSharp MLP) added 2026-05-11 as the first .NET-native
+      # tabular-NN bake-off vs 3a/3c. Same 59-feat rich input as 3c so
+      # the comparison is GBT-vs-MLP-on-identical-data; per-station,
+      # per-lead, same bundle dir layout. Predict dispatches by
+      # metadata.Phase == "3e" to MlpPredictor (TorchSharp libtorch
+      # CPU-only).
+      - id: "3e"
+        role: challenger
+        impl: dotnet
       # 4a became per-cell on 2026-05-11 (lead-pooled flavour
       # retired). One BART per (station, lead), matching 3a's
       # architecture. Aligned-row bake-off 2026-05-10 showed per-cell

@@ -46,6 +46,22 @@
     <!-- ML (for the trainer in phase 2) -->
     <PackageReference Include="Microsoft.ML" Version="4.0.0" />
     <PackageReference Include="Microsoft.ML.LightGbm" Version="4.0.0" />
+
+    <!-- Phase 3e MLP — TorchSharp .NET-native PyTorch binding for the
+         tabular NN bake-off vs 3a/3c/4a. TorchSharp is the managed
+         wrapper; TorchSharp-cpu pulls the CPU-only libtorch native
+         binaries (~500 MB native install on first restore for win-x64
+         + linux-x64 + osx-arm64). CPU-only because our 30k × 59 MLP
+         fits comfortably without GPU and we don't want CUDA dragged
+         into GH runner builds.
+
+         Pinned to 0.105.0 — the actively-maintained 0.10x line as of
+         late 2024 / early 2025. Bumps need re-verifying that the
+         tabular MLP API (torch.nn.Linear / torch.nn.Sequential /
+         BCELoss / Adam / state_dict save+load) hasn't drifted; the
+         library reshuffles its public surface across minor versions. -->
+    <PackageReference Include="TorchSharp" Version="0.105.0" />
+    <PackageReference Include="TorchSharp-cpu" Version="0.105.0" />
   </ItemGroup>
 
 </Project>
