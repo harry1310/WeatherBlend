@@ -579,8 +579,11 @@ public class SitePagesTests
         html.Should().Contain("(1 run)");
         // Per-lead BlendMetric reaches the table (1.234 → "1.234").
         html.Should().Contain("1.234");
-        // Drift indicator — clean tick when DriftFlag is false.
-        html.Should().Contain("✓");
+        // No ⚠/✓ icons, no right-hand "Drift" column — removed
+        // 2026-05-11; per-lead red text is the only drift indicator now.
+        html.Should().NotContain("✓");
+        html.Should().NotContain("⚠");
+        html.Should().NotContain(">Drift</th>");
     }
 
     [Fact]

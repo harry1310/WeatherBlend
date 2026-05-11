@@ -201,19 +201,25 @@ jobs:
           if-no-files-found: ignore
 
       - name: Flag drift in job summary + alert
-        # Phase 3 of AUTO_RETRAIN_PLAN.md — drift flips the workflow to
-        # non-zero exit so the existing GH App webhook auto-files a
-        # [ci-fail] verify issue. Pre-2026-05-10 drift was a `::warning::`
-        # only, which left the orange pill in the run list but never
-        # surfaced as an issue — easy to miss on a Mon+Thu cadence.
+        # Drift is informational, not a pipeline failure. As of 2026-05-11
+        # all drift signals (temp / precip / dry-window / element) emit
+        # ::warning:: + a summary block and the workflow exits 0 if every
+        # verify step actually ran cleanly. Two reasons:
+        #   1. Drift is a MODEL signal, not a PIPELINE signal — the cron
+        #      did its job; the model has a regime/sample-size issue the
+        #      Sunday retrain will absorb. Failing the workflow muddles
+        #      the two AND silently blocks render-site.yml from running
+        #      that day (its workflow_run trigger is gated on
+        #      `conclusion == 'success'`), so the user can't even see the
+        #      fresh drift numbers on the site until the next clean run.
+        #   2. The user reads the site to triage drift; a [ci-fail]
+        #      verify issue per drift-day is noise, not signal.
+        # Hard step failures (compile error, missing data, anything not
+        # 0 or 4) still exit 1.
         #
-        # Cooldown / re-issue suppression is handled by the GH App's
-        # built-in de-dupe (matches by run-failure signature). If verify
-        # sees the same drift on the next run we'd file a new issue;
-        # in practice the App's bot threads them on the same conversation
-        # so the noise stays manageable. Per-cell hash de-dupe (drift on
-        # a NEW (target, station, lead) but the previous one is still
-        # open) can be added later via state JSON in R2 if it gets noisy.
+        # Pre-2026-05-11 drift exited 4 → fired the [ci-fail] verify
+        # issue via the GH App webhook + skipped render-site auto-trigger.
+        # Both undesirable.
         if: always()
         run: |
           T_EXIT="${{ steps.verify_run.outputs.exit }}"
@@ -221,52 +227,41 @@ jobs:
           D_EXIT="${{ steps.verify_dry_window_run.outputs.exit }}"
           E_DRIFT="${{ steps.verify_elements_run.outputs.drift }}"
           E_FAIL="${{ steps.verify_elements_run.outputs.fail }}"
-          drift=0
           fail=0
           drifted_targets=()
           case "$T_EXIT" in
             0) ;;
-            4) echo "::error::Temperature drift detected — see verify report."; drift=1; drifted_targets+=("temperature") ;;
+            4) echo "::warning::Temperature drift detected — see verify report."; drifted_targets+=("temperature") ;;
             *) echo "::error::Temperature verify step exited $T_EXIT (non-drift failure)."; fail=1 ;;
           esac
           case "$P_EXIT" in
             0) ;;
-            4) echo "::error::Precipitation drift detected — see verify report."; drift=1; drifted_targets+=("precipitation") ;;
+            4) echo "::warning::Precipitation drift detected — see verify report."; drifted_targets+=("precipitation") ;;
             *) echo "::error::Precipitation verify step exited $P_EXIT (non-drift failure)."; fail=1 ;;
           esac
           case "$D_EXIT" in
             0) ;;
-            4) echo "::error::Dry-window drift detected — see verify report."; drift=1; drifted_targets+=("dry-window") ;;
+            4) echo "::warning::Dry-window drift detected — see verify report."; drifted_targets+=("dry-window") ;;
             *) echo "::error::Dry-window verify step exited $D_EXIT (non-drift failure)."; fail=1 ;;
           esac
           if [ "$E_DRIFT" = "1" ]; then
-            # Element drift is informational only — does NOT trip the
-            # build red. The 4 element blenders (wind / humidity /
-            # shortwave-radiation / cloud-cover) are pre-PoC support
-            # data, not the user-facing forecast lines, and their drift
-            # signal is noisier (no per-cell tolerance bands yet).
-            # Surfaces as a warning so it's visible in the run summary
-            # without paging via [ci-fail] verify. Hard step failures
-            # (E_FAIL=1, anything that's not 0 or 4) still fail.
-            echo "::warning::Element drift detected — see verify report (not failing the build, see verify.yml:242)."
+            echo "::warning::Element drift detected — see verify report."
+            drifted_targets+=("element")
           fi
           if [ "$E_FAIL" = "1" ]; then fail=1; fi
 
-          if [ "$drift" = "1" ]; then
+          if [ "${#drifted_targets[@]}" -gt 0 ]; then
             {
-              echo "## Drift detected"
+              echo "## Drift detected (informational, not a build failure)"
               echo ""
               echo "Drifted target(s): ${drifted_targets[*]}"
               echo ""
-              echo "Per-cell (station × lead) breakdown is in the \`verify_*.md\` reports under \`data/reports/\` (uploaded as a workflow artifact)."
+              echo "Per-cell (station × lead) breakdown is in the \`verify_*.md\` reports under \`data/reports/\` (uploaded as a workflow artifact and pushed to R2 for the site to render)."
               echo ""
-              echo "Action: open the per-target report, identify the cells, and triage. Common causes:"
+              echo "Action: open the per-target report on the site, identify the cells, and triage. Common causes:"
               echo "  - upstream model dropping rows / changing schema → look at the matching RetrainGuard last-run log"
               echo "  - truth-source change (gauge clog, ERA5 schema bump) → check the truth tree's Pull step in the latest collect run"
               echo "  - real climate / regime shift → wait for next retrain (Sunday) to absorb"
             } >> "$GITHUB_STEP_SUMMARY"
-            # Non-zero exit fires the [ci-fail] verify issue via the
-            # existing webhook handler.
-            exit 4
           fi
           if [ "$fail" = "1" ]; then exit 1; fi

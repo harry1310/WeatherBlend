@@ -410,26 +410,12 @@ public static partial class SitePages
                 .ToDictionary(
                     g => g.Key,
                     g => g.OrderByDescending(r => r.ModelVersion, StringComparer.Ordinal).First());
-            var driftAnyBlend = byLead.Values.Any(r => r.DriftFlag);
-            // Track best-NWP drift across leads in this run, computed the
-            // same way the per-cell highlight does. Aggregates to a row-
-            // level signal so the right-hand drift column can show blend
-            // and best-NWP indicators stacked — without that split the
-            // user couldn't tell whether the row's ⚠ meant the blender
-            // had degraded or the underlying weather was hard.
-            var driftAnyBest = false;
-            foreach (var (lead, r) in byLead)
-            {
-                if (!r.BestSingleMetric.HasValue) continue;
-                if (!trainedSummary.PerLead.TryGetValue(lead, out var pl)) continue;
-                var baseline = pl.BestSingleTestMae;
-                if (double.IsNaN(baseline) || baseline <= 0) continue;
-                if (r.BestSingleMetric.Value > 1.5 * baseline)
-                {
-                    driftAnyBest = true;
-                    break;
-                }
-            }
+            // The right-hand "Drift" column (with ⚠/✓ icons stacked) was
+            // removed 2026-05-11 per user feedback: it duplicated the per-
+            // lead red-text highlight without adding information. The
+            // driftAnyBlend / driftAnyBest aggregations that fed it are
+            // gone too. Per-lead red text remains as the only drift
+            // indicator (driftCls below), and that's the source of truth.
 
             // Distinct versions scored across all leads in this run. Usually
             // one (the active version of this phase at verify-time), but a
@@ -493,28 +479,12 @@ public static partial class SitePages
                 }
             }
 
-            // Stacked drift cell: blend on top, best-NWP underneath, each
-            // with its own ⚠/✓. Labels make it explicit which line the
-            // indicator refers to (the prior single-icon cell only flagged
-            // blend drift but the lead cells highlighted best-NWP drift
-            // independently — readers couldn't tell what the row-level
-            // icon was claiming about). Same layout as the per-lead cell:
-            // headline metric on top, best-NWP small underneath.
-            var blendIcon = driftAnyBlend
-                ? "<span class=\"delta-bad\">⚠</span>"
-                : "<span class=\"delta-good\">✓</span>";
-            var bestIcon = driftAnyBest
-                ? "<span class=\"delta-bad\">⚠</span>"
-                : "<span class=\"delta-good\">✓</span>";
-            var driftCell = $"""<td class="num">blend {blendIcon}<br><small>NWP {bestIcon}</small></td>""";
-
             tbody.Append(Ci, $"""
                 <tr>
                   <td><time datetime="{file.AsOfUtc:yyyy-MM-dd}">{file.AsOfUtc:ddd yyyy-MM-dd}</time></td>
                   <td><small>{versionCellHtml}</small></td>
                   {nCellHtml}
                   {leadCells}
-                  {driftCell}
                 </tr>
                 """);
         }
@@ -528,7 +498,7 @@ public static partial class SitePages
         return $"""
             <div class="verify-history">
               <h5>Verify history <small>({matchingFiles.Count} run{(matchingFiles.Count == 1 ? "" : "s")})</small></h5>
-              <p class="skill-line">Mon + Thu rolling {Escape(metricLabel)}, drift flag in last column. Version column names the trained model — a fresh champion takes ~5-9d to show.</p>
+              <p class="skill-line">Mon + Thu rolling {Escape(metricLabel)}. Per-lead cells turn red when the rolling metric breaches the lead-specific drift threshold; check the verify report for the per-cell breakdown. Version column names the trained model — a fresh champion takes ~5-9d to show.</p>
               <table>
                 <thead>
                   <tr>
@@ -536,7 +506,6 @@ public static partial class SitePages
                     <th>Version</th>
                     <th class="num" title="Max predictions per lead in this run">N</th>
                     {leadHeaders}
-                    <th class="num">Drift</th>
                   </tr>
                 </thead>
                 <tbody>
