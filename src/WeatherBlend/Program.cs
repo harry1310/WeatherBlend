@@ -634,46 +634,56 @@ public static class Program
             name: "--window",
             description: "Dry-window only: window length in hours (3 | 4 | 6 | all)",
             getDefaultValue: () => "all");
+        var predictLocationOpt = new Option<string?>(
+            name: "--location",
+            description: "Precipitation only: override the primary location (e.g. 'membury_devon'). Filters stationsToRun to that location's rainfall config + reads forecasts from that location's tree. Default = primary location (Bonehill). Other targets ignore this flag for now.",
+            getDefaultValue: () => null);
         var predict = new Command(
             "predict",
             "Produce blended forecasts (24/48/72h, plus 120h for temperature + precipitation) from the current blender")
         {
-            predictTargetOpt, predictVersionOpt, predictForDateOpt, predictTruthStationOpt, predictWindowOpt,
+            predictTargetOpt, predictVersionOpt, predictForDateOpt, predictTruthStationOpt, predictWindowOpt, predictLocationOpt,
         };
-        predict.SetHandler(async (target, version, forDate, truthStation, window) =>
+        predict.SetHandler(async (ctx) =>
         {
+            var target = ctx.ParseResult.GetValueForOption(predictTargetOpt)!;
+            var version = ctx.ParseResult.GetValueForOption(predictVersionOpt)!;
+            var forDate = ctx.ParseResult.GetValueForOption(predictForDateOpt);
+            var truthStation = ctx.ParseResult.GetValueForOption(predictTruthStationOpt)!;
+            var window = ctx.ParseResult.GetValueForOption(predictWindowOpt)!;
+            var locationOverride = ctx.ParseResult.GetValueForOption(predictLocationOpt);
             var elementTarget = ElementTargets.TryFromCli(target);
             if (string.Equals(target, "precipitation", StringComparison.OrdinalIgnoreCase))
             {
                 var cmd = host.Services.GetRequiredService<PrecipPredictCommand>();
-                Environment.ExitCode = await cmd.RunAsync(truthStation, version, forDate, CancellationToken.None);
+                ctx.ExitCode = await cmd.RunAsync(truthStation, version, forDate, locationOverride, ctx.GetCancellationToken());
             }
             else if (string.Equals(target, "dry-window", StringComparison.OrdinalIgnoreCase))
             {
                 var cmd = host.Services.GetRequiredService<DryWindowPredictCommand>();
-                Environment.ExitCode = await cmd.RunAsync(truthStation, window, version, forDate, CancellationToken.None);
+                ctx.ExitCode = await cmd.RunAsync(truthStation, window, version, forDate, ctx.GetCancellationToken());
             }
             else if (string.Equals(target, "feels-like", StringComparison.OrdinalIgnoreCase))
             {
                 var cmd = host.Services.GetRequiredService<FeelsLikePredictCommand>();
-                Environment.ExitCode = await cmd.RunAsync(forDate, CancellationToken.None);
+                ctx.ExitCode = await cmd.RunAsync(forDate, ctx.GetCancellationToken());
             }
             else if (string.Equals(target, "start-hour", StringComparison.OrdinalIgnoreCase))
             {
                 var cmd = host.Services.GetRequiredService<StartHourPredictCommand>();
-                Environment.ExitCode = await cmd.RunAsync(forDate, CancellationToken.None);
+                ctx.ExitCode = await cmd.RunAsync(forDate, ctx.GetCancellationToken());
             }
             else if (elementTarget is not null)
             {
                 var cmd = host.Services.GetRequiredService<ElementPredictCommand>();
-                Environment.ExitCode = await cmd.RunAsync(elementTarget, version, forDate, CancellationToken.None);
+                ctx.ExitCode = await cmd.RunAsync(elementTarget, version, forDate, ctx.GetCancellationToken());
             }
             else
             {
                 var cmd = host.Services.GetRequiredService<TempPredictCommand>();
-                await cmd.RunAsync(target, version, forDate, CancellationToken.None);
+                await cmd.RunAsync(target, version, forDate, ctx.GetCancellationToken());
             }
-        }, predictTargetOpt, predictVersionOpt, predictForDateOpt, predictTruthStationOpt, predictWindowOpt);
+        });
         root.AddCommand(predict);
 
         // ---- precip-replay (one-off research command — see PrecipReplayCommand docs) ----

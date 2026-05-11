@@ -41,10 +41,11 @@ runs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature
         fi
 
-    - name: Predict precipitation
+    - name: Predict precipitation (Bonehill, primary location)
       shell: bash
-      # Per-station P(wet). Soft-skip 2 (no precip blender yet) / 3 (no
-      # forecast rows for targets) — neither fatal for the overall predict.
+      # Per-station P(wet) for the primary location. Soft-skip 2 (no precip
+      # blender yet) / 3 (no forecast rows for targets) — neither fatal for
+      # the overall predict.
       run: |
         FOR_DATE="${{ inputs.for_date }}"
         code=0
@@ -52,6 +53,25 @@ runs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target precipitation --truth-station all --for-date "$FOR_DATE" || code=$?
         else
           dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target precipitation --truth-station all || code=$?
+        fi
+        if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then exit "$code"; fi
+
+    - name: Predict precipitation (Membury)
+      shell: bash
+      # Per-station P(wet) for Membury (3 EA gauges). --location filters
+      # stationsToRun to only Membury slugs and reads forecasts from the
+      # Membury tree — Bonehill stations are scored separately above.
+      # Same soft-skip semantics. Phase B of the Membury ship plan
+      # (2026-05-11): predictions land in the standard tree under
+      # data/predictions/precipitation/{station}/...; verify picks them
+      # up automatically (already location-agnostic).
+      run: |
+        FOR_DATE="${{ inputs.for_date }}"
+        code=0
+        if [ -n "$FOR_DATE" ]; then
+          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target precipitation --location membury_devon --truth-station all --for-date "$FOR_DATE" || code=$?
+        else
+          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target precipitation --location membury_devon --truth-station all || code=$?
         fi
         if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then exit "$code"; fi
 

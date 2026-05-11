@@ -224,7 +224,7 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target temperature --feature-set exact
 
-      - name: Train 3a (precipitation lean)
+      - name: Train 3a (precipitation lean) — Bonehill
         id: train_3a
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3a == 'true'
         continue-on-error: true
@@ -232,13 +232,43 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target precipitation
 
-      - name: Train 3c (precipitation rich)
+      - name: Train 3a (precipitation lean) — Membury
+        # Phase A of the Membury ship plan: Sunday retrain now refreshes
+        # both locations. Each location is a separate `dotnet run` —
+        # bundles land at data/models/precipitation/{station}/v..._phase3a/
+        # with station-unique slugs (ea_chards_snowdon_hill / ea_goren /
+        # ea_raymonds_hill), so no path collision with Bonehill.
+        # RetrainGuard reads the previous training_summary.json for each
+        # cell independently, so Membury and Bonehill don't cross-drift.
+        # 3a is one-station-per-call so we loop the 3 EA gauges via
+        # --station; each call trains all 5 leads for that station.
+        id: train_3a_membury
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3a == 'true'
+        continue-on-error: true
+        run: |
+          for s in "Chards Snowdon Hill" "Goren" "Raymonds Hill"; do
+            echo "=== 3a Membury station: $s ==="
+            dotnet run --project src/WeatherBlend --no-build -c Release -- \
+              train --target precipitation --location membury_devon --station "$s"
+          done
+
+      - name: Train 3c (precipitation rich) — Bonehill
         id: train_3c
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3c == 'true'
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target precipitation --feature-set rich
+
+      - name: Train 3c (precipitation rich) — Membury
+        # 3c auto-iterates all stations of the given location, so one call
+        # trains all 3 Membury gauges (no inner loop needed).
+        id: train_3c_membury
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3c == 'true'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target precipitation --feature-set rich --location membury_devon
 
       - name: Train 3d (precipitation exact-runtime)
         id: train_3d
