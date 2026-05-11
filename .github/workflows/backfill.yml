@@ -16,6 +16,10 @@ on:
         description: "End date (yyyy-MM-dd, UTC) — leave blank for yesterday"
         required: false
         default: ""
+      location:
+        description: "Optional: backfill only this location name (e.g. membury_devon). Blank = all configured locations. Applies to previous-runs + rainfall."
+        required: false
+        default: ""
 
 concurrency:
   # Per-(source, start-date) groups so yearly-chunked dispatches run in
@@ -29,7 +33,7 @@ concurrency:
   # was over-cautious; the per-chunk concurrency style matches
   # archive-backfill.yml's design (see its concurrency block for the
   # GitHub-cancels-3rd-pending rationale).
-  group: weatherblend-backfill-${{ inputs.source }}-${{ inputs.start }}
+  group: weatherblend-backfill-${{ inputs.source }}-${{ inputs.start }}-${{ inputs.location || 'all' }}
   cancel-in-progress: false
 
 jobs:
@@ -100,8 +104,12 @@ jobs:
           if [ -n "${{ inputs.end }}" ]; then
             END_ARG="--end ${{ inputs.end }}"
           fi
+          LOC_ARG=""
+          if [ -n "${{ inputs.location }}" ]; then
+            LOC_ARG="--location ${{ inputs.location }}"
+          fi
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            backfill --source ${{ inputs.source }} --start ${{ inputs.start }} $END_ARG
+            backfill --source ${{ inputs.source }} --start ${{ inputs.start }} $END_ARG $LOC_ARG
 
       - name: Push data to R2
         if: always()

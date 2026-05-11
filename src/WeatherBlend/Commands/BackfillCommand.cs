@@ -47,18 +47,27 @@ public sealed class BackfillCommand
         _log = log;
     }
 
-    public async Task<int> RunAsync(string source, DateOnly start, DateOnly end, string? model, CancellationToken ct)
+    public async Task<int> RunAsync(string source, DateOnly start, DateOnly end, string? model, string? location, CancellationToken ct)
     {
-        _log.LogInformation("Backfill source={Source} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd}{ModelFilter} for {Location}",
-            source, start, end, model is null ? "" : $" model={model}", _cfg.Location.DisplayName);
-
+        // Resolve the locations to iterate. Default (location==null) = all
+        // configured. With --location, restrict to that single named entry —
+        // useful for adding a new location without re-pulling existing
+        // locations' historical data (which is otherwise wastefully
+        // idempotent against the OM previous_runs rate limiter).
         var src = source.ToLowerInvariant();
+        var locations = ResolveLocations(location);
+        if (locations is null) return 2;   // unknown location name; ResolveLocations already logged
+
+        _log.LogInformation("Backfill source={Source} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd}{ModelFilter} — {N} location(s): [{Names}]",
+            source, start, end, model is null ? "" : $" model={model}",
+            locations.Count, string.Join(", ", locations.Select(l => l.Name)));
+
         var errors = 0;
 
-        if (src is "previous-runs" or "all") errors += await BackfillPreviousRunsAsync(start, end, model, ct);
+        if (src is "previous-runs" or "all") errors += await BackfillPreviousRunsAsync(start, end, model, locations, ct);
         if (src is "era5" or "all")          errors += await BackfillEra5Async(start, end, ct);
         if (src is "metar" or "all")         errors += await BackfillMetarAsync(start, end, ct);
-        if (src is "rainfall" or "all")      errors += await BackfillRainfallAsync(start, end, ct);
+        if (src is "rainfall" or "all")      errors += await BackfillRainfallAsync(start, end, locations, ct);
 
         if (src is not ("previous-runs" or "era5" or "metar" or "rainfall" or "all"))
         {
@@ -69,6 +78,23 @@ public sealed class BackfillCommand
         return errors == 0 ? 0 : 1;
     }
 
+    /// <summary>Locations to iterate for previous-runs / rainfall. Returns
+    /// null when <paramref name="locationFilter"/> doesn't match any
+    /// configured Locations[].Name — caller treats null as exit-2.</summary>
+    private List<LocationConfig>? ResolveLocations(string? locationFilter)
+    {
+        var all = _cfg.Locations.Count > 0 ? _cfg.Locations : new List<LocationConfig> { _cfg.Location };
+        if (string.IsNullOrWhiteSpace(locationFilter)) return all;
+        var match = all.FirstOrDefault(l => string.Equals(l.Name, locationFilter, StringComparison.OrdinalIgnoreCase));
+        if (match is null)
+        {
+            _log.LogError("--location '{L}' not in configured locations. Available: [{Avail}]",
+                locationFilter, string.Join(", ", all.Select(l => l.Name)));
+            return null;
+        }
+        return new List<LocationConfig> { match };
+    }
+
     // ---- Previous Runs (per model, monthly chunks) -------------------------------
     //
     // Rows are tagged RunTimeSource=offset_day with LeadHours in {24,48,...,168}.
@@ -76,7 +102,7 @@ public sealed class BackfillCommand
     // before it went live the API returns all-null columns and ParsePreviousRuns
     // drops them, so early-date UKMO chunks will log 0 rows — that's expected.
 
-    private async Task<int> BackfillPreviousRunsAsync(DateOnly start, DateOnly end, string? modelFilter, CancellationToken ct)
+    private async Task<int> BackfillPreviousRunsAsync(DateOnly start, DateOnly end, string? modelFilter, IReadOnlyList<LocationConfig> locations, CancellationToken ct)
     {
         var errors = 0;
         var models = modelFilter is null
@@ -88,14 +114,14 @@ public sealed class BackfillCommand
                 modelFilter, string.Join(", ", _cfg.Models.Select(m => m.Id)));
             return 1;
         }
-        // Multi-location 2026-05-11: iterate every configured location.
-        // Open-Meteo previous_runs is keyed by (lat, lon) so different
-        // locations get independently keyed parquet partitions
+        // Multi-location 2026-05-11: iterate the locations the caller
+        // resolved (all configured OR a single one when --location is
+        // set). Open-Meteo previous_runs is keyed by (lat, lon) so
+        // different locations get independently keyed parquet partitions
         // (location=<name>/model=<id>/date=*/run=*.parquet). The token-
         // bucket rate limit is per-API-key not per-location, so the
         // existing PreviousRunsBackfillDelaySeconds knob still applies
         // across the combined fetch volume.
-        var locations = _cfg.Locations.Count > 0 ? _cfg.Locations : new List<LocationConfig> { _cfg.Location };
         foreach (var location in locations)
         {
             _log.LogInformation("previous-runs backfill: location={Name} ({Lat:0.0000}, {Lon:0.0000})",
@@ -206,7 +232,7 @@ public sealed class BackfillCommand
     // comfortable headroom and tidy per-chunk logs. A 1-second polite delay is
     // more than enough.
 
-    private async Task<int> BackfillRainfallAsync(DateOnly start, DateOnly end, CancellationToken ct)
+    private async Task<int> BackfillRainfallAsync(DateOnly start, DateOnly end, IReadOnlyList<LocationConfig> locations, CancellationToken ct)
     {
         var errors = 0;
         // Multi-location 2026-05-11: each location has its own stations
@@ -217,7 +243,6 @@ public sealed class BackfillCommand
         // — no collision risk across locations even if a station name
         // happens to coincide. Locations missing the rainfall block
         // (.Stations empty) are silently skipped.
-        var locations = _cfg.Locations.Count > 0 ? _cfg.Locations : new List<LocationConfig> { _cfg.Location };
         foreach (var location in locations)
         {
             if (location.Rainfall.Stations.Count == 0)
