@@ -584,6 +584,122 @@ public class SitePagesTests
     }
 
     [Fact]
+    public void RenderModels_verify_history_always_includes_full_lead_columns()
+    {
+        // The verify-history table column set is Leads.Full ∪ data-leads,
+        // so the canonical +24/+48/+72/+96/+120 columns always render even
+        // when this week's sidecar only has rows for a subset of leads
+        // (e.g. a freshly retrained champion hasn't accumulated long-lead
+        // predictions yet). Missing cells render as em-dash. Without this
+        // floor a sparse sidecar would silently drop columns and the user
+        // would think the longer leads were dropped from training.
+        var trained = new DateTime(2026, 4, 28, 23, 26, 0, DateTimeKind.Utc);
+        var perLead = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            [24] = new(24, "gfs", 1.23, 1.18, 0.987, 1.42, +0.05, 420, 6),
+        };
+        var summary = new SitePages.ModelSummary(
+            Composite: "temperature",
+            Version: "v2026-04-28_232613",
+            Phase: "2b",
+            DataSource: "era5",
+            TrainedAtUtc: trained,
+            MetricLabel: "Test MAE (°C)",
+            PerLead: perLead);
+
+        // Sidecar has only a lead-24 row — long leads should still appear.
+        var historyFile = new WeatherBlend.Models.VerifyHistoryFile
+        {
+            Target = "temperature",
+            AsOfUtc = new DateTime(2026, 5, 11, 9, 30, 0, DateTimeKind.Utc),
+            WindowDays = 14, LatencyDays = 5, MetricLabel = "MAE (°C)",
+            Rows = new List<WeatherBlend.Models.VerifyHistoryRow>
+            {
+                new()
+                {
+                    Station = null, ModelVersion = "v2026-04-28_232613",
+                    Phase = "2b",
+                    LeadHours = 24, WindowHours = null, N = 53,
+                    BlendMetric = 0.914, DriftFlag = false,
+                },
+            },
+        };
+
+        var input = MakeEmptyForecastInput() with
+        {
+            ModelSummaries = new[] { summary },
+            VerifyHistory = new[] { historyFile },
+        };
+
+        var html = SitePages.RenderModels(input, "temperature");
+
+        // All five canonical lead headers present even though data only has 24.
+        html.Should().Contain(">+24h<");
+        html.Should().Contain(">+48h<");
+        html.Should().Contain(">+72h<");
+        html.Should().Contain(">+96h<");
+        html.Should().Contain(">+120h<");
+    }
+
+    [Fact]
+    public void RenderModels_verify_history_renders_n_column_with_max_n()
+    {
+        // Verify-history rows carry per-lead N. The table surfaces the max
+        // across leads in a dedicated column right after Version — so a
+        // reviewer can spot at-a-glance whether a row's drift signal is on
+        // n=2 (probably noise) or n=53 (real). Long leads naturally have
+        // lower N than short leads; the max is the most informative single
+        // number per row.
+        var trained = new DateTime(2026, 4, 28, 23, 26, 0, DateTimeKind.Utc);
+        var perLead = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            [24] = new(24, "gfs", 1.23, 1.18, 0.987, 1.42, +0.05, 420, 6),
+        };
+        var summary = new SitePages.ModelSummary(
+            Composite: "temperature",
+            Version: "v2026-04-28_232613",
+            Phase: "2b",
+            DataSource: "era5",
+            TrainedAtUtc: trained,
+            MetricLabel: "Test MAE (°C)",
+            PerLead: perLead);
+
+        var historyFile = new WeatherBlend.Models.VerifyHistoryFile
+        {
+            Target = "temperature",
+            AsOfUtc = new DateTime(2026, 5, 11, 9, 30, 0, DateTimeKind.Utc),
+            WindowDays = 14, LatencyDays = 5, MetricLabel = "MAE (°C)",
+            Rows = new List<WeatherBlend.Models.VerifyHistoryRow>
+            {
+                // n drops with lead — the table should surface the max (53).
+                new() { ModelVersion = "v2026-04-28_232613", Phase = "2b",
+                        LeadHours = 24, N = 53, BlendMetric = 0.914 },
+                new() { ModelVersion = "v2026-04-28_232613", Phase = "2b",
+                        LeadHours = 48, N = 41, BlendMetric = 0.905 },
+                new() { ModelVersion = "v2026-04-28_232613", Phase = "2b",
+                        LeadHours = 72, N = 29, BlendMetric = 1.003 },
+                new() { ModelVersion = "v2026-04-28_232613", Phase = "2b",
+                        LeadHours = 96, N = 18, BlendMetric = 1.023 },
+                new() { ModelVersion = "v2026-04-28_232613", Phase = "2b",
+                        LeadHours = 120, N = 9, BlendMetric = 0.363 },
+            },
+        };
+
+        var input = MakeEmptyForecastInput() with
+        {
+            ModelSummaries = new[] { summary },
+            VerifyHistory = new[] { historyFile },
+        };
+
+        var html = SitePages.RenderModels(input, "temperature");
+
+        // The N column header is present.
+        html.Should().Contain(">N<");
+        // The row cell shows the MAX N across leads (53), not the lowest (9).
+        html.Should().Contain(">53<");
+    }
+
+    [Fact]
     public void RenderModels_renders_no_runs_yet_state_when_no_matching_phase()
     {
         // Different phase / different target → no rows match. Renderer used

@@ -153,8 +153,18 @@ public sealed class DryWindowVerifyCommand
                 phase = metadata.Phase ?? "";
             }
 
+            // Min-N gate + per-lead threshold relaxation match the other verifiers.
+            // Active-version filter is not yet wired for dry-window because the
+            // manifest is keyed per (station, window) with its own Current/Active
+            // block — TODO follow-up. Dry-window had zero drifts on 2026-05-11 so
+            // this is not urgent. Slope matches production default in the other
+            // verifiers so thresholds scale consistently across targets.
+            var effThreshold = driftThreshold
+                + TempVerifyCommand.DriftThresholdSlopeDefault
+                  * Math.Max(0.0, (g.Key.LeadHours - 24) / 24.0);
             var drift = trainingBrier.HasValue && trainingBrier.Value > 0
-                && blendBrier > trainingBrier.Value * driftThreshold;
+                && paired.Count >= TempVerifyCommand.MinDriftNDefault
+                && blendBrier > trainingBrier.Value * effThreshold;
 
             resultRows.Add(new VerifyRow(
                 g.Key.TruthStation, g.Key.WindowHours, g.Key.ModelVersion, phase, g.Key.LeadHours,

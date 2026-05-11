@@ -66,6 +66,17 @@ public static class PrecipVerifier
 
         /// <summary>Reliability-diagram bucket count. 10 equal-width bins over [0,1].</summary>
         public int ReliabilityBins { get; init; } = 10;
+
+        /// <summary>Per-additional-24h relaxation of the drift threshold. Long
+        /// leads are naturally worse at predicting precipitation occurrence —
+        /// don't alert on the same multiple. Default 0.0 = flat (tests).</summary>
+        public double DriftThresholdSlopePer24h { get; init; } = 0.0;
+
+        /// <summary>Minimum N for a drift flag to fire. Default 1 preserves
+        /// pre-2026-05-11 behaviour for tests; production sets to 10. Long-
+        /// retired versions self-suppress because predict stops emitting rows
+        /// for them.</summary>
+        public int MinDriftN { get; init; } = 1;
     }
 
     public sealed record VerifyRow(
@@ -93,7 +104,9 @@ public static class PrecipVerifier
         var windowStart = inputs.AsOfUtc.AddDays(-inputs.WindowDays);
         var windowEnd   = inputs.AsOfUtc.AddDays(-inputs.LatencyDays);
 
-        // Keep rows inside the window and with matching truth for this row's station.
+        // Keep rows inside the window with matching truth. No version filter —
+        // MinDriftN on the drift gate handles noise; retired versions stop
+        // accumulating predictions and fade from the rolling window.
         var kept = inputs.Predictions
             .Where(p => p.ValidTimeUtc >= windowStart && p.ValidTimeUtc <= windowEnd)
             .Where(p => inputs.TruthByStationTime.TryGetValue(p.TruthStation, out var byTime)
@@ -183,7 +196,11 @@ public static class PrecipVerifier
             && ls.BlendTestMae > 0)
         {
             refBrier = ls.BlendTestMae;
-            drift = !double.IsNaN(blendBrier) && blendBrier > inputs.DriftThreshold * ls.BlendTestMae;
+            var effectiveThreshold = inputs.DriftThreshold
+                + inputs.DriftThresholdSlopePer24h * Math.Max(0.0, (leadHours - 24) / 24.0);
+            drift = !double.IsNaN(blendBrier)
+                 && preds.Count >= inputs.MinDriftN
+                 && blendBrier > effectiveThreshold * ls.BlendTestMae;
         }
 
         var wetN = (int)truthBin.Sum();

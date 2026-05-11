@@ -99,6 +99,8 @@ public sealed class PrecipVerifyCommand
             WindowDays = windowDays,
             LatencyDays = latencyDays,
             DriftThreshold = driftThreshold,
+            DriftThresholdSlopePer24h = TempVerifyCommand.DriftThresholdSlopeDefault,
+            MinDriftN = TempVerifyCommand.MinDriftNDefault,
         });
 
         var md = PrecipVerifyReporter.BuildMarkdown(asOfUtc, windowDays, latencyDays, driftThreshold, rows);

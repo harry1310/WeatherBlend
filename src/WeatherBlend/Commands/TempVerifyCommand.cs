@@ -88,6 +88,8 @@ public sealed class TempVerifyCommand
             WindowDays = windowDays,
             Era5LatencyDays = era5LatencyDays,
             DriftThreshold = driftThreshold,
+            DriftThresholdSlopePer24h = DriftThresholdSlopeDefault,
+            MinDriftN = MinDriftNDefault,
         };
         var rows = TempVerifier.Compute(inputs);
         // Parallel view: same predictions grouped by ACTUAL lead at prediction
@@ -176,4 +178,20 @@ public sealed class TempVerifyCommand
         return drifting > 0 ? 4 : 0;
     }
 
+    /// <summary>
+    /// Minimum N for a drift flag in production. Picked to suppress single-prediction
+    /// noise (smoke tests, the first day after a new model is deployed) without
+    /// hiding genuine n=10+ signal. Tests bypass this by leaving Inputs.MinDriftN
+    /// at its default of 1. Shared across all four verify commands.
+    /// </summary>
+    public const int MinDriftNDefault = 10;
+
+    /// <summary>
+    /// Per-additional-24h relaxation of the drift threshold (added on top of the
+    /// CLI-supplied <c>--drift</c> base). 0.1 gives e.g. 24h:1.5×, 48h:1.6×,
+    /// 72h:1.7×, 96h:1.8×, 120h:1.9× when base is 1.5. Long-lead forecasts
+    /// degrade naturally — flagging a 120h prediction missing 1.5× its training
+    /// MAE is far less actionable than the same at 24h. Tune later if needed.
+    /// </summary>
+    public const double DriftThresholdSlopeDefault = 0.1;
 }

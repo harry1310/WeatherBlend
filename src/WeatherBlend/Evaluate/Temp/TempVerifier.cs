@@ -63,9 +63,35 @@ public static class TempVerifier
         /// Brief locks this at 5 days.</summary>
         public required int Era5LatencyDays { get; init; }
 
-        /// <summary>Drift flag fires when rolling blend MAE &gt; threshold × training-test MAE.
-        /// Brief locks this at 1.5.</summary>
+        /// <summary>Base drift threshold at lead 24h. Effective threshold at
+        /// other leads is <c>DriftThreshold + DriftThresholdSlopePer24h × max(0, (L-24)/24)</c>.
+        /// Brief originally locked this at 1.5; slope was 0 (flat) until 2026-05-11.</summary>
         public required double DriftThreshold { get; init; }
+
+        /// <summary>
+        /// Per-additional-24h relaxation of the drift threshold. Long-lead
+        /// forecasts naturally degrade — a 120h prediction missing 1.5× its
+        /// training MAE is much less alarming than a 24h one doing the same.
+        /// With the default 0.0, behaviour is the flat-threshold pre-2026-05-11
+        /// model (good for tests). Production sets this to 0.1 (or whatever
+        /// the user tunes), giving e.g. 24h:1.5×, 48h:1.6×, 72h:1.7×, 120h:1.9×.
+        /// </summary>
+        public double DriftThresholdSlopePer24h { get; init; } = 0.0;
+
+        /// <summary>
+        /// Minimum N for a drift flag to fire. Cells with fewer rows than this
+        /// still appear in the per-version table but their DriftFlag stays false
+        /// — a single unlucky prediction will routinely cross 1.5× the training
+        /// MAE without indicating real model regression. With MinDriftN=10,
+        /// smoke-test versions (n=1) and long-retired versions (n→0 in the
+        /// rolling window) self-suppress; recently-retired and currently-deployed
+        /// champions accumulate enough to be evaluated. No separate "active
+        /// versions" filter is needed — predict workflows stop emitting rows
+        /// for retired versions, so their counts naturally fade out of the
+        /// 14-day window within ~2 weeks. Default 1 preserves pre-2026-05-11
+        /// behaviour for tests; production sets to 10.
+        /// </summary>
+        public int MinDriftN { get; init; } = 1;
     }
 
     public sealed record VerifyRow(
@@ -102,9 +128,10 @@ public static class TempVerifier
         var windowStart = inputs.AsOfUtc.AddDays(-inputs.WindowDays);
         var windowEnd   = inputs.AsOfUtc.AddDays(-inputs.Era5LatencyDays);
 
-        // Keep rows (a) inside the window and (b) with matching truth. Without truth
-        // there's nothing to score; dropping upstream keeps every downstream metric
-        // honest (no silent NaN padding).
+        // Keep rows (a) inside the window and (b) with matching truth. No
+        // version filter — MinDriftN on the drift gate handles noise from
+        // smoke tests + long-retired versions; predict naturally stops emitting
+        // rows for retired versions so they fade from the rolling window.
         var kept = inputs.Predictions
             .Where(p => p.ValidTimeUtc >= windowStart && p.ValidTimeUtc <= windowEnd)
             .Where(p => inputs.TruthByTime.ContainsKey(p.ValidTimeUtc))
@@ -265,9 +292,13 @@ public static class TempVerifier
         }
         var persStats = TempMetrics.Compute(persPred, actual);
 
-        // Reference test MAE from training metadata + drift flag. Missing metadata is
-        // not an error — older versions may have been pruned or the prediction may
-        // pre-date today's manifest. Row still renders, drift column just blank.
+        // Reference test MAE from training metadata + drift flag. Two gates:
+        //   (1) N >= MinDriftN              — suppress single-prediction noise
+        //   (2) MAE > effectiveThreshold(L) — actual breach, lead-aware
+        // ActiveVersions filtering happens upstream in Compute(), so by this
+        // point we only see currently-deployed versions. Reference MAE is
+        // surfaced even when N < MinDriftN so reviewers can see thin-sample
+        // cells in the per-version table.
         double? refMae = null;
         var drift = false;
         if (inputs.MetadataByVersion.TryGetValue(version, out var md)
@@ -275,7 +306,10 @@ public static class TempVerifier
             && ls.BlendTestMae > 0)
         {
             refMae = ls.BlendTestMae;
-            drift = blendStats.N > 0 && blendStats.Mae > inputs.DriftThreshold * ls.BlendTestMae;
+            var effectiveThreshold = inputs.DriftThreshold
+                + inputs.DriftThresholdSlopePer24h * Math.Max(0.0, (leadHours - 24) / 24.0);
+            drift = blendStats.N >= inputs.MinDriftN
+                 && blendStats.Mae > effectiveThreshold * ls.BlendTestMae;
         }
 
         return new VerifyRow(

@@ -80,6 +80,8 @@ public sealed class ElementVerifyCommand
             WindowDays = windowDays,
             Era5LatencyDays = era5LatencyDays,
             DriftThreshold = driftThreshold,
+            DriftThresholdSlopePer24h = TempVerifyCommand.DriftThresholdSlopeDefault,
+            MinDriftN = TempVerifyCommand.MinDriftNDefault,
         });
 
         var md = ElementVerifyReporter.BuildMarkdown(

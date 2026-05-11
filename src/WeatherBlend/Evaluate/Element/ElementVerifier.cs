@@ -42,6 +42,16 @@ public static class ElementVerifier
         public required int WindowDays { get; init; }
         public required int Era5LatencyDays { get; init; }
         public required double DriftThreshold { get; init; }
+
+        /// <summary>Per-additional-24h relaxation of the drift threshold.
+        /// Default 0.0 = flat threshold (preserves pre-2026-05-11 tests).</summary>
+        public double DriftThresholdSlopePer24h { get; init; } = 0.0;
+
+        /// <summary>Minimum N for a drift flag to fire. Default 1 preserves
+        /// pre-2026-05-11 behaviour for tests; production sets to 10 to
+        /// suppress single-prediction noise. Long-retired versions self-suppress
+        /// because predict stops emitting rows for them.</summary>
+        public int MinDriftN { get; init; } = 1;
     }
 
     public sealed record VerifyRow(
@@ -124,7 +134,10 @@ public static class ElementVerifier
             && ls.BlendTestMae > 0)
         {
             refMae = ls.BlendTestMae;
-            drift = blendStats.N > 0 && blendStats.Mae > inputs.DriftThreshold * ls.BlendTestMae;
+            var effectiveThreshold = inputs.DriftThreshold
+                + inputs.DriftThresholdSlopePer24h * Math.Max(0.0, (leadHours - 24) / 24.0);
+            drift = blendStats.N >= inputs.MinDriftN
+                 && blendStats.Mae > effectiveThreshold * ls.BlendTestMae;
         }
 
         return new VerifyRow(

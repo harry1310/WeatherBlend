@@ -381,12 +381,18 @@ public static partial class SitePages
                 """;
         }
 
-        // Lead set for the columns: union across every matching run, sorted
-        // ascending. Different runs may have different leads (a target's
-        // training set changed mid-history), so a fixed Leads.Full would
-        // either over- or under-count columns.
-        var allLeads = matchingFiles
+        // Lead set for the columns: canonical Leads.Full (24/48/72/96/120) plus
+        // any extra leads present in the data (so 2d/3d's +12h column appears
+        // for those phases). Using Leads.Full as a floor — rather than a pure
+        // data-driven union — keeps the canonical long-lead columns visible
+        // even when this week's runs happen not to have 96/120 rows (e.g.
+        // because a freshly-promoted champion hasn't accumulated long-lead
+        // history yet). Missing cells render as an em-dash.
+        var dataLeads = matchingFiles
             .SelectMany(x => x.Rows.Select(r => r.LeadHours))
+            .ToHashSet();
+        var allLeads = WeatherBlend.Train.Common.Leads.Full
+            .Concat(dataLeads)
             .Distinct()
             .OrderBy(l => l)
             .ToList();
@@ -439,6 +445,15 @@ public static partial class SitePages
             var versionCellHtml = string.Join(
                 "<br>",
                 versionsScored.Select(v => $"<code>{Escape(v)}</code>"));
+
+            // Sample size column — surfaces "this row scored on what?" right
+            // next to the version. Max N across leads is the most informative
+            // single number: it's the count for the shortest lead (24h) where
+            // most predictions land. A drift signal on n=53 is real; on n=2 it
+            // isn't. Verifier's MinDriftN gate already uses this, but having
+            // the user see it explicitly avoids surprise about borderline cells.
+            var maxN = byLead.Values.Max(r => r.N);
+            var nCellHtml = $"""<td class="num"><span title="Max predictions per lead in this run">{maxN}</span></td>""";
 
             var leadCells = new StringBuilder();
             foreach (var lead in allLeads)
@@ -497,6 +512,7 @@ public static partial class SitePages
                 <tr>
                   <td><time datetime="{file.AsOfUtc:yyyy-MM-dd}">{file.AsOfUtc:ddd yyyy-MM-dd}</time></td>
                   <td><small>{versionCellHtml}</small></td>
+                  {nCellHtml}
                   {leadCells}
                   {driftCell}
                 </tr>
@@ -518,6 +534,7 @@ public static partial class SitePages
                   <tr>
                     <th>Run (UTC)</th>
                     <th>Version</th>
+                    <th class="num" title="Max predictions per lead in this run">N</th>
                     {leadHeaders}
                     <th class="num">Drift</th>
                   </tr>

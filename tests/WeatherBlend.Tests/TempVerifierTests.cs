@@ -138,6 +138,155 @@ public class VerifierTests
     }
 
     [Fact]
+    public void Compute_does_not_flag_drift_when_n_below_min_drift_n()
+    {
+        // Same shape as the drift-fires test (rolling MAE = 2.0 > 1.5 × 1.0)
+        // but only ONE prediction in the window — the MinDriftN gate should
+        // suppress the flag. Reference MAE is still surfaced so reviewers
+        // can see why the cell didn't alert.
+        var preds = new[] { MakePrediction(V1, 24, AsOf.AddDays(-7), blend: 12.0) };
+        var truth = preds.ToDictionary(p => p.ValidTimeUtc, _ => 10.0);
+        var metadata = new Dictionary<string, ModelArtifact.TrainingMetadata>
+        {
+            [V1] = MetadataWithLead(24, blendTestMae: 1.0),
+        };
+
+        var rows = TempVerifier.Compute(new TempVerifier.Inputs
+        {
+            Predictions = preds,
+            TruthByTime = truth,
+            MetadataByVersion = metadata,
+            AsOfUtc = AsOf,
+            WindowDays = 14,
+            Era5LatencyDays = 5,
+            DriftThreshold = 1.5,
+            MinDriftN = 5,        // n=1 < 5 → flag suppressed
+        });
+
+        rows.Should().ContainSingle();
+        rows[0].N.Should().Be(1);
+        rows[0].BlendMae.Should().BeApproximately(2.0, 1e-9);
+        rows[0].ReferenceTestMae.Should().BeApproximately(1.0, 1e-9);
+        rows[0].DriftFlag.Should().BeFalse();   // gated by MinDriftN
+    }
+
+    [Fact]
+    public void Compute_flags_drift_when_n_meets_min_drift_n()
+    {
+        // Boundary: exactly MinDriftN predictions, MAE still > threshold → flag fires.
+        var preds = Enumerable.Range(0, 5)
+            .Select(i => MakePrediction(V1, 24, AsOf.AddDays(-7 - i), blend: 12.0))
+            .ToArray();
+        var truth = preds.ToDictionary(p => p.ValidTimeUtc, _ => 10.0);
+        var metadata = new Dictionary<string, ModelArtifact.TrainingMetadata>
+        {
+            [V1] = MetadataWithLead(24, blendTestMae: 1.0),
+        };
+
+        var rows = TempVerifier.Compute(new TempVerifier.Inputs
+        {
+            Predictions = preds,
+            TruthByTime = truth,
+            MetadataByVersion = metadata,
+            AsOfUtc = AsOf,
+            WindowDays = 14,
+            Era5LatencyDays = 5,
+            DriftThreshold = 1.5,
+            MinDriftN = 5,        // n=5 == 5 → flag fires
+        });
+
+        rows.Should().ContainSingle();
+        rows[0].N.Should().Be(5);
+        rows[0].DriftFlag.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Compute_per_lead_threshold_slope_zero_keeps_flat_threshold()
+    {
+        // Regression: with slope=0 the threshold is identical at every lead.
+        // Two cells at the same MAE ratio (1.7× reference), leads 24 and 120 —
+        // both should fire under a flat 1.5× threshold.
+        var p24 = Enumerable.Range(0, 10).Select(i =>
+            MakePrediction(V1, 24, AsOf.AddDays(-7).AddHours(-i), blend: 11.7)).ToArray();
+        var p120 = Enumerable.Range(0, 10).Select(i =>
+            MakePrediction(V1, 120, AsOf.AddDays(-7).AddHours(-i - 100), blend: 11.7)).ToArray();
+        var truth = p24.Concat(p120).ToDictionary(p => p.ValidTimeUtc, _ => 10.0);
+
+        var metadata = new Dictionary<string, ModelArtifact.TrainingMetadata>
+        {
+            [V1] = new()
+            {
+                Phase = "2b",
+                PerLead =
+                {
+                    ["24"]  = new() { LeadHours = 24,  BlendTestMae = 1.0 },
+                    ["120"] = new() { LeadHours = 120, BlendTestMae = 1.0 },
+                }
+            }
+        };
+
+        var rows = TempVerifier.Compute(new TempVerifier.Inputs
+        {
+            Predictions = p24.Concat(p120).ToArray(),
+            TruthByTime = truth,
+            MetadataByVersion = metadata,
+            AsOfUtc = AsOf,
+            WindowDays = 14,
+            Era5LatencyDays = 5,
+            DriftThreshold = 1.5,
+            DriftThresholdSlopePer24h = 0.0,    // flat — pre-2026-05-11 behaviour
+            MinDriftN = 1,
+        });
+
+        rows.Should().HaveCount(2);
+        rows.Single(r => r.LeadHours == 24).DriftFlag.Should().BeTrue();
+        rows.Single(r => r.LeadHours == 120).DriftFlag.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Compute_per_lead_threshold_slope_relaxes_drift_at_long_leads()
+    {
+        // Slope = 0.1 → effective threshold at lead 120 = 1.5 + 0.1 × 4 = 1.9.
+        // MAE ratio 1.7 fires at lead 24 (threshold stays 1.5) but is now
+        // BELOW threshold at lead 120 (1.7 < 1.9). Tests that the per-lead
+        // relaxation works on the long-lead end without affecting lead 24.
+        var p24 = Enumerable.Range(0, 10).Select(i =>
+            MakePrediction(V1, 24, AsOf.AddDays(-7).AddHours(-i), blend: 11.7)).ToArray();
+        var p120 = Enumerable.Range(0, 10).Select(i =>
+            MakePrediction(V1, 120, AsOf.AddDays(-7).AddHours(-i - 100), blend: 11.7)).ToArray();
+        var truth = p24.Concat(p120).ToDictionary(p => p.ValidTimeUtc, _ => 10.0);
+
+        var metadata = new Dictionary<string, ModelArtifact.TrainingMetadata>
+        {
+            [V1] = new()
+            {
+                Phase = "2b",
+                PerLead =
+                {
+                    ["24"]  = new() { LeadHours = 24,  BlendTestMae = 1.0 },
+                    ["120"] = new() { LeadHours = 120, BlendTestMae = 1.0 },
+                }
+            }
+        };
+
+        var rows = TempVerifier.Compute(new TempVerifier.Inputs
+        {
+            Predictions = p24.Concat(p120).ToArray(),
+            TruthByTime = truth,
+            MetadataByVersion = metadata,
+            AsOfUtc = AsOf,
+            WindowDays = 14,
+            Era5LatencyDays = 5,
+            DriftThreshold = 1.5,
+            DriftThresholdSlopePer24h = 0.1,   // production default
+            MinDriftN = 1,
+        });
+
+        rows.Single(r => r.LeadHours == 24).DriftFlag.Should().BeTrue();    // 1.7 > 1.5
+        rows.Single(r => r.LeadHours == 120).DriftFlag.Should().BeFalse();  // 1.7 < 1.9 (relaxed)
+    }
+
+    [Fact]
     public void Compute_leaves_reference_blank_and_drift_false_when_metadata_missing()
     {
         var preds = new[] { MakePrediction(V1, 24, AsOf.AddDays(-7), blend: 10.0) };
