@@ -41,79 +41,102 @@ public sealed class CollectCommand
 
     public async Task<int> RunAsync(CancellationToken ct)
     {
-        _log.LogInformation("Collecting for {Location} ({Lat:F4}, {Lon:F4}, {Elev}m)",
-            _cfg.Location.DisplayName,
-            _cfg.Location.Latitude,
-            _cfg.Location.Longitude,
-            _cfg.Location.ElevationMeters);
-
+        // Iterate every configured location for forecasts + METAR + EA
+        // rainfall. Each is gated on its own config so a location with
+        // no METAR config (e.g. Membury, precip-only) silently skips
+        // the METAR pull rather than logging a spurious "FAILED". This
+        // closes the live-collect gap where Membury's 6h forecast tree
+        // + EA rainfall stopped at the last previous-runs-refresh
+        // window — pre-2026-05-11 collect ran for `_cfg.Location`
+        // (singular = primary = Bonehill) only.
+        //
+        // Met Office Spot + Obs stay primary-only (single API key,
+        // single geohash configured at the AppConfig.MetOffice level —
+        // not a per-location block). Membury config has no MO; the
+        // morning's commit (20f9e85) deliberately scoped Membury as
+        // EA + Open-Meteo only.
         var forecastErrors = 0;
-        foreach (var model in _cfg.Models)
-        {
-            try
-            {
-                var rows = await _forecasts.FetchLiveAsync(
-                    _cfg.Location, model.Id, _cfg.Variables.Forecast, _cfg.ForecastDays, ct);
-                await ParquetWriter.WriteForecastsAsync(_cfg.Storage.ForecastsPath, rows, ct);
-                _log.LogInformation("  {Model}: wrote {Rows} rows", model.Id, rows.Count);
-            }
-            catch (Exception ex)
-            {
-                forecastErrors++;
-                _log.LogError(ex, "  {Model}: FAILED", model.Id);
-            }
-        }
-
-        var metarErrors = 0;
-        try
-        {
-            var station = _cfg.Location.Metar.Primary;
-            var obs = await _metar.FetchAsync(_cfg.Location.Name, station, hoursBack: 6, ct);
-
-            if (obs.Count == 0 && !string.IsNullOrEmpty(_cfg.Location.Metar.Fallback))
-            {
-                _log.LogWarning("Primary METAR {Station} returned nothing, trying fallback {Fallback}",
-                    station, _cfg.Location.Metar.Fallback);
-                station = _cfg.Location.Metar.Fallback;
-                obs = await _metar.FetchAsync(_cfg.Location.Name, station, hoursBack: 6, ct);
-            }
-
-            await ParquetWriter.WriteObservationsAsync(_cfg.Storage.ObservationsPath, obs, ct);
-            _log.LogInformation("  METAR {Station}: wrote {Rows} observations", station, obs.Count);
-        }
-        catch (Exception ex)
-        {
-            // Match the pattern of every other collector — log + count, do not
-            // abort the rest of collect. Until 2026-04-26 this returned exit 2,
-            // which (a) skipped rainfall + MO Spot + MO Obs + MO Global and
-            // (b) caused GH Actions to skip the post-collect R2 push step,
-            // so even forecasts collected before METAR didn't land on R2.
-            // METAR was load-bearing as the sole verification truth in early
-            // phases; with ERA5/EA/MO Obs now also collected it's no longer
-            // worth blocking everything else when aviationweather.gov hiccups.
-            metarErrors++;
-            _log.LogError(ex, "METAR collection FAILED (non-fatal)");
-        }
-
-        // EA rainfall: pull the last 2 days per station. Interval-end timestamps
-        // plus overnight latency mean a 1-day window can miss readings still
-        // being backfilled by EA; 2 days gives a safe overlap and the dedup
-        // writer makes repeated runs cheap.
-        var endDate = DateOnly.FromDateTime(DateTime.UtcNow);
-        var startDate = endDate.AddDays(-1);
+        var metarErrors    = 0;
         var rainfallErrors = 0;
-        foreach (var st in _cfg.Location.Rainfall.Stations)
+
+        // EA rainfall window: last 2 days per station. Interval-end
+        // timestamps + overnight latency mean a 1-day window can miss
+        // readings still being backfilled by EA; 2 days gives safe
+        // overlap and the dedup writer makes repeated runs cheap.
+        var endDate   = DateOnly.FromDateTime(DateTime.UtcNow);
+        var startDate = endDate.AddDays(-1);
+
+        foreach (var location in _cfg.Locations)
         {
-            try
+            ct.ThrowIfCancellationRequested();
+            _log.LogInformation("=== Collecting for {Location} ({Lat:F4}, {Lon:F4}, {Elev}m) ===",
+                location.DisplayName, location.Latitude, location.Longitude, location.ElevationMeters);
+
+            foreach (var model in _cfg.Models)
             {
-                var rain = await _rainfall.FetchAsync(_cfg.Location.Name, st, startDate, endDate, ct);
-                await ParquetWriter.WriteRainfallAsync(_cfg.Storage.RainfallPath, rain, ct);
-                _log.LogInformation("  EA {Station}: wrote {Rows} readings", st.Name, rain.Count);
+                try
+                {
+                    var rows = await _forecasts.FetchLiveAsync(
+                        location, model.Id, _cfg.Variables.Forecast, _cfg.ForecastDays, ct);
+                    await ParquetWriter.WriteForecastsAsync(_cfg.Storage.ForecastsPath, rows, ct);
+                    _log.LogInformation("  {Loc}/{Model}: wrote {Rows} rows", location.Name, model.Id, rows.Count);
+                }
+                catch (Exception ex)
+                {
+                    forecastErrors++;
+                    _log.LogError(ex, "  {Loc}/{Model}: FAILED", location.Name, model.Id);
+                }
             }
-            catch (Exception ex)
+
+            // METAR — gated on a configured Primary station. Locations
+            // without one (e.g. Membury, precip-only) are silently skipped.
+            if (!string.IsNullOrWhiteSpace(location.Metar.Primary))
             {
-                rainfallErrors++;
-                _log.LogError(ex, "  EA {Station}: FAILED", st.Name);
+                try
+                {
+                    var station = location.Metar.Primary;
+                    var obs = await _metar.FetchAsync(location.Name, station, hoursBack: 6, ct);
+
+                    if (obs.Count == 0 && !string.IsNullOrEmpty(location.Metar.Fallback))
+                    {
+                        _log.LogWarning("  Primary METAR {Station} returned nothing, trying fallback {Fallback}",
+                            station, location.Metar.Fallback);
+                        station = location.Metar.Fallback;
+                        obs = await _metar.FetchAsync(location.Name, station, hoursBack: 6, ct);
+                    }
+
+                    await ParquetWriter.WriteObservationsAsync(_cfg.Storage.ObservationsPath, obs, ct);
+                    _log.LogInformation("  {Loc}/METAR {Station}: wrote {Rows} observations",
+                        location.Name, station, obs.Count);
+                }
+                catch (Exception ex)
+                {
+                    // Log + count, do not abort. Pre-2026-04-26 a METAR
+                    // exit 2 skipped rainfall + MO + the post-collect R2
+                    // push, breaking everything else when aviationweather
+                    // .gov hiccupped. METAR is one truth source among
+                    // many now.
+                    metarErrors++;
+                    _log.LogError(ex, "  {Loc}/METAR collection FAILED (non-fatal)", location.Name);
+                }
+            }
+
+            // EA rainfall — silently skipped for locations with no
+            // rainfall.stations (e.g. a future temp-only secondary).
+            foreach (var st in location.Rainfall.Stations)
+            {
+                try
+                {
+                    var rain = await _rainfall.FetchAsync(location.Name, st, startDate, endDate, ct);
+                    await ParquetWriter.WriteRainfallAsync(_cfg.Storage.RainfallPath, rain, ct);
+                    _log.LogInformation("  {Loc}/EA {Station}: wrote {Rows} readings",
+                        location.Name, st.Name, rain.Count);
+                }
+                catch (Exception ex)
+                {
+                    rainfallErrors++;
+                    _log.LogError(ex, "  {Loc}/EA {Station}: FAILED", location.Name, st.Name);
+                }
             }
         }
 
