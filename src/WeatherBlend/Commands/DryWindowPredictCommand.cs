@@ -132,6 +132,24 @@ public sealed class DryWindowPredictCommand
             return false;
         }
         var metadata = ModelArtifact.LoadTrainingMetadata(versionDir);
+        // Phase A multi-location safety (2026-05-12): refuse to score a
+        // bundle against any NWP source other than the one it was trained
+        // on. Dry-window is bonehill-only today; this assert is the safety
+        // net for when Membury dry-window lands.
+        if (string.IsNullOrEmpty(metadata.LocationName))
+        {
+            _log.LogWarning(
+                "{Key} bundle {V} has no LocationName pinned (legacy bundle predating 2026-05-12 backfill). " +
+                "Proceeding under the active location '{Active}'.",
+                compositeKey, versionName, _cfg.Location.Name);
+        }
+        else if (!string.Equals(metadata.LocationName, _cfg.Location.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            _log.LogError(
+                "{Key} bundle {V} was trained on location '{Trained}' but predict is using NWP from '{Active}' — refusing to score.",
+                compositeKey, versionName, metadata.LocationName, _cfg.Location.Name);
+            return false;
+        }
         var climPath = Path.Combine(versionDir, "dry_window_climatology.json");
         if (!File.Exists(climPath))
         {

@@ -83,6 +83,24 @@ public sealed class ElementPredictCommand
                 continue;
             }
 
+            // Phase A multi-location safety (2026-05-12). Element blenders are
+            // bonehill-only today; safety net for future multi-loc element runs.
+            if (string.IsNullOrEmpty(metadata.LocationName))
+            {
+                _log.LogWarning(
+                    "{Target} bundle {V} has no LocationName pinned (legacy bundle predating 2026-05-12 backfill). " +
+                    "Proceeding under the active location '{Active}'.",
+                    target.CliName, version, _cfg.Location.Name);
+            }
+            else if (!string.Equals(metadata.LocationName, _cfg.Location.Name, StringComparison.OrdinalIgnoreCase))
+            {
+                _log.LogError(
+                    "{Target} bundle {V} was trained on location '{Trained}' but predict is using NWP from '{Active}' — refusing to score.",
+                    target.CliName, version, metadata.LocationName, _cfg.Location.Name);
+                failures++;
+                continue;
+            }
+
             var phase = (metadata.Phase ?? "").ToLowerInvariant();
             _log.LogInformation("--- Version {V} (phase={Phase}) ---", version, phase);
 

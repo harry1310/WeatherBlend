@@ -256,6 +256,33 @@ public sealed class PrecipPredictCommand
             return false;
         }
 
+        // Phase A multi-location safety (2026-05-12): refuse to score a
+        // bundle against any NWP source other than the one it was trained
+        // on. Pre-Phase-A this used to silently produce wrong-LocationName
+        // rows that the render filter then dropped — wasted cycles and a
+        // class of bug invisible until someone read the parquet directly.
+        // Now the trainer pins LocationName into training_metadata.json
+        // and we hard-fail at load time on mismatch.
+        //
+        // Legacy bundles (LocationName empty) get a one-shot warning and a
+        // fallback to the station's home location. After the backfill +
+        // [JsonRequired] tightening this branch goes away.
+        if (string.IsNullOrEmpty(metadata.LocationName))
+        {
+            _log.LogWarning(
+                "Station {Station} bundle {V} has no LocationName pinned (legacy bundle predating 2026-05-12 backfill). " +
+                "Proceeding under the active location '{Active}'.",
+                station, modelVersion, _activeLocation.Name);
+        }
+        else if (!string.Equals(metadata.LocationName, _activeLocation.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            _log.LogError(
+                "Station {Station} bundle {V} was trained on location '{Trained}' but predict is using NWP from '{Active}' — refusing to score. " +
+                "Pass --location {TrainedRetry} or fix the manifest entry.",
+                station, modelVersion, metadata.LocationName, _activeLocation.Name, metadata.LocationName);
+            return false;
+        }
+
         var climPath = Path.Combine(versionDir, ModelArtifact.ClimatologyFileName);
         if (!File.Exists(climPath))
         {

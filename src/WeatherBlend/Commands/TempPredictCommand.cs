@@ -156,6 +156,23 @@ public sealed class TempPredictCommand
             return false;
         }
 
+        // Phase A multi-location safety (2026-05-12). Temp is bonehill-only
+        // today; this is the safety net for when Membury temp lands.
+        if (string.IsNullOrEmpty(metadata.LocationName))
+        {
+            _log.LogWarning(
+                "Bundle {V} has no LocationName pinned (legacy bundle predating 2026-05-12 backfill). " +
+                "Proceeding under the active location '{Active}'.",
+                version, _cfg.Location.Name);
+        }
+        else if (!string.Equals(metadata.LocationName, _cfg.Location.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            _log.LogError(
+                "Bundle {V} was trained on location '{Trained}' but predict is using NWP from '{Active}' — refusing to score.",
+                version, metadata.LocationName, _cfg.Location.Name);
+            return false;
+        }
+
         var phase = (metadata.Phase ?? "").ToLowerInvariant();
         var isRich = phase == "2c";
         var isExact = phase == "2d";
