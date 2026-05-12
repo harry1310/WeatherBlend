@@ -360,6 +360,7 @@ public sealed class TempTrainCommand
             Version = versionName,
             Target = "temperature",
             Phase = "2b",
+            LocationName = _cfg.Location.Name,
             DataSource = "previous_runs_api",
             TrainedAtUtc = now,
             Hyperparameters = BuildHpDict(hp),
@@ -386,7 +387,8 @@ public sealed class TempTrainCommand
             rowsTrain: totalTrainRows, rowsVal: totalValRows, rowsTest: totalTestRows,
             trainFeatures: firstLeadTrainFeatures,
             featureNames: specsPerLead.TryGetValue(leads[0], out var sp0)
-                ? sp0.FeatureNames.ToList() : Array.Empty<string>());
+                ? sp0.FeatureNames.ToList() : Array.Empty<string>(),
+            locationName: _cfg.Location.Name);
         if (!guardResult2b.Passed)
         {
             _log.LogError("Aborting Phase 2b retrain — sanity guard failed. Orphan dir {Dir} not promoted.", versionDir);
@@ -518,6 +520,7 @@ public sealed class TempTrainCommand
             Version = versionName,
             Target = "temperature",
             Phase = "2c",
+            LocationName = _cfg.Location.Name,
             DataSource = "previous_runs_api",
             TrainedAtUtc = now,
             Hyperparameters = BuildHpDict(hp),
@@ -539,7 +542,8 @@ public sealed class TempTrainCommand
             rowsTrain: totalTrainRows, rowsVal: totalValRows, rowsTest: totalTestRows,
             trainFeatures: firstLeadTrainFeatures,
             featureNames: specsPerLead.TryGetValue(leads[0], out var sp2c)
-                ? sp2c.FeatureNames.ToList() : Array.Empty<string>());
+                ? sp2c.FeatureNames.ToList() : Array.Empty<string>(),
+            locationName: _cfg.Location.Name);
         if (!guardResult2c.Passed)
         {
             _log.LogError("Aborting Phase 2c retrain — sanity guard failed. Orphan dir {Dir} not promoted.", versionDir);
@@ -708,6 +712,7 @@ public sealed class TempTrainCommand
             Version = versionName,
             Target = "temperature",
             Phase = "2d",
+            LocationName = _cfg.Location.Name,
             DataSource = "exact_runtime_s3_archive",
             TrainedAtUtc = now,
             Hyperparameters = BuildHpDict(hp),
@@ -730,7 +735,8 @@ public sealed class TempTrainCommand
             rowsTrain: totalTrainRows, rowsVal: totalValRows, rowsTest: totalTestRows,
             trainFeatures: firstLeadTrainFeatures,
             featureNames: specsPerLead.TryGetValue(firstLead2d, out var sp2d)
-                ? sp2d.FeatureNames.ToList() : Array.Empty<string>());
+                ? sp2d.FeatureNames.ToList() : Array.Empty<string>(),
+            locationName: _cfg.Location.Name);
         if (!guardResult2d.Passed)
         {
             _log.LogError("Aborting Phase 2d retrain — sanity guard failed. Orphan dir {Dir} not promoted; ChampionByLead retains the previous 2d pin (manifest unchanged).", versionDir);
@@ -974,6 +980,7 @@ public sealed class TempTrainCommand
             Version = versionName,
             Target = "precipitation",
             Phase = "3a",
+            LocationName = location.Name,
             DataSource = "previous_runs_api+ea_rainfall",
             TrainedAtUtc = now,
             Hyperparameters = BuildPrecipHpDict(hp),
@@ -1015,7 +1022,8 @@ public sealed class TempTrainCommand
             trainFeatures: firstLeadTrainFeatures,
             featureNames: specsPerLead.TryGetValue(leads[0], out var sp3a)
                 ? sp3a.FeatureNames.ToList() : Array.Empty<string>(),
-            labelRates: labelRates3a);
+            labelRates: labelRates3a,
+            locationName: location.Name);
         if (!guardResult3a.Passed)
         {
             _log.LogError("Aborting Phase 3a retrain ({Station}) — sanity guard failed. Orphan dir {Dir} not promoted.", stationSlug, versionDir);
@@ -1251,6 +1259,7 @@ public sealed class TempTrainCommand
             Version = versionName,
             Target = "precipitation",
             Phase = "3c",
+            LocationName = location.Name,
             DataSource = "previous_runs_api+ea_rainfall",
             TrainedAtUtc = DateTime.UtcNow,
             Hyperparameters = BuildPrecipHpDict(hp),
@@ -1279,6 +1288,7 @@ public sealed class TempTrainCommand
             trainFeatures: firstLeadTrainFeatures,
             featureNames: specsPerLead.TryGetValue(leads[0], out var sp3c)
                 ? sp3c.FeatureNames.ToList() : Array.Empty<string>(),
+            locationName: location.Name,
             labelRates: labelRates3c);
         if (!guardResult3c.Passed)
         {
@@ -1531,6 +1541,7 @@ public sealed class TempTrainCommand
             Version = versionName,
             Target = "precipitation",
             Phase = "3e",
+            LocationName = location.Name,
             DataSource = "previous_runs_api+ea_rainfall+torchsharp_mlp",
             TrainedAtUtc = DateTime.UtcNow,
             Hyperparameters = BuildMlpHpDict(hp),
@@ -1569,7 +1580,8 @@ public sealed class TempTrainCommand
             trainFeatures: firstLeadTrainFeatures,
             featureNames: specsPerLead.TryGetValue(leads[0], out var sp3e)
                 ? sp3e.FeatureNames.ToList() : Array.Empty<string>(),
-            labelRates: labelRates3e);
+            labelRates: labelRates3e,
+            locationName: location.Name);
         if (!guardResult3e.Passed)
         {
             _log.LogError("Aborting Phase 3e retrain ({Station}) — sanity guard failed. Orphan dir {Dir} not promoted.", stationSlug, versionDir);
@@ -1795,6 +1807,10 @@ public sealed class TempTrainCommand
             Version = versionName,
             Target = "precipitation",
             Phase = "3d",
+            // 3d (exact-runtime) is bonehill-only today — no Membury exact
+            // archive yet. When it lands, plumb a location arg through
+            // TrainPhase3dStationAsync's signature like 3a/3c/3e do.
+            LocationName = _cfg.Location.Name,
             DataSource = "exact_runtime_s3_archive+ea_rainfall",
             TrainedAtUtc = DateTime.UtcNow,
             Hyperparameters = BuildPrecipHpDict(hp),
@@ -1822,6 +1838,8 @@ public sealed class TempTrainCommand
             computedAtUtc: now,
             rowsTrain: totalTrainRows, rowsVal: totalValRows, rowsTest: totalTestRows,
             trainFeatures: firstLeadTrainFeatures,
+            // 3d (exact-runtime) is bonehill-only — see TrainingMetadata above.
+            locationName: _cfg.Location.Name,
             featureNames: specsPerLead.TryGetValue(firstLead3d, out var sp3d)
                 ? sp3d.FeatureNames.ToList() : Array.Empty<string>(),
             labelRates: labelRates3d);

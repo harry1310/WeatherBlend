@@ -27,7 +27,16 @@ public static class ElementTrainerHarness
         string ModelsRoot,
         Func<int, BlenderSpec> BuildSpec,
         Func<BlenderSpec, CancellationToken, IReadOnlyList<RegressionTrainingRow>> LoadRowsForSpec,
-        IReadOnlyList<string> DeviationsFromBrief);
+        IReadOnlyList<string> DeviationsFromBrief,
+        // Configured location whose NWP fed the training data. Pinned at
+        // train time so predict can refuse to score the bundle against any
+        // other location's NWP (Phase A multi-location safety, 2026-05-12).
+        // Element blenders today are bonehill-only — Wind/Cloud/Humidity/
+        // Radiation pass _cfg.Location.Name. Defaulted to "" so the
+        // existing 4 blender call sites still compile during the rollout;
+        // the harness writes empty into LocationName which the assertion
+        // step (Task #19) treats as "skip with warning".
+        string LocationName = "");
 
     public static async Task<int> RunAsync(
         ILogger log,
@@ -149,6 +158,7 @@ public static class ElementTrainerHarness
             Version = versionName,
             Target = inputs.Target.CliName,
             Phase = inputs.Target.PhaseTag,
+            LocationName = inputs.LocationName,
             DataSource = "previous_runs_api",
             TrainedAtUtc = now,
             Hyperparameters = BuildHpDict(hp),
@@ -167,7 +177,8 @@ public static class ElementTrainerHarness
             rowsTrain: totalTrainRows, rowsVal: totalValRows, rowsTest: totalTestRows,
             trainFeatures: firstLeadTrainFeatures,
             featureNames: specsPerLead.TryGetValue(firstLeadElement, out var spEl)
-                ? spEl.FeatureNames.ToList() : Array.Empty<string>());
+                ? spEl.FeatureNames.ToList() : Array.Empty<string>(),
+            locationName: inputs.LocationName);
         if (!guardResultEl.Passed)
         {
             log.LogError(

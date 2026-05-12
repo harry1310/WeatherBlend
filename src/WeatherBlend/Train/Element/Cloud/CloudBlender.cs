@@ -33,7 +33,8 @@ public sealed class CloudBlender : IElementBlender
                 "2026-04-25). Lean shape is total cloud cover only — N per-model + 3 spread + 4 calendar.",
                 "Objective is L2; MAE used only as early-stopping metric (Microsoft.ML.LightGbm 4.0 limit).",
                 "No monotone constraints (same Microsoft.ML.LightGbm 4.0 limit).",
-            });
+            },
+            LocationName: _cfg.Location.Name);
 
         return ElementTrainerHarness.RunAsync(_log, inputs, leads, ct);
     }

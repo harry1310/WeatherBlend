@@ -33,7 +33,8 @@ public sealed class HumidityBlender : IElementBlender
                 "MF dropped at 48/72h — Open-Meteo live forecasts cap at ~36h.",
                 "Objective is L2; MAE used only as early-stopping metric (Microsoft.ML.LightGbm 4.0 limit).",
                 "No monotone constraints (same Microsoft.ML.LightGbm 4.0 limit).",
-            });
+            },
+            LocationName: _cfg.Location.Name);
 
         return ElementTrainerHarness.RunAsync(_log, inputs, leads, ct);
     }

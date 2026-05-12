@@ -277,6 +277,7 @@ public sealed class DryWindowTrainCommand
                     Version = versionName,
                     Target = "dry_window",
                     Phase = phase,
+                    LocationName = _cfg.Location.Name,
                     DataSource = "previous_runs_api+ea_rainfall",
                     TrainedAtUtc = now,
                     Hyperparameters = BuildHpDict(hp, window),
@@ -308,7 +309,8 @@ public sealed class DryWindowTrainCommand
                     trainFeatures: firstLeadTrainFeatures,
                     featureNames: specsPerLead.TryGetValue(firstLead3b, out var sp3b)
                         ? sp3b.FeatureNames.ToList() : Array.Empty<string>(),
-                    labelRates: labelRates3b);
+                    labelRates: labelRates3b,
+                    locationName: _cfg.Location.Name);
                 if (!guardResult3b.Passed)
                 {
                     // Single-(station, window) guard fail aborts JUST this
@@ -528,6 +530,7 @@ public sealed class DryWindowTrainCommand
                     Version = versionName,
                     Target = "dry_window",
                     Phase = DryWindow3gPredictor.Phase3g,
+                    LocationName = _cfg.Location.Name,
                     DataSource = $"precipitation_replay@{precip3aVersion}",
                     TrainedAtUtc = now,
                     Hyperparameters = new Dictionary<string, object>

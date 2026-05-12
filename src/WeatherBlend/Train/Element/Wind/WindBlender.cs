@@ -47,7 +47,8 @@ public sealed class WindBlender : IElementBlender
                 "Bagging deliberately disabled (1.0/0/1.0). 4-way bake-off showed bagging " +
                 "marginally hurts wind at every lead, unlike every other target. Wind keeps " +
                 "the deterministic ML.NET defaults.",
-            });
+            },
+            LocationName: _cfg.Location.Name);
 
         return ElementTrainerHarness.RunAsync(_log, inputs, leads, ct);
     }
