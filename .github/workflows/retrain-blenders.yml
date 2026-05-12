@@ -216,13 +216,27 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target temperature --feature-set rich
 
-      - name: Train 2d (temperature exact-runtime)
-        id: train_2d
+      - name: Train 2d (temperature exact-runtime, short leads 12/24/48/72)
+        # 2d uses --leads to define the trained set; default is {12,24}.
+        # We split short + long across two steps so the lead-overlap-aware
+        # ModelArtifact.PromoteVersion (ComposeActive in ModelArtifact.cs)
+        # keeps BOTH bundles in Active — disjoint lead-sets coexist.
+        # Pre-2026-05-12 retrain-blenders fired only one 2d step; the other
+        # half of 2d's lead range had no production bundle.
+        id: train_2d_short
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_2d == 'true'
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target temperature --feature-set exact
+            train --target temperature --feature-set exact --leads 12,24,48,72
+
+      - name: Train 2d (temperature exact-runtime, long leads 96/120)
+        id: train_2d_long
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_2d == 'true'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target temperature --feature-set exact --leads 96,120
 
       - name: Train 3a (precipitation lean) — Bonehill
         id: train_3a
@@ -270,13 +284,29 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target precipitation --feature-set rich --location membury_devon
 
-      - name: Train 3d (precipitation exact-runtime)
-        id: train_3d
+      - name: Train 3d (precipitation exact-runtime, short leads 12/24/48/72)
+        # Same split + rationale as 2d above — 3d's existing R2 state
+        # (manually trained on 2026-05-08) had two bundles per station,
+        # short {12,24,48,72} + long {96,120}. The .NET PromoteVersion's
+        # ComposeActive keeps both because their lead-sets are disjoint.
+        # Pre-2026-05-12 retrain-blenders fired ONE 3d step with default
+        # --leads 12,24 → would have collapsed the manual long-lead bundle
+        # the next time it ran. Two-step split preserves the
+        # short-leads-vs-long-leads bake-off Phase 3d was designed for.
+        id: train_3d_short
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3d == 'true'
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target precipitation --feature-set exact
+            train --target precipitation --feature-set exact --leads 12,24,48,72
+
+      - name: Train 3d (precipitation exact-runtime, long leads 96/120)
+        id: train_3d_long
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3d == 'true'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target precipitation --feature-set exact --leads 96,120
 
       - name: Train 3b (dry-window)
         id: train_3b
@@ -343,10 +373,12 @@ jobs:
           declare -A outcomes=(
             [2b]="${{ steps.train_2b.outcome }}"
             [2c]="${{ steps.train_2c.outcome }}"
-            [2d]="${{ steps.train_2d.outcome }}"
+            [2d_short]="${{ steps.train_2d_short.outcome }}"
+            [2d_long]="${{ steps.train_2d_long.outcome }}"
             [3a]="${{ steps.train_3a.outcome }}"
             [3c]="${{ steps.train_3c.outcome }}"
-            [3d]="${{ steps.train_3d.outcome }}"
+            [3d_short]="${{ steps.train_3d_short.outcome }}"
+            [3d_long]="${{ steps.train_3d_long.outcome }}"
             [3b]="${{ steps.train_3b.outcome }}"
             [wind]="${{ steps.train_wind.outcome }}"
             [humidity]="${{ steps.train_humidity.outcome }}"
