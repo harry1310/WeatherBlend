@@ -62,6 +62,28 @@ public static class RetrainGuard
 
         var breaches = new List<GuardBreach>();
 
+        // ---- LocationName: must not have changed between runs ----------
+        // The catastrophic failure mode the Phase A safety work guards
+        // against: a trainer invocation accidentally writing a Membury
+        // bundle into Bonehill's manifest slot (or vice versa) would
+        // promote it as the new champion and silently start serving
+        // wrong-location predictions until verify flags drift days later.
+        // Both empty → legacy bundle pair, no info to compare; skip.
+        // Only one side present → backfill landing or first pinned write
+        // after the legacy era; pass with note.
+        // Both present and different → hard breach.
+        if (!string.IsNullOrEmpty(current.LocationName)
+            && !string.IsNullOrEmpty(previous.LocationName)
+            && !string.Equals(current.LocationName, previous.LocationName, StringComparison.OrdinalIgnoreCase))
+        {
+            breaches.Add(new GuardBreach(
+                Field: "locationName",
+                Previous: previous.LocationName,
+                Current: current.LocationName,
+                Threshold: "must not change",
+                Reason: $"LocationName changed from '{previous.LocationName}' to '{current.LocationName}' for the same composite — refusing to overwrite. Either you've accidentally pointed this trainer at the wrong location's NWP, or the manifest entry is in the wrong location's slot. Investigate before forcing through."));
+        }
+
         // ---- Row count: relative ±RowsDeltaPct -------------------------
         // Empty previous slices (0 rows) skip the check — would divide by
         // zero and never converge to a useful tolerance anyway.
@@ -179,7 +201,15 @@ public static class RetrainGuard
         IReadOnlyList<float[]>? trainFeatures,
         IReadOnlyList<string> featureNames,
         Dictionary<string, double>? labelRates = null,
-        GuardTolerances? tolerances = null)
+        GuardTolerances? tolerances = null,
+        // Configured location whose NWP fed the training data — pinned at
+        // train time so predict can refuse to score the bundle against any
+        // other location's NWP (Phase A multi-location safety, 2026-05-12).
+        // Optional argument for the duration of the trainer-side rollout;
+        // call sites that don't pass it write a legacy summary the guard
+        // treats as "location unknown" (passes with a note). Once every
+        // trainer threads it through, the schema gates it as required.
+        string? locationName = null)
     {
         // Degraded path: empty features → can't compute stats, can't
         // guard. Don't write a summary; the next run will see "no
@@ -201,6 +231,7 @@ public static class RetrainGuard
             composite, phase, version, computedAtUtc,
             rowsTrain, rowsVal, rowsTest,
             trainFeatures, featureNames, labelRates);
+        summary.LocationName = locationName;
 
         var parentDir = Path.GetDirectoryName(versionDir)
             ?? throw new InvalidOperationException(

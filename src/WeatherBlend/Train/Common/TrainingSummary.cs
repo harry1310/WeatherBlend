@@ -31,6 +31,17 @@ public sealed class TrainingSummary
     /// <summary>Version string, mirrors training_metadata.Version.</summary>
     public string Version { get; set; } = "";
 
+    /// <summary>
+    /// Configured location whose NWP fed the training data. Mirrors
+    /// training_metadata.LocationName. RetrainGuard fails the run if this
+    /// is empty (un-pinned bundle) or if it changed vs the previous run for
+    /// the same composite — a Membury retrain accidentally routed through
+    /// Bonehill's manifest slot would silently overwrite the wrong
+    /// production model otherwise. Phase A multi-location safety
+    /// (2026-05-12); nullable for the duration of the backfill window.
+    /// </summary>
+    public string? LocationName { get; set; }
+
     /// <summary>UTC timestamp the summary was computed (typically same as
     /// training_metadata.TrainedAtUtc; tracked here to detect summary/metadata
     /// drift if a partial write left them out of sync).</summary>

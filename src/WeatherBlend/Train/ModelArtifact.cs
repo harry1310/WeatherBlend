@@ -156,6 +156,18 @@ public static class ModelArtifact
         public string Target { get; set; } = "";
         public string Phase { get; set; } = "";
 
+        /// <summary>
+        /// Configured location whose NWP fed this bundle's training data.
+        /// Pinned at train time so predict can refuse to score the bundle
+        /// against any other location's NWP (Phase A multi-location safety,
+        /// 2026-05-12). Nullable for the duration of the backfill window;
+        /// empty string treated as "legacy bundle, location unknown" by
+        /// callers — they should fall back to the station's home-location
+        /// in config and emit a one-shot warning. Will tighten to
+        /// <c>[JsonRequired]</c> once every bundle on R2 is backfilled.
+        /// </summary>
+        public string? LocationName { get; set; }
+
         /// <summary>Free-form tag — e.g. "previous_runs_api" so the report can explain data source at a glance.</summary>
         public string DataSource { get; set; } = "";
 

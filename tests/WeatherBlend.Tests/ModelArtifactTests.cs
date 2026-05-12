@@ -201,6 +201,7 @@ public class ModelArtifactTests : IDisposable
             Version = "v-rt",
             Target = "temperature",
             Phase = "2b",
+            LocationName = "bonehill_rocks",
             DataSource = "previous_runs_api",
             TrainedAtUtc = new DateTime(2026, 4, 21, 20, 12, 31, DateTimeKind.Utc),
             Hyperparameters = new Dictionary<string, object>
@@ -235,12 +236,48 @@ public class ModelArtifactTests : IDisposable
 
         reloaded.Version.Should().Be(original.Version);
         reloaded.Phase.Should().Be(original.Phase);
+        reloaded.LocationName.Should().Be("bonehill_rocks");
         reloaded.TrainedAtUtc.Should().Be(original.TrainedAtUtc);
         reloaded.TestMae.Should().BeEquivalentTo(original.TestMae);
         reloaded.DeviationsFromBrief.Should().Equal(original.DeviationsFromBrief);
         reloaded.PerLead.Should().ContainKey("24");
         reloaded.PerLead["24"].BestSingle.Should().Be("temp_ecmwf");
         reloaded.PerLead["24"].BlendTestMae.Should().BeApproximately(1.23, 1e-9);
+    }
+
+    [Fact]
+    public void TrainingMetadata_loads_legacy_bundle_with_no_LocationName_field()
+    {
+        // Bundles trained before the Phase A multi-location safety work
+        // (2026-05-12) wrote no LocationName field. The deserialiser MUST
+        // tolerate that during the backfill window, surfacing the value as
+        // null so callers can either fall back to a station→location lookup
+        // or warn-and-skip. After Task #21 lands the field becomes
+        // [JsonRequired] and this test is replaced by a "throws on missing"
+        // counterpart.
+        var versionDir = Path.Combine(_root, "temperature", "v-legacy");
+        Directory.CreateDirectory(versionDir);
+        var legacyJson = """
+            {
+              "Version": "v-legacy",
+              "Target": "temperature",
+              "Phase": "2b",
+              "DataSource": "previous_runs_api",
+              "TrainedAtUtc": "2026-04-21T20:12:31Z",
+              "Hyperparameters": {},
+              "TestMae": {},
+              "DeviationsFromBrief": [],
+              "PerLead": {}
+            }
+            """;
+        File.WriteAllText(
+            Path.Combine(versionDir, ModelArtifact.TrainingMetadataFileName),
+            legacyJson);
+
+        var loaded = ModelArtifact.LoadTrainingMetadata(versionDir);
+
+        loaded.Phase.Should().Be("2b");
+        loaded.LocationName.Should().BeNull();
     }
 
     [Fact]

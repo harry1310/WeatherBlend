@@ -369,4 +369,57 @@ public class RetrainGuardTests
         // stayed at 2, and the per-feature check skipped 'c' (not in prev).
         result.Breaches.Should().BeEmpty();
     }
+
+    [Fact]
+    public void Check_fails_when_LocationName_changes_between_runs()
+    {
+        // The catastrophic Phase A scenario: a Membury bundle accidentally
+        // routed through Bonehill's manifest slot would silently overwrite
+        // the wrong production model. Guard MUST refuse the write — same
+        // composite, different LocationName is the unrecoverable case.
+        var prev = MakeSummary();
+        prev.LocationName = "bonehill_rocks";
+        var curr = MakeSummary();
+        curr.LocationName = "membury_devon";
+
+        var result = RetrainGuard.Check(curr, prev, RetrainGuard.Defaults);
+
+        result.Passed.Should().BeFalse();
+        result.Breaches.Should().ContainSingle(b => b.Field == "locationName");
+    }
+
+    [Fact]
+    public void Check_passes_when_both_LocationNames_match()
+    {
+        var prev = MakeSummary();
+        prev.LocationName = "bonehill_rocks";
+        var curr = MakeSummary();
+        curr.LocationName = "bonehill_rocks";
+
+        var result = RetrainGuard.Check(curr, prev, RetrainGuard.Defaults);
+
+        result.Passed.Should().BeTrue();
+        result.Breaches.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Check_passes_when_either_LocationName_is_unset()
+    {
+        // Backfill window: previous summary predates the field, current
+        // summary is the first pinned write. Guard treats the missing side
+        // as "no info to compare" rather than a breach — refusing legacy
+        // pairings would block every retrain until backfill is done.
+        // Symmetric in the other direction (newly-empty current would
+        // signal trainer regression but isn't a hard block — the schema-
+        // level [JsonRequired] bumped in Task #21 catches that case at
+        // load time anyway).
+        var prev = MakeSummary();              // LocationName = null
+        var curr = MakeSummary();
+        curr.LocationName = "bonehill_rocks";
+
+        var result = RetrainGuard.Check(curr, prev, RetrainGuard.Defaults);
+
+        result.Passed.Should().BeTrue();
+        result.Breaches.Should().NotContain(b => b.Field == "locationName");
+    }
 }
