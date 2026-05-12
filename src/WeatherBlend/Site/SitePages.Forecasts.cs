@@ -293,6 +293,38 @@ public static partial class SitePages
         => RenderPrecipSection(input, lead, activeLocation: null);
 
     /// <summary>
+    /// Phase → (colour, dashed?) for the main P(wet) chart. Champion (3a)
+    /// is solid brand purple; every challenger gets its OWN distinct hue
+    /// + dashed style so 5+ phases stay readable on one axis. Hand-picked
+    /// to be visually distinct under web rendering (no two adjacent hues
+    /// on the colour wheel; light/dark contrast varies).
+    ///
+    /// Pre-2026-05-12 every challenger shared NwpPalette.BlendChallenger
+    /// (light purple) with the only distinction being 2d/3d (magenta) —
+    /// adding 3e + 4b put 4 lines on identical colour, unreadable.
+    /// </summary>
+    private static (string color, bool dashed) PrecipPhaseStyle(string phase, bool isChampion)
+    {
+        if (isChampion) return (NwpPalette.Blend, dashed: false);   // brand purple, solid
+        return phase switch
+        {
+            // 3c: rich-feature LightGBM challenger — blue.
+            "3c" => ("#1976D2", true),
+            // 3d: exact-runtime challenger — keep the existing magenta.
+            "3d" => (NwpPalette.BlendExactChallenger, true),
+            // 3e: TorchSharp MLP challenger — green (distinct family from
+            // the GBT challengers).
+            "3e" => ("#2E7D32", true),
+            // 4b: synthesised 2-way mean of 4a + 3e — orange/amber. Stands
+            // out because 4b is our headline production stack (Brier 0.0830
+            // per the 2026-05-12 bake-off, beats best single by 1.8%).
+            "4b" => ("#F57C00", true),
+            // Fallback for any future challenger (5b etc).
+            _    => (NwpPalette.BlendChallenger, true),
+        };
+    }
+
+    /// <summary>
     /// Each precip prediction row carries the LocationName whose NWP fed its
     /// featureset (PrecipPredictCommand's <c>_activeLocation.Name</c>). Multi-
     /// location renders MUST drop rows where a station's prediction came from
@@ -451,25 +483,17 @@ public static partial class SitePages
                 continue;
             }
 
-            // Top: P(wet) + climatology + per-NWP PoP, all on the [0, 1]
-            // probability axis. Per-NWP PoP comes from Open-Meteo's
-            // precipitation_probability (0..100 percent, divided by 100
-            // here to share the axis). Only ~4 of 8 NWPs publish it
-            // (GFS / ECMWF / ICON / GEM via Open-Meteo); the others have
-            // no rows in NwpPrecipProbabilities and silently drop out of
-            // the legend. Threshold each NWP uses for "any precip" varies
-            // and isn't strictly our 0.1 mm/h training label, so the
-            // overlay is direction-of-effect, not like-for-like.
+            // Top chart: our blended model P(wet) lines + climatology only.
+            // Per-NWP PoP overlay moved to a page-level chart below the
+            // station loop (2026-05-12 — was overcrowded with 5 blender
+            // lines + 4 NWP PoP lines + climatology on one axis).
             //
-            // Champion + challenger P(wet) lines: P(wet) bucketed by
-            // ActivePhasePolicy priority so champion (3a) draws solid in
-            // brand purple, challenger (3c) draws dashed in the same colour.
-            // Climatology + NWP PoP overlay sit on top in their own colours.
+            // Champion = 3a (solid brand purple). Each challenger has its
+            // OWN distinct colour so 5+ phases stay readable. Dashed for
+            // every challenger; solid only for the champion. Climatology
+            // is grey.
             var probSeries = new List<LineSeries>();
             var orderedPrecipPhases = ActivePhasePolicy.ByTarget["precipitation"];
-            // Same now-1h drop as latestPerValid above — historical points
-            // alongside the live ones, bounded by the renderer's outer
-            // window.
             var precipByPhase = precipForLocation
                 .Where(r => r.Station == station
                             && r.LeadHours == lead)
@@ -480,59 +504,26 @@ public static partial class SitePages
                                                  .Select(gv => gv.OrderByDescending(r => r.PredictedAtUtc).First())
                                                  .OrderBy(r => r.ValidTimeUtc)
                                                  .ToList());
-            // Champion solid in deep purple, challenger solid in lighter
-            // purple — same hue family, distinguishable by saturation.
             for (int i = 0; i < orderedPrecipPhases.Count; i++)
             {
                 var phase = orderedPrecipPhases[i];
                 // 4a renders in its own standalone panel below
-                // (RenderPhase4aPanel) — keeping the main P(wet) chart to
-                // 3a/3c/3d + climatology + per-NWP PoP. With 4a inline the
-                // chart had 3 prediction lines + 8 NWP overlays + 4a's
-                // dashed Q05/Q95 = 13+ series, unreadable.
+                // (RenderPhase4aPanel) — its dashed Q05/Q95 band would
+                // crowd the main chart, and its own panel can carry
+                // more posterior detail without competing for space.
                 if (phase == "4a") continue;
                 if (!precipByPhase.TryGetValue(phase, out var phaseRows) || phaseRows.Count == 0) continue;
-                // Color rules:
-                //   champion (i==0)       → NwpPalette.Blend (brand purple)
-                //   exact-runtime (2d/3d) → NwpPalette.BlendExactChallenger (magenta)
-                //   other challengers     → NwpPalette.BlendChallenger (lighter purple)
-                var color = i == 0
-                    ? NwpPalette.Blend
-                    : phase == "2d" || phase == "3d"
-                        ? NwpPalette.BlendExactChallenger
-                        : NwpPalette.BlendChallenger;
+                var (color, dashed) = PrecipPhaseStyle(phase, isChampion: i == 0);
                 var label = i == 0 ? $"P(wet) ({phase} champion)" : $"P(wet) ({phase} challenger)";
                 var pts = phaseRows
                     .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet))
                     .ToList();
-                probSeries.Add(new LineSeries(label, color, pts));
+                probSeries.Add(new LineSeries(label, color, pts, Dashed: dashed));
             }
             // Climatology stays a single line — it's a station property, not
             // a blender output. Read off the champion-pooled rows above.
             probSeries.Add(new LineSeries("Climatology", "#9e9e9e",
                 latestPerValid.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ClimatologyPWet)).ToList()));
-
-            // Filter per-NWP PoP to the same valid-time range the blend
-            // covers at this lead, so the chart's X axis stays aligned and
-            // we don't drag in points beyond the lead's forward window.
-            var minValid = latestPerValid[0].ValidTimeUtc;
-            var maxValid = latestPerValid[^1].ValidTimeUtc;
-            var nwpPalette = NwpsForPrecipitation()
-                .ToDictionary(np => np.Label, np => np.Color, StringComparer.Ordinal);
-            foreach (var nwpGroup in input.NwpPrecipProbabilities
-                .Where(p => p.ValidTimeUtc >= minValid && p.ValidTimeUtc <= maxValid)
-                .GroupBy(p => p.Model)
-                .OrderBy(g => g.Key, StringComparer.Ordinal))
-            {
-                var label = LookupNwpLabel(nwpGroup.Key);
-                if (!nwpPalette.TryGetValue(label, out var colour)) colour = "#999";
-                var pts = nwpGroup
-                    .OrderBy(p => p.ValidTimeUtc)
-                    .Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.ProbabilityPercent / 100.0))
-                    .ToList();
-                if (pts.Count > 0)
-                    probSeries.Add(new LineSeries($"{label} PoP", colour, pts));
-            }
 
             s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
             {
@@ -565,6 +556,51 @@ public static partial class SitePages
             s.Append(RenderPrecipHourlyConfidenceTable(visiblePerValid, station, input.PrecipConformalTau));
             s.Append(RenderPhase4aPanel(input, station, lead, pageXMin, pageXMax));
             s.Append(RenderBayesianCiPanel(input, station, lead, pageXMin, pageXMax));
+        }
+
+        // Page-level NWP precipitation_probability (PoP) chart — moved
+        // out of the per-station main P(wet) chart on 2026-05-12. PoP
+        // values are identical across rainfall stations (they're a point
+        // forecast at the location's NWP grid cell) so it makes sense
+        // to render once per page rather than per station. Sits above
+        // the mm/h chart so the eye reads "is rain likely?" then "how
+        // hard?" top-to-bottom. Only ~4 of 8 NWPs publish PoP — others
+        // drop out of the legend silently.
+        if (input.NwpPrecipProbabilities.Count > 0)
+        {
+            var popSeries = new List<LineSeries>();
+            var popPalette = nwpSpecs
+                .ToDictionary(np => np.Label, np => np.Color, StringComparer.Ordinal);
+            foreach (var grp in input.NwpPrecipProbabilities
+                .GroupBy(p => p.Model)
+                .OrderBy(g => g.Key, StringComparer.Ordinal))
+            {
+                var label = LookupNwpLabel(grp.Key);
+                if (!popPalette.TryGetValue(label, out var colour)) colour = "#999";
+                var pts = grp
+                    .OrderBy(p => p.ValidTimeUtc)
+                    .Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.ProbabilityPercent / 100.0))
+                    .ToList();
+                if (pts.Count > 0)
+                    popSeries.Add(new LineSeries(label, colour, pts));
+            }
+            if (popSeries.Count > 0)
+            {
+                s.Append("<h4>NWP precipitation probability — point forecast at Bonehill</h4>");
+                s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
+                {
+                    Title = $"NWP PoP — Bonehill — +{lead}h",
+                    XLabel = "Valid time (UTC)",
+                    YLabel = "Probability",
+                    Series = popSeries,
+                    Height = 220,
+                    FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
+                    FormatY = v => v.ToString("0.00", Ci),
+                    TodayLineX = input.GeneratedAtUtc.ToOADate(),
+                    XMin = pageXMin,
+                    XMax = pageXMax,
+                }));
+            }
         }
 
         // Per-NWP precip rate (mm/h) — point forecast at Bonehill, hoisted
