@@ -293,34 +293,26 @@ public static partial class SitePages
         => RenderPrecipSection(input, lead, activeLocation: null);
 
     /// <summary>
-    /// Phase → (colour, dashed?) for the main P(wet) chart. Champion (3a)
-    /// is solid brand purple; every challenger gets its OWN distinct hue
-    /// + dashed style so 5+ phases stay readable on one axis. Hand-picked
-    /// to be visually distinct under web rendering (no two adjacent hues
-    /// on the colour wheel; light/dark contrast varies).
+    /// Phase → colour for the main P(wet) chart. Champion (3a) and every
+    /// challenger get their own distinct hue; all SOLID lines (no dashes)
+    /// so the eye reads colour, not stroke pattern. Hand-picked to be
+    /// visually distinct under web rendering (no two adjacent hues on
+    /// the colour wheel; light/dark contrast varies).
     ///
     /// Pre-2026-05-12 every challenger shared NwpPalette.BlendChallenger
     /// (light purple) with the only distinction being 2d/3d (magenta) —
     /// adding 3e + 4b put 4 lines on identical colour, unreadable.
     /// </summary>
-    private static (string color, bool dashed) PrecipPhaseStyle(string phase, bool isChampion)
+    private static string PrecipPhaseColor(string phase, bool isChampion)
     {
-        if (isChampion) return (NwpPalette.Blend, dashed: false);   // brand purple, solid
+        if (isChampion) return NwpPalette.Blend;   // brand purple
         return phase switch
         {
-            // 3c: rich-feature LightGBM challenger — blue.
-            "3c" => ("#1976D2", true),
-            // 3d: exact-runtime challenger — keep the existing magenta.
-            "3d" => (NwpPalette.BlendExactChallenger, true),
-            // 3e: TorchSharp MLP challenger — green (distinct family from
-            // the GBT challengers).
-            "3e" => ("#2E7D32", true),
-            // 4b: synthesised 2-way mean of 4a + 3e — orange/amber. Stands
-            // out because 4b is our headline production stack (Brier 0.0830
-            // per the 2026-05-12 bake-off, beats best single by 1.8%).
-            "4b" => ("#F57C00", true),
-            // Fallback for any future challenger (5b etc).
-            _    => (NwpPalette.BlendChallenger, true),
+            "3c" => "#1976D2",                       // blue — rich-feature LightGBM
+            "3d" => NwpPalette.BlendExactChallenger, // magenta — exact-runtime (unchanged)
+            "3e" => "#2E7D32",                       // green — TorchSharp MLP
+            "4b" => "#F57C00",                       // orange — 2-way mean (headline stack)
+            _    => NwpPalette.BlendChallenger,      // fallback for future challengers
         };
     }
 
@@ -513,12 +505,12 @@ public static partial class SitePages
                 // more posterior detail without competing for space.
                 if (phase == "4a") continue;
                 if (!precipByPhase.TryGetValue(phase, out var phaseRows) || phaseRows.Count == 0) continue;
-                var (color, dashed) = PrecipPhaseStyle(phase, isChampion: i == 0);
+                var color = PrecipPhaseColor(phase, isChampion: i == 0);
                 var label = i == 0 ? $"P(wet) ({phase} champion)" : $"P(wet) ({phase} challenger)";
                 var pts = phaseRows
                     .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet))
                     .ToList();
-                probSeries.Add(new LineSeries(label, color, pts, Dashed: dashed));
+                probSeries.Add(new LineSeries(label, color, pts));
             }
             // Climatology stays a single line — it's a station property, not
             // a blender output. Read off the champion-pooled rows above.
