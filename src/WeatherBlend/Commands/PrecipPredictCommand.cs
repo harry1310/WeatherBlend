@@ -239,12 +239,15 @@ public sealed class PrecipPredictCommand
         // Caught 2026-05-12 03:22 UTC by predict-and-render run 25711115753
         // shortly after the manifest fix promoted 4a back into Active.
         if (modelVersion.EndsWith("_phase4a", StringComparison.Ordinal)
+            || modelVersion.EndsWith("_phase4b", StringComparison.Ordinal)
             || modelVersion.EndsWith("_phase5a", StringComparison.Ordinal))
         {
+            var which = modelVersion.EndsWith("_phase4a", StringComparison.Ordinal) ? "4a"
+                      : modelVersion.EndsWith("_phase4b", StringComparison.Ordinal) ? "4b"
+                      : "5a";
             _log.LogInformation(
-                "Station {Station}: skipping {V} — Python-trained phase, served by predict-{Workflow}.yml.",
-                station, modelVersion,
-                modelVersion.EndsWith("_phase4a", StringComparison.Ordinal) ? "4a" : "5a");
+                "Station {Station}: skipping {V} — Python-{Workflow} phase, served by its own predict step.",
+                station, modelVersion, which);
             return true;   // not a failure — just not this command's job
         }
 

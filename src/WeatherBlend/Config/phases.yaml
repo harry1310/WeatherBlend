@@ -78,6 +78,17 @@ targets:
       - id: "4a"
         role: challenger
         impl: python
+      # 4b is the arithmetic mean of 4a + 3e — not a trained model,
+      # the 2026-05-12 LightGBM-meta bake-off identified it as the
+      # best production stack at current data scale (Brier 0.0830,
+      # wins 14/15 (station,lead) cells vs the best single). The
+      # bundle is minted post-retrain by mint_4b_bundle.py and the
+      # cycle predictions are synthesised by predict_4b.py — no
+      # training step, both live in WeatherProbabilistic alongside
+      # predict_4a / predict_5a.
+      - id: "4b"
+        role: challenger
+        impl: python
       - id: "5a"
         role: confidence
         impl: python
