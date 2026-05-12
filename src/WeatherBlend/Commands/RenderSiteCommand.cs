@@ -69,6 +69,7 @@ public sealed class RenderSiteCommand
         var precip = precipRows.Select(r => new SitePages.PrecipForecastPoint(
             Station:         r.TruthStation,
             Version:         r.ModelVersion,
+            LocationName:    r.LocationName,
             PredictedAtUtc:  r.PredictionMadeAtUtc,
             ValidTimeUtc:    r.ValidTimeUtc,
             LeadHours:       r.LeadHours,

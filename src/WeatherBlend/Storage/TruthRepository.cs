@@ -39,6 +39,24 @@ public sealed class TruthRepository
     }
 
     /// <summary>
+    /// SQL fragment: <c>'a', 'b', 'c'</c> — the LocationName values for every
+    /// configured location, single-quoted and ready to drop into an
+    /// <c>IN (...)</c> clause. Defaults to <c>''</c> (matches nothing) when
+    /// <see cref="AppConfig.Locations"/> is empty so test fixtures and smoke
+    /// runs without a Locations block degrade to "no rows" rather than
+    /// throwing on an empty IN list. The 2026-05-11 multi-location PoC means
+    /// truth trees carry rows tagged with each location's Name; the previous
+    /// primary-only filter silently dropped Membury truth on every read,
+    /// which in turn emptied the Membury rolling-Brier and verify reports.
+    /// </summary>
+    private string LocationInList()
+    {
+        var inList = string.Join(", ",
+            _cfg.Locations.Select(l => "'" + l.Name.Replace("'", "''") + "'"));
+        return string.IsNullOrEmpty(inList) ? "''" : inList;
+    }
+
+    /// <summary>
     /// Hourly ERA5 reading at the configured location, keyed by
     /// <c>ValidTimeUtc</c>. Default column is <c>Temperature2m</c>; element
     /// verify passes the per-target column name (e.g. <c>RelativeHumidity2m</c>,
@@ -52,6 +70,13 @@ public sealed class TruthRepository
         ValidateColumnName(column);
 
         var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.Era5Path, "**", "*.parquet"));
+        // Stays primary-only on purpose: the return type is keyed by
+        // ValidTimeUtc and an IN-list across locations would emit two values
+        // per timestamp (one per location grid cell), throwing on the
+        // ToDictionary below. The only consumer is the primary-location temp
+        // chart; if a Membury temp/element skill page lands later it should
+        // get a per-location overload (GetEra5Hourly(string locationName, ...))
+        // rather than silently broaden this one. See TODO multi-loc-temp.
         var sql = $@"
 SELECT ValidTimeUtc, {column}
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
@@ -81,11 +106,16 @@ WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
         var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.RainfallPath, "**", "*.parquet"));
 
         // end + 1h so the last hour's four 15-min readings are all in range.
+        // Multi-location IN-list — Membury rainfall (LocationName=membury_devon)
+        // was being silently dropped under the previous primary-only filter,
+        // which emptied rolling-Brier and verify for Chards/Goren/Raymonds.
+        // StationName remains unique across locations so the dedicated filter
+        // still selects exactly one station's rows.
         var sql = $@"
 SELECT date_trunc('hour', ObservedTimeUtc) AS valid_time,
        SUM(Value15MinMm) AS mm_hour
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
+WHERE LocationName IN ({LocationInList()})
   AND StationName  = '{stationName.Replace("'", "''")}'
   AND Value15MinMm IS NOT NULL
   AND ObservedTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
@@ -115,12 +145,13 @@ ORDER BY 1";
         ct.ThrowIfCancellationRequested();
         var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.RainfallPath, "**", "*.parquet"));
 
+        // Multi-location IN-list — see GetEaHourlyRainfall for rationale.
         var sql = $@"
 SELECT StationName,
        date_trunc('hour', ObservedTimeUtc) AS valid_time,
        SUM(Value15MinMm) AS mm_hour
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
+WHERE LocationName IN ({LocationInList()})
   AND Value15MinMm IS NOT NULL
   AND ObservedTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
   AND ObservedTimeUtc <= TIMESTAMP '{end.AddHours(1):yyyy-MM-dd HH:mm:ss}'
@@ -156,10 +187,16 @@ ORDER BY StationName, valid_time";
         if (slugs.Count == 0)
             return new Dictionary<string, IReadOnlyDictionary<DateTime, double>>(StringComparer.OrdinalIgnoreCase);
 
-        var stationNamesBySlug = _cfg.Location.Rainfall.Stations.ToDictionary(
-            s => StationSlug.WithEaPrefix(s.Name),
-            s => s.Name,
-            StringComparer.OrdinalIgnoreCase);
+        // Slug → friendly StationName across EVERY configured location.
+        // Pre-2026-05-12 this looked at primary's stations only and Membury
+        // slugs returned an empty dict + "no config station" warning, which
+        // was the second half of why Membury rolling-Brier rendered empty.
+        var stationNamesBySlug = _cfg.Locations
+            .SelectMany(loc => loc.Rainfall.Stations)
+            .ToDictionary(
+                s => StationSlug.WithEaPrefix(s.Name),
+                s => s.Name,
+                StringComparer.OrdinalIgnoreCase);
 
         var result = new Dictionary<string, IReadOnlyDictionary<DateTime, double>>(StringComparer.OrdinalIgnoreCase);
         foreach (var slug in slugs)

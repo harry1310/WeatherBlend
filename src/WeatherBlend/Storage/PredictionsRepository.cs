@@ -137,6 +137,23 @@ ORDER BY ModelVersion, LeadHours, ValidTimeUtc";
                 "'" + ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath, "precipitation", s, "**", "*.parquet")) + "'"))
                 + "], hive_partitioning = false, union_by_name = true)";
 
+        // Predictions are tagged with the LocationName whose NWP fed the
+        // featureset (see PrecipPredictCommand: `_activeLocation.Name`).
+        // Multi-location PoC (2026-05-11) means the tree carries rows for
+        // every configured location; build the IN list from `_cfg.Locations`
+        // so adding a third location doesn't need a code change here.
+        // Per-station home-location filtering happens downstream in
+        // SitePages.Forecasts so a Membury station never picks up
+        // Bonehill-NWP rows of the same model version (or vice versa).
+        var locationInList = string.Join(", ",
+            _cfg.Locations.Select(l => "'" + l.Name.Replace("'", "''") + "'"));
+        if (string.IsNullOrEmpty(locationInList))
+        {
+            // Defensive: empty config → match nothing rather than throw, so
+            // tests / smoke runs without a Locations block degrade to "no rows".
+            locationInList = "''";
+        }
+
         // ConformalSetTag persisted only since precip-conformal-fit (2026-05-03).
         // ProbWetStd / ProbWetQ05 / ProbWetQ95 / Ci80Width / Ci90Width persisted
         // since the Bayesian-uncertainty alignment 2026-05-09 (4a + 5a).
@@ -158,7 +175,7 @@ SELECT LocationName, TruthStation, ModelVersion, PredictionMadeAtUtc, ValidTimeU
        ConformalSetTag,
        ProbWetStd, ProbWetQ05, ProbWetQ95, Ci80Width, Ci90Width
 FROM {fromClause}
-WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
+WHERE LocationName IN ({locationInList})
   AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
   -- 5a's lead-as-feature predict can write occasional null-band rows
@@ -228,6 +245,11 @@ ORDER BY TruthStation, ModelVersion, LeadHours, ValidTimeUtc";
                 "'" + ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath, "dry_window", c.Station, $"window_{c.WindowHours}h", "**", "*.parquet")) + "'"))
                 + "], hive_partitioning = false, union_by_name = true)";
 
+        // Multi-location filter (mirrors the precip query above).
+        var locationInListDw = string.Join(", ",
+            _cfg.Locations.Select(l => "'" + l.Name.Replace("'", "''") + "'"));
+        if (string.IsNullOrEmpty(locationInListDw)) locationInListDw = "''";
+
         // McMean/P10/P50/P90LongestDryRunHours: persisted only by Phase 3g
         // since 2026-05-03. Older parquets lack the columns; union_by_name
         // already on the read silently fills them as NULL for those rows.
@@ -247,7 +269,7 @@ SELECT LocationName, TruthStation, WindowHours, ModelVersion,
        EpistemicProbDryWindowQ90,  EpistemicSigmaUsed,
        ConformalSetTag
 FROM {fromClause}
-WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
+WHERE LocationName IN ({locationInListDw})
   AND TargetDateUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
   AND TargetDateUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 ORDER BY TruthStation, WindowHours, ModelVersion, LeadHours, TargetDateUtc";

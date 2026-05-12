@@ -293,6 +293,48 @@ public static partial class SitePages
         => RenderPrecipSection(input, lead, activeLocation: null);
 
     /// <summary>
+    /// Each precip prediction row carries the LocationName whose NWP fed its
+    /// featureset (PrecipPredictCommand's <c>_activeLocation.Name</c>). Multi-
+    /// location renders MUST drop rows where a station's prediction came from
+    /// a different location's NWP — Membury stations should only render
+    /// membury_devon-sourced rows, Bonehill stations only bonehill_rocks-
+    /// sourced rows. Anything else is a category error: the model was trained
+    /// against one site's NWP and the prediction is being scored against
+    /// another. Pre-2026-05-12 the SQL filter quietly enforced primary-only
+    /// at the cost of dropping legitimate Membury rows entirely.
+    ///
+    /// The map is built from <see cref="SiteInputs.Locations"/> (each
+    /// LocationDescriptor lists its RainStationSlugs). A station present in
+    /// no location returns <c>null</c> — callers treat that as "allow any"
+    /// so legacy single-location callers / tests that don't populate
+    /// Locations keep working unchanged.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string> BuildStationHomeLocation(SiteInputs input)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var loc in input.Locations)
+        {
+            foreach (var slug in loc.RainStationSlugs)
+                map[slug] = loc.Name;
+        }
+        return map;
+    }
+
+    /// <summary>
+    /// True iff <paramref name="row"/> was sourced from the right location's
+    /// NWP for its <c>Station</c>. Returns true (allow) when the station has
+    /// no home-location entry — legacy single-location callers / fixtures
+    /// without a populated Locations list keep their old behaviour.
+    /// </summary>
+    private static bool RowMatchesStationHomeLocation(
+        PrecipForecastPoint row,
+        IReadOnlyDictionary<string, string> stationHomeLocation)
+    {
+        if (!stationHomeLocation.TryGetValue(row.Station, out var home)) return true;
+        return string.Equals(row.LocationName, home, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
     /// Per-station rain panels for one lead. When <paramref name="activeLocation"/>
     /// is non-null, the station list is intersected with that location's
     /// rainfall slugs so the Bonehill tab only shows Bonehill stations and
@@ -305,9 +347,19 @@ public static partial class SitePages
         var s = new StringBuilder();
         s.Append("<h3>Precipitation — P(wet ≥ 0.1 mm/h)</h3>");
 
+        // Drop rows where the prediction's NWP source location doesn't match
+        // the station's home location. See BuildStationHomeLocation /
+        // RowMatchesStationHomeLocation for the rationale (mismatched pairings
+        // are a category error). Doing this once at the top keeps the four
+        // downstream queries identical and removes the risk of forgetting one.
+        var stationHomeLocation = BuildStationHomeLocation(input);
+        var precipForLocation = input.PrecipPredictions
+            .Where(r => RowMatchesStationHomeLocation(r, stationHomeLocation))
+            .ToList();
+
         // Filter to active stations so a demoted-from-config station whose
         // historical predictions are still on disk doesn't get a panel.
-        var stations = input.PrecipPredictions
+        var stations = precipForLocation
             .Select(p => p.Station).Distinct()
             .Where(s => input.ActiveStationSlugs.Count == 0 || input.ActiveStationSlugs.Contains(s))
             .OrderBy(st => st, StringComparer.Ordinal).ToList();
@@ -352,7 +404,7 @@ public static partial class SitePages
         // a single consistent forward edge across the tab.
         foreach (var station in stations)
         {
-            var latestPerValid = input.PrecipPredictions
+            var latestPerValid = precipForLocation
                 .Where(r => r.Station == station && r.LeadHours == lead)
                 .GroupBy(r => r.ValidTimeUtc)
                 .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
@@ -418,7 +470,7 @@ public static partial class SitePages
             // Same now-1h drop as latestPerValid above — historical points
             // alongside the live ones, bounded by the renderer's outer
             // window.
-            var precipByPhase = input.PrecipPredictions
+            var precipByPhase = precipForLocation
                 .Where(r => r.Station == station
                             && r.LeadHours == lead)
                 .Where(r => input.PhaseByVersion.TryGetValue(r.Version, out var ph)
@@ -612,7 +664,14 @@ public static partial class SitePages
     {
         if (!Phase4aDisplayLeads.Contains(lead)) return "";
 
+        // Drop rows whose NWP source location doesn't match this station's
+        // home location — same rule as the main P(wet) chart above. Predictions
+        // for Membury stations made from Bonehill NWP are a category error
+        // and would skew the panel even though they happen to be present in
+        // the predictions tree.
+        var stationHomeLocation = BuildStationHomeLocation(input);
         var rows = input.PrecipPredictions
+            .Where(r => RowMatchesStationHomeLocation(r, stationHomeLocation))
             .Where(r => string.Equals(r.Station, stationSlug, StringComparison.OrdinalIgnoreCase)
                         && r.LeadHours == lead
                         && input.PhaseByVersion.TryGetValue(r.Version, out var ph)

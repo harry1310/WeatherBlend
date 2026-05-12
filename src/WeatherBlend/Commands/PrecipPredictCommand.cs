@@ -114,23 +114,41 @@ public sealed class PrecipPredictCommand
         var modelsRoot = _cfg.Storage.ModelsPath;
 
         var stationsToRun = ResolveStations(modelsRoot, truthStation);
-        if (!string.IsNullOrWhiteSpace(locationOverride))
+        // Always intersect with the active location's rainfall config — a
+        // station's predict MUST use NWP from its own location's grid cell,
+        // never from a sibling location's. Pre-2026-05-12 this filter only
+        // ran when --location was passed, so step 1 of predict-and-render
+        // (no --location → primary) silently ran Membury stations against
+        // Bonehill NWP. The render-side LocationName filter dropped the
+        // resulting wrong-location rows but the predict job still wasted
+        // the cycles AND tagged the parquet with bonehill_rocks for a
+        // membury_devon station, which is a category error. Filtering at
+        // the source means step 1 only ever predicts its own location's
+        // stations, regardless of whether --truth-station was "all" or a
+        // specific slug. A Membury slug requested without --location now
+        // returns 0 with a clear log message instead of silently producing
+        // wrong-NWP predictions.
+        var locationSlugs = _activeLocation.Rainfall.Stations
+            .Select(s => StationSlug.WithEaPrefix(s.Name))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var beforeCount = stationsToRun.Count;
+        var dropped = stationsToRun.Where(s => !locationSlugs.Contains(s)).ToList();
+        stationsToRun = stationsToRun.Where(s => locationSlugs.Contains(s)).ToList();
+        if (dropped.Count > 0)
         {
-            // Filter to slugs that match the active location's rainfall config.
-            // ResolveStations may have returned all 7 (truthStation=all) but
-            // --location pins us to just the 3 Membury slugs.
-            var locationSlugs = _activeLocation.Rainfall.Stations
-                .Select(s => StationSlug.WithEaPrefix(s.Name))
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var beforeCount = stationsToRun.Count;
-            stationsToRun = stationsToRun.Where(s => locationSlugs.Contains(s)).ToList();
-            _log.LogInformation("Filtered {Before} → {After} stations for location '{Loc}'.",
-                beforeCount, stationsToRun.Count, _activeLocation.Name);
+            _log.LogInformation(
+                "Dropping {Count}/{Before} station(s) not in location '{Loc}' rainfall config: [{Dropped}]. " +
+                "Predict each station against its own location's NWP — re-run with --location <name> to score the rest.",
+                dropped.Count, beforeCount, _activeLocation.Name, string.Join(", ", dropped));
         }
         if (stationsToRun.Count == 0)
         {
-            _log.LogError("No precipitation blender artefacts found under {Dir}. Train first.",
-                Path.Combine(modelsRoot, "precipitation"));
+            _log.LogError(
+                "No precipitation blender artefacts under {Dir} match location '{Loc}' rainfall stations [{Configured}]. " +
+                "Either add the station to that location's config or pass --location <name>.",
+                Path.Combine(modelsRoot, "precipitation"),
+                _activeLocation.Name,
+                string.Join(", ", _activeLocation.Rainfall.Stations.Select(s => s.Name)));
             return 2;
         }
 

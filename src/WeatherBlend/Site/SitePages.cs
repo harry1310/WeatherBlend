@@ -565,6 +565,12 @@ public static partial class SitePages
     public sealed record PrecipForecastPoint(
         string Station,
         string Version,
+        // Location whose NWP fed the featureset (PrecipPredictCommand's
+        // _activeLocation.Name). Carried through so multi-location renders
+        // can drop rows where a station's predictions came from another
+        // location's NWP — the right pairing is "row.LocationName matches
+        // the station's home location".
+        string LocationName,
         DateTime PredictedAtUtc,
         DateTime ValidTimeUtc,
         int LeadHours,
