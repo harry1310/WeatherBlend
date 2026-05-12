@@ -1,0 +1,333 @@
+using System.Text.Json;
+using DuckDB.NET.Data;
+using Microsoft.Extensions.Logging;
+using Parquet.Serialization;
+using WeatherBlend.Config;
+using WeatherBlend.Models;
+using WeatherBlend.Train;
+using WeatherBlend.Train.Common;
+
+namespace WeatherBlend.Commands;
+
+/// <summary>
+/// Phase 4b one-time bundle minter. 4b isn't a trained model — it's
+/// the arithmetic mean of phase 4a + phase 3e P(wet), identified as
+/// the best production stack in the 2026-05-12 bake-off. The bundle
+/// exists so render / verify / Models page treat 4b as a first-class
+/// phase: there's a versioned dir per station with metadata,
+/// climatology, feature schema, training_summary, and a
+/// test_predictions.parquet derived from the inner-join of 4a + 3e's
+/// own test_predictions parquets.
+///
+/// Runs once per Sunday auto-retrain (after 4a + 3e are minted) plus
+/// any time the user wants to refresh the bundle manually. Updates
+/// MANIFEST.Active via PromoteVersionAsChampion so the new 4b
+/// version replaces the previous one (lead-overlap-aware: same phase,
+/// same lead set → replace, no accumulation).
+///
+/// What the bundle contains:
+///   training_metadata.json   Phase=4b, LocationName, PerLead Brier
+///                            on the joined test slice, source bundle
+///                            versions in DeviationsFromBrief.
+///   training_summary.json    Minimal stub for RetrainGuard.
+///   feature_schema.json      One BlenderSpec per lead listing p_4a +
+///                            p_3e as inputs (so the Spec page renders
+///                            a meaningful card).
+///   test_predictions.parquet Inner-join of 4a + 3e test_predictions
+///                            with p_wet = mean(p_4a, p_3e).
+///   climatology.json         Copied from 3a's bundle — same station,
+///                            same wet indicator, identical baseline.
+/// </summary>
+public sealed class Phase4bMintCommand
+{
+    private readonly ILogger<Phase4bMintCommand> _log;
+    private readonly AppConfig _cfg;
+    private const string Phase = "4b";
+
+    public Phase4bMintCommand(ILogger<Phase4bMintCommand> log, AppConfig cfg)
+    {
+        _log = log;
+        _cfg = cfg;
+    }
+
+    public async Task<int> RunAsync(CancellationToken ct)
+    {
+        var stations = ResolveStations();
+        if (stations.Count == 0)
+        {
+            _log.LogError("No precipitation stations configured — cannot mint 4b.");
+            return 2;
+        }
+
+        var modelsRoot = _cfg.Storage.ModelsPath;
+        var version = DateTime.UtcNow.ToString("'v'yyyy-MM-dd_HHmmss'_phase4b'");
+        var trainedAt = DateTime.UtcNow;
+
+        _log.LogInformation(
+            "Mint Phase 4b: version={Version}, stations=[{Stations}]",
+            version, string.Join(", ", stations));
+
+        int nOk = 0, nErr = 0;
+        foreach (var station in stations)
+        {
+            ct.ThrowIfCancellationRequested();
+            var (ok, note) = await MintForStationAsync(modelsRoot, station, version, trainedAt, ct);
+            _log.LogInformation("{Tag} {Station}: {Note}", ok ? "OK " : "ERR", station, note);
+            if (ok) nOk++; else nErr++;
+        }
+        _log.LogInformation("Done. Minted: {OK}, failed: {Err}.", nOk, nErr);
+        return nErr == 0 ? 0 : 3;
+    }
+
+    private IReadOnlyList<string> ResolveStations()
+    {
+        var slugs = new List<string>();
+        foreach (var loc in _cfg.Locations)
+        {
+            foreach (var s in loc.Rainfall.Stations)
+                slugs.Add(StationSlug.WithEaPrefix(s.Name));
+        }
+        return slugs;
+    }
+
+    private async Task<(bool ok, string note)> MintForStationAsync(
+        string modelsRoot, string station, string version, DateTime trainedAt, CancellationToken ct)
+    {
+        var stationDir = Path.Combine(modelsRoot, "precipitation", station);
+        if (!Directory.Exists(stationDir))
+            return (false, $"station dir missing at {stationDir}");
+
+        var bundle4a = FindLatestBundleWithTestPredictions(stationDir, "_phase4a");
+        var bundle3e = FindLatestBundleWithTestPredictions(stationDir, "_phase3e");
+        var bundle3a = FindLatestBundleWithTestPredictions(stationDir, phaseSuffix: null);
+        if (bundle4a is null) return (false, $"no 4a bundle with test_predictions.parquet under {stationDir}");
+        if (bundle3e is null) return (false, $"no 3e bundle with test_predictions.parquet under {stationDir}");
+        if (bundle3a is null) return (false, $"no 3a bundle (needed for climatology copy) under {stationDir}");
+
+        // Pull the active location from the 3a bundle's metadata — 4b
+        // inherits the location pinning. If a station ever ends up with
+        // 3a + 3e + 4a trained on different locations, RetrainGuard
+        // would have refused those promotions long before we got here.
+        var meta3a = ModelArtifact.LoadTrainingMetadata(bundle3a);
+        var location = string.IsNullOrEmpty(meta3a.LocationName)
+            ? _cfg.Location.Name
+            : meta3a.LocationName;
+
+        // Read both test_predictions parquets via DuckDB, inner-join on
+        // (valid_time, lead) — the canonical schema is
+        // {valid_time, station, lead, p_wet, observed_wet}.
+        var joined = ReadAndJoinTestPredictions(
+            Path.Combine(bundle4a, "test_predictions.parquet"),
+            Path.Combine(bundle3e, "test_predictions.parquet"));
+        if (joined.Count == 0)
+            return (false, "inner-join of 4a + 3e test_predictions produced 0 rows");
+
+        // Write bundle dir + artefacts.
+        var outDir = Path.Combine(stationDir, version);
+        Directory.CreateDirectory(outDir);
+
+        // 1. test_predictions.parquet — same schema as every other binary phase.
+        var testRows = joined
+            .Select(j => new TestPredictionRow
+            {
+                valid_time   = j.ValidTime,
+                station      = j.Station,
+                lead         = j.Lead,
+                p_wet        = j.PWet,
+                observed_wet = (byte)(j.Observed ? 1 : 0),
+            })
+            .ToList();
+        await ParquetSerializer.SerializeAsync(testRows,
+            Path.Combine(outDir, "test_predictions.parquet"), cancellationToken: ct);
+
+        // 2. Per-lead Brier — same convention every binary phase uses
+        // (BlendTestMae carries Brier; BlendTestRmse / Bias not
+        // meaningful for an unfit mean, set to 0/mean(p-y)).
+        var perLead = new Dictionary<string, ModelArtifact.PerLeadStats>();
+        foreach (var leadGroup in joined.GroupBy(j => j.Lead).OrderBy(g => g.Key))
+        {
+            var rows = leadGroup.ToList();
+            var y = rows.Select(r => r.Observed ? 1.0 : 0.0).ToArray();
+            var p = rows.Select(r => r.PWet).ToArray();
+            var p4a = rows.Select(r => r.PWet4a).ToArray();
+            var p3e = rows.Select(r => r.PWet3e).ToArray();
+            var brierBlend = Brier(p, y);
+            var brier4a    = Brier(p4a, y);
+            var brier3e    = Brier(p3e, y);
+            var bestBrier  = Math.Min(brier4a, brier3e);
+            var bestName   = brier3e <= brier4a ? "p_3e" : "p_4a";
+            perLead[leadGroup.Key.ToString()] = new ModelArtifact.PerLeadStats
+            {
+                LeadHours          = leadGroup.Key,
+                DataRangeTrain     = "",
+                DataRangeVal       = "",
+                DataRangeTest      = "",
+                TrainRows          = 0,
+                ValRows            = 0,
+                TestRows           = rows.Count,
+                TestCalendarMonths = 0,
+                BestSingle         = bestName,
+                BestSingleValMae   = null,
+                BestSingleTestMae  = bestBrier,
+                BlendTestMae       = brierBlend,
+                BlendTestRmse      = 0.0,
+                BlendTestBias      = p.Zip(y, (pp, yy) => pp - yy).Average(),
+                CalibratedBlendTestMae = 0.0,
+            };
+        }
+
+        // 3. training_metadata.json — first-class phase, real PerLead numbers.
+        var metadata = new ModelArtifact.TrainingMetadata
+        {
+            Version       = version,
+            Target        = "precipitation",
+            Phase         = Phase,
+            LocationName  = location,
+            DataSource    = $"derived: mean(p_4a, p_3e) — 4a={Path.GetFileName(bundle4a)}, 3e={Path.GetFileName(bundle3e)}",
+            TrainedAtUtc  = trainedAt,
+            Hyperparameters = new Dictionary<string, object>
+            {
+                ["method"]            = "arithmetic_mean",
+                ["components"]        = new[] { "p_4a", "p_3e" },
+                ["source_bundle_4a"]  = Path.GetFileName(bundle4a)!,
+                ["source_bundle_3e"]  = Path.GetFileName(bundle3e)!,
+            },
+            TestMae = perLead.ToDictionary(
+                kv => $"lead_{kv.Key}h_brier",
+                kv => kv.Value.BlendTestMae),
+            DeviationsFromBrief = new List<string>
+            {
+                "Phase 4b is NOT a trained model — it is the arithmetic mean of phase 4a's BART P(wet) and phase 3e's MLP P(wet). The bundle is minted by Phase4bMintCommand (typically after Sunday auto-retrain) so the ModelMetadata + Manifest plumbing treats it as a first-class phase (renders on rain forecasts, scored by verify, shown on the Models page). The 'training' step is the join + average.",
+                "test_predictions.parquet is the inner-join of 4a and 3e's test_predictions parquets with p_wet = (p_4a + p_3e) / 2. PerLead.BlendTestMae reports Brier on that joined slice — matches the 2026-05-12 LightGBM-meta-learner bake-off finding (mean Brier 0.0830 vs best single 3e at 0.0844).",
+                "No feature schema, no LightGBM/MLP/BART training step. Phase4bPredictCommand performs the same arithmetic on the live cycle's 4a + 3e prediction parquets — predict-and-render runs it inline between predict-all and the R2 push.",
+                "PerLeadStats fields repurposed: BlendTestMae=Brier on joined test slice, BlendTestBias=mean(p − y), BlendTestRmse=0.0 (not meaningful), BestSingleTestMae=Brier of the better of 4a/3e alone on the same slice.",
+                "Climatology copied from the station's 3a bundle — 4b targets the same wet/dry indicator at the same station, so the baseline is identical.",
+            },
+            PerLead = perLead,
+        };
+        await File.WriteAllTextAsync(Path.Combine(outDir, ModelArtifact.TrainingMetadataFileName),
+            JsonSerializer.Serialize(metadata, new JsonSerializerOptions { WriteIndented = true }), ct);
+
+        // 4. feature_schema.json — one BlenderSpec per lead, two
+        // synthetic "models" (p_4a, p_3e). Lets the Spec page render
+        // 4b's card without bespoke handling.
+        var leadInts = perLead.Keys.Select(int.Parse).OrderBy(x => x).ToArray();
+        var schemaPerLead = leadInts.ToDictionary(
+            L => L,
+            L => new BlenderSpec
+            {
+                Target         = "precipitation",
+                FeatureSet     = "phase4b-2way-mean",
+                LeadHours      = L,
+                RequiredModels = Array.Empty<string>(),
+                OptionalModels = Array.Empty<string>(),
+                Models         = new[] { "phase4a", "phase3e" },
+                FeatureNames   = new[] { "p_4a", "p_3e" },
+                DataSource     = BlenderDataSource.OpenMeteoPreviousRuns,  // closest match — 4b doesn't have its own
+                Tier           = "4b-synth",
+                UkvStrategy    = WeatherBlend.Train.Exact12h.Exact12hFeatureBuilder.UkvPickStrategy.Strict,
+            });
+        ModelArtifact.SaveBlenderSpecs(outDir, schemaPerLead);
+
+        // 5. climatology.json — copy from 3a's bundle. Same station,
+        // same wet indicator, identical baseline rate.
+        var climSrc = Path.Combine(bundle3a, ModelArtifact.ClimatologyFileName);
+        if (File.Exists(climSrc))
+            File.Copy(climSrc, Path.Combine(outDir, ModelArtifact.ClimatologyFileName), overwrite: true);
+
+        // 6. training_summary.json — minimal stub for RetrainGuard.
+        // No real features → empty PerFeature dict. Row count = test
+        // slice size. Label rate from the joined slice's observed_wet.
+        var summary = new TrainingSummary
+        {
+            SchemaVersion     = "1",
+            Composite         = $"precipitation/{station}",
+            Phase             = Phase,
+            Version           = version,
+            LocationName      = location,
+            ComputedAtUtc     = trainedAt,
+            RowsTrain         = 0,
+            RowsVal           = 0,
+            RowsTest          = joined.Count,
+            FeaturesEffective = 2,
+            PerFeature        = new Dictionary<string, FeatureStats>(),
+            LabelRates        = new Dictionary<string, double>
+            {
+                [station] = joined.Count(j => j.Observed) / (double)joined.Count,
+            },
+        };
+        ModelArtifact.SaveTrainingSummary(outDir, summary);
+
+        // 7. Promote into MANIFEST.Active — replaces any prior _phase4b
+        // entry for this station (ComposeActive is lead-overlap-aware).
+        ModelArtifact.PromoteStationVersionAsChampion(modelsRoot, "precipitation", station, version, newPhase: Phase);
+
+        return (true, $"minted {version} ({joined.Count:N0} test rows, mean Brier {perLead.Values.Average(s => s.BlendTestMae):F4}); promoted to MANIFEST.Active");
+    }
+
+    private static string? FindLatestBundleWithTestPredictions(string stationDir, string? phaseSuffix)
+    {
+        if (!Directory.Exists(stationDir)) return null;
+        var candidates = new List<string>();
+        foreach (var d in Directory.GetDirectories(stationDir))
+        {
+            var name = Path.GetFileName(d);
+            if (phaseSuffix is null)
+            {
+                if (name.Contains("phase")) continue;     // 3a champion has no phase suffix
+            }
+            else
+            {
+                if (!name.EndsWith(phaseSuffix, StringComparison.Ordinal)) continue;
+            }
+            if (File.Exists(Path.Combine(d, "test_predictions.parquet"))) candidates.Add(d);
+        }
+        return candidates.OrderByDescending(d => Path.GetFileName(d), StringComparer.Ordinal).FirstOrDefault();
+    }
+
+    private record JoinedRow(DateTime ValidTime, string Station, int Lead,
+                             double PWet4a, double PWet3e, double PWet, bool Observed);
+
+    private static List<JoinedRow> ReadAndJoinTestPredictions(string parquet4a, string parquet3e)
+    {
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        var p4a = parquet4a.Replace("\\", "/");
+        var p3e = parquet3e.Replace("\\", "/");
+        var sql = $@"
+SELECT a.valid_time, a.station, a.lead,
+       a.p_wet AS p_4a, e.p_wet AS p_3e, a.observed_wet
+FROM read_parquet('{p4a}') a
+INNER JOIN read_parquet('{p3e}') e
+  ON a.valid_time = e.valid_time
+ AND a.station    = e.station
+ AND a.lead       = e.lead
+ORDER BY a.valid_time, a.lead";
+        var rows = new List<JoinedRow>();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            var vt   = r.GetDateTime(0);
+            var st   = r.GetString(1);
+            var lead = (int)r.GetInt64(2);
+            var p4   = r.GetDouble(3);
+            var p3   = r.GetDouble(4);
+            var obs  = !r.IsDBNull(5) && r.GetInt32(5) > 0;
+            rows.Add(new JoinedRow(vt, st, lead, p4, p3, (p4 + p3) / 2.0, obs));
+        }
+        return rows;
+    }
+
+    private static double Brier(double[] p, double[] y)
+    {
+        double sum = 0.0;
+        for (int i = 0; i < p.Length; i++)
+        {
+            var d = p[i] - y[i];
+            sum += d * d;
+        }
+        return sum / p.Length;
+    }
+}

@@ -168,6 +168,8 @@ public static class Program
                 services.AddTransient<TempPredictCommand>();
                 services.AddTransient<PrecipPredictCommand>();
                 services.AddTransient<PrecipReplayCommand>();
+                services.AddTransient<Phase4bPredictCommand>();
+                services.AddTransient<Phase4bMintCommand>();
                 // PrecipCalibrateCommand (Phase 3a_isotonic PAV calibration) +
                 // DryWindowCalibrateCommand (Phase 3d-calibrated) removed
                 // 2026-04-29 — bake-off found PAV didn't move test Brier on
@@ -685,6 +687,37 @@ public static class Program
             }
         });
         root.AddCommand(predict);
+
+        // ---- phase4b-predict — synthesise the 2-way mean of 4a + 3e ----
+        // No options today; reads stations from config.yaml. Optional
+        // --for-date supports backfill scenarios (same shape as predict).
+        var p4bForDateOpt = new Option<DateOnly?>(
+            name: "--for-date",
+            description: "Anchor date YYYY-MM-DD (UTC). Omit = today's date (the live cycle).");
+        var phase4bPredict = new Command(
+            "phase4b-predict",
+            "Synthesise Phase 4b predictions (mean of 4a + 3e) for the current cycle.")
+        {
+            p4bForDateOpt,
+        };
+        phase4bPredict.SetHandler(async (ctx) =>
+        {
+            var forDate = ctx.ParseResult.GetValueForOption(p4bForDateOpt);
+            var cmd = host.Services.GetRequiredService<Phase4bPredictCommand>();
+            ctx.ExitCode = await cmd.RunAsync(forDate, ctx.GetCancellationToken());
+        });
+        root.AddCommand(phase4bPredict);
+
+        // ---- phase4b-mint — refresh the 4b bundle after a 4a/3e retrain ----
+        var phase4bMint = new Command(
+            "phase4b-mint",
+            "Mint a fresh Phase 4b bundle from the latest 4a + 3e test_predictions (run after Sunday auto-retrain).");
+        phase4bMint.SetHandler(async (ctx) =>
+        {
+            var cmd = host.Services.GetRequiredService<Phase4bMintCommand>();
+            ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
+        });
+        root.AddCommand(phase4bMint);
 
         // ---- precip-replay (one-off research command — see PrecipReplayCommand docs) ----
         var replayStationOpt = new Option<string>(

@@ -95,53 +95,17 @@ jobs:
       # Phase 4b synthesis — 2-way arithmetic mean of phase 4a (BART)
       # and phase 3e (MLP) P(wet). Runs INSIDE predict-and-render
       # (rather than its own cron) so the same cycle's fresh 3e
-      # parquet feeds the mean alongside whatever 4a is most recent
-      # on R2. predict-4b.yml in WeatherProbabilistic stays as a
-      # manual-trigger backfill, but the steady-state path is here.
-      #
-      # 4b's script lives in WeatherProbabilistic for consistency
-      # with predict_4a / predict_5a (Python-side prediction
-      # synthesis). We checkout WP into a sibling dir, install the
-      # light deps (pandas + pyarrow + duckdb + numpy — no R, no
-      # rpy2), and run the synthesis against the in-workspace
-      # data/predictions tree. Output lands at the standard
-      # data/predictions/precipitation/{station}/model_version=v..._phase4b
-      # path the R2 push step below picks up.
-      # 4b's synthesis script lives in WeatherProbabilistic (consistency
-      # with predict_4a / predict_5a). WP is private, so the default
-      # GITHUB_TOKEN can't check it out — mint an App installation token
-      # via the same App that retrain dispatches use (installed on both
-      # repos per project_auto_retrain_shipped.md), and pass that to the
-      # checkout step. Cheap (one extra step, ~2 sec).
-      - name: Get GitHub App installation token (for WP checkout)
-        id: wp-app-token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.GH_APP_ID }}
-          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          owner: harry1310
-          repositories: WeatherProbabilistic
-
-      - name: Checkout WeatherProbabilistic for 4b synthesis
-        uses: actions/checkout@v4
-        with:
-          repository: harry1310/WeatherProbabilistic
-          token: ${{ steps.wp-app-token.outputs.token }}
-          path: WeatherProbabilistic
-          ref: main
-
+      # parquet (just written by predict-all) feeds the mean
+      # alongside whatever 4a is most recent on R2. .NET command
+      # implemented in Phase4bPredictCommand.cs — same DuckDB +
+      # ParquetSerializer plumbing as the rest of the predict path.
+      # Soft-skip exit code 3 if a station's MANIFEST has no
+      # *_phase4b entry yet — Membury stations correctly skip until
+      # their 4a + 3e land.
       - name: Synthesise Phase 4b (2-way mean of 4a + 3e)
-        # Soft-skip if 4b's MANIFEST entry is missing or the join
-        # produces 0 rows — predict_4b returns exit code 3 in that
-        # case, treated as non-fatal here so 4b absence doesn't
-        # break render.
         continue-on-error: true
         run: |
-          python -m pip install --upgrade pip
-          pip install pandas pyarrow duckdb numpy
-          python -u WeatherProbabilistic/scripts/predict_4b.py \
-            --predictions-root ./data/predictions \
-            --models-root ./data/models/precipitation
+          dotnet run --project src/WeatherBlend --no-build -c Release -- phase4b-predict
 
       - name: Push predictions to R2
         # Pushed BEFORE render so the deployed site is reading the same state
