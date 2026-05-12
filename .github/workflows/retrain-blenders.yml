@@ -377,6 +377,26 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target cloud-cover
 
+      - name: Mint Phase 4b bundle
+        # 4b is the arithmetic mean of 4a + 3e — no training step, but
+        # the bundle's metadata + test_predictions need refreshing
+        # whenever 4a or 3e are retrained so the Models page Brier
+        # numbers stay current. Reads the latest 4a + 3e bundles
+        # already pulled from R2 at job start; ignores whether the
+        # 4a side actually retrained this run (4a is retrained in the
+        # WP-side workflow on the same Sunday tick — its newer bundle
+        # lands on R2 via that workflow's push step, picked up at the
+        # next predict-and-render's sync). Bundle re-mint is therefore
+        # one-cycle-behind on 4a updates but always fresh on 3e —
+        # acceptable trade for the simple flow.
+        # Fires only if 3e succeeded (the binding constraint — 4a
+        # refresh is a separate Sunday job).
+        id: mint_4b
+        if: steps.gate.outputs.proceed == 'true' && steps.train_3e.outcome == 'success'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- phase4b-mint
+
       - name: Aggregate train results
         # Reads each step's outcome; if any failed, fails the job so
         # the [ci-fail] retrain-blenders issue auto-files. Phases that
@@ -396,6 +416,7 @@ jobs:
             [3d_short]="${{ steps.train_3d_short.outcome }}"
             [3d_long]="${{ steps.train_3d_long.outcome }}"
             [3e]="${{ steps.train_3e.outcome }}"
+            [4b_mint]="${{ steps.mint_4b.outcome }}"
             [3b]="${{ steps.train_3b.outcome }}"
             [wind]="${{ steps.train_wind.outcome }}"
             [humidity]="${{ steps.train_humidity.outcome }}"
