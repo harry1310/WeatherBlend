@@ -133,7 +133,7 @@ jobs:
           # Per-phase run flags. Add a new flag here when wiring a new
           # phase's run block below.
           run_2b=false; run_2c=false; run_2d=false
-          run_3a=false; run_3c=false; run_3d=false
+          run_3a=false; run_3c=false; run_3d=false; run_3e=false
           run_3b=false; run_3g=false
           case ",$INPUT," in *,2b,*) run_2b=true ;; esac
           case ",$INPUT," in *,2c,*) run_2c=true ;; esac
@@ -141,9 +141,10 @@ jobs:
           case ",$INPUT," in *,3a,*) run_3a=true ;; esac
           case ",$INPUT," in *,3c,*) run_3c=true ;; esac
           case ",$INPUT," in *,3d,*) run_3d=true ;; esac
+          case ",$INPUT," in *,3e,*) run_3e=true ;; esac
           case ",$INPUT," in *,3b,*) run_3b=true ;; esac
           case ",$INPUT," in *,3g,*) run_3g=true ;; esac
-          for v in 2b 2c 2d 3a 3c 3d 3b 3g; do
+          for v in 2b 2c 2d 3a 3c 3d 3e 3b 3g; do
             echo "run_${v}=$(eval echo \$run_${v})" >> "$GITHUB_OUTPUT"
           done
 
@@ -284,6 +285,19 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target precipitation --feature-set rich --location membury_devon
 
+      - name: Train 3e (precipitation MLP)
+        # Phase 3e is a TorchSharp MLP on the same 59-feature rich set as
+        # 3c — head-to-head comparable, just a different model family.
+        # Dispatched via `--feature-set mlp` (see TempTrainCommand's
+        # precipitation switch). Bonehill-only for now; Membury 3e waits
+        # for the Phase B fanout.
+        id: train_3e
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3e == 'true'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target precipitation --feature-set mlp
+
       - name: Train 3d (precipitation exact-runtime, short leads 12/24/48/72)
         # Same split + rationale as 2d above — 3d's existing R2 state
         # (manually trained on 2026-05-08) had two bundles per station,
@@ -376,9 +390,12 @@ jobs:
             [2d_short]="${{ steps.train_2d_short.outcome }}"
             [2d_long]="${{ steps.train_2d_long.outcome }}"
             [3a]="${{ steps.train_3a.outcome }}"
+            [3a_membury]="${{ steps.train_3a_membury.outcome }}"
             [3c]="${{ steps.train_3c.outcome }}"
+            [3c_membury]="${{ steps.train_3c_membury.outcome }}"
             [3d_short]="${{ steps.train_3d_short.outcome }}"
             [3d_long]="${{ steps.train_3d_long.outcome }}"
+            [3e]="${{ steps.train_3e.outcome }}"
             [3b]="${{ steps.train_3b.outcome }}"
             [wind]="${{ steps.train_wind.outcome }}"
             [humidity]="${{ steps.train_humidity.outcome }}"
