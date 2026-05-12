@@ -576,8 +576,12 @@ public sealed class RenderSiteCommand
                     kv => new SitePages.PerLeadMetric(
                         LeadHours:          kv.Value.LeadHours,
                         BestSingle:         kv.Value.BestSingle,
-                        BestSingleValMae:   kv.Value.BestSingleValMae,
-                        BestSingleTestMae:  kv.Value.BestSingleTestMae,
+                        // 4a/5a (Python-trained) emit JSON null here — surface
+                        // as NaN. Models page's bestRef computation already
+                        // treats NaN as "missing" and renders the em-dash
+                        // branch (SitePages.Models.cs:216-218).
+                        BestSingleValMae:   kv.Value.BestSingleValMae  ?? double.NaN,
+                        BestSingleTestMae:  kv.Value.BestSingleTestMae ?? double.NaN,
                         BlendTestScore:     kv.Value.BlendTestMae,
                         BlendTestRmse:      kv.Value.BlendTestRmse,
                         BlendTestBias:      kv.Value.BlendTestBias,
