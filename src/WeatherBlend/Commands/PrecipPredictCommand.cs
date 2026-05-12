@@ -206,6 +206,30 @@ public sealed class PrecipPredictCommand
         IReadOnlyDictionary<int, IReadOnlyDictionary<DateTime, PivotedRow>> perLeadValid,
         CancellationToken ct)
     {
+        // Python-trained phases (4a per-cell BART, 5a INLA Bayesian) live
+        // in WeatherProbabilistic and have their own dedicated predict
+        // workflows (predict-4a.yml + predict-5a.yml). Their bundles end up
+        // in the same data/models/precipitation/{station}/ tree + their
+        // versions are auto-promoted into MANIFEST.json's Active (since
+        // 2026-05-12), so once-around the Active loop in this .NET
+        // PrecipPredictCommand they'd hit `metadata.Phase == "4a"` or
+        // "5a" and try to load a LightGBM blender that isn't there.
+        // Worse — train_4a.py writes BestSingleTestMae=null which the .NET
+        // PerLeadStats deserialiser rejects (System.Double can't accept
+        // null), so we crash BEFORE reaching the dispatch. Cheapest fix:
+        // sniff the version-name suffix and skip without trying to load.
+        // Caught 2026-05-12 03:22 UTC by predict-and-render run 25711115753
+        // shortly after the manifest fix promoted 4a back into Active.
+        if (modelVersion.EndsWith("_phase4a", StringComparison.Ordinal)
+            || modelVersion.EndsWith("_phase5a", StringComparison.Ordinal))
+        {
+            _log.LogInformation(
+                "Station {Station}: skipping {V} — Python-trained phase, served by predict-{Workflow}.yml.",
+                station, modelVersion,
+                modelVersion.EndsWith("_phase4a", StringComparison.Ordinal) ? "4a" : "5a");
+            return true;   // not a failure — just not this command's job
+        }
+
         var versionDir = ModelArtifact.ResolveStationVersionDir(modelsRoot, "precipitation", station, modelVersion);
         var metadata = ModelArtifact.LoadTrainingMetadata(versionDir);
         if (metadata.PerLead.Count == 0)
