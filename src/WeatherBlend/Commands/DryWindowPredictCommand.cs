@@ -166,6 +166,22 @@ public sealed class DryWindowPredictCommand
         _log.LogInformation("{Key}: version {V} (phase {P}), window {W}h",
             compositeKey, metadata.Version, metadata.Phase, windowHours);
 
+        // Phase 3f — local bake-off experiment only, NOT a site-rendered
+        // phase. No C# predict path exists for 3f (its bundle artefact is
+        // a TorchSharp MLP .pt rather than a LightGBM .zip). If a stale
+        // entry persists in the manifest's Active list (from a pre-2026-05-13
+        // train that incorrectly called PromoteStationVersionAsChallenger),
+        // skip it silently rather than crash on LoadLeadModel. The train
+        // path no longer registers 3f; this guard covers stale manifest
+        // entries on R2 until the next retrain refreshes them.
+        if (string.Equals(metadata.Phase, DryWindowFeatureBuilder.Phase3f, StringComparison.Ordinal))
+        {
+            _log.LogInformation(
+                "{Key}: skipping phase 3f version {V} — 3f is a local-only bake-off challenger, not a site phase.",
+                compositeKey, versionName);
+            return false;
+        }
+
         // Phase 3g — parameter-free MC over Phase 3a's hourly P(wet). Skips
         // the entire blender-feature → LightGBM pipeline below; reads 3a's
         // live prediction parquet for the anchor cycle and runs MC per
@@ -174,6 +190,15 @@ public sealed class DryWindowPredictCommand
         if (string.Equals(metadata.Phase, DryWindow3gPredictor.Phase3g, StringComparison.Ordinal))
         {
             return await RunPhase3gAsync(
+                versionDir, stationSlug, windowHours, versionName, metadata, climatology,
+                targets, anchorDate, predictionMadeAt, ct);
+        }
+
+        // Phase 3j — Gaussian copula MC sibling of 3g. Same 3a-live-q input
+        // shape; per-lead 9×9 Σ comes from the bundle's correlation.json.
+        if (string.Equals(metadata.Phase, DryWindow3jPredictor.Phase3j, StringComparison.Ordinal))
+        {
+            return await RunPhase3jAsync(
                 versionDir, stationSlug, windowHours, versionName, metadata, climatology,
                 targets, anchorDate, predictionMadeAt, ct);
         }
@@ -442,6 +467,132 @@ public sealed class DryWindowPredictCommand
                     lead, targetDate, windowHours, prob, climProb,
                     stats.P10LongestRun, stats.P50LongestRun, stats.P90LongestRun);
             }
+        }
+
+        if (predictions.Count == 0) return false;
+        await WritePredictionsAsync(predictions, stationSlug, windowHours, anchorDate, versionName, ct);
+        return true;
+    }
+
+    /// <summary>
+    /// Phase 3j predict path. Mirrors 3g exactly except the per-day Bernoulli
+    /// draws within the MC sampler are correlated by the bundle's per-lead Σ.
+    /// Same 3a-live-q input, same output schema, same conformal calibrator
+    /// hook. Epistemic CI from Bayesian 5a is intentionally NOT applied here
+    /// (perturbing q under a copula is not a free closed-form like the
+    /// independence case; the plain copula point estimate ships now and an
+    /// epistemic extension can come later if the verify shows it matters).
+    /// </summary>
+    private async Task<bool> RunPhase3jAsync(
+        string versionDir, string stationSlug, int windowHours, string versionName,
+        ModelArtifact.TrainingMetadata metadata, DryWindowClimatology climatology,
+        IReadOnlyList<(int Lead, DateTime Date)> targets,
+        DateTime anchorDate, DateTime predictionMadeAt, CancellationToken ct)
+    {
+        var precip3aVersion = metadata.Hyperparameters.HpString("precip_3a_version");
+        if (string.IsNullOrEmpty(precip3aVersion))
+        {
+            _log.LogWarning(
+                "{S}/window_{W}h 3j {V}: missing 'precip_3a_version' in training_metadata.Hyperparameters; skipping.",
+                stationSlug, windowHours, versionName);
+            return false;
+        }
+
+        Dictionary<int, double[,]> choleskyByLead;
+        try
+        {
+            choleskyByLead = DryWindow3jPredictor.LoadCholeskyByLead(versionDir);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex,
+                "{S}/window_{W}h 3j {V}: failed to load correlation.json; skipping.",
+                stationSlug, windowHours, versionName);
+            return false;
+        }
+
+        Dictionary<DateTime, double> hourly;
+        try
+        {
+            hourly = DryWindow3gPredictor.LoadLivePredictionsHourly(
+                _cfg.Storage.PredictionsPath, stationSlug, precip3aVersion, anchorDate);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex,
+                "{S}/window_{W}h 3j {V}: failed to load 3a live predictions for anchor {A:yyyy-MM-dd} (3a version {Pv}); skipping.",
+                stationSlug, windowHours, versionName, anchorDate, precip3aVersion);
+            return false;
+        }
+        if (hourly.Count == 0)
+        {
+            _log.LogWarning(
+                "{S}/window_{W}h 3j {V}: 3a parquet for anchor {A:yyyy-MM-dd} ({Pv}) is empty; skipping.",
+                stationSlug, windowHours, versionName, anchorDate, precip3aVersion);
+            return false;
+        }
+
+        var mcSamples = metadata.Hyperparameters.HpInt("mc_samples") ?? DryWindow3jPredictor.DefaultMcSamples;
+        var seed = metadata.Hyperparameters.HpInt("seed") ?? 42;
+
+        var daytime = _cfg.DryWindow.BuildDaytimeWindow();
+        var rng = new Random(seed);
+        var predictions = new List<DryWindowPredictionRow>();
+
+        foreach (var (lead, targetDate) in targets)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!choleskyByLead.TryGetValue(lead, out var L))
+            {
+                _log.LogWarning(
+                    "  {S}/window_{W}h 3j {V} lead {L}h: bundle has no Σ for this lead; skipping.",
+                    stationSlug, windowHours, versionName, lead);
+                continue;
+            }
+            var (startHour, endHour) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(targetDate));
+            var qDaytime = DryWindow3gPredictor.ExtractDaytimeQ(
+                hourly, targetDate, startHour, endHour);
+            if (qDaytime is null)
+            {
+                _log.LogWarning(
+                    "  {S}/window_{W}h 3j lead {L}h ({D:yyyy-MM-dd}): 3a missing one or more daytime hours; skipping.",
+                    stationSlug, windowHours, lead, targetDate);
+                continue;
+            }
+
+            var prob = DryWindow3jPredictor.ProbDryWindow(qDaytime, L, windowHours, rng, mcSamples);
+            var climProb = climatology.Predict(targetDate);
+            var conformalTag = ModelArtifact.PredictConformalIfPresent(versionDir, lead, prob);
+
+            var qFloats = new float[qDaytime.Length];
+            for (int i = 0; i < qDaytime.Length; i++) qFloats[i] = (float)qDaytime[i];
+
+            predictions.Add(new DryWindowPredictionRow
+            {
+                LocationName = _cfg.Location.Name,
+                TruthStation = stationSlug,
+                WindowHours = windowHours,
+                ModelVersion = versionName,
+                PredictionMadeAtUtc = predictionMadeAt,
+                TargetDateUtc = targetDate,
+                LeadHours = lead,
+                ProbHasDryWindow = prob,
+                ClimatologyProbHasDryWindow = climProb,
+                AgreementHasDryWindow = null,
+                PrecipSumMean = null, LongestDryRunMean = null, WetHourCountMean = null,
+                HasDryWindowGfs = null, HasDryWindowEcmwf = null, HasDryWindowIcon = null,
+                HasDryWindowMf = null, HasDryWindowUkmo = null, HasDryWindowGem = null,
+                HasDryWindowAifs = null, HasDryWindowJma = null,
+                PrecipSumGfs = null, PrecipSumEcmwf = null, PrecipSumIcon = null,
+                PrecipSumMf = null, PrecipSumUkmo = null, PrecipSumGem = null,
+                PrecipSumAifs = null, PrecipSumJma = null,
+                FeatureVectorHash = FeatureHashing.HashFloats(qFloats),
+                ConformalSetTag = conformalTag,
+            });
+
+            _log.LogInformation(
+                "  3j lead {L}h ({D:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (clim {C:0.000}, copula MC over 3a {Pv})",
+                lead, targetDate, windowHours, prob, climProb, precip3aVersion);
         }
 
         if (predictions.Count == 0) return false;

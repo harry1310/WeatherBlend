@@ -59,9 +59,10 @@ public sealed class DryWindowTrainCommand
     {
         if (phase != DryWindowFeatureBuilder.Phase3b
             && phase != DryWindow3gPredictor.Phase3g
-            && phase != DryWindowFeatureBuilder.Phase3f)
+            && phase != DryWindowFeatureBuilder.Phase3f
+            && phase != DryWindow3jPredictor.Phase3j)
         {
-            _log.LogError("Unsupported dry-window training phase '{Phase}'. Expected '3b', '3f' or '3g'.", phase);
+            _log.LogError("Unsupported dry-window training phase '{Phase}'. Expected '3b', '3f', '3g' or '3j'.", phase);
             return 2;
         }
 
@@ -95,6 +96,23 @@ public sealed class DryWindowTrainCommand
                 return 2;
             }
             return await RunPhase3fAsync(stations, windows3f, leads, ct);
+        }
+
+        // Phase 3j — Gaussian copula MC over 3a's hourly P(wet). Sibling of 3g,
+        // adds a 9×9 Σ per (station, lead) fit on observed daytime binary
+        // sequences from 3a's replay parquet. Bake-off challenger registered
+        // alongside 3g; per-window-champion routing deferred to a later
+        // decision (today's 2026-05-13 bake-off: 3j beats 3g at 3h windows by
+        // 4.7% but loses at 6h by 11.3%).
+        if (phase == DryWindow3jPredictor.Phase3j)
+        {
+            var windows3j = ParseWindows(windowArg);
+            if (windows3j is null)
+            {
+                _log.LogError("Invalid --window value '{W}'. Expected 3, 4, 6, or all.", windowArg);
+                return 2;
+            }
+            return await RunPhase3jAsync(stations, windows3j, leads, ct);
         }
 
         var windows = ParseWindows(windowArg);
@@ -630,6 +648,300 @@ public sealed class DryWindowTrainCommand
     }
 
     /// <summary>
+    /// Phase 3j — Gaussian copula MC over Phase 3a's hourly P(wet) outputs.
+    /// Sibling of 3g, structurally identical except per-hour Bernoulli draws
+    /// within a sample day are correlated by a fitted 9×9 Σ. Σ is fit per
+    /// (station, lead) on the TRAIN slice of observed daytime binary
+    /// sequences from 3a's replay parquet — observation history only, no
+    /// dependency on 3a's q-values. Predict at test time uses the same
+    /// daytime q-vector 3g would use plus the lead's Cholesky factor.
+    ///
+    /// Why this is a challenger and not a champion replacement: the
+    /// 2026-05-13 15-way bake-off found 3j wins at 3h windows by 4.7%
+    /// (positive within-day autocorrelation makes long-enough dry blocks
+    /// rarer than iid predicts) but loses at 6h by 11.3% (long-run
+    /// constraint doesn't fit the train Σ's tail behaviour). Per-window
+    /// champion routing is deferred — for now 3j ships alongside 3g and
+    /// the site shows both.
+    ///
+    /// Bundle layout under <c>data/models/dry_window/{station}/window_{N}h/v..._phase3j/</c>:
+    /// <code>
+    ///   correlation.json         { "ByLead": { "24": { "Sigma": [[..]] }, ... } }
+    ///   dry_window_climatology.json
+    ///   training_metadata.json
+    /// </code>
+    /// No model.zip — predict is parameter-free given Σ + 3a's q.
+    /// </summary>
+    private async Task<int> RunPhase3jAsync(string[] stations, int[] windows, int[] leads, CancellationToken ct)
+    {
+        var modelsRoot = _cfg.Storage.ModelsPath;
+        var daytime = _cfg.DryWindow.BuildDaytimeWindow();
+        var rngSeed = 42;
+        var mcSamples = DryWindow3jPredictor.DefaultMcSamples;
+
+        _log.LogInformation(
+            "Phase 3j — stations=[{S}] windows=[{W}] leads=[{L}], MC samples={Mc}",
+            string.Join(", ", stations), string.Join(",", windows),
+            string.Join(",", leads), mcSamples);
+
+        var precipManifest = _metadata.TryGetManifest("precipitation");
+        if (precipManifest?.Stations is null)
+        {
+            _log.LogError("3j needs the precipitation manifest to resolve 3a champions; not found.");
+            return 2;
+        }
+
+        int trained = 0, skipped = 0;
+        foreach (var stationName in stations)
+        {
+            var stationSlug = StationSlug.WithEaPrefix(stationName);
+            if (!precipManifest.Stations.TryGetValue(stationSlug, out var precipEntry)
+                || string.IsNullOrEmpty(precipEntry.Current))
+            {
+                _log.LogWarning(
+                    "{S}: no 3a champion in precipitation manifest; skipping 3j.",
+                    stationName);
+                continue;
+            }
+            var precip3aVersion = precipEntry.Current;
+
+            // Pre-load per-lead q (for test MC) AND observed hourly labels
+            // (for Σ fit). Both come from the same replay parquet so a
+            // missing label hour implies a missing q hour too.
+            var replayQByLead = new Dictionary<int, Dictionary<DateTime, double>>();
+            var replayLabelByLead = new Dictionary<int, Dictionary<DateTime, byte>>();
+            foreach (var lead in leads)
+            {
+                replayQByLead[lead] = DryWindow3gPredictor.LoadReplayHourly(
+                    _cfg.Storage.PredictionsPath, stationSlug, precip3aVersion, lead);
+                replayLabelByLead[lead] = DryWindow3jPredictor.LoadReplayLabelsHourly(
+                    _cfg.Storage.PredictionsPath, stationSlug, precip3aVersion, lead);
+                _log.LogInformation(
+                    "  loaded {Nq} q hours + {Nl} label hours from 3a replay for {S} lead {L}h",
+                    replayQByLead[lead].Count, replayLabelByLead[lead].Count, stationName, lead);
+            }
+
+            foreach (var window in windows)
+            {
+                ct.ThrowIfCancellationRequested();
+                var compositeKey = $"{stationSlug}/window_{window}h";
+                var now = DateTime.UtcNow;
+                var versionDir = ModelArtifact.BuildStationVersionDir(
+                    modelsRoot, "dry_window", compositeKey, now, "phase3j");
+                var versionName = Path.GetFileName(versionDir);
+
+                _log.LogInformation("=== Station '{S}', window {W}h → 3j {V} ===",
+                    stationName, window, versionName);
+
+                var perLead = new Dictionary<string, ModelArtifact.PerLeadStats>();
+                var sigmaByLead = new Dictionary<int, double[,]>();
+                var choleskyByLead = new Dictionary<int, double[,]>();
+                DryWindowClimatology? climatology = null;
+                bool anyLeadScored = false;
+
+                foreach (var lead in leads)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    _log.LogInformation("--- Lead {L}h ---", lead);
+
+                    var spec = DryWindowFeatureBuilder.BuildSpec(_cfg.Blenders, lead, DryWindowFeatureBuilder.Phase3b);
+                    var rows = DryWindowFeatureBuilder.BuildForLead(
+                        _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
+                        _cfg.Location.Name, stationName,
+                        spec, window, daytime, ct);
+
+                    if (rows.Count < 100)
+                    {
+                        _log.LogWarning("  only {N} rows for ({S}, {W}h, lead {L}h); skipping lead.",
+                            rows.Count, stationName, window, lead);
+                        skipped++;
+                        continue;
+                    }
+
+                    var ds = DryWindowDataset.Split(rows);
+                    climatology ??= BuildClimatologyFromVectorRows(ds.Train, window);
+
+                    _log.LogInformation("  Split → train {Tn}, val {Vn}, test {En}",
+                        ds.Train.Count, ds.Val.Count, ds.Test.Count);
+
+                    // Fit Σ from TRAIN-slice observed daytime binary sequences.
+                    // Skip days where any daytime hour's label is missing —
+                    // matches DryWindowFeatureBuilder's gap handling.
+                    var labelsHourly = replayLabelByLead[lead];
+                    var trainSequences = new List<byte[]>(ds.Train.Count);
+                    foreach (var row in ds.Train)
+                    {
+                        var (s, e) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(row.TargetDateUtc));
+                        var n = e - s;
+                        var seq = new byte[n];
+                        bool gap = false;
+                        var midnight = new DateTime(
+                            row.TargetDateUtc.Year, row.TargetDateUtc.Month, row.TargetDateUtc.Day,
+                            0, 0, 0, DateTimeKind.Utc);
+                        for (int h = s; h < e; h++)
+                        {
+                            if (!labelsHourly.TryGetValue(midnight.AddHours(h), out var lbl))
+                            {
+                                gap = true; break;
+                            }
+                            seq[h - s] = lbl;
+                        }
+                        if (!gap) trainSequences.Add(seq);
+                    }
+                    if (trainSequences.Count < 50)
+                    {
+                        _log.LogWarning(
+                            "  {S} {W}h lead {L}h: only {N} train sequences after label-gap filter; skipping (need ≥50 for stable Σ).",
+                            stationName, window, lead, trainSequences.Count);
+                        skipped++;
+                        continue;
+                    }
+
+                    var sigma = DryWindow3jPredictor.FitCorrelation(trainSequences.ToArray());
+                    double[,] L;
+                    try
+                    {
+                        L = DryWindow3jPredictor.CholeskyDecompose(sigma);
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        _log.LogWarning(
+                            "  {S} {W}h lead {L}h: Cholesky failed ({Msg}); skipping lead.",
+                            stationName, window, lead, ex.Message);
+                        skipped++;
+                        continue;
+                    }
+                    sigmaByLead[lead] = sigma;
+                    choleskyByLead[lead] = L;
+
+                    _log.LogInformation(
+                        "  fitted Σ from {N} train sequences (mean off-diag corr ≈ {Avg:0.000})",
+                        trainSequences.Count, MeanOffDiagonal(sigma));
+
+                    // Score 3j copula MC on the test split. Same daytime-q
+                    // extraction as 3g but pass through the copula predictor.
+                    var hourlyQ = replayQByLead[lead];
+                    var rng = new Random(rngSeed);
+                    var probs = new List<double>(ds.Test.Count);
+                    var labels = new List<bool>(ds.Test.Count);
+                    foreach (var row in ds.Test)
+                    {
+                        var (s, e) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(row.TargetDateUtc));
+                        var q = DryWindow3gPredictor.ExtractDaytimeQ(hourlyQ, row.TargetDateUtc, s, e);
+                        if (q is null) continue;
+                        probs.Add(DryWindow3jPredictor.ProbDryWindow(q, L, window, rng, mcSamples));
+                        labels.Add(row.Label);
+                    }
+
+                    if (probs.Count < 10)
+                    {
+                        _log.LogWarning(
+                            "  {S} {W}h lead {L}h: only {N} test rows after replay-gap filter; skipping.",
+                            stationName, window, lead, probs.Count);
+                        skipped++;
+                        continue;
+                    }
+
+                    var brier = Brier(probs, labels);
+                    var climPred = DryWindowBaselines.Climatology(ds.Train, ds.Test, window);
+                    var climBrier = WeatherBlend.Evaluate.Precip.PrecipMetrics.Brier(
+                        climPred, ds.Test.Select(r => r.Label ? 1.0 : 0.0).ToArray());
+
+                    perLead[lead.ToString()] = new ModelArtifact.PerLeadStats
+                    {
+                        LeadHours = lead,
+                        DataRangeTrain = $"{ds.TrainStart:yyyy-MM-dd}Z → {ds.TrainEnd:yyyy-MM-dd}Z",
+                        DataRangeVal   = $"{ds.ValStart:yyyy-MM-dd}Z → {ds.ValEnd:yyyy-MM-dd}Z",
+                        DataRangeTest  = $"{ds.TestStart:yyyy-MM-dd}Z → {ds.TestEnd:yyyy-MM-dd}Z",
+                        TrainRows = ds.Train.Count,
+                        ValRows   = ds.Val.Count,
+                        TestRows  = probs.Count,
+                        TestCalendarMonths = ds.Test
+                            .Select(r => new DateTime(r.TargetDateUtc.Year, r.TargetDateUtc.Month, 1))
+                            .Distinct().Count(),
+                        BlendTestMae = brier,
+                        BlendTestRmse = climBrier,
+                        BlendTestBias = 0.0,
+                        CalibratedBlendTestMae = brier,
+                    };
+                    anyLeadScored = true;
+                    trained++;
+                    _log.LogInformation(
+                        "  Lead {L}h Brier={B:0.0000} (clim {C:0.0000}, n_test={N})",
+                        lead, brier, climBrier, probs.Count);
+                }
+
+                if (!anyLeadScored)
+                {
+                    _log.LogWarning("  No leads scored for ({S}, {W}h); skipping artefact save.",
+                        stationName, window);
+                    continue;
+                }
+
+                Directory.CreateDirectory(versionDir);
+                if (climatology is not null)
+                    climatology.SaveTo(Path.Combine(versionDir, "dry_window_climatology.json"));
+                DryWindow3jPredictor.WriteCorrelationJson(versionDir, sigmaByLead);
+
+                var metadata = new ModelArtifact.TrainingMetadata
+                {
+                    Version = versionName,
+                    Target = "dry_window",
+                    Phase = DryWindow3jPredictor.Phase3j,
+                    LocationName = _cfg.Location.Name,
+                    DataSource = $"precipitation_replay@{precip3aVersion}",
+                    TrainedAtUtc = now,
+                    Hyperparameters = new Dictionary<string, object>
+                    {
+                        ["mc_samples"] = mcSamples,
+                        ["seed"] = rngSeed,
+                        ["precip_3a_version"] = precip3aVersion,
+                        ["window_hours"] = window,
+                        ["correlation_dim"] = sigmaByLead.Values.First().GetLength(0),
+                    },
+                    TestMae = perLead.ToDictionary(kv => $"lead_{kv.Key}h_brier", kv => kv.Value.BlendTestMae),
+                    PerLead = perLead,
+                    DeviationsFromBrief = new List<string>
+                    {
+                        "Phase 3j — Gaussian copula MC over Phase 3a hourly P(wet) marginals. Per-hour draws within a sample day correlated by a 9×9 Σ fit on observed daytime wet/dry binary sequences from the train slice.",
+                        "Cross-window monotonicity P(N=3) ≥ P(N=4) ≥ P(N=6) preserved via single-pass-multiple-windows (DryWindow3jPredictor.ProbDryWindow).",
+                        $"3a champion bound at training time: {precip3aVersion}. Σ fit on the train slice of that 3a's replay parquet (observation column, not the model's q).",
+                        "Per-window scope: today's bake-off (2026-05-13) shows 3j wins 3h windows (+4.7% vs 3g) but loses 6h (-11.3%). Shipping as challenger alongside 3g; per-window-champion routing TBD.",
+                        $"MC samples = {mcSamples} (2× 3g's default — copula path is slightly noisier per sample due to Φ evaluation + matrix-vector product).",
+                    },
+                };
+                ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
+
+                ModelArtifact.PromoteStationVersionAsChallenger(
+                    modelsRoot, "dry_window", compositeKey, versionName,
+                    newPhase: DryWindow3jPredictor.Phase3j);
+
+                var (cf, cs) = await _conformal.FitOneAsync(
+                    compositeKey, versionName, DryWindowConformalFitCommand.DefaultAlpha, ct);
+                _log.LogInformation("Auto-conformal: fitted {F} leads ({S} skipped) for {K}/{V}",
+                    cf, cs, compositeKey, versionName);
+
+                _log.LogInformation("Saved 3j artefacts → {Dir}", versionDir);
+            }
+        }
+
+        _log.LogInformation("Phase 3j training complete. Scored={T} Skipped={S}", trained, skipped);
+        await Task.CompletedTask;
+        return trained == 0 ? 3 : 0;
+    }
+
+    private static double MeanOffDiagonal(double[,] m)
+    {
+        int n = m.GetLength(0);
+        if (n <= 1) return 0.0;
+        double sum = 0; int count = 0;
+        for (int i = 0; i < n; i++)
+            for (int j = 0; j < n; j++)
+                if (i != j) { sum += m[i, j]; count++; }
+        return count == 0 ? 0.0 : sum / count;
+    }
+
+    /// <summary>
     /// Phase 3f — TorchSharp MLP on the same day-level rich features as 3b
     /// (built via <see cref="DryWindowFeatureBuilder.BuildForLead"/> with
     /// phase=3b for feature parity). Same chronological 70/15/15 split as
@@ -857,14 +1169,17 @@ public sealed class DryWindowTrainCommand
                         testPredictionRows.Count, testPredPath);
                 }
 
-                // 3f is a challenger by design — register in the manifest's
-                // Active list so the model registry can see it, but DON'T
-                // promote to champion (Current stays whatever 3b/3g set).
-                ModelArtifact.PromoteStationVersionAsChallenger(
-                    modelsRoot, "dry_window", compositeKey, versionName,
-                    newPhase: DryWindowFeatureBuilder.Phase3f);
-
-                _log.LogInformation("Saved 3f MLP artefacts → {Dir}", versionDir);
+                // 3f is local-only — bundles persist on disk for bake-off
+                // discovery but do NOT register in the manifest's Active list.
+                // No DryWindowPhases entry, no predict path in C#: registering
+                // 3f as a challenger would cause DryWindowPredictCommand to
+                // iterate it, hit LoadLeadModel (LightGBM .zip) on a path
+                // that only has .pt MLP weights, and crash. The original
+                // PromoteStationVersionAsChallenger call here was a 2026-05-13
+                // mistake — 3f was never supposed to be a "phase on the site"
+                // (see project_dry_window_bakeoff_2026-05-13.md). Bake-off
+                // scripts glob the bundle dir directly so they still see 3f.
+                _log.LogInformation("Saved 3f MLP artefacts → {Dir} (bake-off only — NOT registered in manifest)", versionDir);
             }
         }
 

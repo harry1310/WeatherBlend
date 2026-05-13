@@ -134,7 +134,7 @@ jobs:
           # phase's run block below.
           run_2b=false; run_2c=false; run_2d=false
           run_3a=false; run_3c=false; run_3d=false; run_3e=false
-          run_3b=false; run_3g=false
+          run_3b=false; run_3g=false; run_3j=false
           case ",$INPUT," in *,2b,*) run_2b=true ;; esac
           case ",$INPUT," in *,2c,*) run_2c=true ;; esac
           case ",$INPUT," in *,2d,*) run_2d=true ;; esac
@@ -144,7 +144,8 @@ jobs:
           case ",$INPUT," in *,3e,*) run_3e=true ;; esac
           case ",$INPUT," in *,3b,*) run_3b=true ;; esac
           case ",$INPUT," in *,3g,*) run_3g=true ;; esac
-          for v in 2b 2c 2d 3a 3c 3d 3e 3b 3g; do
+          case ",$INPUT," in *,3j,*) run_3j=true ;; esac
+          for v in 2b 2c 2d 3a 3c 3d 3e 3b 3g 3j; do
             echo "run_${v}=$(eval echo \$run_${v})" >> "$GITHUB_OUTPUT"
           done
 
@@ -336,6 +337,19 @@ jobs:
       # 3g in "all", we silently no-op via the if-guard not matching
       # any train step (the aggregator then sees no failures from 3g).
 
+      - name: Train 3j (dry-window copula MC)
+        id: train_3j
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3j == 'true'
+        continue-on-error: true
+        run: |
+          # 3j fits a 9×9 Σ per (station, lead) on observed daytime
+          # binary sequences from the train slice of 3a's replay parquet.
+          # Sigma evolves with each weekly retrain. The bound 3a version
+          # is captured from the precipitation manifest at training time
+          # (same convention as 3g).
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target dry-window --feature-set copula-mc
+
       # ---- Element blenders (wind, humidity, radiation, cloud-cover) ----
       # NOT in phases.yaml today (they're per-VARIABLE rather than
       # per-PHASE; one champion each, no challenger axis). Hardcoded
@@ -418,6 +432,7 @@ jobs:
             [3e]="${{ steps.train_3e.outcome }}"
             [4b_mint]="${{ steps.mint_4b.outcome }}"
             [3b]="${{ steps.train_3b.outcome }}"
+            [3j]="${{ steps.train_3j.outcome }}"
             [wind]="${{ steps.train_wind.outcome }}"
             [humidity]="${{ steps.train_humidity.outcome }}"
             [radiation]="${{ steps.train_radiation.outcome }}"

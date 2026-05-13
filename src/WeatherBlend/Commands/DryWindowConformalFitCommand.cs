@@ -141,9 +141,15 @@ public sealed class DryWindowConformalFitCommand
             // Get per-val P(wet) for this version. Branch on phase:
             //   3b uses the LightGBM model + optional isotonic calibrator
             //   3g re-runs MC over 3a's hourly q from the bound replay parquet
-            var (probs, labels) = metadata.Phase == DryWindow3gPredictor.Phase3g
-                ? Score3gOnVal(metadata, stationSlug, lead, ds, daytime, ct)
-                : Score3bOnVal(versionDir, spec, lead, ds, stationName);
+            //   3j re-runs copula MC over 3a's q using the bundle's per-lead Σ
+            var (probs, labels) = metadata.Phase switch
+            {
+                var p when p == DryWindow3gPredictor.Phase3g
+                    => Score3gOnVal(metadata, stationSlug, lead, ds, daytime, ct),
+                var p when p == DryWindow3jPredictor.Phase3j
+                    => Score3jOnVal(versionDir, metadata, stationSlug, lead, ds, daytime, ct),
+                _   => Score3bOnVal(versionDir, spec, lead, ds, stationName),
+            };
 
             if (probs.Count < 30)
             {
@@ -206,6 +212,54 @@ public sealed class DryWindowConformalFitCommand
             // to be explicit.
             var window = metadata.Hyperparameters.HpInt("window_hours") ?? 3;
             probs.Add(DryWindow3gPredictor.ProbDryWindow(q, window, rng, DefaultMcSamples));
+            labels.Add(row.Label);
+        }
+        return (probs, labels);
+    }
+
+    /// 3j path: copula MC over 3a's hourly q using the bundle's per-lead Σ.
+    /// Mirrors Score3gOnVal but threads the Cholesky factor for the requested lead.
+    private (List<double> Probs, List<bool> Labels) Score3jOnVal(
+        string versionDir, ModelArtifact.TrainingMetadata metadata, string stationSlug, int lead,
+        DryWindowDataset ds, DaytimeWindow daytime, CancellationToken ct)
+    {
+        var probs = new List<double>();
+        var labels = new List<bool>();
+
+        var v3a = metadata.Hyperparameters.HpString("precip_3a_version");
+        if (string.IsNullOrEmpty(v3a))
+        {
+            _log.LogWarning("  3j version missing precip_3a_version metadata; skipping");
+            return (probs, labels);
+        }
+
+        Dictionary<int, double[,]> choleskyByLead;
+        try
+        {
+            choleskyByLead = DryWindow3jPredictor.LoadCholeskyByLead(versionDir);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning("  3j bundle correlation.json load failed ({Msg}); skipping", ex.Message);
+            return (probs, labels);
+        }
+        if (!choleskyByLead.TryGetValue(lead, out var L))
+        {
+            _log.LogWarning("  3j bundle has no Σ for lead {L}h; skipping", lead);
+            return (probs, labels);
+        }
+
+        var hourly = DryWindow3gPredictor.LoadReplayHourly(
+            _cfg.Storage.PredictionsPath, stationSlug, v3a, lead);
+        var rng = new Random(42);
+        foreach (var row in ds.Val)
+        {
+            ct.ThrowIfCancellationRequested();
+            var (s, e) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(row.TargetDateUtc));
+            var q = DryWindow3gPredictor.ExtractDaytimeQ(hourly, row.TargetDateUtc, s, e);
+            if (q is null) continue;
+            var window = metadata.Hyperparameters.HpInt("window_hours") ?? 3;
+            probs.Add(DryWindow3jPredictor.ProbDryWindow(q, L, window, rng, DefaultMcSamples));
             labels.Add(row.Label);
         }
         return (probs, labels);

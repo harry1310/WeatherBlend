@@ -97,13 +97,19 @@ targets:
     phases:
       # 3g (parameter-free MC over Phase 3a hourly P(wet) marginals) is the
       # 3b challenger; cross-window monotonicity P(N=3) ≥ P(N=4) ≥ P(N=6)
-      # holds by construction. 3d-shape (no Brier gain), 3e (B2 cascade —
-      # 3g supersedes structurally for all windows, not just the 3h↔4h
-      # pair), and 3f (62-feature failed attempt) were retired 2026-05-04
-      # along with their training paths.
+      # holds by construction. 3d-shape, the legacy 3e cascade, and the
+      # legacy 3f attempt were retired 2026-05-04 (a separate 3f train
+      # path exists in DryWindowTrainCommand for local bake-off use but
+      # isn't on the site — no DryWindowPhases entry, not in this list).
+      # 3j (Gaussian copula MC, added 2026-05-13) wins 3h windows by 4.7%
+      # vs 3g but loses 6h by 11.3%; included as a site-rendered
+      # challenger so the weekly retrain refits Σ on the latest train slice.
       - id: "3b"
         role: champion
         impl: dotnet
       - id: "3g"
+        role: challenger
+        impl: dotnet
+      - id: "3j"
         role: challenger
         impl: dotnet
