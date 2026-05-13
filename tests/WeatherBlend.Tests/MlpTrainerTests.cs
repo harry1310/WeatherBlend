@@ -98,6 +98,61 @@ public class MlpTrainerTests
         trained.BestValBrier.Should().BeLessThan(0.20);
     }
 
+    /// <summary>Dead-column safety net regression test. Reproduces the
+    /// 3e-Bellever 2026-05-13 failure mode: an extra feature whose
+    /// training values are 100% NaN (so ComputeStandardiser writes
+    /// mean=0, scale=1) collapses into the post-standardisation mean
+    /// at train time. At predict time the SAME column carries a real
+    /// value (mimicking offset_day vs reported cloud cover). Without
+    /// the fix, that live value standardises to (60-0)/1 = 60 and
+    /// saturates the MLP; with the fix it forces to 0 (= what training
+    /// saw) and the prediction matches what we'd get with the column
+    /// NaN'd at predict too.
+    /// </summary>
+    [Fact]
+    public void PredictVectorProbability_zeroes_dead_columns_to_match_training_distribution()
+    {
+        var (train, val, test, spec) = MakeSynthetic(seed: 13, n_features: 8);
+
+        // Force feature index 7 to NaN across train+val+test — i.e. the
+        // model has never seen a real value for it. Train sees NaN →
+        // imputed to 0 by MakeStandardisedTensor anyway, so this column
+        // contributes nothing during fitting; ComputeStandardiser writes
+        // mean=0, scale=1 for it (the dead-column sentinel).
+        foreach (var row in train.Concat(val).Concat(test))
+            row.Features[7] = float.NaN;
+
+        var hp = new MlpTrainer.Hyperparameters(
+            HiddenSizes: new[] { 16, 8 },
+            Dropout: 0.0, LearningRate: 5e-3, BatchSize: 64,
+            MaxEpochs: 50, EarlyStoppingPatience: 50, Seed: 13);
+        var trained = MlpTrainer.TrainVector(train, val, spec, hp);
+
+        // Confirm ComputeStandardiser detected the dead column.
+        trained.ScalerMean[7].Should().Be(0f);
+        trained.ScalerScale[7].Should().Be(1f);
+
+        // Predict twice: once with the dead column held at NaN (train-like)
+        // and once with the dead column populated with a large OOD value
+        // (= the offset_day vs reported mismatch). The fix forces both to
+        // the same post-standardisation 0, so predictions must match.
+        var withNan = test.Select(r => new BinaryTrainingRow {
+            Features = r.Features.ToArray(), Label = r.Label
+        }).ToList();
+        var withOod = test.Select(r => {
+            var f = r.Features.ToArray();
+            f[7] = 60f;   // big OOD value, c.f. live cloud_low_mean
+            return new BinaryTrainingRow { Features = f, Label = r.Label };
+        }).ToList();
+
+        var probsNan = MlpTrainer.PredictVectorProbability(trained, withNan);
+        var probsOod = MlpTrainer.PredictVectorProbability(trained, withOod);
+
+        for (int i = 0; i < probsNan.Length; i++)
+            probsOod[i].Should().BeApproximately(probsNan[i], 1e-6,
+                $"row {i}: dead-column OOD value must standardise to the same 0 as train-time NaN");
+    }
+
     [Fact]
     public void SaveLeadModel_then_LoadLeadModel_round_trips_predictions()
     {

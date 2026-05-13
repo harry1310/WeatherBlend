@@ -287,7 +287,30 @@ public sealed class MlpTrainer
     /// <summary>Standardise rows + pack into a [N, d_in] float32 tensor.
     /// NaN inputs are imputed to 0 POST-standardisation (= the
     /// per-column mean) so they contribute a neutral signal rather
-    /// than poisoning the forward pass.</summary>
+    /// than poisoning the forward pass.
+    ///
+    /// Dead-column safety net (added 2026-05-13): ComputeStandardiser
+    /// writes (mean=0, scale=1) for any column whose training values
+    /// were 100% NaN. At train time every input for those columns is
+    /// NaN → already imputed to 0 below, so the dead-column branch is
+    /// a no-op. At PREDICT time the live forecast tree may carry real
+    /// values for the same columns (e.g. CloudCoverLow is NULL across
+    /// every offset_day row we train on, but the reported/synthesised
+    /// rows we predict from DO have it populated). Without this branch
+    /// a live value of 60 would z-score to (60-0)/1=60, saturate the
+    /// downstream neurons, and collapse P(wet) to ~1e-5 — exactly the
+    /// 3e-on-Bellever failure mode found 2026-05-13. Forcing the input
+    /// to 0 keeps the predict-time distribution identical to what the
+    /// MLP saw during fitting.
+    ///
+    /// The (mean=0, scale=1) signature isn't theoretically unique — a
+    /// real feature could in principle have zero training mean and
+    /// unit stdev — but none of the current rich/lean spec features
+    /// land there (calendar sin/cos have non-1 stdev, RH/precip means
+    /// have non-zero means, persistence features have non-zero means).
+    /// Long-term Option A: drop verified-dead features from the spec
+    /// outright (project_rich_spec_cloud_features_removal). Until then
+    /// this branch keeps existing bundles producing usable numbers.</summary>
     private static Tensor MakeStandardisedTensor(
         IReadOnlyList<BinaryTrainingRow> rows, float[] mean, float[] scale, int d_in)
     {
@@ -299,7 +322,7 @@ public sealed class MlpTrainer
             var off = i * d_in;
             for (int k = 0; k < d_in; k++)
             {
-                if (float.IsNaN(f[k]))
+                if (IsDeadColumn(mean[k], scale[k]) || float.IsNaN(f[k]))
                     flat[off + k] = 0f;          // = post-standardisation mean
                 else
                     flat[off + k] = (f[k] - mean[k]) / scale[k];
@@ -307,6 +330,8 @@ public sealed class MlpTrainer
         }
         return torch.tensor(flat, new long[] { n, d_in }, ScalarType.Float32);
     }
+
+    private static bool IsDeadColumn(float m, float s) => m == 0f && s == 1f;
 
     private static Tensor MakeLabelTensor(IReadOnlyList<BinaryTrainingRow> rows)
     {

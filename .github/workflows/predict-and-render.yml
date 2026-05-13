@@ -99,11 +99,20 @@ jobs:
       # alongside whatever 4a is most recent on R2. .NET command
       # implemented in Phase4bPredictCommand.cs — same DuckDB +
       # ParquetSerializer plumbing as the rest of the predict path.
-      # Soft-skip exit code 3 if a station's MANIFEST has no
-      # *_phase4b entry yet — Membury stations correctly skip until
-      # their 4a + 3e land.
+      #
+      # Exit code semantics (per-station soft-skip handled inside the
+      # command; build only fails on exit > 0 meaning ALL stations
+      # produced zero rows):
+      #   0 — at least one station wrote 4b rows
+      #   2 — no precipitation stations configured (config bug)
+      #   3 — every station fell through (no 4b manifest entry AND no
+      #       4a/3e match anywhere) — should now be impossible after
+      #       the back-look fix shipped 2026-05-13 unless 4a or 3e are
+      #       both completely absent from R2.
+      # Pre-2026-05-13 this step was `continue-on-error: true` which
+      # silently swallowed every exit code — including exit 3 firing
+      # daily because of the same-anchor join bug. Now propagates.
       - name: Synthesise Phase 4b (2-way mean of 4a + 3e)
-        continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- phase4b-predict
 

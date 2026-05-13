@@ -96,10 +96,29 @@ public sealed class Phase4bPredictCommand
 
         var predRoot = _cfg.Storage.PredictionsPath;
         var stationDir = Path.Combine(predRoot, "precipitation", station);
+        // 4a: drive only from THIS cycle's parquet — today's 4a is the
+        // canonical source of "what physical times are we synthesising
+        // 4b for right now". Older 4a parquets would just produce
+        // duplicate (V, L) keys (their forward grids overlap with
+        // today's), the dedup would keep today's anyway, and we'd
+        // emit zero extra 4b rows for the work.
         var parquet4a = FindLatestPredictionParquet(stationDir, "_phase4a", anchor);
-        var parquet3e = FindLatestPredictionParquet(stationDir, "_phase3e", anchor);
         if (parquet4a is null) return (false, $"no 4a predictions parquet for date={anchor:yyyy-MM-dd}");
-        if (parquet3e is null) return (false, $"no 3e predictions parquet for date={anchor:yyyy-MM-dd}");
+
+        // 3e: scan EVERY anchor's parquet for the station. Reason:
+        // 3e's per-cycle parquet at lead L covers exactly one calendar
+        // day (anchor + L/24 days, 24 hourly slots), while 4a's
+        // per-cycle parquet at lead L spans the full forecast horizon.
+        // So today's 4a row at (V=2026-05-13 06:00, L=24) needs to be
+        // paired with the 3e cycle whose anchor was 2026-05-12 (lead-24
+        // bucket = the day starting 2026-05-13) — yesterday's parquet,
+        // not today's. We glob across all date= partitions and let the
+        // DuckDB window pick the freshest PredictionMadeAtUtc per
+        // (V, L). If multiple parquets agree on a cell, freshest wins.
+        var parquet3eGlob = Path.Combine(stationDir, "model_version=*_phase3e", "date=*", "predictions.parquet");
+        var anyTouched3e = Directory.EnumerateDirectories(stationDir, "model_version=*_phase3e")
+            .Any(d => Directory.EnumerateFiles(d, "predictions.parquet", SearchOption.AllDirectories).Any());
+        if (!anyTouched3e) return (false, "no 3e predictions parquets on disk for this station");
 
         // Read both with DuckDB rather than ParquetSerializer<PrecipPredictionRow> —
         // predict_4a.py writes from Python and only carries the bare minimum
@@ -107,48 +126,51 @@ public sealed class Phase4bPredictCommand
         // per-NWP precip). 3e is .NET-written with the full PrecipPredictionRow
         // schema, so we carry every covariate column from 3e and just plug in
         // 4a's ProbWet for the mean.
-        var (rows3e, rows4aProbByKey) = await ReadBothPhasesAsync(parquet4a, parquet3e, ct);
-        if (rows3e.Count == 0) return (false, $"3e parquet at {parquet3e} read as empty");
-        if (rows4aProbByKey.Count == 0) return (false, $"4a parquet at {parquet4a} read as empty");
+        var (rows4a, rows3eByKey) = await ReadBothPhasesAsync(parquet4a, parquet3eGlob, ct);
+        if (rows4a.Count == 0) return (false, $"4a parquet at {parquet4a} read as empty");
+        if (rows3eByKey.Count == 0) return (false, "3e parquet glob produced 0 rows across all anchors");
 
-        // Inner-join on (valid_time, lead). For each match: ProbWet =
-        // mean(p_3e, p_4a), every other covariate column carried from
-        // 3e (per-NWP precip, climatology, agreement chip data —
-        // downstream render reads these for the chart's NWP overlay
-        // and chip annotations). Quantile / CI columns nulled —
-        // they're 4a's BART posterior outputs, no defined meaning
-        // for an unfit arithmetic mean.
+        // Drive from 4a: each row in today's 4a becomes a candidate 4b
+        // synthesis cell. Look up the freshest 3e row at the same
+        // (ValidTime, Lead) — possibly from an older anchor — and emit
+        // the mean if both sides have a value. Covariates ride along
+        // from the matched 3e row (slightly stale vs today's NWP cycle
+        // when the match is from an earlier anchor, but render only
+        // consumes ClimatologyPWet + PrecipAgreementWet01 and both are
+        // robust to one-cycle staleness).
         // PrecipPredictionRow is a sealed class (not a record), so `with`
         // doesn't work — construct each output row explicitly. Verbose
         // but the property list is stable.
-        var joined = new List<PrecipPredictionRow>(rows3e.Count);
-        foreach (var r in rows3e)
+        var joined = new List<PrecipPredictionRow>(rows4a.Count);
+        int matchedCount = 0;
+        foreach (var (key, p4a) in rows4a)
         {
-            if (!rows4aProbByKey.TryGetValue((r.ValidTimeUtc, r.LeadHours), out var p4a))
+            if (!rows3eByKey.TryGetValue(key, out var r3e))
                 continue;
+            matchedCount++;
             joined.Add(new PrecipPredictionRow
             {
-                LocationName         = r.LocationName,
-                TruthStation         = r.TruthStation,
+                LocationName         = r3e.LocationName,
+                TruthStation         = r3e.TruthStation,
                 ModelVersion         = version4b,
                 PredictionMadeAtUtc  = synthesisTime,
-                ValidTimeUtc         = r.ValidTimeUtc,
-                LeadHours            = r.LeadHours,
-                ProbWet              = (r.ProbWet + p4a) / 2.0,
-                ClimatologyPWet      = r.ClimatologyPWet,
-                PrecipGfs            = r.PrecipGfs,
-                PrecipEcmwf          = r.PrecipEcmwf,
-                PrecipIcon           = r.PrecipIcon,
-                PrecipMf             = r.PrecipMf,
-                PrecipUkmo           = r.PrecipUkmo,
-                PrecipGem            = r.PrecipGem,
-                PrecipAifs           = r.PrecipAifs,
-                PrecipJma            = r.PrecipJma,
-                PrecipMean           = r.PrecipMean,
-                PrecipStd            = r.PrecipStd,
-                PrecipMax            = r.PrecipMax,
-                PrecipAgreementWet01 = r.PrecipAgreementWet01,
-                FeatureVectorHash    = r.FeatureVectorHash,
+                ValidTimeUtc         = key.ValidTime,
+                LeadHours            = key.Lead,
+                ProbWet              = (r3e.ProbWet + p4a) / 2.0,
+                ClimatologyPWet      = r3e.ClimatologyPWet,
+                PrecipGfs            = r3e.PrecipGfs,
+                PrecipEcmwf          = r3e.PrecipEcmwf,
+                PrecipIcon           = r3e.PrecipIcon,
+                PrecipMf             = r3e.PrecipMf,
+                PrecipUkmo           = r3e.PrecipUkmo,
+                PrecipGem            = r3e.PrecipGem,
+                PrecipAifs           = r3e.PrecipAifs,
+                PrecipJma            = r3e.PrecipJma,
+                PrecipMean           = r3e.PrecipMean,
+                PrecipStd            = r3e.PrecipStd,
+                PrecipMax            = r3e.PrecipMax,
+                PrecipAgreementWet01 = r3e.PrecipAgreementWet01,
+                FeatureVectorHash    = r3e.FeatureVectorHash,
                 // Quantile + CI columns are 4a's BART posterior outputs —
                 // no defined meaning for an unfit arithmetic mean, so
                 // null them. Exact-runtime cols + per-NWP run timestamps
@@ -162,7 +184,9 @@ public sealed class Phase4bPredictCommand
             });
         }
         if (joined.Count == 0)
-            return (false, "inner-join of latest 4a + 3e produced 0 rows (no shared valid_time + lead — different anchor times?)");
+            return (false,
+                $"no 4a row at any (ValidTime, Lead) found a matching 3e prediction across {rows3eByKey.Count} historical 3e cells " +
+                "(4a today has rows but 3e tree has no shared keys — should not happen unless 3e tree is single-anchor)");
 
         // Same merge-on-write as PrecipPredictCommand.MergeRows.
         var dateStr = anchor.ToString("yyyy-MM-dd");
@@ -179,64 +203,74 @@ public sealed class Phase4bPredictCommand
             .OrderBy(r => r.ValidTimeUtc).ThenBy(r => r.LeadHours)
             .ToList();
         await ParquetSerializer.SerializeAsync(merged, outPath, cancellationToken: ct);
-        return (true, $"wrote {joined.Count} new rows (file now holds {merged.Count}); model_version={version4b}");
+        return (true,
+            $"wrote {joined.Count} new rows (matched {matchedCount}/{rows4a.Count} 4a cells to 3e across {rows3eByKey.Count} historical 3e cells); " +
+            $"file now holds {merged.Count}; model_version={version4b}");
     }
 
     /// <summary>
-    /// Read both parquets via DuckDB, inner-joining on (ValidTime,
-    /// Lead). Returns:
-    ///   - rows3e: full PrecipPredictionRow rows from 3e (which carries
-    ///     the rich .NET-side schema — ClimatologyPWet, per-NWP precip,
-    ///     agreement chip, FeatureVectorHash, etc).
-    ///   - rows4aProbByKey: dict of (ValidTime, Lead) -> ProbWet from
-    ///     4a (predict_4a.py's parquet only carries the bare minimum
-    ///     columns, hence we pull just P(wet) and ignore the rest).
+    /// Read both phases via DuckDB. Returns:
+    ///   - rows4a: dict (ValidTime, Lead) → ProbWet, from TODAY's 4a
+    ///     parquet only. Today's 4a is the canonical "what physical
+    ///     times are we synthesising for now" driver — older 4a
+    ///     parquets just produce duplicate keys that today's would win
+    ///     anyway, so scanning them is wasted work.
+    ///   - rows3eByKey: dict (ValidTime, Lead) → full PrecipPredictionRow
+    ///     from the freshest 3e row across EVERY anchor's parquet for
+    ///     the station. ROW_NUMBER over (ValidTime, Lead) ORDER BY
+    ///     PredictionMadeAtUtc DESC keeps the latest cycle's prediction
+    ///     when multiple anchors emit the same (V, L) cell.
     ///
-    /// Both are deduped by latest PredictionMadeAtUtc per cell so a
-    /// multi-cycle parquet collapses to one row per (ValidTime, Lead).
-    /// Caller carries 3e's rich columns into the synthesised 4b rows;
-    /// only ProbWet differs.
+    /// 3e is .NET-written with the full PrecipPredictionRow schema; 4a
+    /// is Python-written and only carries ValidTimeUtc, LeadHours, ProbWet,
+    /// PredictionMadeAtUtc, plus quantile bands we don't use here.
+    /// Caller drives from rows4a and looks up the 3e row by (V, L).
     /// </summary>
-    private static async Task<(List<PrecipPredictionRow> rows3e,
-                               Dictionary<(DateTime, int), double> rows4aProbByKey)>
-        ReadBothPhasesAsync(string parquet4a, string parquet3e, CancellationToken ct)
+    private static async Task<(Dictionary<(DateTime ValidTime, int Lead), double> rows4a,
+                               Dictionary<(DateTime ValidTime, int Lead), PrecipPredictionRow> rows3eByKey)>
+        ReadBothPhasesAsync(string parquet4a, string parquet3eGlob, CancellationToken ct)
     {
         await Task.Yield();   // keep async signature for symmetry; DuckDB is sync
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
 
-        var p4aGlob = parquet4a.Replace("\\", "/");
-        var p3eGlob = parquet3e.Replace("\\", "/");
+        var p4aPath = parquet4a.Replace("\\", "/");
+        var p3eGlobDuck = parquet3eGlob.Replace("\\", "/");
 
-        // 3e: full PrecipPredictionRow schema (.NET-written from
-        // PrecipPredictCommand). ROW_NUMBER picks the freshest PMT per
-        // (ValidTime, Lead) so a multi-cycle file collapses to one row.
-        var rows3e = new List<PrecipPredictionRow>();
+        // 3e: glob across all anchor parquets for this station's
+        // *_phase3e versions. ROW_NUMBER picks the freshest
+        // PredictionMadeAtUtc per (ValidTime, Lead) — so an older
+        // anchor only contributes a cell that today's anchor doesn't
+        // (because the freshest wins per-cell). union_by_name = true
+        // tolerates incidental schema drift across parquet versions.
+        var rows3e = new Dictionary<(DateTime, int), PrecipPredictionRow>();
         var sql3e = $@"
 WITH ranked AS (
   SELECT *, ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, LeadHours ORDER BY PredictionMadeAtUtc DESC) AS rn
-  FROM read_parquet('{p3eGlob}', union_by_name = true)
+  FROM read_parquet('{p3eGlobDuck}', union_by_name = true)
 )
 SELECT LocationName, TruthStation, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
        ProbWet, ClimatologyPWet,
        PrecipGfs, PrecipEcmwf, PrecipIcon, PrecipMf, PrecipUkmo, PrecipGem, PrecipAifs, PrecipJma,
        PrecipMean, PrecipStd, PrecipMax, PrecipAgreementWet01,
        FeatureVectorHash
-FROM ranked WHERE rn = 1 ORDER BY ValidTimeUtc, LeadHours";
+FROM ranked WHERE rn = 1";
         using (var cmd3e = conn.CreateCommand())
         {
             cmd3e.CommandText = sql3e;
             using var r = cmd3e.ExecuteReader();
             while (r.Read())
             {
-                rows3e.Add(new PrecipPredictionRow
+                var vt = r.GetDateTime(4);
+                var lead = (int)r.GetInt64(5);
+                rows3e[(vt, lead)] = new PrecipPredictionRow
                 {
                     LocationName        = r.GetString(0),
                     TruthStation        = r.GetString(1),
                     ModelVersion        = r.GetString(2),
                     PredictionMadeAtUtc = r.GetDateTime(3),
-                    ValidTimeUtc        = r.GetDateTime(4),
-                    LeadHours           = (int)r.GetInt64(5),
+                    ValidTimeUtc        = vt,
+                    LeadHours           = lead,
                     ProbWet             = r.GetDouble(6),
                     ClimatologyPWet     = r.IsDBNull(7)  ? 0.0  : r.GetDouble(7),
                     PrecipGfs           = r.IsDBNull(8)  ? null : (double?)r.GetDouble(8),
@@ -252,20 +286,18 @@ FROM ranked WHERE rn = 1 ORDER BY ValidTimeUtc, LeadHours";
                     PrecipMax           = r.IsDBNull(18) ? null : (double?)r.GetDouble(18),
                     PrecipAgreementWet01 = r.IsDBNull(19) ? null : (double?)r.GetDouble(19),
                     FeatureVectorHash   = r.IsDBNull(20) ? "" : r.GetString(20),
-                });
+                };
             }
         }
 
-        // 4a: just the key + ProbWet — predict_4a.py's parquet only
-        // writes the bare minimum (ValidTimeUtc/LeadHours/ProbWet +
-        // quantile bands + metadata). The rich covariate columns come
-        // from 3e above.
+        // 4a: today's parquet only. Dedupe by freshest PMT per (V, L)
+        // in case the file holds multiple intra-day cycles.
         var rows4a = new Dictionary<(DateTime, int), double>();
         var sql4a = $@"
 WITH ranked AS (
   SELECT ValidTimeUtc, LeadHours, ProbWet, PredictionMadeAtUtc,
          ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, LeadHours ORDER BY PredictionMadeAtUtc DESC) AS rn
-  FROM read_parquet('{p4aGlob}', union_by_name = true)
+  FROM read_parquet('{p4aPath}', union_by_name = true)
 )
 SELECT ValidTimeUtc, LeadHours, ProbWet
 FROM ranked WHERE rn = 1";
@@ -281,7 +313,7 @@ FROM ranked WHERE rn = 1";
                 rows4a[(vt, lead)] = p;
             }
         }
-        return (rows3e, rows4a);
+        return (rows4a, rows3e);
     }
 
     private static string? FindLatestPredictionParquet(string stationDir, string phaseSuffix, DateOnly anchor)
