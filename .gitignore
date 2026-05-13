@@ -29,3 +29,10 @@ __pycache__/
 
 # Wrangler (Cloudflare Pages deploy tooling — local cache/tmp only)
 .wrangler/
+
+# Local bake-off / experiment CSVs — regenerable from the scripts and
+# captured in memory entries; only commit a CSV when it's a permanent
+# reference (precedent: lgbm_meta_bakeoff_*, stack_bakeoff_* are kept).
+reports/4way_bakeoff_*.csv
+reports/3g_source_bakeoff_*.csv
+reports/3a_vs_3e_daytime_diagnostic.csv
