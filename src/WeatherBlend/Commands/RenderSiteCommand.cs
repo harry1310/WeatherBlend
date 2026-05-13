@@ -367,12 +367,16 @@ public sealed class RenderSiteCommand
         }
 
         // Dry-window skill — split out from rain-skill on 2026-05-04 so each
-        // variable's skill content has its own page. Per-station like rain.
+        // variable's skill content has its own page. Per-station BUT keyed
+        // off dry-window-only stations (was rainStations — that included
+        // Membury, which has precip predictions but no dry-window data, so
+        // it surfaced a tab that rendered an empty table).
+        var dryWindowSkillStations = SitePages.GetDryWindowSkillStations(input);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "skill-dry-window.html"),
             SitePages.RenderDryWindowSkill(input, null), ct);
-        for (int i = 1; i < rainStations.Count; i++)
+        for (int i = 1; i < dryWindowSkillStations.Count; i++)
         {
-            var slug = SitePages.StationSlug(rainStations[i]);
+            var slug = SitePages.StationSlug(dryWindowSkillStations[i]);
             await File.WriteAllTextAsync(
                 Path.Combine(outputDir, $"skill-dry-window-{slug}.html"),
                 SitePages.RenderDryWindowSkill(input, slug), ct);

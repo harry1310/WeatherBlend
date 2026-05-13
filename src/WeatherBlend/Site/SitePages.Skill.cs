@@ -132,7 +132,10 @@ public static partial class SitePages
     /// </summary>
     public static string RenderDryWindowSkill(SiteInputs input, string? stationSlug = null)
     {
-        var stations = GetRainSkillStations(input);
+        // Was GetRainSkillStations (union of precip + dry-window stations) —
+        // that surfaced a Membury tab even though Membury has no dry-window
+        // predictions. Use the dry-window-only set instead.
+        var stations = GetDryWindowSkillStations(input);
         var currentStation = ResolveStationFromSlug(stations, stationSlug);
 
         var content = new StringBuilder();
@@ -251,6 +254,23 @@ public static partial class SitePages
     /// </summary>
     internal static IReadOnlyList<string> GetRainSkillStations(SiteInputs input)
         => GetRainSkillStations(input, activeLocation: null);
+
+    /// <summary>
+    /// Station set for the DRY-WINDOW skill sub-nav. Unlike
+    /// <see cref="GetRainSkillStations"/> this is NOT a union with precip
+    /// stations — Membury (precip-only) would otherwise get a dry-window
+    /// tab that renders an empty table. Only stations with actual
+    /// dry-window predictions appear, intersected with ActiveStationSlugs
+    /// so a demoted station's stale predictions don't surface a tab.
+    /// </summary>
+    internal static IReadOnlyList<string> GetDryWindowSkillStations(SiteInputs input)
+    {
+        var set = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var d in input.DryWindowPredictions) set.Add(d.Station);
+        if (input.ActiveStationSlugs.Count > 0)
+            set.IntersectWith(input.ActiveStationSlugs);
+        return set.OrderBy(s => s, StringComparer.Ordinal).ToList();
+    }
 
     /// <summary>
     /// <inheritdoc cref="GetRainSkillStations(SiteInputs)"/>

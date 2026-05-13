@@ -177,9 +177,11 @@ public static partial class SitePages
     /// style (day-of-week short + day/month numeric, e.g. "Tue 5/5"). Today
     /// is offset 0 (file index.html); each forward day gets index-{n}.html.
     /// Days with zero tiles after the outdoor-window + future-only filter
-    /// are skipped so the sub-nav can't link to a blank page (added
-    /// 2026-05-07). If the active offset itself has no tiles it's still
-    /// rendered as the highlight so the user knows where they are.
+    /// are skipped so the sub-nav can't link to a blank page. The
+    /// "keep the active offset visible even if empty" exception (added
+    /// 2026-05-07) was removed 2026-05-13 — the user found "Today"
+    /// showing as a highlighted-but-empty tab worse than no Today tab at
+    /// all when the page was visited after the outdoor window.
     /// </summary>
     private static string RenderHomeDaySubNav(SiteInputs input, int activeOffset)
     {
@@ -188,9 +190,7 @@ public static partial class SitePages
         s.Append("<nav class=\"lead-nav\"><ul>");
         for (int n = 0; n <= MaxHomeDayOffset; n++)
         {
-            // Skip empty days, but always keep the active one so the
-            // current page has something highlighted in the bar.
-            if (n != activeOffset && CountHomeDayTiles(input, n) == 0) continue;
+            if (CountHomeDayTiles(input, n) == 0) continue;
 
             var date = today.AddDays(n);
             var file = n == 0 ? "index.html" : $"index-{n}.html";
