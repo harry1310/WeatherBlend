@@ -114,6 +114,9 @@ class CellResult:
     brier_6a_iid: float | None         # 6a — hourly MLP trained with joint hourly+dry-window loss,
                                        # then iid MC downstream (same sampler as 3g).
     brier_6a_copula: float | None      # Same 6a model, copula MC downstream (3j-style dependence).
+    brier_3n: float | None             # Regime-conditioned copula MC — 3j with TWO Σs (settled vs
+                                       # unsettled) split by NWP-ensemble agreement. Tests whether
+                                       # 3j's pooled Σ underfits both regimes.
 
 
 # ----------------------------------------------------------------------
@@ -203,6 +206,10 @@ def find_3i_test_predictions(station: str, window: int) -> Path | None:
 
 def find_3j_test_predictions(station: str, window: int) -> Path | None:
     return find_dry_window_test_predictions(station, window, phase_suffix="phase3j")
+
+
+def find_3n_test_predictions(station: str, window: int) -> Path | None:
+    return find_dry_window_test_predictions(station, window, phase_suffix="phase3n")
 
 
 def find_3k_test_predictions(station: str, window: int) -> Path | None:
@@ -362,6 +369,7 @@ def evaluate_station(
     df_3h_3e_by_window: dict[int, pd.DataFrame],
     df_3i_by_window: dict[int, pd.DataFrame],
     df_3j_by_window: dict[int, pd.DataFrame],
+    df_3n_by_window: dict[int, pd.DataFrame],
     df_3k_by_window: dict[int, pd.DataFrame],
     df_3l_by_window: dict[int, pd.DataFrame],
     df_3m_by_window: dict[int, pd.DataFrame],
@@ -493,6 +501,13 @@ def evaluate_station(
             df_6a_cop_w["target_date"] = pd.to_datetime(df_6a_cop_w["target_date"], utc=True).dt.tz_localize(None)
             for _, row in df_6a_cop_w.iterrows():
                 p_6a_cop_by_key[(int(row["lead"]), pd.Timestamp(row["target_date"]))] = float(row["p_dry_window"])
+        df_3n_w = df_3n_by_window.get(window)
+        p_3n_by_key: dict[tuple[int, pd.Timestamp], float] = {}
+        if df_3n_w is not None:
+            df_3n_w = df_3n_w[["target_date", "lead", "p_dry_window"]].copy()
+            df_3n_w["target_date"] = pd.to_datetime(df_3n_w["target_date"], utc=True).dt.tz_localize(None)
+            for _, row in df_3n_w.iterrows():
+                p_3n_by_key[(int(row["lead"]), pd.Timestamp(row["target_date"]))] = float(row["p_dry_window"])
 
         for lead in leads:
             sub_3b = df_3b_w[df_3b_w["lead"] == lead]
@@ -519,6 +534,7 @@ def evaluate_station(
             preds_3m: list[float] | None = [] if df_3m_w is not None else None
             preds_6a_iid: list[float] | None = [] if df_6a_iid_w is not None else None
             preds_6a_cop: list[float] | None = [] if df_6a_cop_w is not None else None
+            preds_3n: list[float] | None = [] if df_3n_w is not None else None
             labels: list[int] = []
             for _, row in sub_3b.iterrows():
                 td = pd.Timestamp(row["target_date"])
@@ -560,6 +576,8 @@ def evaluate_station(
                     continue
                 if preds_6a_cop is not None and key not in p_6a_cop_by_key:
                     continue
+                if preds_3n is not None and key not in p_3n_by_key:
+                    continue
                 q_raw = by_lead_date[key]
                 preds_3b.append(float(row["p_dry_window"]))
                 preds_3g.append(prob_dry_window_mc(q_raw, window, MC_SAMPLES, rng))
@@ -583,6 +601,8 @@ def evaluate_station(
                     preds_6a_iid.append(p_6a_iid_by_key[key])
                 if preds_6a_cop is not None:
                     preds_6a_cop.append(p_6a_cop_by_key[key])
+                if preds_3n is not None:
+                    preds_3n.append(p_3n_by_key[key])
                 if preds_mc_3c is not None:
                     q_3c = by_lead_date_3c[key]
                     preds_mc_3c.append(prob_dry_window_mc(q_3c, window, MC_SAMPLES, rng))
@@ -682,6 +702,11 @@ def evaluate_station(
                 b_6a_cop = brier(np.array(preds_6a_cop, dtype="float64"), arr_lbl)
             else:
                 b_6a_cop = None
+            b_3n: float | None
+            if preds_3n is not None and len(preds_3n) == len(labels):
+                b_3n = brier(np.array(preds_3n, dtype="float64"), arr_lbl)
+            else:
+                b_3n = None
 
             results.append(CellResult(
                 station=station, window=window, lead=lead,
@@ -704,6 +729,7 @@ def evaluate_station(
                 brier_3m=b_3m,
                 brier_6a_iid=b_6a_iid,
                 brier_6a_copula=b_6a_cop,
+                brier_3n=b_3n,
             ))
     return results
 
@@ -903,6 +929,18 @@ def print_summary(results: list[CellResult]) -> None:
         print(f"    (matched-subset — 3b={sub3b:.4f}, 3g={sub3g:.4f}, 3j={sub3j:.4f}; head-to-head: 3g {sub3g:.4f} vs 6a-cop {b_6a_cop:.4f} -> {100*(sub3g - b_6a_cop)/sub3g:+.1f}% vs 3g; 3j {sub3j:.4f} vs 6a-cop -> {100*(sub3j - b_6a_cop)/sub3j:+.1f}% vs 3j)")
     else:
         print("  6a-copula       —         (6a bundle not trained yet)")
+    b_3n = mean("brier_3n")
+    cells_3n = [r for r in results if r.brier_3n is not None]
+    if not np.isnan(b_3n):
+        sub3b  = float(np.mean([r.brier_3b for r in cells_3n]))
+        sub3g  = float(np.mean([r.brier_3g for r in cells_3n]))
+        sub3j  = float(np.mean([r.brier_3j for r in cells_3n if r.brier_3j is not None]))
+        print(f"  3n (regime-MC)  {b_3n:.4f}    ({100 * (sub3b - b_3n) / sub3b:+.1f}% vs 3b — on {len(cells_3n)}/{len(results)} cells)")
+        print(f"    (matched-subset — 3b={sub3b:.4f}, 3g={sub3g:.4f}, 3j={sub3j:.4f}; "
+              f"head-to-head: 3g {sub3g:.4f} vs 3n {b_3n:.4f} -> {100*(sub3g - b_3n)/sub3g:+.1f}% vs 3g; "
+              f"3j {sub3j:.4f} vs 3n -> {100*(sub3j - b_3n)/sub3j:+.1f}% vs 3j)")
+    else:
+        print("  3n (regime-MC)  —         (3n bundle not trained yet)")
 
     print()
     print("=" * 150)
@@ -927,6 +965,7 @@ def print_summary(results: list[CellResult]) -> None:
         m_sub   = [r.brier_3m for r in subset if r.brier_3m is not None]
         ai_sub  = [r.brier_6a_iid for r in subset if r.brier_6a_iid is not None]
         ac_sub  = [r.brier_6a_copula for r in subset if r.brier_6a_copula is not None]
+        n_sub   = [r.brier_3n for r in subset if r.brier_3n is not None]
         cal_str = f"{np.mean(cal_sub):.4f}" if cal_sub else "—"
         f_str   = f"{np.mean(f_sub):.4f}"   if f_sub   else "—"
         m3_str  = f"{np.mean(m3_sub):.4f}"  if m3_sub  else "—"
@@ -941,7 +980,8 @@ def print_summary(results: list[CellResult]) -> None:
         m_str   = f"{np.mean(m_sub):.4f}"   if m_sub   else "—"
         ai_str  = f"{np.mean(ai_sub):.4f}"  if ai_sub  else "—"
         ac_str  = f"{np.mean(ac_sub):.4f}"  if ac_sub  else "—"
-        print(f"  window {w}h:  3b={b3b:.4f}  3g={b3g:.4f}  3j={j_str}  3m={m_str}  6a-iid={ai_str}  6a-cop={ac_str}  3f={f_str}  3h(3a)={h_str}  mean2={bmean:.4f}  mean3={m3_str}")
+        n_str   = f"{np.mean(n_sub):.4f}"   if n_sub   else "—"
+        print(f"  window {w}h:  3b={b3b:.4f}  3g={b3g:.4f}  3j={j_str}  3n={n_str}  3m={m_str}  6a-iid={ai_str}  6a-cop={ac_str}  3f={f_str}  3h(3a)={h_str}  mean2={bmean:.4f}  mean3={m3_str}")
 
 
 def write_csv(results: list[CellResult], path: Path) -> None:
@@ -1081,6 +1121,13 @@ def main() -> int:
             if p is None:
                 continue
             df_6a_copula_by_window[w] = pd.read_parquet(p)
+        # 3n: regime-conditioned copula MC — DryWindowTrainCommand.RunPhase3nAsync.
+        df_3n_by_window: dict[int, pd.DataFrame] = {}
+        for w in windows:
+            p_3n = find_3n_test_predictions(station, w)
+            if p_3n is None:
+                continue
+            df_3n_by_window[w] = pd.read_parquet(p_3n)
 
         # 3c hourly P(wet) — feeds MC-3c (parallel to 3a-driven 3g).
         # Test slice should be identical to 3a's (both from the same
@@ -1174,7 +1221,8 @@ def main() -> int:
 
         all_results.extend(evaluate_station(
             station, df_3a, df_3b_by_window, df_3f_by_window, df_3h_by_window, df_3h_3e_by_window,
-            df_3i_by_window, df_3j_by_window, df_3k_by_window, df_3l_by_window, df_3m_by_window,
+            df_3i_by_window, df_3j_by_window, df_3n_by_window,
+            df_3k_by_window, df_3l_by_window, df_3m_by_window,
             df_6a_iid_by_window, df_6a_copula_by_window,
             df_3c, df_3e, isotonic_by_lead, leads, windows, rng,
         ))

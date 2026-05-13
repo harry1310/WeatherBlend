@@ -148,6 +148,8 @@ public sealed class DryWindowConformalFitCommand
                     => Score3gOnVal(metadata, stationSlug, lead, ds, daytime, ct),
                 var p when p == DryWindow3jPredictor.Phase3j
                     => Score3jOnVal(versionDir, metadata, stationSlug, lead, ds, daytime, ct),
+                var p when p == DryWindow3nPredictor.Phase3n
+                    => Score3nOnVal(versionDir, metadata, stationSlug, lead, ds, daytime, ct),
                 _   => Score3bOnVal(versionDir, spec, lead, ds, stationName),
             };
 
@@ -260,6 +262,70 @@ public sealed class DryWindowConformalFitCommand
             if (q is null) continue;
             var window = metadata.Hyperparameters.HpInt("window_hours") ?? 3;
             probs.Add(DryWindow3jPredictor.ProbDryWindow(q, L, window, rng, DefaultMcSamples));
+            labels.Add(row.Label);
+        }
+        return (probs, labels);
+    }
+
+    /// 3n path: regime-conditioned copula MC. Computes the day's NWP agreement
+    /// from the offset_day forecast tree (same as train-side classification)
+    /// and routes through Σ_settled or Σ_unsettled accordingly.
+    private (List<double> Probs, List<bool> Labels) Score3nOnVal(
+        string versionDir, ModelArtifact.TrainingMetadata metadata, string stationSlug, int lead,
+        DryWindowDataset ds, DaytimeWindow daytime, CancellationToken ct)
+    {
+        var probs = new List<double>();
+        var labels = new List<bool>();
+
+        var v3a = metadata.Hyperparameters.HpString("precip_3a_version");
+        if (string.IsNullOrEmpty(v3a))
+        {
+            _log.LogWarning("  3n version missing precip_3a_version metadata; skipping");
+            return (probs, labels);
+        }
+
+        Dictionary<int, DryWindow3nPredictor.RegimeBundle> bundles;
+        try
+        {
+            bundles = DryWindow3nPredictor.LoadByLead(versionDir);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning("  3n bundle correlation.json load failed ({Msg}); skipping", ex.Message);
+            return (probs, labels);
+        }
+        if (!bundles.TryGetValue(lead, out var bundle))
+        {
+            _log.LogWarning("  3n bundle has no regime entry for lead {L}h; skipping", lead);
+            return (probs, labels);
+        }
+
+        // Recompute per-day agreement on the val slice — same offset_day
+        // source the trainer used, so val-time classification matches
+        // train-time classification.
+        (int Start, int EndExclusive) DaytimeFor(DateOnly d) => daytime.UtcHourRangeFor(d);
+        var canonical = WeatherBlend.Train.TempFeatureBuilder.CanonicalModelOrder;
+        var perDay = DryWindowNwpAgreement.LoadOffsetDayPerNwpDaytime(
+            _cfg.Storage.ForecastsPath, _cfg.Location.Name, lead, canonical, DaytimeFor);
+        var agreementByDate = new Dictionary<DateTime, double>(perDay.Count);
+        foreach (var (date, mat) in perDay)
+        {
+            var a = DryWindowNwpAgreement.ComputePerDay(mat);
+            if (!double.IsNaN(a)) agreementByDate[date] = a;
+        }
+
+        var hourly = DryWindow3gPredictor.LoadReplayHourly(
+            _cfg.Storage.PredictionsPath, stationSlug, v3a, lead);
+        var rng = new Random(42);
+        foreach (var row in ds.Val)
+        {
+            ct.ThrowIfCancellationRequested();
+            var (s, e) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(row.TargetDateUtc));
+            var q = DryWindow3gPredictor.ExtractDaytimeQ(hourly, row.TargetDateUtc, s, e);
+            if (q is null) continue;
+            if (!agreementByDate.TryGetValue(row.TargetDateUtc, out var agr)) continue;
+            var window = metadata.Hyperparameters.HpInt("window_hours") ?? 3;
+            probs.Add(DryWindow3nPredictor.ProbDryWindow(q, bundle, agr, window, rng, DefaultMcSamples));
             labels.Add(row.Label);
         }
         return (probs, labels);

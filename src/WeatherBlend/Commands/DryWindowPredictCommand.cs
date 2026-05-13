@@ -203,6 +203,16 @@ public sealed class DryWindowPredictCommand
                 targets, anchorDate, predictionMadeAt, ct);
         }
 
+        // Phase 3n — regime-conditioned copula MC. Same q-vector source as 3j,
+        // plus a live-tree NWP agreement computation that picks Σ_settled or
+        // Σ_unsettled per (target_date, lead).
+        if (string.Equals(metadata.Phase, DryWindow3nPredictor.Phase3n, StringComparison.Ordinal))
+        {
+            return await RunPhase3nAsync(
+                versionDir, stationSlug, windowHours, versionName, metadata, climatology,
+                targets, anchorDate, predictionMadeAt, ct);
+        }
+
         // Per-lead BlenderSpec lives in feature_schema.json.
         var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
         var canonOrder = WeatherBlend.Train.TempFeatureBuilder.CanonicalModelOrder.ToList();
@@ -593,6 +603,162 @@ public sealed class DryWindowPredictCommand
             _log.LogInformation(
                 "  3j lead {L}h ({D:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (clim {C:0.000}, copula MC over 3a {Pv})",
                 lead, targetDate, windowHours, prob, climProb, precip3aVersion);
+        }
+
+        if (predictions.Count == 0) return false;
+        await WritePredictionsAsync(predictions, stationSlug, windowHours, anchorDate, versionName, ct);
+        return true;
+    }
+
+    /// <summary>
+    /// Phase 3n predict path. Mirrors 3j exactly except per-target-date Σ
+    /// selection: compute NWP agreement from the live forecast tree, route
+    /// the day through Σ_settled or Σ_unsettled per the bundle's threshold.
+    /// </summary>
+    private async Task<bool> RunPhase3nAsync(
+        string versionDir, string stationSlug, int windowHours, string versionName,
+        ModelArtifact.TrainingMetadata metadata, DryWindowClimatology climatology,
+        IReadOnlyList<(int Lead, DateTime Date)> targets,
+        DateTime anchorDate, DateTime predictionMadeAt, CancellationToken ct)
+    {
+        var precip3aVersion = metadata.Hyperparameters.HpString("precip_3a_version");
+        if (string.IsNullOrEmpty(precip3aVersion))
+        {
+            _log.LogWarning(
+                "{S}/window_{W}h 3n {V}: missing 'precip_3a_version' in training_metadata.Hyperparameters; skipping.",
+                stationSlug, windowHours, versionName);
+            return false;
+        }
+
+        Dictionary<int, DryWindow3nPredictor.RegimeBundle> regimeBundles;
+        try
+        {
+            regimeBundles = DryWindow3nPredictor.LoadByLead(versionDir);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex,
+                "{S}/window_{W}h 3n {V}: failed to load correlation.json; skipping.",
+                stationSlug, windowHours, versionName);
+            return false;
+        }
+
+        Dictionary<DateTime, double> hourly;
+        try
+        {
+            hourly = DryWindow3gPredictor.LoadLivePredictionsHourly(
+                _cfg.Storage.PredictionsPath, stationSlug, precip3aVersion, anchorDate);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex,
+                "{S}/window_{W}h 3n {V}: failed to load 3a live predictions for anchor {A:yyyy-MM-dd} (3a version {Pv}); skipping.",
+                stationSlug, windowHours, versionName, anchorDate, precip3aVersion);
+            return false;
+        }
+        if (hourly.Count == 0)
+        {
+            _log.LogWarning(
+                "{S}/window_{W}h 3n {V}: 3a parquet for anchor {A:yyyy-MM-dd} ({Pv}) is empty; skipping.",
+                stationSlug, windowHours, versionName, anchorDate, precip3aVersion);
+            return false;
+        }
+
+        // Compute NWP agreement per target date from the live forecast tree.
+        // Same agreement formula as the trainer; uses the production canonical
+        // model set. Per-lead query because lead is part of the agreement
+        // computation (different LeadHours filter).
+        var daytime = _cfg.DryWindow.BuildDaytimeWindow();
+        (int Start, int EndExclusive) DaytimeFor(DateOnly d) => daytime.UtcHourRangeFor(d);
+        var canonical = WeatherBlend.Train.TempFeatureBuilder.CanonicalModelOrder;
+
+        var mcSamples = metadata.Hyperparameters.HpInt("mc_samples") ?? DryWindow3nPredictor.DefaultMcSamples;
+        var seed = metadata.Hyperparameters.HpInt("seed") ?? 42;
+        var rng = new Random(seed);
+        var predictions = new List<DryWindowPredictionRow>();
+
+        // Pre-load agreement-by-date per lead — one DuckDB query per lead.
+        var agreementsByLead = new Dictionary<int, Dictionary<DateTime, double>>();
+        foreach (var lead in targets.Select(t => t.Lead).Distinct())
+        {
+            // ValidTime range: from anchorDate forward to anchor + 6d horizon
+            // (covers leads up to 120h plus a small buffer).
+            var winStart = anchorDate.Date;
+            var winEnd   = winStart.AddDays(6);
+            var matrices = DryWindowNwpAgreement.LoadLivePerNwpDaytime(
+                _cfg.Storage.ForecastsPath, _cfg.Location.Name, lead,
+                canonical, DaytimeFor, winStart, winEnd);
+            var perDay = new Dictionary<DateTime, double>(matrices.Count);
+            foreach (var (date, mat) in matrices)
+            {
+                var a = DryWindowNwpAgreement.ComputePerDay(mat);
+                if (!double.IsNaN(a)) perDay[date] = a;
+            }
+            agreementsByLead[lead] = perDay;
+        }
+
+        foreach (var (lead, targetDate) in targets)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!regimeBundles.TryGetValue(lead, out var bundle))
+            {
+                _log.LogWarning(
+                    "  {S}/window_{W}h 3n {V} lead {L}h: bundle has no regime entry for this lead; skipping.",
+                    stationSlug, windowHours, versionName, lead);
+                continue;
+            }
+            var (startHour, endHour) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(targetDate));
+            var qDaytime = DryWindow3gPredictor.ExtractDaytimeQ(
+                hourly, targetDate, startHour, endHour);
+            if (qDaytime is null)
+            {
+                _log.LogWarning(
+                    "  {S}/window_{W}h 3n lead {L}h ({D:yyyy-MM-dd}): 3a missing one or more daytime hours; skipping.",
+                    stationSlug, windowHours, lead, targetDate);
+                continue;
+            }
+
+            agreementsByLead[lead].TryGetValue(targetDate.Date, out var dayAgreement);
+            if (dayAgreement == 0.0) dayAgreement = double.NaN;  // missing = NaN → SelectCholesky falls back to settled
+            var regimeLabel = double.IsNaN(dayAgreement)
+                ? "settled (default — agreement unclassifiable)"
+                : dayAgreement >= bundle.Threshold ? "settled" : "unsettled";
+
+            var prob = DryWindow3nPredictor.ProbDryWindow(
+                qDaytime, bundle, dayAgreement, windowHours, rng, mcSamples);
+            var climProb = climatology.Predict(targetDate);
+            var conformalTag = ModelArtifact.PredictConformalIfPresent(versionDir, lead, prob);
+
+            var qFloats = new float[qDaytime.Length];
+            for (int i = 0; i < qDaytime.Length; i++) qFloats[i] = (float)qDaytime[i];
+
+            predictions.Add(new DryWindowPredictionRow
+            {
+                LocationName = _cfg.Location.Name,
+                TruthStation = stationSlug,
+                WindowHours = windowHours,
+                ModelVersion = versionName,
+                PredictionMadeAtUtc = predictionMadeAt,
+                TargetDateUtc = targetDate,
+                LeadHours = lead,
+                ProbHasDryWindow = prob,
+                ClimatologyProbHasDryWindow = climProb,
+                AgreementHasDryWindow = null,
+                PrecipSumMean = null, LongestDryRunMean = null, WetHourCountMean = null,
+                HasDryWindowGfs = null, HasDryWindowEcmwf = null, HasDryWindowIcon = null,
+                HasDryWindowMf = null, HasDryWindowUkmo = null, HasDryWindowGem = null,
+                HasDryWindowAifs = null, HasDryWindowJma = null,
+                PrecipSumGfs = null, PrecipSumEcmwf = null, PrecipSumIcon = null,
+                PrecipSumMf = null, PrecipSumUkmo = null, PrecipSumGem = null,
+                PrecipSumAifs = null, PrecipSumJma = null,
+                FeatureVectorHash = FeatureHashing.HashFloats(qFloats),
+                ConformalSetTag = conformalTag,
+            });
+
+            _log.LogInformation(
+                "  3n lead {L}h ({D:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (clim {C:0.000}; agreement={A:0.000} → {R})",
+                lead, targetDate, windowHours, prob, climProb,
+                double.IsNaN(dayAgreement) ? -1.0 : dayAgreement, regimeLabel);
         }
 
         if (predictions.Count == 0) return false;

@@ -651,6 +651,7 @@ public static partial class SitePages
             ("dry_window", "3b")   => "53-feature LightGBM per-(station, window).",
             ("dry_window", "3g")   => "Parameter-free MC over 3a hourly P(wet). Monotonic by construction.",
             ("dry_window", "3j")   => "Gaussian copula MC over 3a hourly P(wet) with a per-(station, lead) 9×9 Σ fit on observed daytime binary sequences. Captures within-day wet/dry autocorrelation that 3g's iid sampler misses.",
+            ("dry_window", "3n")   => "Regime-conditioned copula MC. Two Σs per (station, lead): Σ_settled (train days where NWPs agreed on hourly wet/dry) and Σ_unsettled (disagreement days). Per-day live NWP agreement picks which Σ to apply.",
             _ => $"Phase {phase} blender.",
         };
     }

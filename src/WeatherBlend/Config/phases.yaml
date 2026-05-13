@@ -113,3 +113,6 @@ targets:
       - id: "3j"
         role: challenger
         impl: dotnet
+      - id: "3n"
+        role: challenger
+        impl: dotnet

@@ -60,9 +60,10 @@ public sealed class DryWindowTrainCommand
         if (phase != DryWindowFeatureBuilder.Phase3b
             && phase != DryWindow3gPredictor.Phase3g
             && phase != DryWindowFeatureBuilder.Phase3f
-            && phase != DryWindow3jPredictor.Phase3j)
+            && phase != DryWindow3jPredictor.Phase3j
+            && phase != DryWindow3nPredictor.Phase3n)
         {
-            _log.LogError("Unsupported dry-window training phase '{Phase}'. Expected '3b', '3f', '3g' or '3j'.", phase);
+            _log.LogError("Unsupported dry-window training phase '{Phase}'. Expected '3b', '3f', '3g', '3j' or '3n'.", phase);
             return 2;
         }
 
@@ -113,6 +114,20 @@ public sealed class DryWindowTrainCommand
                 return 2;
             }
             return await RunPhase3jAsync(stations, windows3j, leads, ct);
+        }
+
+        // Phase 3n — regime-conditioned copula MC. Two Σs per (station, lead)
+        // split by NWP-consensus regime. See DryWindow3nPredictor for the
+        // 2026-05-13 pre-flight diagnostic that motivated splitting Σ.
+        if (phase == DryWindow3nPredictor.Phase3n)
+        {
+            var windows3n = ParseWindows(windowArg);
+            if (windows3n is null)
+            {
+                _log.LogError("Invalid --window value '{W}'. Expected 3, 4, 6, or all.", windowArg);
+                return 2;
+            }
+            return await RunPhase3nAsync(stations, windows3n, leads, ct);
         }
 
         var windows = ParseWindows(windowArg);
@@ -736,6 +751,7 @@ public sealed class DryWindowTrainCommand
                 var perLead = new Dictionary<string, ModelArtifact.PerLeadStats>();
                 var sigmaByLead = new Dictionary<int, double[,]>();
                 var choleskyByLead = new Dictionary<int, double[,]>();
+                var testPredictionRows = new List<DryWindowTestPredictionRow>();
                 DryWindowClimatology? climatology = null;
                 bool anyLeadScored = false;
 
@@ -829,8 +845,18 @@ public sealed class DryWindowTrainCommand
                         var (s, e) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(row.TargetDateUtc));
                         var q = DryWindow3gPredictor.ExtractDaytimeQ(hourlyQ, row.TargetDateUtc, s, e);
                         if (q is null) continue;
-                        probs.Add(DryWindow3jPredictor.ProbDryWindow(q, L, window, rng, mcSamples));
+                        var p = DryWindow3jPredictor.ProbDryWindow(q, L, window, rng, mcSamples);
+                        probs.Add(p);
                         labels.Add(row.Label);
+                        testPredictionRows.Add(new DryWindowTestPredictionRow
+                        {
+                            target_date = row.TargetDateUtc,
+                            station = stationSlug,
+                            window = window,
+                            lead = lead,
+                            p_dry_window = p,
+                            observed_dry_window = (byte)(row.Label ? 1 : 0),
+                        });
                     }
 
                     if (probs.Count < 10)
@@ -883,6 +909,15 @@ public sealed class DryWindowTrainCommand
                     climatology.SaveTo(Path.Combine(versionDir, "dry_window_climatology.json"));
                 DryWindow3jPredictor.WriteCorrelationJson(versionDir, sigmaByLead);
 
+                if (testPredictionRows.Count > 0)
+                {
+                    var testPredPath = Path.Combine(versionDir, "test_predictions.parquet");
+                    await Parquet.Serialization.ParquetSerializer.SerializeAsync(
+                        testPredictionRows, testPredPath, cancellationToken: ct);
+                    _log.LogInformation("Wrote {N} test_predictions rows → {Path}",
+                        testPredictionRows.Count, testPredPath);
+                }
+
                 var metadata = new ModelArtifact.TrainingMetadata
                 {
                     Version = versionName,
@@ -926,6 +961,338 @@ public sealed class DryWindowTrainCommand
         }
 
         _log.LogInformation("Phase 3j training complete. Scored={T} Skipped={S}", trained, skipped);
+        await Task.CompletedTask;
+        return trained == 0 ? 3 : 0;
+    }
+
+    /// <summary>
+    /// Phase 3n — regime-conditioned copula MC. Same structure as 3j but
+    /// fits TWO Σs per (station, lead): one on train days where NWPs agree
+    /// strongly on the hourly wet/dry pattern (settled atmospheric regime),
+    /// one on days where they disagree (unsettled/transitional). The agreement
+    /// threshold is the median of the train slice's agreement scores —
+    /// guarantees roughly equal data per Σ.
+    ///
+    /// At test/predict time the day's agreement (recomputed from whichever
+    /// forecast tree applies) routes the day through Σ_settled or
+    /// Σ_unsettled before the copula MC runs.
+    /// </summary>
+    private async Task<int> RunPhase3nAsync(string[] stations, int[] windows, int[] leads, CancellationToken ct)
+    {
+        var modelsRoot = _cfg.Storage.ModelsPath;
+        var daytime = _cfg.DryWindow.BuildDaytimeWindow();
+        var rngSeed = 42;
+        var mcSamples = DryWindow3nPredictor.DefaultMcSamples;
+        var canonicalModels = WeatherBlend.Train.TempFeatureBuilder.CanonicalModelOrder;
+
+        _log.LogInformation(
+            "Phase 3n — stations=[{S}] windows=[{W}] leads=[{L}], MC samples={Mc}",
+            string.Join(", ", stations), string.Join(",", windows),
+            string.Join(",", leads), mcSamples);
+        _log.LogInformation(
+            "Regime axis: per-day NWP consensus on hourly wet/dry (canonical {N}-model set).",
+            canonicalModels.Count);
+
+        var precipManifest = _metadata.TryGetManifest("precipitation");
+        if (precipManifest?.Stations is null)
+        {
+            _log.LogError("3n needs the precipitation manifest to resolve 3a champions; not found.");
+            return 2;
+        }
+
+        // Agreement-by-target-date is identical across stations (it's a
+        // forecast-tree property of the location). Compute once per lead.
+        (int Start, int EndExclusive) DaytimeFor(DateOnly d) => daytime.UtcHourRangeFor(d);
+        var agreementByLead = new Dictionary<int, Dictionary<DateTime, double>>();
+        foreach (var lead in leads)
+        {
+            var matrices = DryWindowNwpAgreement.LoadOffsetDayPerNwpDaytime(
+                _cfg.Storage.ForecastsPath, _cfg.Location.Name, lead,
+                canonicalModels, DaytimeFor);
+            var byDate = new Dictionary<DateTime, double>(matrices.Count);
+            foreach (var (date, mat) in matrices)
+            {
+                var a = DryWindowNwpAgreement.ComputePerDay(mat);
+                if (!double.IsNaN(a)) byDate[date] = a;
+            }
+            agreementByLead[lead] = byDate;
+            _log.LogInformation(
+                "  computed agreement for {N} training days at lead {L}h", byDate.Count, lead);
+        }
+
+        int trained = 0, skipped = 0;
+        foreach (var stationName in stations)
+        {
+            var stationSlug = StationSlug.WithEaPrefix(stationName);
+            if (!precipManifest.Stations.TryGetValue(stationSlug, out var precipEntry)
+                || string.IsNullOrEmpty(precipEntry.Current))
+            {
+                _log.LogWarning(
+                    "{S}: no 3a champion in precipitation manifest; skipping 3n.",
+                    stationName);
+                continue;
+            }
+            var precip3aVersion = precipEntry.Current;
+
+            // Same per-lead Q/label load as 3j — same replay parquets.
+            var replayQByLead = new Dictionary<int, Dictionary<DateTime, double>>();
+            var replayLabelByLead = new Dictionary<int, Dictionary<DateTime, byte>>();
+            foreach (var lead in leads)
+            {
+                replayQByLead[lead] = DryWindow3gPredictor.LoadReplayHourly(
+                    _cfg.Storage.PredictionsPath, stationSlug, precip3aVersion, lead);
+                replayLabelByLead[lead] = DryWindow3jPredictor.LoadReplayLabelsHourly(
+                    _cfg.Storage.PredictionsPath, stationSlug, precip3aVersion, lead);
+                _log.LogInformation(
+                    "  loaded {Nq} q hours + {Nl} label hours from 3a replay for {S} lead {L}h",
+                    replayQByLead[lead].Count, replayLabelByLead[lead].Count, stationName, lead);
+            }
+
+            foreach (var window in windows)
+            {
+                ct.ThrowIfCancellationRequested();
+                var compositeKey = $"{stationSlug}/window_{window}h";
+                var now = DateTime.UtcNow;
+                var versionDir = ModelArtifact.BuildStationVersionDir(
+                    modelsRoot, "dry_window", compositeKey, now, "phase3n");
+                var versionName = Path.GetFileName(versionDir);
+
+                _log.LogInformation("=== Station '{S}', window {W}h → 3n {V} ===",
+                    stationName, window, versionName);
+
+                var perLead = new Dictionary<string, ModelArtifact.PerLeadStats>();
+                var bundleByLead = new Dictionary<int, (double[,] SigmaSettled, double[,] SigmaUnsettled, double Threshold, int DaysSettled, int DaysUnsettled)>();
+                var testPredictionRows = new List<DryWindowTestPredictionRow>();
+                DryWindowClimatology? climatology = null;
+                bool anyLeadScored = false;
+
+                foreach (var lead in leads)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    _log.LogInformation("--- Lead {L}h ---", lead);
+
+                    var spec = DryWindowFeatureBuilder.BuildSpec(_cfg.Blenders, lead, DryWindowFeatureBuilder.Phase3b);
+                    var rows = DryWindowFeatureBuilder.BuildForLead(
+                        _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
+                        _cfg.Location.Name, stationName,
+                        spec, window, daytime, ct);
+
+                    if (rows.Count < 100)
+                    {
+                        _log.LogWarning("  only {N} rows for ({S}, {W}h, lead {L}h); skipping lead.",
+                            rows.Count, stationName, window, lead);
+                        skipped++;
+                        continue;
+                    }
+
+                    var ds = DryWindowDataset.Split(rows);
+                    climatology ??= BuildClimatologyFromVectorRows(ds.Train, window);
+
+                    _log.LogInformation("  Split → train {Tn}, val {Vn}, test {En}",
+                        ds.Train.Count, ds.Val.Count, ds.Test.Count);
+
+                    var labelsHourly = replayLabelByLead[lead];
+                    var agreement = agreementByLead[lead];
+
+                    // Per train day: build observed daytime binary sequence,
+                    // attach the day's agreement. Skip days missing either.
+                    var trainEntries = new List<(byte[] Seq, double Agree)>(ds.Train.Count);
+                    foreach (var row in ds.Train)
+                    {
+                        if (!agreement.TryGetValue(row.TargetDateUtc, out var agr)) continue;
+                        var (s, e) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(row.TargetDateUtc));
+                        var n = e - s;
+                        var seq = new byte[n];
+                        bool gap = false;
+                        var midnight = new DateTime(
+                            row.TargetDateUtc.Year, row.TargetDateUtc.Month, row.TargetDateUtc.Day,
+                            0, 0, 0, DateTimeKind.Utc);
+                        for (int h = s; h < e; h++)
+                        {
+                            if (!labelsHourly.TryGetValue(midnight.AddHours(h), out var lbl))
+                            {
+                                gap = true; break;
+                            }
+                            seq[h - s] = lbl;
+                        }
+                        if (!gap) trainEntries.Add((seq, agr));
+                    }
+                    if (trainEntries.Count < 100)
+                    {
+                        _log.LogWarning(
+                            "  {S} {W}h lead {L}h: only {N} train days after label-gap + agreement filter; skipping (need ≥100 for two stable Σs).",
+                            stationName, window, lead, trainEntries.Count);
+                        skipped++;
+                        continue;
+                    }
+
+                    var trainAgrees = trainEntries.Select(t => t.Agree).OrderBy(x => x).ToArray();
+                    var threshold = trainAgrees[trainAgrees.Length / 2];
+
+                    var settledSeqs   = trainEntries.Where(t => t.Agree >= threshold).Select(t => t.Seq).ToArray();
+                    var unsettledSeqs = trainEntries.Where(t => t.Agree <  threshold).Select(t => t.Seq).ToArray();
+                    if (settledSeqs.Length < 30 || unsettledSeqs.Length < 30)
+                    {
+                        _log.LogWarning(
+                            "  {S} {W}h lead {L}h: regime buckets too thin (settled={Ns}, unsettled={Nu}); skipping.",
+                            stationName, window, lead, settledSeqs.Length, unsettledSeqs.Length);
+                        skipped++;
+                        continue;
+                    }
+
+                    var sigmaSettled   = DryWindow3jPredictor.FitCorrelation(settledSeqs);
+                    var sigmaUnsettled = DryWindow3jPredictor.FitCorrelation(unsettledSeqs);
+                    double[,] cholSettled, cholUnsettled;
+                    try
+                    {
+                        cholSettled   = DryWindow3jPredictor.CholeskyDecompose(sigmaSettled);
+                        cholUnsettled = DryWindow3jPredictor.CholeskyDecompose(sigmaUnsettled);
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        _log.LogWarning(
+                            "  {S} {W}h lead {L}h: Cholesky failed ({Msg}); skipping lead.",
+                            stationName, window, lead, ex.Message);
+                        skipped++;
+                        continue;
+                    }
+                    bundleByLead[lead] = (sigmaSettled, sigmaUnsettled, threshold, settledSeqs.Length, unsettledSeqs.Length);
+
+                    _log.LogInformation(
+                        "  fitted Σ — settled (n={Ns}, mean off-diag {Ds:0.000}) | unsettled (n={Nu}, mean off-diag {Du:0.000}) | threshold={T:0.000}",
+                        settledSeqs.Length, MeanOffDiagonal(sigmaSettled),
+                        unsettledSeqs.Length, MeanOffDiagonal(sigmaUnsettled), threshold);
+
+                    var hourlyQ = replayQByLead[lead];
+                    var rng = new Random(rngSeed);
+                    var probs = new List<double>(ds.Test.Count);
+                    var labels = new List<bool>(ds.Test.Count);
+                    int testSettled = 0, testUnsettled = 0;
+                    foreach (var row in ds.Test)
+                    {
+                        var (s, e) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(row.TargetDateUtc));
+                        var q = DryWindow3gPredictor.ExtractDaytimeQ(hourlyQ, row.TargetDateUtc, s, e);
+                        if (q is null) continue;
+                        if (!agreement.TryGetValue(row.TargetDateUtc, out var agr)) continue;
+                        var L = agr >= threshold ? cholSettled : cholUnsettled;
+                        if (agr >= threshold) testSettled++; else testUnsettled++;
+                        var p = DryWindow3jPredictor.ProbDryWindow(q, L, window, rng, mcSamples);
+                        probs.Add(p);
+                        labels.Add(row.Label);
+                        testPredictionRows.Add(new DryWindowTestPredictionRow
+                        {
+                            target_date = row.TargetDateUtc,
+                            station = stationSlug,
+                            window = window,
+                            lead = lead,
+                            p_dry_window = p,
+                            observed_dry_window = (byte)(row.Label ? 1 : 0),
+                        });
+                    }
+
+                    if (probs.Count < 10)
+                    {
+                        _log.LogWarning(
+                            "  {S} {W}h lead {L}h: only {N} test rows after filters; skipping.",
+                            stationName, window, lead, probs.Count);
+                        skipped++;
+                        continue;
+                    }
+
+                    var brier = Brier(probs, labels);
+                    var climPred = DryWindowBaselines.Climatology(ds.Train, ds.Test, window);
+                    var climBrier = WeatherBlend.Evaluate.Precip.PrecipMetrics.Brier(
+                        climPred, ds.Test.Select(r => r.Label ? 1.0 : 0.0).ToArray());
+
+                    perLead[lead.ToString()] = new ModelArtifact.PerLeadStats
+                    {
+                        LeadHours = lead,
+                        DataRangeTrain = $"{ds.TrainStart:yyyy-MM-dd}Z → {ds.TrainEnd:yyyy-MM-dd}Z",
+                        DataRangeVal   = $"{ds.ValStart:yyyy-MM-dd}Z → {ds.ValEnd:yyyy-MM-dd}Z",
+                        DataRangeTest  = $"{ds.TestStart:yyyy-MM-dd}Z → {ds.TestEnd:yyyy-MM-dd}Z",
+                        TrainRows = ds.Train.Count,
+                        ValRows   = ds.Val.Count,
+                        TestRows  = probs.Count,
+                        TestCalendarMonths = ds.Test
+                            .Select(r => new DateTime(r.TargetDateUtc.Year, r.TargetDateUtc.Month, 1))
+                            .Distinct().Count(),
+                        BlendTestMae = brier,
+                        BlendTestRmse = climBrier,
+                        BlendTestBias = 0.0,
+                        CalibratedBlendTestMae = brier,
+                    };
+                    anyLeadScored = true;
+                    trained++;
+                    _log.LogInformation(
+                        "  Lead {L}h Brier={B:0.0000} (clim {C:0.0000}, n_test={N}; routed {Ts} settled / {Tu} unsettled)",
+                        lead, brier, climBrier, probs.Count, testSettled, testUnsettled);
+                }
+
+                if (!anyLeadScored)
+                {
+                    _log.LogWarning("  No leads scored for ({S}, {W}h); skipping artefact save.",
+                        stationName, window);
+                    continue;
+                }
+
+                Directory.CreateDirectory(versionDir);
+                if (climatology is not null)
+                    climatology.SaveTo(Path.Combine(versionDir, "dry_window_climatology.json"));
+                DryWindow3nPredictor.WriteCorrelationJson(versionDir, bundleByLead);
+
+                if (testPredictionRows.Count > 0)
+                {
+                    var testPredPath = Path.Combine(versionDir, "test_predictions.parquet");
+                    await Parquet.Serialization.ParquetSerializer.SerializeAsync(
+                        testPredictionRows, testPredPath, cancellationToken: ct);
+                    _log.LogInformation("Wrote {N} test_predictions rows → {Path}",
+                        testPredictionRows.Count, testPredPath);
+                }
+
+                var metadata = new ModelArtifact.TrainingMetadata
+                {
+                    Version = versionName,
+                    Target = "dry_window",
+                    Phase = DryWindow3nPredictor.Phase3n,
+                    LocationName = _cfg.Location.Name,
+                    DataSource = $"precipitation_replay@{precip3aVersion}",
+                    TrainedAtUtc = now,
+                    Hyperparameters = new Dictionary<string, object>
+                    {
+                        ["mc_samples"] = mcSamples,
+                        ["seed"] = rngSeed,
+                        ["precip_3a_version"] = precip3aVersion,
+                        ["window_hours"] = window,
+                        ["regime_axis"] = "nwp_per_hour_wet_dry_consensus",
+                        ["wet_threshold_mm_h"] = DryWindowNwpAgreement.WetThresholdMmH,
+                        ["min_models_per_hour"] = DryWindowNwpAgreement.MinModelsPerHour,
+                    },
+                    TestMae = perLead.ToDictionary(kv => $"lead_{kv.Key}h_brier", kv => kv.Value.BlendTestMae),
+                    PerLead = perLead,
+                    DeviationsFromBrief = new List<string>
+                    {
+                        "Phase 3n — regime-conditioned Gaussian copula MC. Two Σs per (station, lead) split by NWP-consensus on per-hour wet/dry. Threshold is the median of the train slice's agreement scores.",
+                        $"Same MC mechanics as 3j; 3n only differs in Σ selection. Bound 3a champion: {precip3aVersion}.",
+                        "Predict-time uses the SAME agreement formula on the live forecast tree (RunTimeSource='reported') so the regime label of a day stays consistent across train and predict.",
+                        "Pre-flight diagnostic 2026-05-13 on Bellever lead 24: Frobenius norm of Σ_settled-Σ_unsettled = 4.04, mean off-diag 0.80 vs 0.35 — strongly suggests the regime axis is informative.",
+                    },
+                };
+                ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
+
+                ModelArtifact.PromoteStationVersionAsChallenger(
+                    modelsRoot, "dry_window", compositeKey, versionName,
+                    newPhase: DryWindow3nPredictor.Phase3n);
+
+                var (cf, cs) = await _conformal.FitOneAsync(
+                    compositeKey, versionName, DryWindowConformalFitCommand.DefaultAlpha, ct);
+                _log.LogInformation("Auto-conformal: fitted {F} leads ({S} skipped) for {K}/{V}",
+                    cf, cs, compositeKey, versionName);
+
+                _log.LogInformation("Saved 3n artefacts → {Dir}", versionDir);
+            }
+        }
+
+        _log.LogInformation("Phase 3n training complete. Scored={T} Skipped={S}", trained, skipped);
         await Task.CompletedTask;
         return trained == 0 ? 3 : 0;
     }

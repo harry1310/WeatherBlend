@@ -57,6 +57,14 @@ public static class DryWindowPhases
         ChampionVsChallengerLabel: "Phase 3j (copula)",
         Color: "#7e57c2");
 
+    public static readonly DryWindowPhase Phase3n = new(
+        Key: "3n",
+        LongTitle: "Phase 3n — regime-conditioned copula MC (settled / unsettled Σ)",
+        ShortTitle: "Phase 3n (regime MC)",
+        Description: "Copula MC over 3a hourly P(wet) with TWO Σs per (station, lead) — Σ_settled fit on train days where NWPs agreed on hourly wet/dry, Σ_unsettled fit on disagreement days. At predict time the day's live NWP agreement picks which Σ to use.",
+        ChampionVsChallengerLabel: "Phase 3n (regime)",
+        Color: "#00897b");
+
     /// <summary>
     /// Display-metadata records keyed by phase string. Source of truth for
     /// "if this phase ever ships, here's what its card / heading looks like";
@@ -69,6 +77,7 @@ public static class DryWindowPhases
             [Phase3b.Key] = Phase3b,
             [Phase3g.Key] = Phase3g,
             [Phase3j.Key] = Phase3j,
+            [Phase3n.Key] = Phase3n,
         };
 
     /// <summary>
