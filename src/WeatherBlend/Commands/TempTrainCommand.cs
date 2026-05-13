@@ -141,13 +141,16 @@ public sealed class TempTrainCommand
                 "--feature-set {Fs} is only supported for targets temperature, precipitation.", fs);
             return 2;
         }
-        // "mlp" = Phase 3e (TorchSharp tabular NN). Precipitation-only — no
-        // tabular-NN bake-off scope for temperature today; revisit if the
-        // 3e vs 3a/3c outcome justifies a 2x companion.
-        if (fs == "mlp" && t != "precipitation")
+        // "mlp" = Phase 3e (precipitation hourly P(wet)) OR Phase 3f
+        // (dry-window day-level), depending on target. Both are TorchSharp
+        // tabular NNs trained against the same input distribution as their
+        // LightGBM counterparts (3c for 3e, 3b for 3f). No temperature mlp
+        // variant today — revisit if 2e is justified by the precipitation/
+        // dry-window results.
+        if (fs == "mlp" && t != "precipitation" && t != "dry-window")
         {
             _log.LogError(
-                "--feature-set {Fs} is only supported for target precipitation.", fs);
+                "--feature-set {Fs} is only supported for targets precipitation, dry-window.", fs);
             return 2;
         }
         if (elementTarget is not null && fs != "lean")
@@ -212,15 +215,19 @@ public sealed class TempTrainCommand
                 _       => await RunPhase3aAsync(leads, station, location, ct),
             },
             // dry-window: lean → Phase 3b (53 features),
-            //             independence-mc → Phase 3g (parameter-free MC over 3a marginals).
+            //             independence-mc → Phase 3g (parameter-free MC over 3a marginals),
+            //             mlp → Phase 3f (TorchSharp MLP on the same features as 3b).
             // "rich" silently maps to 3b for symmetry with the temperature/precip
             // dispatch — there's no rich dry-window variant after 3d-shape was
             // retired 2026-05-04.
             "dry-window"    => await _dryWindow.RunAsync(
                                    station ?? "all", window ?? "all", leads,
-                                   fs == "independence-mc"
-                                       ? Train.DryWindow.DryWindow3gPredictor.Phase3g
-                                       : Train.DryWindow.DryWindowFeatureBuilder.Phase3b,
+                                   fs switch
+                                   {
+                                       "independence-mc" => Train.DryWindow.DryWindow3gPredictor.Phase3g,
+                                       "mlp"             => Train.DryWindow.DryWindowFeatureBuilder.Phase3f,
+                                       _                 => Train.DryWindow.DryWindowFeatureBuilder.Phase3b,
+                                   },
                                    ct),
             // Per-variable element blenders: one dispatcher routes wind / humidity /
             // shortwave-radiation / cloud-cover to its dedicated IElementBlender.

@@ -7,6 +7,7 @@ using WeatherBlend.Storage;
 using WeatherBlend.Train;
 using WeatherBlend.Train.Common;
 using WeatherBlend.Train.DryWindow;
+using WeatherBlend.Train.Mlp;
 using CommonRow = WeatherBlend.Train.Common.DryWindowTrainingRow;
 
 namespace WeatherBlend.Commands;
@@ -57,9 +58,10 @@ public sealed class DryWindowTrainCommand
     public async Task<int> RunAsync(string stationArg, string windowArg, int[] leads, string phase, CancellationToken ct)
     {
         if (phase != DryWindowFeatureBuilder.Phase3b
-            && phase != DryWindow3gPredictor.Phase3g)
+            && phase != DryWindow3gPredictor.Phase3g
+            && phase != DryWindowFeatureBuilder.Phase3f)
         {
-            _log.LogError("Unsupported dry-window training phase '{Phase}'. Expected '3b' or '3g'.", phase);
+            _log.LogError("Unsupported dry-window training phase '{Phase}'. Expected '3b', '3f' or '3g'.", phase);
             return 2;
         }
 
@@ -80,6 +82,19 @@ public sealed class DryWindowTrainCommand
                 return 2;
             }
             return await RunPhase3gAsync(stations, windows3g, leads, ct);
+        }
+
+        // Phase 3f — TorchSharp MLP on the same day-level features as 3b.
+        // Bake-off challenger; never promoted to champion.
+        if (phase == DryWindowFeatureBuilder.Phase3f)
+        {
+            var windows3f = ParseWindows(windowArg);
+            if (windows3f is null)
+            {
+                _log.LogError("Invalid --window value '{W}'. Expected 3, 4, 6, or all.", windowArg);
+                return 2;
+            }
+            return await RunPhase3fAsync(stations, windows3f, leads, ct);
         }
 
         var windows = ParseWindows(windowArg);
@@ -132,6 +147,13 @@ public sealed class DryWindowTrainCommand
                 List<float[]>? firstLeadTrainFeatures = null;
                 IReadOnlyList<bool>? firstLeadTrainLabels = null;
                 int totalTrainRows = 0, totalValRows = 0, totalTestRows = 0;
+
+                // Buffer per-row test predictions across all leads for this
+                // (station, window) — written once at the bottom of the
+                // window loop. Sibling of TempTrainCommand.testPredictionRows
+                // but on the day-level dry-window schema. Consumed by dry-
+                // window bake-offs (e.g. 3b vs 3g vs MC-over-calibrated-3a).
+                var testPredictionRows = new List<DryWindowTestPredictionRow>();
 
                 foreach (var lead in leads)
                 {
@@ -199,6 +221,25 @@ public sealed class DryWindowTrainCommand
                     // stays in metadata.
                     var blendProbShipping = calibrationEnabled ? blendProbCal : blendProbRaw;
                     var blendBrierShipping = calibrationEnabled ? blendBrierCal : blendBrierRaw;
+
+                    // Buffer per-row held-out predictions for the bake-off
+                    // parquet. ds.Test is in row-order; blendProbShipping is
+                    // index-aligned. p_dry_window is the SHIPPING value so a
+                    // downstream Brier on the bake-off parquet matches what
+                    // the site renders.
+                    var stationSlug = StationSlug.WithEaPrefix(stationName);
+                    for (int i = 0; i < ds.Test.Count; i++)
+                    {
+                        testPredictionRows.Add(new DryWindowTestPredictionRow
+                        {
+                            target_date          = ds.Test[i].TargetDateUtc,
+                            station              = stationSlug,
+                            window               = window,
+                            lead                 = lead,
+                            p_dry_window         = blendProbShipping[i],
+                            observed_dry_window  = (byte)(ds.Test[i].Label ? 1 : 0),
+                        });
+                    }
 
                     var best = DryWindowBaselines.BestSingle(spec, ds.Val);
                     var bestValBrier = PrecipMetrics.Brier(
@@ -270,6 +311,24 @@ public sealed class DryWindowTrainCommand
                 if (climatology is not null)
                 {
                     climatology.SaveTo(Path.Combine(versionDir, "dry_window_climatology.json"));
+                }
+
+                // test_predictions.parquet — per-row held-out predictions
+                // accumulated across the leads in this (station, window).
+                // Schema matches DryWindowTestPredictionRow (target_date,
+                // station, window, lead, p_dry_window, observed_dry_window).
+                // Consumed by dry-window bake-off scripts that need to
+                // inner-join 3b's direct prediction against MC-based
+                // alternatives (3g + variants) on the same test cells.
+                // p_dry_window is the SHIPPING probability — matches what
+                // the site renders.
+                if (testPredictionRows.Count > 0)
+                {
+                    var testPredPath = Path.Combine(versionDir, "test_predictions.parquet");
+                    await Parquet.Serialization.ParquetSerializer.SerializeAsync(
+                        testPredictionRows, testPredPath, cancellationToken: ct);
+                    _log.LogInformation("Wrote {N} test_predictions rows → {Path}",
+                        testPredictionRows.Count, testPredPath);
                 }
 
                 var metadata = new ModelArtifact.TrainingMetadata
@@ -567,6 +626,249 @@ public sealed class DryWindowTrainCommand
 
         _log.LogInformation("Phase 3g training complete. Scored={T} Skipped={S}", trained, skipped);
         await Task.CompletedTask;
+        return trained == 0 ? 3 : 0;
+    }
+
+    /// <summary>
+    /// Phase 3f — TorchSharp MLP on the same day-level rich features as 3b
+    /// (built via <see cref="DryWindowFeatureBuilder.BuildForLead"/> with
+    /// phase=3b for feature parity). Same chronological 70/15/15 split as
+    /// 3b, scored on the same test slice — so the bake-off compares
+    /// like-for-like.
+    ///
+    /// Architecture deliberately small for the small-N tabular regime
+    /// (~700 day rows per cell vs 3e's ~30k hourly): HiddenSizes=[32,16],
+    /// Dropout=0.3, BatchSize=64. Anything larger overfits. The MLP
+    /// trainer's NaN-aware standardiser + dead-column safety net (added
+    /// 2026-05-13 to fix 3e's offset_day-vs-reported cloud_*_mean OOD
+    /// collapse) carry over for free.
+    ///
+    /// Bundle layout mirrors 3e's precip MLP under the dry_window tree:
+    /// <code>
+    /// data/models/dry_window/{station}/window_{N}h/v..._phase3f/
+    ///   mlp_lead_24h.pt
+    ///   mlp_lead_48h.pt
+    ///   mlp_lead_72h.pt
+    ///   preprocess.json
+    ///   feature_schema.json
+    ///   training_metadata.json
+    ///   test_predictions.parquet
+    /// </code>
+    ///
+    /// 3f never promotes to champion — it's a bake-off challenger only.
+    /// No conformal fit (the bake-off cares about Brier, not coverage).
+    /// </summary>
+    private async Task<int> RunPhase3fAsync(string[] stations, int[] windows, int[] leads, CancellationToken ct)
+    {
+        var modelsRoot = _cfg.Storage.ModelsPath;
+        var daytime = _cfg.DryWindow.BuildDaytimeWindow();
+
+        // Tabular-small-N MLP — see XML doc above. Defaults differ from 3e
+        // because 3e fits 30k rows, 3f fits ~700.
+        var mlpHp = new MlpTrainer.Hyperparameters(
+            HiddenSizes: new[] { 32, 16 },
+            Dropout: 0.3,
+            LearningRate: 1e-3,
+            BatchSize: 64,
+            MaxEpochs: 200,
+            EarlyStoppingPatience: 20,
+            Seed: 42);
+
+        _log.LogInformation(
+            "Phase 3f (MLP) — stations=[{S}] windows=[{W}] leads=[{L}]; arch={Arch} dropout={D} bs={B}",
+            string.Join(", ", stations), string.Join(",", windows), string.Join(",", leads),
+            string.Join("x", mlpHp.HiddenSizesEffective), mlpHp.Dropout, mlpHp.BatchSize);
+
+        int trained = 0, skipped = 0;
+
+        foreach (var stationName in stations)
+        {
+            foreach (var window in windows)
+            {
+                ct.ThrowIfCancellationRequested();
+                var stationSlug = StationSlug.WithEaPrefix(stationName);
+                var compositeKey = $"{stationSlug}/window_{window}h";
+                var now = DateTime.UtcNow;
+                var versionDir = ModelArtifact.BuildStationVersionDir(
+                    modelsRoot, "dry_window", compositeKey, now, "phase3f");
+                var versionName = Path.GetFileName(versionDir);
+
+                _log.LogInformation("=== Station '{S}', window {W}h → 3f {V} ===",
+                    stationName, window, versionName);
+
+                var specsPerLead = new Dictionary<int, BlenderSpec>();
+                var perLeadStats = new Dictionary<string, ModelArtifact.PerLeadStats>();
+                var perLeadPreprocess = new Dictionary<string, MlpArtifact.PerLeadPreprocess>(StringComparer.Ordinal);
+                var testPredictionRows = new List<DryWindowTestPredictionRow>();
+                DryWindowClimatology? climatology = null;
+                bool anyLeadTrained = false;
+
+                foreach (var lead in leads)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    _log.LogInformation("--- Lead {L}h ---", lead);
+
+                    // Reuse 3b's spec + row builder so the chronological split
+                    // matches 3b's exactly — bake-off requires identical test
+                    // slices across phases or Brier numbers aren't comparable.
+                    var spec = DryWindowFeatureBuilder.BuildSpec(_cfg.Blenders, lead, DryWindowFeatureBuilder.Phase3b);
+                    specsPerLead[lead] = spec;
+                    _log.LogInformation("Spec: {Spec}", spec);
+
+                    var rows = DryWindowFeatureBuilder.BuildForLead(
+                        _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
+                        _cfg.Location.Name, stationName,
+                        spec, window, daytime, ct);
+
+                    if (rows.Count < 100)
+                    {
+                        _log.LogWarning("  only {N} rows for ({S}, {W}h, lead {L}h); skipping lead.",
+                            rows.Count, stationName, window, lead);
+                        skipped++;
+                        continue;
+                    }
+
+                    var ds = DryWindowDataset.Split(rows);
+                    climatology ??= BuildClimatologyFromVectorRows(ds.Train, window);
+
+                    _log.LogInformation("  Split → train {Tn}, val {Vn}, test {En}",
+                        ds.Train.Count, ds.Val.Count, ds.Test.Count);
+
+                    // Convert day-level dry-window rows to the BinaryTrainingRow
+                    // shape MlpTrainer expects. Only Features + Label matter —
+                    // ValidTimeUtc is preserved but the trainer ignores it.
+                    var trainBin = ds.Train.Select(r => new BinaryTrainingRow {
+                        ValidTimeUtc = r.TargetDateUtc,
+                        Features = r.Features,
+                        Label = r.Label,
+                    }).ToList();
+                    var valBin   = ds.Val.Select(r => new BinaryTrainingRow {
+                        ValidTimeUtc = r.TargetDateUtc,
+                        Features = r.Features,
+                        Label = r.Label,
+                    }).ToList();
+                    var testBin  = ds.Test.Select(r => new BinaryTrainingRow {
+                        ValidTimeUtc = r.TargetDateUtc,
+                        Features = r.Features,
+                        Label = r.Label,
+                    }).ToList();
+
+                    var trainedMlp = MlpTrainer.TrainVector(trainBin, valBin, spec, mlpHp);
+                    var testProbs = MlpTrainer.PredictVectorProbability(trainedMlp, testBin);
+                    var truthTest = ds.Test.Select(r => r.Label ? 1.0 : 0.0).ToArray();
+                    var brier = PrecipMetrics.Brier(testProbs, truthTest);
+                    var climPred = DryWindowBaselines.Climatology(ds.Train, ds.Test, window);
+                    var climBrier = PrecipMetrics.Brier(climPred, truthTest);
+                    var bss = PrecipMetrics.BrierSkillScore(brier, climBrier);
+
+                    _log.LogInformation(
+                        "  Lead {L}h MLP test Brier={B:0.0000} (clim {C:0.0000}, BSS={Bss:+0.0000;-0.0000;0.0000}, epochs={E}, best_val={V:0.0000})",
+                        lead, brier, climBrier, bss, trainedMlp.EpochsRun, trainedMlp.BestValBrier);
+
+                    // Save the lead's .pt + accumulate the preprocess block.
+                    var perLead = MlpArtifact.SaveLeadModel(versionDir, lead, trainedMlp, spec);
+                    perLeadPreprocess[lead.ToString()] = perLead;
+
+                    perLeadStats[lead.ToString()] = new ModelArtifact.PerLeadStats
+                    {
+                        LeadHours = lead,
+                        DataRangeTrain = $"{ds.TrainStart:yyyy-MM-dd}Z → {ds.TrainEnd:yyyy-MM-dd}Z",
+                        DataRangeVal   = $"{ds.ValStart:yyyy-MM-dd}Z → {ds.ValEnd:yyyy-MM-dd}Z",
+                        DataRangeTest  = $"{ds.TestStart:yyyy-MM-dd}Z → {ds.TestEnd:yyyy-MM-dd}Z",
+                        TrainRows = ds.Train.Count,
+                        ValRows   = ds.Val.Count,
+                        TestRows  = ds.Test.Count,
+                        TestCalendarMonths = ds.Test
+                            .Select(r => new DateTime(r.TargetDateUtc.Year, r.TargetDateUtc.Month, 1))
+                            .Distinct().Count(),
+                        BlendTestMae = brier,
+                        BlendTestRmse = climBrier,
+                        BlendTestBias = 0.0,
+                        CalibratedBlendTestMae = brier,   // MLP doesn't ship a separate calibrator
+                    };
+
+                    for (int i = 0; i < ds.Test.Count; i++)
+                    {
+                        testPredictionRows.Add(new DryWindowTestPredictionRow
+                        {
+                            target_date         = ds.Test[i].TargetDateUtc,
+                            station             = stationSlug,
+                            window              = window,
+                            lead                = lead,
+                            p_dry_window        = testProbs[i],
+                            observed_dry_window = (byte)(ds.Test[i].Label ? 1 : 0),
+                        });
+                    }
+                    anyLeadTrained = true;
+                    trained++;
+                }
+
+                if (!anyLeadTrained)
+                {
+                    _log.LogWarning("  No leads trained for ({S}, {W}h); skipping artefact save.",
+                        stationName, window);
+                    continue;
+                }
+
+                Directory.CreateDirectory(versionDir);
+                ModelArtifact.SaveBlenderSpecs(versionDir, specsPerLead);
+                MlpArtifact.WritePreprocess(versionDir,
+                    new MlpArtifact.Preprocess(PerLead: perLeadPreprocess));
+                if (climatology is not null)
+                    climatology.SaveTo(Path.Combine(versionDir, "dry_window_climatology.json"));
+
+                var metadata = new ModelArtifact.TrainingMetadata
+                {
+                    Version = versionName,
+                    Target = "dry_window",
+                    Phase = DryWindowFeatureBuilder.Phase3f,
+                    LocationName = _cfg.Location.Name,
+                    DataSource = "previous_runs_api+ea_rainfall",
+                    TrainedAtUtc = now,
+                    Hyperparameters = new Dictionary<string, object>
+                    {
+                        ["hidden_sizes"] = mlpHp.HiddenSizesEffective,
+                        ["dropout"] = mlpHp.Dropout,
+                        ["learning_rate"] = mlpHp.LearningRate,
+                        ["batch_size"] = mlpHp.BatchSize,
+                        ["max_epochs"] = mlpHp.MaxEpochs,
+                        ["early_stopping_patience"] = mlpHp.EarlyStoppingPatience,
+                        ["seed"] = mlpHp.Seed,
+                        ["window_hours"] = window,
+                    },
+                    TestMae = perLeadStats.ToDictionary(kv => $"lead_{kv.Key}h_brier", kv => kv.Value.BlendTestMae),
+                    PerLead = perLeadStats,
+                    DeviationsFromBrief = new List<string>
+                    {
+                        "Phase 3f — TorchSharp MLP on the same day-level rich features as 3b. Bake-off challenger; never promoted to champion.",
+                        "Architecture [32, 16] / dropout 0.3 / batch 64 chosen for the small-N tabular regime (~700 day rows per cell). 3e's [128, 64, 32] would be ~18x overparameterised at this data scale.",
+                        "Conformal calibration omitted — 3f is offline-only for the bake-off, not a predict-path phase.",
+                        "Spec reuses 3b's BuildSpec(phase=3b) so train/val/test split + feature vector are identical, enabling like-for-like Brier comparison against 3b.",
+                    },
+                };
+                ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
+
+                if (testPredictionRows.Count > 0)
+                {
+                    var testPredPath = Path.Combine(versionDir, "test_predictions.parquet");
+                    await Parquet.Serialization.ParquetSerializer.SerializeAsync(
+                        testPredictionRows, testPredPath, cancellationToken: ct);
+                    _log.LogInformation("Wrote {N} test_predictions rows → {Path}",
+                        testPredictionRows.Count, testPredPath);
+                }
+
+                // 3f is a challenger by design — register in the manifest's
+                // Active list so the model registry can see it, but DON'T
+                // promote to champion (Current stays whatever 3b/3g set).
+                ModelArtifact.PromoteStationVersionAsChallenger(
+                    modelsRoot, "dry_window", compositeKey, versionName,
+                    newPhase: DryWindowFeatureBuilder.Phase3f);
+
+                _log.LogInformation("Saved 3f MLP artefacts → {Dir}", versionDir);
+            }
+        }
+
+        _log.LogInformation("Phase 3f training complete. Trained={T} Skipped={S}", trained, skipped);
         return trained == 0 ? 3 : 0;
     }
 
