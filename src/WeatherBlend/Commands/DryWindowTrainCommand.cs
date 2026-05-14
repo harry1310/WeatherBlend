@@ -529,9 +529,6 @@ public sealed class DryWindowTrainCommand
                     ct.ThrowIfCancellationRequested();
                     _log.LogInformation("--- Lead {L}h ---", lead);
 
-                    // Reuse 3b's spec + row builder so the chronological split
-                    // is identical to 3b's. We don't USE the day-aggregate
-                    // features for 3g — we only need the (date, label) sequence.
                     var spec = DryWindowFeatureBuilder.BuildSpec(_cfg.Blenders, lead, DryWindowFeatureBuilder.Phase3b);
                     var rows = DryWindowFeatureBuilder.BuildForLead(
                         _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
@@ -552,10 +549,6 @@ public sealed class DryWindowTrainCommand
                     _log.LogInformation("  Split → train {Tn}, val {Vn}, test {En}",
                         ds.Train.Count, ds.Val.Count, ds.Test.Count);
 
-                    // PAV-on-MC-output was tried 2026-05-14 (task #34) and
-                    // CONSISTENTLY HURT across 3g and 3p. ~120 val rows
-                    // overfits at Bovey/Hexworthy, matching the 2026-04-29
-                    // 3b finding. Reverted; 3g ships raw MC output.
                     var hourly = replayByLead[lead];
                     var rng = new Random(rngSeed);
                     var probs = new List<double>(ds.Test.Count);
@@ -564,7 +557,7 @@ public sealed class DryWindowTrainCommand
                     {
                         var (s, e) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(row.TargetDateUtc));
                         var q = DryWindow3gPredictor.ExtractDaytimeQ(hourly, row.TargetDateUtc, s, e);
-                        if (q is null) continue;   // replay gap — skip honest reporting
+                        if (q is null) continue;
                         var p = DryWindow3gPredictor.ProbDryWindow(q, window, rng, mcSamples);
                         probs.Add(p);
                         labels.Add(row.Label);
@@ -854,8 +847,6 @@ public sealed class DryWindowTrainCommand
                         "  fitted Σ from {N} train sequences (mean off-diag corr ≈ {Avg:0.000})",
                         trainSequences.Count, MeanOffDiagonal(sigma));
 
-                    // PAV-on-MC-output reverted 2026-05-14 (task #34 negative
-                    // result); ships raw copula MC output.
                     var hourlyQ = replayQByLead[lead];
                     var rng = new Random(rngSeed);
                     var probs = new List<double>(ds.Test.Count);
@@ -1183,8 +1174,6 @@ public sealed class DryWindowTrainCommand
                         settledSeqs.Length, MeanOffDiagonal(sigmaSettled),
                         unsettledSeqs.Length, MeanOffDiagonal(sigmaUnsettled), threshold);
 
-                    // PAV-on-MC-output reverted 2026-05-14 (task #34 negative
-                    // result); ships raw regime-conditioned copula MC output.
                     var hourlyQ = replayQByLead[lead];
                     var rng = new Random(rngSeed);
                     var probs = new List<double>(ds.Test.Count);
