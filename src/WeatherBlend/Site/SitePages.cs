@@ -695,24 +695,29 @@ public static partial class SitePages
     public sealed record NwpPrecipProbForecastPoint(
         string Model,
         DateTime ValidTimeUtc,
-        double ProbabilityPercent);
+        double ProbabilityPercent,
+        string LocationName);
 
     /// <summary>Per-NWP precipitation rate (mm/h) — Open-Meteo's
     /// <c>precipitation</c> field. Hourly granularity, deduped to the
     /// freshest RunTime per (Model, ValidTime). Used by the lead-12
     /// rain page's NWP rate chart where the prediction-row-based overlay
-    /// is too sparse.</summary>
+    /// is too sparse. <see cref="LocationName"/> carries the config slug
+    /// of the location this forecast was sourced from so the renderer can
+    /// route per active location tab (Bonehill vs Membury, etc.).</summary>
     public sealed record NwpPrecipRateForecastPoint(
         string Model,
         DateTime ValidTimeUtc,
-        double PrecipMmPerHour);
+        double PrecipMmPerHour,
+        string LocationName);
 
     /// <summary>Per-NWP 2m temperature (°C). Same shape and purpose as
     /// NwpPrecipRateForecastPoint, used on the temp lead-12 page.</summary>
     public sealed record NwpTemperatureForecastPoint(
         string Model,
         DateTime ValidTimeUtc,
-        double Temperature2m);
+        double Temperature2m,
+        string LocationName);
 
     /// <summary>One Met Office DataHub Spot forecast row at a single
     /// (RunTime, ValidTime). Fields nullable because the Spot product
@@ -729,7 +734,15 @@ public static partial class SitePages
         /// is "P(any measurable precip)", which is a slightly looser
         /// threshold than our blender's 0.1 mm/h training label — note that
         /// in any chart legend that overlays the two.</summary>
-        double? PrecipitationProbabilityPercent);
+        double? PrecipitationProbabilityPercent,
+        /// <summary>Config slug of the location this Spot row was sourced
+        /// from (e.g. <c>bonehill_rocks</c>, <c>membury_devon</c>) so the
+        /// skill-page renderer can pick the right rows per active tab.</summary>
+        string LocationName,
+        /// <summary>(ValidTime − RunTime) in hours. Used by the skill-page
+        /// per-lead bucketing: chart's +Lh trace draws rows with
+        /// LeadHours ∈ [L, L+24).</summary>
+        int LeadHours);
 
     /// <summary>One row of the dry-window start-hour curve. Multiple rows
     /// share a (Station, WindowHours, LeadHours, TargetDateUtc) and differ

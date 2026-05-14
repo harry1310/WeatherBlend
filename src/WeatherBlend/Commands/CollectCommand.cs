@@ -50,11 +50,12 @@ public sealed class CollectCommand
         // window — pre-2026-05-11 collect ran for `_cfg.Location`
         // (singular = primary = Bonehill) only.
         //
-        // Met Office Spot + Obs stay primary-only (single API key,
-        // single geohash configured at the AppConfig.MetOffice level —
-        // not a per-location block). Membury config has no MO; the
-        // morning's commit (20f9e85) deliberately scoped Membury as
-        // EA + Open-Meteo only.
+        // Met Office Spot now loops over _cfg.Locations (Spot is lat/lon-
+        // driven so it works for any configured location — used as a
+        // skill-page comparison line only, not a blender input). Met
+        // Office Obs stays primary-only because the geohash is pinned at
+        // the AppConfig.MetOffice level — extending it would need a
+        // per-location obsGeohash field.
         var forecastErrors = 0;
         var metarErrors    = 0;
         var rainfallErrors = 0;
@@ -157,25 +158,32 @@ public sealed class CollectCommand
 
         var errors = 0;
 
-        try
+        // Spot: lat/lon-driven, one shot per configured location. Skill-pages
+        // only (not a blender input) so this just lands in the forecasts tree
+        // under model=met_office_spot, location=<slug> for the render side to
+        // pick up. Obs stays primary-only — see below.
+        var spotKey = MetOfficeSecrets.TryLoad(mo.SpotKeyEnvVar, mo.SpotKeyFile);
+        if (string.IsNullOrWhiteSpace(spotKey))
         {
-            var spotKey = MetOfficeSecrets.TryLoad(mo.SpotKeyEnvVar, mo.SpotKeyFile);
-            if (string.IsNullOrWhiteSpace(spotKey))
-            {
-                _log.LogWarning("  Met Office Spot: no API key ({Env} / {File}); skipping",
-                    mo.SpotKeyEnvVar, mo.SpotKeyFile);
-            }
-            else
-            {
-                var rows = await _metOfficeSpot.FetchAsync(_cfg.Location, mo.SpotModelTag, spotKey, ct);
-                await ParquetWriter.WriteForecastsAsync(_cfg.Storage.ForecastsPath, rows, ct);
-                _log.LogInformation("  Met Office Spot: wrote {Rows} rows", rows.Count);
-            }
+            _log.LogWarning("  Met Office Spot: no API key ({Env} / {File}); skipping all locations",
+                mo.SpotKeyEnvVar, mo.SpotKeyFile);
         }
-        catch (Exception ex)
+        else
         {
-            errors++;
-            _log.LogError(ex, "  Met Office Spot: FAILED");
+            foreach (var location in _cfg.Locations)
+            {
+                try
+                {
+                    var rows = await _metOfficeSpot.FetchAsync(location, mo.SpotModelTag, spotKey, ct);
+                    await ParquetWriter.WriteForecastsAsync(_cfg.Storage.ForecastsPath, rows, ct);
+                    _log.LogInformation("  Met Office Spot ({Loc}): wrote {Rows} rows", location.Name, rows.Count);
+                }
+                catch (Exception ex)
+                {
+                    errors++;
+                    _log.LogError(ex, "  Met Office Spot ({Loc}): FAILED", location.Name);
+                }
+            }
         }
 
         try

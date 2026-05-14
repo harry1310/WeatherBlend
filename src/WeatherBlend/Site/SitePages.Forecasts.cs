@@ -193,7 +193,13 @@ public static partial class SitePages
         var series = new List<LineSeries>();
         var tempPalette = NwpsForTemperature()
             .ToDictionary(np => np.Label, np => np.Color, StringComparer.Ordinal);
+        // Temperature pages are primary-location-only (no per-location URLs yet),
+        // so filter raw NWP rows to the primary location to avoid contaminating
+        // the chart with other configured locations' grid-cell temperatures.
+        var primaryLocName = input.Locations.FirstOrDefault(l => l.IsPrimary)?.Name ?? "";
         foreach (var grp in input.NwpTemperatures
+            .Where(t => string.IsNullOrEmpty(primaryLocName)
+                        || string.Equals(t.LocationName, primaryLocName, StringComparison.OrdinalIgnoreCase))
             .GroupBy(t => t.Model)
             .OrderBy(g => g.Key, StringComparer.Ordinal))
         {
@@ -558,12 +564,21 @@ public static partial class SitePages
         // the mm/h chart so the eye reads "is rain likely?" then "how
         // hard?" top-to-bottom. Only ~4 of 8 NWPs publish PoP — others
         // drop out of the legend silently.
+        var activeLocName = activeLocation?.Name ?? "";
+        var activeLocDisplay = activeLocation?.DisplayName
+            ?? input.Locations.FirstOrDefault(l => l.IsPrimary)?.DisplayName
+            ?? "primary";
+        bool MatchesActiveLoc(string locName)
+            => string.IsNullOrEmpty(activeLocName)
+               || string.Equals(locName, activeLocName, StringComparison.OrdinalIgnoreCase);
+
         if (input.NwpPrecipProbabilities.Count > 0)
         {
             var popSeries = new List<LineSeries>();
             var popPalette = nwpSpecs
                 .ToDictionary(np => np.Label, np => np.Color, StringComparer.Ordinal);
             foreach (var grp in input.NwpPrecipProbabilities
+                .Where(p => MatchesActiveLoc(p.LocationName))
                 .GroupBy(p => p.Model)
                 .OrderBy(g => g.Key, StringComparer.Ordinal))
             {
@@ -578,10 +593,10 @@ public static partial class SitePages
             }
             if (popSeries.Count > 0)
             {
-                s.Append("<h4>NWP precipitation probability — point forecast at Bonehill</h4>");
+                s.Append(Ci, $"<h4>NWP precipitation probability — point forecast at {Escape(activeLocDisplay)}</h4>");
                 s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
                 {
-                    Title = $"NWP PoP — Bonehill — +{lead}h",
+                    Title = $"NWP PoP — {activeLocDisplay} — +{lead}h",
                     XLabel = "Valid time (UTC)",
                     YLabel = "Probability",
                     Series = popSeries,
@@ -608,6 +623,7 @@ public static partial class SitePages
             var ratePalette = nwpSpecs
                 .ToDictionary(np => np.Label, np => np.Color, StringComparer.Ordinal);
             foreach (var grp in input.NwpPrecipRates
+                .Where(t => MatchesActiveLoc(t.LocationName))
                 .GroupBy(t => t.Model)
                 .OrderBy(g => g.Key, StringComparer.Ordinal))
             {
@@ -622,10 +638,10 @@ public static partial class SitePages
             }
             if (nwpSeries.Count > 0)
             {
-                s.Append("<h4>NWP precip rate (mm/h) — point forecast at Bonehill</h4>");
+                s.Append(Ci, $"<h4>NWP precip rate (mm/h) — point forecast at {Escape(activeLocDisplay)}</h4>");
                 s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
                 {
-                    Title = $"NWP precip rate — Bonehill — +{lead}h",
+                    Title = $"NWP precip rate — {activeLocDisplay} — +{lead}h",
                     XLabel = "Valid time (UTC)",
                     YLabel = "Precip rate (mm/h)",
                     Series = nwpSeries,

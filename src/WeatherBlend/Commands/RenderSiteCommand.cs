@@ -1134,24 +1134,27 @@ FROM ranked WHERE rn = 1 ORDER BY station_slug, valid_time, lead";
         var nwpFilter = "('gfs_seamless','ecmwf_ifs025','icon_seamless','meteofrance_seamless'," +
                         "'ukmo_seamless','gem_seamless','ecmwf_aifs025_single','jma_seamless')";
 
+        var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
+
         var sql = $@"
 WITH ranked AS (
-  SELECT Model, RunTimeUtc, ValidTimeUtc, PrecipitationProbability,
-         row_number() OVER (PARTITION BY Model, ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn
+  SELECT Model, LocationName, RunTimeUtc, ValidTimeUtc, PrecipitationProbability,
+         row_number() OVER (PARTITION BY Model, LocationName, ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn
   FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-  WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
+  WHERE LocationName IN ({locFilter})
     AND Model IN {nwpFilter}
     AND PrecipitationProbability IS NOT NULL
     AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
     AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 )
-SELECT Model, ValidTimeUtc, PrecipitationProbability
-FROM ranked WHERE rn = 1 ORDER BY Model, ValidTimeUtc";
+SELECT Model, ValidTimeUtc, PrecipitationProbability, LocationName
+FROM ranked WHERE rn = 1 ORDER BY LocationName, Model, ValidTimeUtc";
 
         return ParquetReader.Query(sql, r => new SitePages.NwpPrecipProbForecastPoint(
             Model:               r.GetString(0),
             ValidTimeUtc:        r.GetDateTime(1),
-            ProbabilityPercent:  r.GetDouble(2)),
+            ProbabilityPercent:  r.GetDouble(2),
+            LocationName:        r.GetString(3)),
             _log, "Per-NWP precipitation_probability tree empty — overlay panel will be absent.", ct);
     }
 
@@ -1170,24 +1173,27 @@ FROM ranked WHERE rn = 1 ORDER BY Model, ValidTimeUtc";
         var nwpFilter = "('gfs_seamless','ecmwf_ifs025','icon_seamless','meteofrance_seamless'," +
                         "'ukmo_seamless','gem_seamless','ecmwf_aifs025_single','jma_seamless')";
 
+        var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
+
         var sql = $@"
 WITH ranked AS (
-  SELECT Model, RunTimeUtc, ValidTimeUtc, Precipitation,
-         row_number() OVER (PARTITION BY Model, ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn
+  SELECT Model, LocationName, RunTimeUtc, ValidTimeUtc, Precipitation,
+         row_number() OVER (PARTITION BY Model, LocationName, ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn
   FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-  WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
+  WHERE LocationName IN ({locFilter})
     AND Model IN {nwpFilter}
     AND Precipitation IS NOT NULL
     AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
     AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 )
-SELECT Model, ValidTimeUtc, Precipitation
-FROM ranked WHERE rn = 1 ORDER BY Model, ValidTimeUtc";
+SELECT Model, ValidTimeUtc, Precipitation, LocationName
+FROM ranked WHERE rn = 1 ORDER BY LocationName, Model, ValidTimeUtc";
 
         return ParquetReader.Query(sql, r => new SitePages.NwpPrecipRateForecastPoint(
             Model:           r.GetString(0),
             ValidTimeUtc:    r.GetDateTime(1),
-            PrecipMmPerHour: r.GetDouble(2)),
+            PrecipMmPerHour: r.GetDouble(2),
+            LocationName:    r.GetString(3)),
             _log, "Per-NWP precipitation rate tree empty — overlay panel will be absent.", ct);
     }
 
@@ -1205,24 +1211,27 @@ FROM ranked WHERE rn = 1 ORDER BY Model, ValidTimeUtc";
         var nwpFilter = "('gfs_seamless','ecmwf_ifs025','icon_seamless','meteofrance_seamless'," +
                         "'ukmo_seamless','gem_seamless','ecmwf_aifs025_single','jma_seamless')";
 
+        var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
+
         var sql = $@"
 WITH ranked AS (
-  SELECT Model, RunTimeUtc, ValidTimeUtc, Temperature2m,
-         row_number() OVER (PARTITION BY Model, ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn
+  SELECT Model, LocationName, RunTimeUtc, ValidTimeUtc, Temperature2m,
+         row_number() OVER (PARTITION BY Model, LocationName, ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn
   FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-  WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
+  WHERE LocationName IN ({locFilter})
     AND Model IN {nwpFilter}
     AND Temperature2m IS NOT NULL
     AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
     AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 )
-SELECT Model, ValidTimeUtc, Temperature2m
-FROM ranked WHERE rn = 1 ORDER BY Model, ValidTimeUtc";
+SELECT Model, ValidTimeUtc, Temperature2m, LocationName
+FROM ranked WHERE rn = 1 ORDER BY LocationName, Model, ValidTimeUtc";
 
         return ParquetReader.Query(sql, r => new SitePages.NwpTemperatureForecastPoint(
             Model:          r.GetString(0),
             ValidTimeUtc:   r.GetDateTime(1),
-            Temperature2m:  r.GetDouble(2)),
+            Temperature2m:  r.GetDouble(2),
+            LocationName:   r.GetString(3)),
             _log, "Per-NWP temperature tree empty — overlay panel will be absent.", ct);
     }
 
@@ -1238,24 +1247,35 @@ FROM ranked WHERE rn = 1 ORDER BY Model, ValidTimeUtc";
         ct.ThrowIfCancellationRequested();
         var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.ForecastsPath, "**", "*.parquet"));
 
+        var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
+
+        // Partition by (Location, ValidTime, LeadHours) — keeps one row per
+        // (Loc, Valid, Lead) so the renderer can bucket Spot rows into the
+        // chart's per-lead traces ([L, L+24) windows). The freshest RunTime
+        // within each (Loc, Valid, Lead) triple wins — typically the only
+        // one (a 6-hourly Spot cycle emits exactly one row per ValidTime per
+        // unique lead) so the dedup is mostly a no-op but defends against
+        // an unusual collect cycle.
         var sql = $@"
 WITH ranked AS (
-  SELECT RunTimeUtc, ValidTimeUtc, Temperature2m, PrecipitationProbability,
-         row_number() OVER (PARTITION BY ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn
+  SELECT RunTimeUtc, ValidTimeUtc, LocationName, LeadHours, Temperature2m, PrecipitationProbability,
+         row_number() OVER (PARTITION BY LocationName, ValidTimeUtc, LeadHours ORDER BY RunTimeUtc DESC) AS rn
   FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-  WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
+  WHERE LocationName IN ({locFilter})
     AND Model = 'met_office_spot'
     AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
     AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 )
-SELECT RunTimeUtc, ValidTimeUtc, Temperature2m, PrecipitationProbability
-FROM ranked WHERE rn = 1 ORDER BY ValidTimeUtc";
+SELECT RunTimeUtc, ValidTimeUtc, Temperature2m, PrecipitationProbability, LocationName, LeadHours
+FROM ranked WHERE rn = 1 ORDER BY LocationName, ValidTimeUtc, LeadHours";
 
         return ParquetReader.Query(sql, r => new SitePages.MetOfficeSpotForecastPoint(
             RunTimeUtc:                      r.GetDateTime(0),
             ValidTimeUtc:                    r.GetDateTime(1),
             Temperature2m:                   r.IsDBNull(2) ? null : r.GetDouble(2),
-            PrecipitationProbabilityPercent: r.IsDBNull(3) ? null : r.GetDouble(3)),
+            PrecipitationProbabilityPercent: r.IsDBNull(3) ? null : r.GetDouble(3),
+            LocationName:                    r.GetString(4),
+            LeadHours:                       r.GetInt32(5)),
             _log, "Met Office Spot tree empty — comparison line will be absent.", ct);
     }
 

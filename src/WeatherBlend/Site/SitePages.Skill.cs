@@ -197,9 +197,7 @@ public static partial class SitePages
         content.Append(RenderRainLocationSubNav("skill-rainfall", input.Locations, activeName, lead: null));
 
         var heading = active is null || active.IsPrimary ? "rain" : $"rain — {active.DisplayName}";
-        var intro = active is null || active.IsPrimary
-            ? "P(wet) vs observed wet hours, then rolling Brier per phase."
-            : "Rolling Brier per phase. (P(wet)-vs-observed eyeball block deferred for non-primary locations.)";
+        var intro = "P(wet) vs observed wet hours, then rolling Brier per phase.";
         content.Append(Ci, $"""
               <hgroup>
                 <h2>Skill — {Escape(heading)}</h2>
@@ -218,16 +216,9 @@ public static partial class SitePages
             content.Append(RenderStationSubNav(stationNavBase, stations, currentStation));
         }
 
-        if (active is null || active.IsPrimary)
-        {
-            content.Append("<h3>P(wet) vs observed wet-hour</h3>");
-            content.Append(RenderPrecipVsTruthBlock(input, currentStation));
-            content.Append("<hr/><h3>Rolling Brier (P(wet))</h3>");
-        }
-        else
-        {
-            content.Append("<h3>Rolling Brier (P(wet))</h3>");
-        }
+        content.Append("<h3>P(wet) vs observed wet-hour</h3>");
+        content.Append(RenderPrecipVsTruthBlock(input, currentStation));
+        content.Append("<hr/><h3>Rolling Brier (P(wet))</h3>");
         content.Append(RenderRollingBrierBlock(input, currentStation));
 
         content.Append("</section>");
@@ -480,13 +471,22 @@ public static partial class SitePages
         // ERA5/METAR truth, but it's a *forecast* so we label it explicitly
         // and use the Met Office brand navy so the eye reads it as another
         // forecaster's view, not a truth source.
+        // MO Spot temp filtered to the +24h lead bucket [24, 47] — matches the
+        // rain skill chart's convention and our blender's lead-band training.
+        var primaryLocName = input.Locations.FirstOrDefault(l => l.IsPrimary)?.Name ?? "";
         var moSpotPts = input.MetOfficeSpotForecasts
-            .Where(m => m.ValidTimeUtc >= input.WindowStartUtc && m.Temperature2m.HasValue)
+            .Where(m => m.ValidTimeUtc >= input.WindowStartUtc
+                        && m.Temperature2m.HasValue
+                        && m.LeadHours >= 24 && m.LeadHours < 48
+                        && (string.IsNullOrEmpty(primaryLocName)
+                            || string.Equals(m.LocationName, primaryLocName, StringComparison.OrdinalIgnoreCase)))
+            .GroupBy(m => m.ValidTimeUtc)
+            .Select(g => g.OrderBy(m => m.LeadHours).First())
             .OrderBy(m => m.ValidTimeUtc)
             .Select(m => (X: m.ValidTimeUtc.ToOADate(), Y: m.Temperature2m!.Value))
             .ToList();
         if (moSpotPts.Count > 0)
-            series.Add(new LineSeries("Met Office Spot", NwpPalette.MetOfficeSpot, moSpotPts));
+            series.Add(new LineSeries("Met Office Spot (+24h lead)", NwpPalette.MetOfficeSpot, moSpotPts));
 
         if (series.Count == 0)
             return RenderEmptyChart($"Temperature — phase {phaseKey}", "No overlap between predictions and truth in window.");
@@ -722,20 +722,36 @@ public static partial class SitePages
                     series.Add(new LineSeries($"P(wet) +{lead}h", color, pts));
             }
 
-            // Met Office Spot precipitation probability as a comparison line.
-            // The DataHub Spot product emits PoP in percent on a 0–100 scale —
-            // divide by 100 here so it shares the chart's [0, 1] Y-axis with
-            // P(wet). NB the Met Office threshold is "any measurable precip",
-            // a slightly looser bound than our 0.1 mm/h training label, so the
-            // comparison is direction-of-effect rather than apples-to-apples.
-            // The skill-line block above the chart calls this out.
+            // Met Office Spot precipitation probability as a single comparison
+            // line per chart, filtered to the +24h lead bucket [24, 47].
+            // Matches how our blender is trained (24-hour lead band per bucket)
+            // — so the Spot line represents "what Spot would have said 24-47 h
+            // before the ValidTime". Bucket [24, 47] is fully covered by Spot's
+            // hourly endpoint (0-48h horizon), giving dense data; longer-lead
+            // buckets would lean on the three-hourly endpoint and be sparse.
+            //
+            // PoP comes in percent on 0-100 → divide by 100 to share the
+            // chart's [0, 1] Y-axis. NB the Met Office threshold is "any
+            // measurable precip", a looser bound than our 0.1 mm/h training
+            // label — the skill-line block above the chart calls this out.
+            //
+            // Filter to the home location of the station being charted so the
+            // Membury rain skill page draws Membury's Spot PoP, not Bonehill's.
+            var stationHomeLoc = input.Locations
+                .FirstOrDefault(l => l.RainStationSlugs.Any(s => string.Equals(s, station, StringComparison.OrdinalIgnoreCase)))?.Name ?? "";
             var moSpotPts = input.MetOfficeSpotForecasts
-                .Where(m => m.ValidTimeUtc >= input.WindowStartUtc && m.PrecipitationProbabilityPercent.HasValue)
+                .Where(m => m.ValidTimeUtc >= input.WindowStartUtc
+                            && m.PrecipitationProbabilityPercent.HasValue
+                            && m.LeadHours >= 24 && m.LeadHours < 48
+                            && (string.IsNullOrEmpty(stationHomeLoc)
+                                || string.Equals(m.LocationName, stationHomeLoc, StringComparison.OrdinalIgnoreCase)))
+                .GroupBy(m => m.ValidTimeUtc)
+                .Select(g => g.OrderBy(m => m.LeadHours).First())
                 .OrderBy(m => m.ValidTimeUtc)
                 .Select(m => (X: m.ValidTimeUtc.ToOADate(), Y: m.PrecipitationProbabilityPercent!.Value / 100.0))
                 .ToList();
             if (moSpotPts.Count > 0)
-                series.Add(new LineSeries("Met Office Spot PoP", NwpPalette.MetOfficeSpot, moSpotPts));
+                series.Add(new LineSeries("Met Office Spot PoP (+24h lead)", NwpPalette.MetOfficeSpot, moSpotPts));
 
             if (series.Count == 0)
             {
