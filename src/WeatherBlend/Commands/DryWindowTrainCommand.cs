@@ -520,6 +520,7 @@ public sealed class DryWindowTrainCommand
                     stationName, window, versionName);
 
                 var perLead = new Dictionary<string, ModelArtifact.PerLeadStats>();
+                var testPredictionRows = new List<DryWindowTestPredictionRow>();
                 DryWindowClimatology? climatology = null;
                 bool anyLeadScored = false;
 
@@ -551,10 +552,10 @@ public sealed class DryWindowTrainCommand
                     _log.LogInformation("  Split → train {Tn}, val {Vn}, test {En}",
                         ds.Train.Count, ds.Val.Count, ds.Test.Count);
 
-                    // Score 3g raw on the test split. PAV deliberately not
-                    // applied — the 2026-05-03 bake-off found PAV hurts more
-                    // than it helps (Hexworthy 6h flips 22% Brier the wrong
-                    // way; raw beats PAV on 15/27 cells overall).
+                    // PAV-on-MC-output was tried 2026-05-14 (task #34) and
+                    // CONSISTENTLY HURT across 3g and 3p. ~120 val rows
+                    // overfits at Bovey/Hexworthy, matching the 2026-04-29
+                    // 3b finding. Reverted; 3g ships raw MC output.
                     var hourly = replayByLead[lead];
                     var rng = new Random(rngSeed);
                     var probs = new List<double>(ds.Test.Count);
@@ -564,8 +565,18 @@ public sealed class DryWindowTrainCommand
                         var (s, e) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(row.TargetDateUtc));
                         var q = DryWindow3gPredictor.ExtractDaytimeQ(hourly, row.TargetDateUtc, s, e);
                         if (q is null) continue;   // replay gap — skip honest reporting
-                        probs.Add(DryWindow3gPredictor.ProbDryWindow(q, window, rng, mcSamples));
+                        var p = DryWindow3gPredictor.ProbDryWindow(q, window, rng, mcSamples);
+                        probs.Add(p);
                         labels.Add(row.Label);
+                        testPredictionRows.Add(new DryWindowTestPredictionRow
+                        {
+                            target_date = row.TargetDateUtc,
+                            station = stationSlug,
+                            window = window,
+                            lead = lead,
+                            p_dry_window = p,
+                            observed_dry_window = (byte)(row.Label ? 1 : 0),
+                        });
                     }
 
                     if (probs.Count < 10)
@@ -616,6 +627,15 @@ public sealed class DryWindowTrainCommand
                 Directory.CreateDirectory(versionDir);
                 if (climatology is not null)
                     climatology.SaveTo(Path.Combine(versionDir, "dry_window_climatology.json"));
+
+                if (testPredictionRows.Count > 0)
+                {
+                    var testPredPath = Path.Combine(versionDir, "test_predictions.parquet");
+                    await Parquet.Serialization.ParquetSerializer.SerializeAsync(
+                        testPredictionRows, testPredPath, cancellationToken: ct);
+                    _log.LogInformation("Wrote {N} test_predictions rows → {Path}",
+                        testPredictionRows.Count, testPredPath);
+                }
 
                 var metadata = new ModelArtifact.TrainingMetadata
                 {
@@ -834,8 +854,8 @@ public sealed class DryWindowTrainCommand
                         "  fitted Σ from {N} train sequences (mean off-diag corr ≈ {Avg:0.000})",
                         trainSequences.Count, MeanOffDiagonal(sigma));
 
-                    // Score 3j copula MC on the test split. Same daytime-q
-                    // extraction as 3g but pass through the copula predictor.
+                    // PAV-on-MC-output reverted 2026-05-14 (task #34 negative
+                    // result); ships raw copula MC output.
                     var hourlyQ = replayQByLead[lead];
                     var rng = new Random(rngSeed);
                     var probs = new List<double>(ds.Test.Count);
@@ -1163,6 +1183,8 @@ public sealed class DryWindowTrainCommand
                         settledSeqs.Length, MeanOffDiagonal(sigmaSettled),
                         unsettledSeqs.Length, MeanOffDiagonal(sigmaUnsettled), threshold);
 
+                    // PAV-on-MC-output reverted 2026-05-14 (task #34 negative
+                    // result); ships raw regime-conditioned copula MC output.
                     var hourlyQ = replayQByLead[lead];
                     var rng = new Random(rngSeed);
                     var probs = new List<double>(ds.Test.Count);
