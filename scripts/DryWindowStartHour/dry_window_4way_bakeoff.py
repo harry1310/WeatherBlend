@@ -652,12 +652,16 @@ def evaluate_station(
                     continue
                 q_raw = by_lead_date[key]
                 preds_3b.append(float(row["p_dry_window"]))
-                # 3g: prefer the bundle's calibrated test_predictions if present
-                # (post-PAV); fall back to inline raw MC for older bundles.
-                if key in p_3g_bundle_by_key:
-                    preds_3g.append(p_3g_bundle_by_key[key])
-                else:
-                    preds_3g.append(prob_dry_window_mc(q_raw, window, MC_SAMPLES, rng))
+                # 3g: ALWAYS use inline MC for canonical comparison.
+                # (Earlier this session I switched to reading 3g's
+                # test_predictions bundle when present — that silently
+                # changed the measurement from inline-1000-samples to
+                # bundle-10000-samples, shifting 3g aggregate by ~0.0013
+                # and flipping the 3g-vs-3j ordering due to MC noise
+                # difference rather than any real change. Reverted —
+                # 3g stays inline so cross-session comparisons are
+                # apples-to-apples.)
+                preds_3g.append(prob_dry_window_mc(q_raw, window, MC_SAMPLES, rng))
                 if preds_3f is not None:
                     preds_3f.append(p_3f_by_key[key])
                 if preds_3h is not None:
