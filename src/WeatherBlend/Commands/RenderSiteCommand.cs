@@ -58,8 +58,15 @@ public sealed class RenderSiteCommand
             "Render site: predictions [{Start:yyyy-MM-dd}..{End:yyyy-MM-dd}], rolling {Rolling}d, output → {Dir}",
             windowStart, predictionEnd, rollingWindowDays, outputDir);
 
-        var predictions = _predictions.GetTemperaturePredictions(windowStart, predictionEnd, ct);
-        _log.LogInformation("Loaded {N} temperature prediction rows.", predictions.Count);
+        // Site rendering is primary-location-only until the multi-loc temp
+        // page lands (deferred 2026-05-14). Pass [primary] explicitly so the
+        // repo's location filter stays an opt-in concern, not a hidden
+        // default — when the page rework wires Membury, swap to `null` for
+        // an unfiltered scan + per-loc grouping in the renderer.
+        var primaryLocFilter = new[] { _cfg.Location.Name };
+        var predictions = _predictions.GetTemperaturePredictions(primaryLocFilter, windowStart, predictionEnd, ct);
+        _log.LogInformation("Loaded {N} temperature prediction rows (location={Loc}).",
+            predictions.Count, _cfg.Location.Name);
 
         // Precip + dry-window come back as the canonical domain rows from the
         // repo; the renderer projects to its lighter SitePages records below.

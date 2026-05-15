@@ -44,14 +44,19 @@ public sealed class PredictionsRepository
     // -----------------------------------------------------------------
 
     /// <summary>
-    /// Every temperature prediction for the configured location whose
-    /// <c>ValidTimeUtc</c> falls in [<paramref name="start"/>, <paramref name="end"/>].
+    /// Temperature predictions whose <c>ValidTimeUtc</c> falls in
+    /// [<paramref name="start"/>, <paramref name="end"/>], optionally scoped to a
+    /// list of <paramref name="locations"/>. Pass <c>null</c> or an empty list to
+    /// scan every location partition under the temperature subtree (multi-loc
+    /// renderer pattern); pass an explicit list to limit to those locations
+    /// (verify pattern — cheaper scan, no cross-location noise).
     /// Drops rows with null <c>BlendTemperature</c> — they're meaningless and
     /// the renderer / verify both want to ignore them. Order is
     /// <c>(ModelVersion, LeadHours, ValidTimeUtc)</c>; callers re-sort if
     /// they need a different order.
     /// </summary>
     public IReadOnlyList<TempPredictionRow> GetTemperaturePredictions(
+        IReadOnlyList<string>? locations,
         DateTime start, DateTime end, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
@@ -60,6 +65,11 @@ public sealed class PredictionsRepository
         // dry_window) have different schemas and would surface as nulls or wrong
         // columns under union_by_name.
         var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath, "temperature", "**", "*.parquet"));
+
+        var locationClause = locations is { Count: > 0 }
+            ? "AND LocationName IN (" + string.Join(", ",
+                  locations.Select(l => $"'{l.Replace("'", "''")}'")) + ")"
+            : ""; // null/empty = no location filter, scan everything
 
         // hive_partitioning=false — the `model_version=` hive key collides with the
         // in-file ModelVersion column under case-insensitive resolution. Same rule
@@ -72,8 +82,8 @@ SELECT LocationName, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
        TempMean, TempStd, TempRange,
        FeatureVectorHash
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
-  AND BlendTemperature IS NOT NULL
+WHERE BlendTemperature IS NOT NULL
+  {locationClause}
   AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 ORDER BY ModelVersion, LeadHours, ValidTimeUtc";

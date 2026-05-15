@@ -89,16 +89,36 @@ jobs:
       - name: Build
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
 
-      - name: Verify temperature
+      - name: Verify temperature (Bonehill, primary location)
         # Exit code 4 = drift detected. Keep the step non-fatal (|| true) but
         # propagate the exit to a separate step so the job is still visibly
-        # orange in the run list.
+        # orange in the run list. No --location → defaults to the primary.
         id: verify_run
         run: |
           AS_OF="${{ github.event.inputs.as_of }}"
           WINDOW="${{ github.event.inputs.window_days }}"
           DRIFT="${{ github.event.inputs.drift }}"
           ARGS="--target temperature"
+          if [ -n "$AS_OF" ]; then ARGS="$ARGS --as-of $AS_OF"; fi
+          if [ -n "$WINDOW" ]; then ARGS="$ARGS --window-days $WINDOW"; fi
+          if [ -n "$DRIFT" ]; then ARGS="$ARGS --drift $DRIFT"; fi
+          set +e
+          dotnet run --project src/WeatherBlend --no-build -c Release -- verify $ARGS
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Verify temperature (Membury)
+        # 2b/2c trained for Membury 2026-05-14. Predict wired since 2026-05-15;
+        # verify wires here. --location scopes the prediction filter +
+        # disambiguates the report filename (verify_temperature_membury_devon_
+        # YYYY-MM-DD.md). History JSON is skipped for non-primary until the
+        # multi-location Models page lands — markdown is the only deliverable
+        # for now.
+        id: verify_run_membury
+        run: |
+          AS_OF="${{ github.event.inputs.as_of }}"
+          WINDOW="${{ github.event.inputs.window_days }}"
+          DRIFT="${{ github.event.inputs.drift }}"
+          ARGS="--target temperature --location membury_devon"
           if [ -n "$AS_OF" ]; then ARGS="$ARGS --as-of $AS_OF"; fi
           if [ -n "$WINDOW" ]; then ARGS="$ARGS --window-days $WINDOW"; fi
           if [ -n "$DRIFT" ]; then ARGS="$ARGS --drift $DRIFT"; fi

@@ -43,12 +43,31 @@ public sealed class TempVerifyCommand
         int era5LatencyDays,
         double driftThreshold,
         CancellationToken ct)
+        => await RunAsync(target, asOf, windowDays, era5LatencyDays, driftThreshold, locationOverride: null, ct);
+
+    public async Task<int> RunAsync(
+        string target,
+        DateOnly? asOf,
+        int windowDays,
+        int era5LatencyDays,
+        double driftThreshold,
+        string? locationOverride,
+        CancellationToken ct)
     {
         if (!string.Equals(target, "temperature", StringComparison.OrdinalIgnoreCase))
         {
             _log.LogError("Only target=temperature is supported (got '{Target}')", target);
             return 2;
         }
+
+        // Resolve which location's predictions to verify. Default = primary
+        // (Bonehill back-compat). When --location is passed, scope to that
+        // location's prediction partition; the per-station temperature
+        // manifest (2026-05-14 layout) means each location's predictions
+        // live under temperature/{location}/... so the filter is precise.
+        var primaryName = _cfg.Location.Name;
+        var locationName = string.IsNullOrWhiteSpace(locationOverride) ? primaryName : locationOverride!;
+        var isPrimary = string.Equals(locationName, primaryName, StringComparison.OrdinalIgnoreCase);
 
         var asOfUtc = asOf.HasValue
             ? asOf.Value.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc).AddDays(1)
@@ -57,10 +76,11 @@ public sealed class TempVerifyCommand
         var windowEnd   = asOfUtc.AddDays(-era5LatencyDays);
 
         _log.LogInformation(
-            "Verify: as-of {AsOf:yyyy-MM-dd HH:mm}Z, window [{Start:yyyy-MM-dd}..{End:yyyy-MM-dd}], latency {Latency}d, drift {Drift:0.00}×",
-            asOfUtc, windowStart, windowEnd, era5LatencyDays, driftThreshold);
+            "Verify: target=temperature, location={Loc}, as-of {AsOf:yyyy-MM-dd HH:mm}Z, window [{Start:yyyy-MM-dd}..{End:yyyy-MM-dd}], latency {Latency}d, drift {Drift:0.00}×",
+            locationName, asOfUtc, windowStart, windowEnd, era5LatencyDays, driftThreshold);
 
-        var predictions = _predictions.GetTemperaturePredictions(windowStart, windowEnd, ct);
+        var predictions = _predictions.GetTemperaturePredictions(
+            locations: new[] { locationName }, windowStart, windowEnd, ct);
         _log.LogInformation("Loaded {N} prediction rows in window.", predictions.Count);
 
         if (predictions.Count == 0)
@@ -109,8 +129,12 @@ public sealed class TempVerifyCommand
         // so the filename pattern matches the precip / dry-window / element
         // siblings. Pre-rename markdowns stay as historical artefacts on R2;
         // only future writes get the new name.
-        var outPath = Path.Combine(_cfg.Storage.ReportsPath,
-            $"verify_temperature_{asOfUtc:yyyy-MM-dd}.md");
+        // Non-primary location adds a {location} segment so Bonehill and
+        // Membury reports for the same date don't overwrite each other.
+        var mdName = isPrimary
+            ? $"verify_temperature_{asOfUtc:yyyy-MM-dd}.md"
+            : $"verify_temperature_{locationName}_{asOfUtc:yyyy-MM-dd}.md";
+        var outPath = Path.Combine(_cfg.Storage.ReportsPath, mdName);
         await File.WriteAllTextAsync(outPath, md, ct);
         _log.LogInformation("Report written → {Path}", outPath);
 
@@ -164,7 +188,22 @@ public sealed class TempVerifyCommand
             }))
             .ToList(),
         };
-        await Evaluate.VerifyHistoryWriter.WriteAsync(_cfg.Storage.ReportsPath, history, ct);
+        // Models-page history sidecar: skip for non-primary locations until
+        // the multi-location site rework lands. Writing a second JSON with
+        // the same Target="temperature" would surface Membury rows as new
+        // model cards on the Bonehill Models page — confusing today, will
+        // be wired properly when the per-location page split ships.
+        // Markdown report is unaffected (location prefix on the filename).
+        if (isPrimary)
+        {
+            await Evaluate.VerifyHistoryWriter.WriteAsync(_cfg.Storage.ReportsPath, history, ct);
+        }
+        else
+        {
+            _log.LogInformation(
+                "Skipping verify-history JSON for non-primary location '{Loc}' — Models-page integration deferred.",
+                locationName);
+        }
 
         // One-line summary to stdout — easy to scrape from CI logs.
         foreach (var r in rows)

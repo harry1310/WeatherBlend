@@ -638,7 +638,7 @@ public static class Program
             getDefaultValue: () => "all");
         var predictLocationOpt = new Option<string?>(
             name: "--location",
-            description: "Precipitation only: override the primary location (e.g. 'membury_devon'). Filters stationsToRun to that location's rainfall config + reads forecasts from that location's tree. Default = primary location (Bonehill). Other targets ignore this flag for now.",
+            description: "Precipitation + temperature: override the primary location (e.g. 'membury_devon'). For precip, filters stationsToRun to that location's rainfall config + reads forecasts from that location's tree. For temperature (post-2026-05-14 station-keyed layout), filters to that station entry's bundles + that location's forecasts. Without --location, temperature iterates EVERY station entry in the manifest; precipitation defaults to the primary location only.",
             getDefaultValue: () => null);
         var predict = new Command(
             "predict",
@@ -773,11 +773,15 @@ public static class Program
             name: "--window",
             description: "Dry-window target only: window length in hours (3 | 4 | 6 | all)",
             getDefaultValue: () => "all");
+        var verifyLocationOpt = new Option<string?>(
+            name: "--location",
+            description: "Temperature target only: scope verify to one location's predictions (e.g. 'membury_devon'). Default = primary location (Bonehill). Other targets ignore this flag for now — precip verify is location-agnostic via station partitioning.",
+            getDefaultValue: () => null);
         var verify = new Command(
             "verify",
             "Rolling verification vs ERA5 (temperature) or EA rainfall (precipitation/dry-window), stratified by (version, lead). Flags drift.")
         {
-            verifyTargetOpt, verifyAsOfOpt, verifyWindowOpt, verifyLatencyOpt, verifyDriftOpt, verifyTruthStationOpt, verifyDryWindowOpt,
+            verifyTargetOpt, verifyAsOfOpt, verifyWindowOpt, verifyLatencyOpt, verifyDriftOpt, verifyTruthStationOpt, verifyDryWindowOpt, verifyLocationOpt,
         };
         verify.SetHandler(async (ctx) =>
         {
@@ -788,6 +792,7 @@ public static class Program
             var drift = ctx.ParseResult.GetValueForOption(verifyDriftOpt);
             var truthStation = ctx.ParseResult.GetValueForOption(verifyTruthStationOpt)!;
             var dryWindow = ctx.ParseResult.GetValueForOption(verifyDryWindowOpt)!;
+            var locationOverride = ctx.ParseResult.GetValueForOption(verifyLocationOpt);
 
             var elementTarget = ElementTargets.TryFromCli(target);
             if (string.Equals(target, "precipitation", StringComparison.OrdinalIgnoreCase))
@@ -818,7 +823,7 @@ public static class Program
             {
                 var cmd = host.Services.GetRequiredService<TempVerifyCommand>();
                 ctx.ExitCode = await cmd.RunAsync(
-                    target, asOf, windowDays ?? 14, latencyDays, drift, ctx.GetCancellationToken());
+                    target, asOf, windowDays ?? 14, latencyDays, drift, locationOverride, ctx.GetCancellationToken());
             }
         });
         root.AddCommand(verify);

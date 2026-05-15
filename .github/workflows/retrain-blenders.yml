@@ -203,7 +203,7 @@ jobs:
       # Each step's exit code is captured; the aggregator at the end
       # decides the workflow's overall outcome.
 
-      - name: Train 2b (temperature lean)
+      - name: Train 2b (temperature lean) — Bonehill
         id: train_2b
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_2b == 'true'
         continue-on-error: true
@@ -211,13 +211,37 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target temperature
 
-      - name: Train 2c (temperature rich)
+      - name: Train 2b (temperature lean) — Membury
+        # Phase B of the Membury ship plan (2026-05-15): temperature now
+        # trains per location, matching precip 3a/3c. Bundle lands at
+        # data/models/temperature/membury_devon/v.../ thanks to the
+        # 2026-05-14 Stations-keyed manifest layout. RetrainGuard reads
+        # the previous training_summary.json under the same per-station
+        # path, so Membury and Bonehill don't cross-drift.
+        # 2d (exact-runtime) deliberately not trained for Membury yet —
+        # needs S3 archive backfill for Membury's grid cell first.
+        id: train_2b_membury
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_2b == 'true'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target temperature --location membury_devon
+
+      - name: Train 2c (temperature rich) — Bonehill
         id: train_2c
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_2c == 'true'
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target temperature --feature-set rich
+
+      - name: Train 2c (temperature rich) — Membury
+        id: train_2c_membury
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_2c == 'true'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target temperature --feature-set rich --location membury_devon
 
       - name: Train 2d (temperature exact-runtime, short leads 12/24/48/72)
         # 2d uses --leads to define the trained set; default is {12,24}.
@@ -434,7 +458,9 @@ jobs:
         run: |
           declare -A outcomes=(
             [2b]="${{ steps.train_2b.outcome }}"
+            [2b_membury]="${{ steps.train_2b_membury.outcome }}"
             [2c]="${{ steps.train_2c.outcome }}"
+            [2c_membury]="${{ steps.train_2c_membury.outcome }}"
             [2d_short]="${{ steps.train_2d_short.outcome }}"
             [2d_long]="${{ steps.train_2d_long.outcome }}"
             [3a]="${{ steps.train_3a.outcome }}"
