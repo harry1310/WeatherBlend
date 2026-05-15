@@ -208,9 +208,9 @@ public sealed class TempTrainCommand
                     string.Join(", ", _cfg.Locations.Select(l => l.Name)));
                 return 2;
             }
-            if (t != "precipitation")
+            if (t != "precipitation" && t != "temperature")
             {
-                _log.LogWarning("--location only affects precipitation 3a/3c today; ignoring for target '{T}'.", t);
+                _log.LogWarning("--location only affects precipitation 3a/3c and temperature 2b/2c/2d today; ignoring for target '{T}'.", t);
             }
         }
 
@@ -218,9 +218,9 @@ public sealed class TempTrainCommand
         {
             "temperature"   => fs switch
             {
-                "rich"  => await RunPhase2cAsync(leads, ct),
-                "exact" => await RunPhase2dAsync(tier, includeUkv, exactLeads, cycles, ct),
-                _       => await RunPhase2bAsync(leads, ct),
+                "rich"  => await RunPhase2cAsync(leads, location, ct),
+                "exact" => await RunPhase2dAsync(tier, includeUkv, exactLeads, cycles, location, ct),
+                _       => await RunPhase2bAsync(leads, location, ct),
             },
             "precipitation" => fs switch
             {
@@ -267,11 +267,16 @@ public sealed class TempTrainCommand
         _     => null,
     };
 
-    private async Task<int> RunPhase2bAsync(int[] leads, CancellationToken ct)
+    private async Task<int> RunPhase2bAsync(int[] leads, Config.LocationConfig location, CancellationToken ct)
     {
         var now = DateTime.UtcNow;
         var modelsRoot = _cfg.Storage.ModelsPath;
-        var versionDir = ModelArtifact.BuildVersionDir(modelsRoot, "temperature", now);
+        // Station-keyed (location-keyed for temperature) layout post 2026-05-14:
+        // bundles live under data/models/temperature/{location}/v{ts}/ to mirror
+        // the per-station precipitation tree. The flat top-level layout was
+        // single-location only; this prepares the manifest for a second location.
+        var stationKey = location.Name;
+        var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "temperature", stationKey, now);
         var versionName = Path.GetFileName(versionDir);
 
         var hp = new TempTrainer.Hyperparameters();
@@ -302,7 +307,7 @@ public sealed class TempTrainCommand
             var rows = TempFeatureBuilder.BuildForLead(
                 _cfg.Storage.ForecastsPath,
                 _cfg.Storage.Era5Path,
-                _cfg.Location.Name,
+                location.Name,
                 spec,
                 ct);
             _log.LogInformation("Loaded {N} rows spanning {S:yyyy-MM-dd} → {E:yyyy-MM-dd}",
@@ -386,7 +391,7 @@ public sealed class TempTrainCommand
             Version = versionName,
             Target = "temperature",
             Phase = "2b",
-            LocationName = _cfg.Location.Name,
+            LocationName = location.Name,
             DataSource = "previous_runs_api",
             TrainedAtUtc = now,
             Hyperparameters = BuildHpDict(hp),
@@ -408,21 +413,22 @@ public sealed class TempTrainCommand
         // the orphan dir on guard-fail is invisible to predict + verify.
         var guardResult2b = RetrainGuard.BuildCheckAndSave(_log,
             versionDir,
-            composite: "temperature", phase: "2b", version: versionName,
+            composite: $"temperature/{stationKey}", phase: "2b", version: versionName,
             computedAtUtc: now,
             rowsTrain: totalTrainRows, rowsVal: totalValRows, rowsTest: totalTestRows,
             trainFeatures: firstLeadTrainFeatures,
             featureNames: specsPerLead.TryGetValue(leads[0], out var sp0)
                 ? sp0.FeatureNames.ToList() : Array.Empty<string>(),
-            locationName: _cfg.Location.Name);
+            locationName: location.Name);
         if (!guardResult2b.Passed)
         {
             _log.LogError("Aborting Phase 2b retrain — sanity guard failed. Orphan dir {Dir} not promoted.", versionDir);
             return 4;
         }
-        // Promote 2b: replaces any prior 2b entry in Active and sets Current.
-        // Any active 2c challenger survives untouched.
-        ModelArtifact.PromoteVersionAsChampion(modelsRoot, "temperature", versionName, newPhase: "2b");
+        // Promote 2b: replaces any prior 2b entry in this station's Active and
+        // sets Current. Any active 2c challenger survives untouched. Other
+        // locations' Stations entries are left untouched.
+        ModelArtifact.PromoteStationVersionAsChampion(modelsRoot, "temperature", stationKey, versionName, newPhase: "2b");
 
         _log.LogInformation("Phase 2b artefacts → {Dir}", versionDir);
         _log.LogInformation("Summary — {Summary}",
@@ -435,11 +441,12 @@ public sealed class TempTrainCommand
 
     // ---- Phase 2c: rich-feature temperature blender (champion/challenger) ----------
 
-    private async Task<int> RunPhase2cAsync(int[] leads, CancellationToken ct)
+    private async Task<int> RunPhase2cAsync(int[] leads, Config.LocationConfig location, CancellationToken ct)
     {
         var now = DateTime.UtcNow;
         var modelsRoot = _cfg.Storage.ModelsPath;
-        var versionDir = ModelArtifact.BuildVersionDir(modelsRoot, "temperature", now, suffix: "phase2c");
+        var stationKey = location.Name;
+        var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "temperature", stationKey, now, suffix: "phase2c");
         var versionName = Path.GetFileName(versionDir);
 
         var hp = new TempTrainer.Hyperparameters();
@@ -468,7 +475,7 @@ public sealed class TempTrainCommand
             var rows = TempRichFeatureBuilder.BuildForLead(
                 _cfg.Storage.ForecastsPath,
                 _cfg.Storage.Era5Path,
-                _cfg.Location.Name,
+                location.Name,
                 spec,
                 ct);
             _log.LogInformation("Loaded {N} rich rows spanning {S:yyyy-MM-dd} → {E:yyyy-MM-dd}",
@@ -546,7 +553,7 @@ public sealed class TempTrainCommand
             Version = versionName,
             Target = "temperature",
             Phase = "2c",
-            LocationName = _cfg.Location.Name,
+            LocationName = location.Name,
             DataSource = "previous_runs_api",
             TrainedAtUtc = now,
             Hyperparameters = BuildHpDict(hp),
@@ -563,24 +570,25 @@ public sealed class TempTrainCommand
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
         var guardResult2c = RetrainGuard.BuildCheckAndSave(_log,
             versionDir,
-            composite: "temperature", phase: "2c", version: versionName,
+            composite: $"temperature/{stationKey}", phase: "2c", version: versionName,
             computedAtUtc: now,
             rowsTrain: totalTrainRows, rowsVal: totalValRows, rowsTest: totalTestRows,
             trainFeatures: firstLeadTrainFeatures,
             featureNames: specsPerLead.TryGetValue(leads[0], out var sp2c)
                 ? sp2c.FeatureNames.ToList() : Array.Empty<string>(),
-            locationName: _cfg.Location.Name);
+            locationName: location.Name);
         if (!guardResult2c.Passed)
         {
             _log.LogError("Aborting Phase 2c retrain — sanity guard failed. Orphan dir {Dir} not promoted.", versionDir);
             return 4;
         }
 
-        // Promote 2c as a challenger: replaces any prior 2c entry in Active
-        // (so re-training is idempotent) and leaves Current = 2b champion.
-        // Predict + verify iterate both versions every cycle.
-        ModelArtifact.PromoteVersionAsChallenger(modelsRoot, "temperature", versionName, newPhase: "2c");
-        var newActive = ModelArtifact.ResolveActive(modelsRoot, "temperature");
+        // Promote 2c as a challenger inside this station's entry: replaces any
+        // prior 2c entry in Active (so re-training is idempotent) and leaves
+        // Current = 2b champion. Predict + verify iterate both versions every
+        // cycle.
+        ModelArtifact.PromoteStationVersionAsChallenger(modelsRoot, "temperature", stationKey, versionName, newPhase: "2c");
+        var newActive = ModelArtifact.ResolveStationActive(modelsRoot, "temperature", stationKey);
 
         _log.LogInformation("Phase 2c artefacts → {Dir}", versionDir);
         _log.LogInformation("Active versions now: [{Active}]", string.Join(", ", newActive));
@@ -603,12 +611,13 @@ public sealed class TempTrainCommand
     /// </summary>
     private static readonly int[] DefaultPhase2dLeads = { 12, 24 };
 
-    private async Task<int> RunPhase2dAsync(string? tierName, bool? includeUkvOpt, int[]? exactLeads, int[]? cycleHoursFilter, CancellationToken ct)
+    private async Task<int> RunPhase2dAsync(string? tierName, bool? includeUkvOpt, int[]? exactLeads, int[]? cycleHoursFilter, Config.LocationConfig location, CancellationToken ct)
     {
         var leads = exactLeads is { Length: > 0 } ? exactLeads : DefaultPhase2dLeads;
         var now = DateTime.UtcNow;
         var modelsRoot = _cfg.Storage.ModelsPath;
-        var versionDir = ModelArtifact.BuildVersionDir(modelsRoot, "temperature", now, suffix: "phase2d");
+        var stationKey = location.Name;
+        var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "temperature", stationKey, now, suffix: "phase2d");
         var versionName = Path.GetFileName(versionDir);
 
         // Bake-off-tuned defaults: lr=0.05/leaves=31/min-leaf=50/feat-frac=1.0
@@ -658,7 +667,7 @@ public sealed class TempTrainCommand
             var rows = Exact12hFeatureBuilder.Build(
                 _cfg.Storage.ForecastsPath,
                 _cfg.Storage.Era5Path,
-                _cfg.Location.Name,
+                location.Name,
                 tier,
                 spec,
                 targetLead: lead,
@@ -738,7 +747,7 @@ public sealed class TempTrainCommand
             Version = versionName,
             Target = "temperature",
             Phase = "2d",
-            LocationName = _cfg.Location.Name,
+            LocationName = location.Name,
             DataSource = "exact_runtime_s3_archive",
             TrainedAtUtc = now,
             Hyperparameters = BuildHpDict(hp),
@@ -756,13 +765,13 @@ public sealed class TempTrainCommand
         var firstLead2d = leads.Length > 0 ? leads[0] : 0;
         var guardResult2d = RetrainGuard.BuildCheckAndSave(_log,
             versionDir,
-            composite: "temperature", phase: "2d", version: versionName,
+            composite: $"temperature/{stationKey}", phase: "2d", version: versionName,
             computedAtUtc: now,
             rowsTrain: totalTrainRows, rowsVal: totalValRows, rowsTest: totalTestRows,
             trainFeatures: firstLeadTrainFeatures,
             featureNames: specsPerLead.TryGetValue(firstLead2d, out var sp2d)
                 ? sp2d.FeatureNames.ToList() : Array.Empty<string>(),
-            locationName: _cfg.Location.Name);
+            locationName: location.Name);
         if (!guardResult2d.Passed)
         {
             _log.LogError("Aborting Phase 2d retrain — sanity guard failed. Orphan dir {Dir} not promoted; ChampionByLead retains the previous 2d pin (manifest unchanged).", versionDir);
@@ -771,7 +780,7 @@ public sealed class TempTrainCommand
 
         // Promote 2d as a challenger — 2b stays Current. ChampionByLead pins
         // 2d at lead 12 ONLY (where 2b doesn't train); 24+ falls through
-        // to Current (= 2b). PromoteVersionAsChallenger is lead-set-aware
+        // to Current (= 2b). PromoteStationVersionAsChallenger is lead-set-aware
         // (post-2026-05-08) so a 2d retrain at e.g. {72,96,120} no longer
         // clobbers a sibling 2d at {12,24,48}; both stay Active when their
         // lead-sets differ.
@@ -782,10 +791,10 @@ public sealed class TempTrainCommand
         // at a version with no lead 12 in its schema (silently broke the
         // home-page lead-12 tile filter).
         const int Phase2dChampionLead = 12;
-        ModelArtifact.PromoteVersionAsChallenger(modelsRoot, "temperature", versionName, newPhase: "2d");
+        ModelArtifact.PromoteStationVersionAsChallenger(modelsRoot, "temperature", stationKey, versionName, newPhase: "2d");
         if (leads.Contains(Phase2dChampionLead))
         {
-            ModelArtifact.SetChampionForLead(modelsRoot, "temperature", Phase2dChampionLead, versionName);
+            ModelArtifact.SetStationChampionForLead(modelsRoot, "temperature", stationKey, Phase2dChampionLead, versionName);
         }
         else
         {
@@ -793,7 +802,7 @@ public sealed class TempTrainCommand
                 "Skipping ChampionByLead pin — this run did not train lead {Lead}h (leads: [{Leads}]).",
                 Phase2dChampionLead, string.Join(",", leads));
         }
-        var newActive = ModelArtifact.ResolveActive(modelsRoot, "temperature");
+        var newActive = ModelArtifact.ResolveStationActive(modelsRoot, "temperature", stationKey);
 
         _log.LogInformation("Phase 2d artefacts → {Dir}", versionDir);
         _log.LogInformation("Active versions now: [{Active}]", string.Join(", ", newActive));

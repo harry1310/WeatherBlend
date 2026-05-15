@@ -38,7 +38,10 @@ public sealed class TempPredictCommand
         _cfg = cfg;
     }
 
-    public async Task<int> RunAsync(string target, string modelVersion, DateOnly? forDate, CancellationToken ct)
+    public Task<int> RunAsync(string target, string modelVersion, DateOnly? forDate, CancellationToken ct)
+        => RunAsync(target, modelVersion, forDate, locationOverride: null, ct);
+
+    public async Task<int> RunAsync(string target, string modelVersion, DateOnly? forDate, string? locationOverride, CancellationToken ct)
     {
         if (!string.Equals(target, "temperature", StringComparison.OrdinalIgnoreCase))
         {
@@ -47,68 +50,97 @@ public sealed class TempPredictCommand
         }
 
         var modelsRoot = _cfg.Storage.ModelsPath;
-        var versions = ResolveRequestedVersions(modelsRoot, modelVersion);
-        if (versions.Count == 0)
+        // Station-keyed (per-location) manifest layout post 2026-05-14.
+        // Decide which station keys to predict for:
+        //   --location given → just that location's entry
+        //   default          → every manifest station entry that has Active
+        //                      versions (typically just bonehill_rocks today).
+        // Each station's predict cycle uses ITS OWN location's NWP via
+        // _cfg.Locations lookup. Membury can be wired in by a future train
+        // (Milestone 4 of the 2026-05-14 multi-location rollout) — nothing
+        // about predict needs to change once a manifest entry exists.
+        IReadOnlyList<string> stationKeys;
+        if (!string.IsNullOrWhiteSpace(locationOverride))
         {
-            _log.LogError("No versions to predict — manifest has no Active list and no Current pointer.");
-            return 2;
+            stationKeys = new[] { locationOverride };
         }
+        else
+        {
+            // ListStations returns only station entries with non-empty Current,
+            // which mirrors precip's "demoted-archive" filter and is exactly the
+            // set we want to predict for.
+            var allStations = WeatherBlend.Train.ModelArtifact.ListStations(modelsRoot, "temperature");
+            stationKeys = allStations.Count > 0
+                ? allStations
+                : new[] { _cfg.Location.Name };  // first-ever predict before any station-keyed bundle
+        }
+        _log.LogInformation("Predicting for stations: [{Stations}]", string.Join(", ", stationKeys));
 
-        _log.LogInformation("Predicting with versions: [{Versions}]", string.Join(", ", versions));
-
-        // predictionMadeAt = real wall-clock UTC (provenance).
-        // anchor = the hour we compute lead offsets from (see PredictAnchor).
         var predictionMadeAt = DateTime.UtcNow;
         var anchor = PredictAnchor.Compute(predictionMadeAt, forDate);
 
-        // 24 hourly targets per lead bucket — mirrors PrecipPredictCommand
-        // so each predict cycle emits a full hourly trajectory (anchor+L .. anchor+L+23h)
-        // for every lead, not just one snapshot value at lead L exactly. Downstream
-        // per-(lead, valid) loop is unchanged.
-        var anchorDayUtc = new DateTime(anchor.Year, anchor.Month, anchor.Day, 0, 0, 0, DateTimeKind.Utc);
-        var targets = DefaultLeads
-            .SelectMany(L =>
-            {
-                var dayStart = anchorDayUtc.AddDays(L / 24);
-                return Enumerable.Range(0, 24).Select(h => (Lead: L, Valid: dayStart.AddHours(h)));
-            })
-            .ToArray();
-
-        _log.LogInformation("Anchor {Anchor:yyyy-MM-dd HH:mm}Z (for-date={ForDate}) — {N} hourly targets across leads {Leads}",
-            anchor,
-            forDate?.ToString("yyyy-MM-dd") ?? "live",
-            targets.Length,
-            string.Join(",", DefaultLeads));
-
-        // Per-lead forecast pull — each lead bucket pulls rows under the
-        // matching lead-bucket constraint (RunTime <= Valid - L), so the
-        // lead-L model receives rows in the [L, L+24h) actual-lead band it
-        // was trained on (Open-Meteo's previous_day_(L/24) aggregation).
-        // Without per-lead bucketing, "latest cycle wins" would feed the
-        // lead-24 model rows at actual lead < 24h once we predict for valid
-        // times within 24h of anchor. Same shape as PrecipPredictCommand.
-        var perLeadValid = new Dictionary<int, IReadOnlyDictionary<DateTime, PivotedRow>>();
-        foreach (var lead in DefaultLeads)
-        {
-            var leadTargets = targets.Where(t => t.Lead == lead).ToArray();
-            if (leadTargets.Length == 0) continue;
-            perLeadValid[lead] = QueryLatestForecastRows(
-                _cfg.Storage.ForecastsPath,
-                _cfg.Location.Name,
-                leadTargets.Min(t => t.Valid),
-                leadTargets.Max(t => t.Valid),
-                asOfRunTime: anchor,
-                leadHoursLowerBound: lead,
-                ct);
-        }
-
         var anyOutput = false;
         var failures = 0;
-        foreach (var version in versions)
+        foreach (var stationKey in stationKeys)
         {
             ct.ThrowIfCancellationRequested();
-            var ok = await PredictForVersionAsync(modelsRoot, version, perLeadValid, targets, predictionMadeAt, anchor, ct);
-            if (ok) anyOutput = true; else failures++;
+            var location = _cfg.Locations.FirstOrDefault(l =>
+                l.Name.Equals(stationKey, StringComparison.OrdinalIgnoreCase));
+            if (location is null)
+            {
+                _log.LogWarning("Station key '{Station}' has a temperature manifest entry but no matching location in config.yaml — skipping.",
+                    stationKey);
+                continue;
+            }
+
+            var versions = ResolveRequestedVersions(modelsRoot, stationKey, modelVersion);
+            if (versions.Count == 0)
+            {
+                _log.LogWarning("Station '{Station}': no Active versions in manifest. Skipping.", stationKey);
+                continue;
+            }
+            _log.LogInformation("[{Station}] Active versions: [{Versions}]", stationKey, string.Join(", ", versions));
+
+            // 24 hourly targets per lead bucket — mirrors PrecipPredictCommand
+            // so each predict cycle emits a full hourly trajectory (anchor+L .. anchor+L+23h)
+            // for every lead, not just one snapshot value at lead L exactly.
+            var anchorDayUtc = new DateTime(anchor.Year, anchor.Month, anchor.Day, 0, 0, 0, DateTimeKind.Utc);
+            var targets = DefaultLeads
+                .SelectMany(L =>
+                {
+                    var dayStart = anchorDayUtc.AddDays(L / 24);
+                    return Enumerable.Range(0, 24).Select(h => (Lead: L, Valid: dayStart.AddHours(h)));
+                })
+                .ToArray();
+
+            _log.LogInformation("[{Station}] Anchor {Anchor:yyyy-MM-dd HH:mm}Z (for-date={ForDate}) — {N} hourly targets across leads {Leads}",
+                stationKey, anchor,
+                forDate?.ToString("yyyy-MM-dd") ?? "live",
+                targets.Length,
+                string.Join(",", DefaultLeads));
+
+            // Per-lead forecast pull — keyed to this station's location.
+            var perLeadValid = new Dictionary<int, IReadOnlyDictionary<DateTime, PivotedRow>>();
+            foreach (var lead in DefaultLeads)
+            {
+                var leadTargets = targets.Where(t => t.Lead == lead).ToArray();
+                if (leadTargets.Length == 0) continue;
+                perLeadValid[lead] = QueryLatestForecastRows(
+                    _cfg.Storage.ForecastsPath,
+                    location.Name,
+                    leadTargets.Min(t => t.Valid),
+                    leadTargets.Max(t => t.Valid),
+                    asOfRunTime: anchor,
+                    leadHoursLowerBound: lead,
+                    ct);
+            }
+
+            foreach (var version in versions)
+            {
+                ct.ThrowIfCancellationRequested();
+                var ok = await PredictForVersionAsync(modelsRoot, stationKey, location, version, perLeadValid, targets, predictionMadeAt, anchor, ct);
+                if (ok) anyOutput = true; else failures++;
+            }
         }
 
         if (!anyOutput)
@@ -119,18 +151,20 @@ public sealed class TempPredictCommand
         return failures == 0 ? 0 : 4;
     }
 
-    private List<string> ResolveRequestedVersions(string modelsRoot, string modelVersion)
+    private List<string> ResolveRequestedVersions(string modelsRoot, string stationKey, string modelVersion)
     {
-        // "current" / "all" → iterate every active version. Anything else is an explicit
-        // version dir name and we run only that one (back-compat with single-version CLI).
+        // "current" / "all" → iterate every active version for THIS station entry.
+        // Anything else is an explicit version dir name (back-compat single-version CLI).
         var v = modelVersion?.ToLowerInvariant() ?? "current";
         if (v is "current" or "all")
-            return ModelArtifact.ResolveActive(modelsRoot, "temperature").ToList();
+            return ModelArtifact.ResolveStationActive(modelsRoot, "temperature", stationKey).ToList();
         return new List<string> { modelVersion! };
     }
 
     private async Task<bool> PredictForVersionAsync(
         string modelsRoot,
+        string stationKey,
+        Config.LocationConfig activeLocation,
         string version,
         IReadOnlyDictionary<int, IReadOnlyDictionary<DateTime, PivotedRow>> perLeadValid,
         (int Lead, DateTime Valid)[] targets,
@@ -142,12 +176,12 @@ public sealed class TempPredictCommand
         ModelArtifact.TrainingMetadata metadata;
         try
         {
-            versionDir = ModelArtifact.ResolveVersionDir(modelsRoot, "temperature", version);
+            versionDir = ModelArtifact.ResolveStationVersionDir(modelsRoot, "temperature", stationKey, version);
             metadata = ModelArtifact.LoadTrainingMetadata(versionDir);
         }
         catch (Exception ex)
         {
-            _log.LogError("Cannot load version {V}: {Msg}", version, ex.Message);
+            _log.LogError("Cannot load version {V} for station {S}: {Msg}", version, stationKey, ex.Message);
             return false;
         }
         if (metadata.PerLead.Count == 0)
@@ -156,20 +190,21 @@ public sealed class TempPredictCommand
             return false;
         }
 
-        // Phase A multi-location safety (2026-05-12). Temp is bonehill-only
-        // today; this is the safety net for when Membury temp lands.
+        // Phase A multi-location safety (2026-05-12). Now the station key
+        // pre-filters versions to the right location, but keep the LocationName
+        // pin as a belt-and-braces check (corrupt metadata is still possible).
         if (string.IsNullOrEmpty(metadata.LocationName))
         {
             _log.LogWarning(
                 "Bundle {V} has no LocationName pinned (legacy bundle predating 2026-05-12 backfill). " +
                 "Proceeding under the active location '{Active}'.",
-                version, _cfg.Location.Name);
+                version, activeLocation.Name);
         }
-        else if (!string.Equals(metadata.LocationName, _cfg.Location.Name, StringComparison.OrdinalIgnoreCase))
+        else if (!string.Equals(metadata.LocationName, activeLocation.Name, StringComparison.OrdinalIgnoreCase))
         {
             _log.LogError(
-                "Bundle {V} was trained on location '{Trained}' but predict is using NWP from '{Active}' — refusing to score.",
-                version, metadata.LocationName, _cfg.Location.Name);
+                "Bundle {V} (under station '{Station}') was trained on location '{Trained}' but predict is using NWP from '{Active}' — refusing to score.",
+                version, stationKey, metadata.LocationName, activeLocation.Name);
             return false;
         }
 
@@ -195,7 +230,7 @@ public sealed class TempPredictCommand
         // input pivot + output column population differ.
         if (isExact)
         {
-            var ok = await PredictExactForVersionAsync(versionDir, metadata, specs, predictionMadeAt, anchor, ct);
+            var ok = await PredictExactForVersionAsync(stationKey, activeLocation, versionDir, metadata, specs, predictionMadeAt, anchor, ct);
             return ok;
         }
 
@@ -316,7 +351,7 @@ public sealed class TempPredictCommand
             var spreadStart = spec.Models.Count;
             predictions.Add(new TempPredictionRow
             {
-                LocationName = _cfg.Location.Name,
+                LocationName = activeLocation.Name,
                 ModelVersion = metadata.Version,
                 PredictionMadeAtUtc = predictionMadeAt,
                 ValidTimeUtc = valid,
@@ -345,23 +380,26 @@ public sealed class TempPredictCommand
             return false;
         }
 
-        await WritePredictionsAsync(predictions, anchor, metadata.Version, ct);
+        await WritePredictionsAsync(stationKey, predictions, anchor, metadata.Version, ct);
         return true;
     }
 
     private async Task WritePredictionsAsync(
+        string stationKey,
         IReadOnlyList<TempPredictionRow> predictions,
         DateTime anchor,
         string modelVersion,
         CancellationToken ct)
     {
-        // Layout: data/predictions/temperature/model_version=<v>/date=<yyyy-MM-dd>/predictions.parquet.
+        // Layout: data/predictions/temperature/{station}/model_version=<v>/date=<yyyy-MM-dd>/predictions.parquet.
+        // Station-keyed since 2026-05-14 to mirror precip's per-station tree.
         // Date is the anchor date so re-runs across the same UTC day land in the same file.
         // Dedupe on (PredictionMadeAtUtc, LeadHours): the latest write for a given key wins —
         // matches ObservationsAsync's append-and-dedupe semantics.
         var dateStr = anchor.ToString("yyyy-MM-dd");
         var outDir = Path.Combine(_cfg.Storage.PredictionsPath,
             "temperature",
+            stationKey,
             $"model_version={modelVersion}",
             $"date={dateStr}");
         Directory.CreateDirectory(outDir);
@@ -567,6 +605,8 @@ ORDER BY ValidTimeUtc, Model;";
     private static readonly int[] Phase2dValidHoursUtc = { 0, 6, 12, 18 };
 
     private async Task<bool> PredictExactForVersionAsync(
+        string stationKey,
+        Config.LocationConfig activeLocation,
         string versionDir,
         ModelArtifact.TrainingMetadata metadata,
         IReadOnlyDictionary<int, BlenderSpec> specs,
@@ -588,7 +628,7 @@ ORDER BY ValidTimeUtc, Model;";
         // resulting dictionary is keyed by (ValidTime, Lead) → per-model temps.
         var pivotByLeadValid = QueryExactForecastRows(
             _cfg.Storage.ForecastsPath,
-            _cfg.Location.Name,
+            activeLocation.Name,
             specs: specs,
             earliestValid: windowStart,
             latestValid: windowEnd,
@@ -703,7 +743,7 @@ ORDER BY ValidTimeUtc, Model;";
                 var spreadStart = spec.Models.Count + (includeUkv ? 1 : 0);
                 predictions.Add(new TempPredictionRow
                 {
-                    LocationName = _cfg.Location.Name,
+                    LocationName = activeLocation.Name,
                     ModelVersion = metadata.Version,
                     PredictionMadeAtUtc = predictionMadeAt,
                     ValidTimeUtc = valid,
@@ -732,7 +772,7 @@ ORDER BY ValidTimeUtc, Model;";
             return false;
         }
 
-        await WritePredictionsAsync(predictions, anchor, metadata.Version, ct);
+        await WritePredictionsAsync(stationKey, predictions, anchor, metadata.Version, ct);
         return true;
     }
 

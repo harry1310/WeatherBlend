@@ -129,10 +129,15 @@ public sealed class ModelMetadataRepository
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// Bulk-load training metadata for flat-target versions (temperature +
-    /// element_*). Versions that don't have a metadata file on disk are
-    /// silently skipped with a debug log — same behaviour as the old
-    /// <c>LoadMetadataForVersions</c> helper.
+    /// Bulk-load training metadata for flat-target versions (element_*).
+    /// Versions that don't have a metadata file on disk are silently skipped
+    /// with a debug log — same behaviour as the old <c>LoadMetadataForVersions</c>
+    /// helper.
+    ///
+    /// NOTE: Temperature migrated to a per-station (per-location) layout
+    /// 2026-05-14; use <see cref="GetTemperatureTrainingMetadataForVersions"/>
+    /// to read those. This flat-path lookup will only find legacy
+    /// pre-migration bundles for temperature.
     /// </summary>
     public IReadOnlyDictionary<string, ModelArtifact.TrainingMetadata>
         GetTrainingMetadataForVersions(string target, IEnumerable<string> versions)
@@ -143,6 +148,27 @@ public sealed class ModelMetadataRepository
             var dir = Path.Combine(_modelsRoot, target, v);
             var meta = TryLoadFromDir(dir, $"{target}/{v}");
             if (meta is not null) result[v] = meta;
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Bulk-load training metadata for the per-station temperature layout
+    /// (post-2026-05-14). Walks every (station, version) combination in the
+    /// supplied list; missing dirs / missing files / parse errors are skipped
+    /// with a warning. Result keyed by version string only (station is
+    /// recoverable from the underlying metadata.LocationName + the manifest
+    /// shape, and the renderer wants flat lookups by version).
+    /// </summary>
+    public IReadOnlyDictionary<string, ModelArtifact.TrainingMetadata>
+        GetTemperatureTrainingMetadataForVersions(IEnumerable<(string Station, string Version)> keys)
+    {
+        var result = new Dictionary<string, ModelArtifact.TrainingMetadata>(StringComparer.Ordinal);
+        foreach (var (station, version) in keys.Distinct())
+        {
+            var dir = Path.Combine(_modelsRoot, "temperature", station, version);
+            var meta = TryLoadFromDir(dir, $"temperature/{station}/{version}");
+            if (meta is not null) result[version] = meta;
         }
         return result;
     }
@@ -195,17 +221,20 @@ public sealed class ModelMetadataRepository
     /// safe as a flat lookup.
     /// </summary>
     public IReadOnlyDictionary<string, string> GetPhaseByVersion(
-        IEnumerable<string> temperatureVersions,
+        IEnumerable<(string Station, string Version)> temperatureKeys,
         IEnumerable<(string Station, string Version)> precipitationKeys,
         IEnumerable<(string Station, int WindowHours, string Version)> dryWindowKeys)
     {
         var phases = new Dictionary<string, string>(StringComparer.Ordinal);
 
-        foreach (var v in temperatureVersions.Distinct(StringComparer.Ordinal))
+        foreach (var (station, version) in temperatureKeys.Distinct())
         {
-            var meta = TryLoadFromDir(Path.Combine(_modelsRoot, "temperature", v), $"temperature/{v}");
+            // Post-2026-05-14 layout: temperature/{station}/{version}/...
+            var meta = TryLoadFromDir(
+                Path.Combine(_modelsRoot, "temperature", station, version),
+                $"temperature/{station}/{version}");
             if (meta is not null && !string.IsNullOrWhiteSpace(meta.Phase))
-                phases[v] = meta.Phase;
+                phases[version] = meta.Phase;
         }
 
         foreach (var (station, version) in precipitationKeys.Distinct())

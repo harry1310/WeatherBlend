@@ -588,8 +588,15 @@ public static partial class SitePages
                     .OrderBy(p => p.ValidTimeUtc)
                     .Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.ProbabilityPercent / 100.0))
                     .ToList();
+                // Suffix " PoP" so the NWP lines on the rain chart don't
+                // collide with the blender's "P(wet)" series label or the
+                // (label-only) NWP precip-rate chart further down — eyeballing
+                // the chart legend should immediately tell the reader this is
+                // an NWP probability of precip, not the blender's output or
+                // a mm/h rate. Lost in a 2026-05-12 refactor when the chart
+                // moved out of the per-station loop; restored 2026-05-15.
                 if (pts.Count > 0)
-                    popSeries.Add(new LineSeries(label, colour, pts));
+                    popSeries.Add(new LineSeries($"{label} PoP", colour, pts));
             }
             if (popSeries.Count > 0)
             {

@@ -217,6 +217,16 @@ ORDER BY StationName, valid_time";
     /// (ObservedTimeUtc, Temperature2m) tuples — list rather than dict because
     /// chart code wants the time-sorted sequence. Empty list when
     /// <paramref name="station"/> is blank or the tree is empty.
+    ///
+    /// METAR text is keyed by ICAO, not by our location. Two configured
+    /// locations can map to the same nearest airport (Bonehill + Membury
+    /// both pick EGTE/EGDY in Devon, e.g.) and ask the storage for the same
+    /// rows. Previously this filtered on <c>LocationName</c> too which
+    /// silently returned zero rows for the second location once we stopped
+    /// duplicating METAR partitions under each location — now the query is
+    /// keyed by ICAO only and the config layer (LocationConfig.Metar.Primary
+    /// / .Fallback) decides which ICAO each location asks for. See
+    /// memory/feedback_no_guessing.md and the 2026-05-14 Membury rollout.
     /// </summary>
     public IReadOnlyList<(DateTime ObservedTimeUtc, double Temperature2m)> GetMetarTemperature(
         string station, DateTime start, DateTime end, CancellationToken ct)
@@ -232,8 +242,7 @@ ORDER BY StationName, valid_time";
         var sql = $@"
 SELECT ObservedTimeUtc, Temperature2m
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
-  AND Station = '{station.Replace("'", "''")}'
+WHERE Station = '{station.Replace("'", "''")}'
   AND Temperature2m IS NOT NULL
   AND ObservedTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
   AND ObservedTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'

@@ -59,7 +59,10 @@ public static class FeelsLikePredictPipeline
         DateTime predictionMadeAtUtc,
         CancellationToken ct)
     {
-        var temp = await LoadTemperatureLeanAsync(log, predictionsRoot, modelsRoot, anchor, ct);
+        // Temperature is per-station (per-location) on disk since 2026-05-14.
+        // locationName here is the FeelsLike target location, which doubles as
+        // the temperature manifest station key.
+        var temp = await LoadTemperatureLeanAsync(log, predictionsRoot, modelsRoot, anchor, locationName, ct);
         var hum  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.Humidity,           anchor, ct);
         var wnd  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.Wind,               anchor, ct);
         var rad  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.ShortwaveRadiation, anchor, ct);
@@ -148,11 +151,30 @@ public static class FeelsLikePredictPipeline
         return active[0];
     }
 
-    private static async Task<InputStream> LoadTemperatureLeanAsync(
-        ILogger log, string predictionsRoot, string modelsRoot, DateTime anchor, CancellationToken ct)
+    /// <summary>
+    /// Per-station Active version pick — used by temperature since it
+    /// migrated to a per-location manifest layout 2026-05-14. FeelsLike
+    /// operates on the primary location only today; revisit when a
+    /// Membury FeelsLike page is wired up.
+    /// </summary>
+    private static string PickActiveStationVersion(string modelsRoot, string target, string stationKey, ILogger log)
     {
-        var version = PickActiveVersion(modelsRoot, "temperature", log);
-        var path = Path.Combine(predictionsRoot, "temperature",
+        var active = ModelArtifact.ResolveStationActive(modelsRoot, target, stationKey);
+        if (active.Count == 0)
+            throw new InvalidOperationException(
+                $"No Active version for {target}/{stationKey}; train it first.");
+        if (active.Count > 1)
+            log.LogInformation("  {Target}/{Station}: {N} Active versions, using first ({V}).",
+                target, stationKey, active.Count, active[0]);
+        return active[0];
+    }
+
+    private static async Task<InputStream> LoadTemperatureLeanAsync(
+        ILogger log, string predictionsRoot, string modelsRoot, DateTime anchor,
+        string stationKey, CancellationToken ct)
+    {
+        var version = PickActiveStationVersion(modelsRoot, "temperature", stationKey, log);
+        var path = Path.Combine(predictionsRoot, "temperature", stationKey,
             $"model_version={version}", $"date={anchor:yyyy-MM-dd}", "predictions.parquet");
         if (!File.Exists(path))
         {

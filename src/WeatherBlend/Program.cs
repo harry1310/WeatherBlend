@@ -267,7 +267,7 @@ public static class Program
             getDefaultValue: () => null);
         var locationOpt = new Option<string?>(
             name: "--location",
-            description: "Optional: backfill only this location name (matches AppConfig.Locations[].Name). Applies to previous-runs + rainfall. Defaults to all configured locations.",
+            description: "Optional: backfill only this location name (matches AppConfig.Locations[].Name). Applies to previous-runs + era5 + rainfall (METAR dedupes per-ICAO). Defaults to all configured locations.",
             getDefaultValue: () => null);
         var backfill = new Command("backfill", "Fetch historical data (previous-runs forecasts, ERA5, OGIMET METAR, EA rainfall)")
             { sourceOpt, startOpt, endOpt, modelOpt, locationOpt };
@@ -683,7 +683,7 @@ public static class Program
             else
             {
                 var cmd = host.Services.GetRequiredService<TempPredictCommand>();
-                await cmd.RunAsync(target, version, forDate, ctx.GetCancellationToken());
+                ctx.ExitCode = await cmd.RunAsync(target, version, forDate, locationOverride, ctx.GetCancellationToken());
             }
         });
         root.AddCommand(predict);

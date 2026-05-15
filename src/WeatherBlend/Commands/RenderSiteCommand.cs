@@ -161,8 +161,12 @@ public sealed class RenderSiteCommand
         // PhaseByVersion has to be computed before the rolling functions so
         // they can group by phase rather than version (a retrain would
         // otherwise fragment the chart into stubs).
+        // Temperature is per-station (per-location) on disk since 2026-05-14;
+        // the (station, version) tuples drive ModelMetadataRepository to the
+        // right per-location subtree. For temperature the station key IS the
+        // LocationName (each location is its own blender).
         var phaseByVersion = _metadata.GetPhaseByVersion(
-            predictions.Select(p => p.ModelVersion),
+            predictions.Select(p => (Station: p.LocationName, Version: p.ModelVersion)),
             precip.Select(p => (p.Station, p.Version)),
             dryWindow.Select(d => (d.Station, d.WindowHours, d.Version)));
         var rolling = ComputeRollingMae(predictions, truth, phaseByVersion, rollingWindowDays);
@@ -177,10 +181,19 @@ public sealed class RenderSiteCommand
         var rainfall = LoadRainfallTruth(windowStart, now, precip, ct);
         _log.LogInformation("Rainfall truth: {N} stations loaded.", rainfall.Count);
 
-        var currentVersion = _metadata.GetChampion("temperature");
-        var championByLead = _metadata.GetChampionByLead("temperature");
-        _log.LogInformation("Champion (temperature): {Version}",
-            string.IsNullOrEmpty(currentVersion) ? "(none)" : currentVersion);
+        // Temperature manifest migrated to per-station layout 2026-05-14.
+        // The site renders the PRIMARY location's temperature only (multi-loc
+        // temp site rendering is a future Phase D-style follow-up); pick the
+        // champion + per-lead pins for the primary station entry.
+        var primaryTempStation = _cfg.Location.Name;
+        var tempChampions = _metadata.GetChampionsByStation("temperature");
+        var currentVersion = tempChampions.TryGetValue(primaryTempStation, out var tcv) ? tcv : "";
+        var tempChampionByStationLead = _metadata.GetChampionByStationLead("temperature");
+        var championByLead = (IReadOnlyDictionary<int, string>)tempChampionByStationLead
+            .Where(kv => string.Equals(kv.Key.Station, primaryTempStation, StringComparison.Ordinal))
+            .ToDictionary(kv => kv.Key.LeadHours, kv => kv.Value);
+        _log.LogInformation("Champion (temperature, station={Station}): {Version}",
+            primaryTempStation, string.IsNullOrEmpty(currentVersion) ? "(none)" : currentVersion);
         if (championByLead.Count > 0)
             _log.LogInformation("Per-lead champion overrides: {Entries}",
                 string.Join(", ", championByLead.OrderBy(kv => kv.Key).Select(kv => $"+{kv.Key}h→{kv.Value}")));
@@ -434,9 +447,17 @@ public sealed class RenderSiteCommand
         var modelsRoot = _cfg.Storage.ModelsPath;
         var summaries = new List<SitePages.ModelSummary>();
 
-        foreach (var version in predictions.Select(p => p.ModelVersion).Distinct())
+        // Temperature is per-station (per-location) on disk since 2026-05-14.
+        // Derive the (station, version) pair from each prediction's LocationName
+        // — same shape as the precip block immediately below.
+        foreach (var (station, version) in predictions
+            .Select(p => (p.LocationName, p.ModelVersion))
+            .Distinct())
         {
-            var dir = Path.Combine(modelsRoot, "temperature", version);
+            var dir = Path.Combine(modelsRoot, "temperature", station, version);
+            // Composite stays "temperature" for the renderer — the Models page
+            // is single-location (primary) today; per-location multi-station
+            // temperature display lands as part of the future Phase D rework.
             var summary = TryLoadSummary(dir, composite: "temperature", version, metricLabel: "Test MAE (°C)");
             if (summary is not null) summaries.Add(summary);
         }
@@ -494,7 +515,12 @@ public sealed class RenderSiteCommand
             if (!byKey.TryGetValue((composite, version), out var summary)) return;
             var dir = composite switch
             {
-                "temperature" => Path.Combine(modelsRoot, "temperature", version),
+                // Temperature: per-station (per-location) layout post-2026-05-14.
+                // Composite collapses to "temperature" for the renderer but on
+                // disk the version lives under {modelsRoot}/temperature/{station}/{version}/.
+                // Locate the directory by scanning each station entry; this is a
+                // bounded handful of stations so the linear search is fine.
+                "temperature" => FindTemperatureVersionDir(modelsRoot, version),
                 _ when composite.StartsWith("precipitation/", StringComparison.Ordinal) =>
                     Path.Combine(modelsRoot, "precipitation",
                         composite["precipitation/".Length..], version),
@@ -503,7 +529,7 @@ public sealed class RenderSiteCommand
                     BuildDryWindowDir(modelsRoot, composite, version),
                 _ => null,
             };
-            if (dir is null || !Directory.Exists(dir)) return;
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return;
             try
             {
                 var specs = ModelArtifact.LoadBlenderSpecs(dir);
@@ -563,6 +589,29 @@ public sealed class RenderSiteCommand
         var station = parts[1];
         var window = parts[2]; // e.g. "6h"
         return Path.Combine(modelsRoot, "dry_window", station, $"window_{window}", version);
+    }
+
+    /// <summary>
+    /// Find a temperature version's on-disk directory by scanning each
+    /// station entry under <c>{modelsRoot}/temperature/</c>. Returns the
+    /// first match — version-dir names are timestamped and effectively
+    /// unique, but if two locations ever shared a version name (e.g. the
+    /// retrain workflow ran at the same UTC second), the first match still
+    /// loads the right BlenderSpec since both bundles would have been
+    /// trained against the same blender config. Returns null when no
+    /// matching dir exists (the version was deleted or predates the
+    /// per-station migration).
+    /// </summary>
+    private static string? FindTemperatureVersionDir(string modelsRoot, string version)
+    {
+        var tempRoot = Path.Combine(modelsRoot, "temperature");
+        if (!Directory.Exists(tempRoot)) return null;
+        foreach (var stationDir in Directory.EnumerateDirectories(tempRoot))
+        {
+            var candidate = Path.Combine(stationDir, version);
+            if (Directory.Exists(candidate)) return candidate;
+        }
+        return null;
     }
 
     private SitePages.ModelSummary? TryLoadSummary(string versionDir, string composite, string version, string metricLabel)

@@ -74,12 +74,13 @@ public class ConfigTests
     [Fact]
     public void AppConfig_binds_multiple_Locations_from_yaml()
     {
-        // The shipped config.yaml has both Bonehill (primary, full
-        // rainfall + metar config) and Membury (added 2026-05-11, rainfall
-        // only). Binding contract: Locations[0] = Bonehill, Locations[1]
-        // = Membury. Membury's METAR block is absent so the
-        // Stations list under it is empty but the LocationConfig itself
-        // populates cleanly.
+        // The shipped config.yaml has both Bonehill (primary, rainfall + METAR)
+        // and Membury (rainfall + METAR — added 2026-05-14 alongside the
+        // temperature rollout). Binding contract: Locations[0] = Bonehill,
+        // Locations[1] = Membury. Both METAR blocks point at the same ICAOs
+        // (EGTE primary, EGDY fallback) because they're the closest reliable
+        // airports to both Dartmoor and East Devon — the read-side filter is
+        // per-ICAO so the duplicate mapping isn't a storage concern.
         var configPath = Path.Combine(AppContext.BaseDirectory, "config.yaml");
         var cfg = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
             .AddYamlFile(configPath, optional: false)
@@ -90,12 +91,16 @@ public class ConfigTests
         bound.Locations.Should().HaveCount(2);
         bound.Locations[0].Name.Should().Be("bonehill_rocks");
         bound.Locations[0].Rainfall.Stations.Should().HaveCount(3);
+        bound.Locations[0].Metar.Primary.Should().Be("EGTE");
+        bound.Locations[0].Metar.Fallback.Should().Be("EGDY");
         bound.Locations[1].Name.Should().Be("membury_devon");
         bound.Locations[1].Rainfall.Stations.Should().HaveCount(3);
         bound.Locations[1].Rainfall.Stations.Select(s => s.Name).Should()
             .Contain("Chards Snowdon Hill")
             .And.Contain("Goren")
             .And.Contain("Raymonds Hill");
+        bound.Locations[1].Metar.Primary.Should().Be("EGTE");
+        bound.Locations[1].Metar.Fallback.Should().Be("EGDY");
         // Back-compat accessor still points to the primary.
         bound.Location.Name.Should().Be("bonehill_rocks");
     }

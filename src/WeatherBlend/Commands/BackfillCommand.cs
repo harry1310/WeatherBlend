@@ -65,8 +65,8 @@ public sealed class BackfillCommand
         var errors = 0;
 
         if (src is "previous-runs" or "all") errors += await BackfillPreviousRunsAsync(start, end, model, locations, ct);
-        if (src is "era5" or "all")          errors += await BackfillEra5Async(start, end, ct);
-        if (src is "metar" or "all")         errors += await BackfillMetarAsync(start, end, ct);
+        if (src is "era5" or "all")          errors += await BackfillEra5Async(start, end, locations, ct);
+        if (src is "metar" or "all")         errors += await BackfillMetarAsync(start, end, locations, ct);
         if (src is "rainfall" or "all")      errors += await BackfillRainfallAsync(start, end, locations, ct);
 
         if (src is not ("previous-runs" or "era5" or "metar" or "rainfall" or "all"))
@@ -157,45 +157,79 @@ public sealed class BackfillCommand
 
     // ---- ERA5 (monthly chunks, single source) ------------------------------------
 
-    private async Task<int> BackfillEra5Async(DateOnly start, DateOnly end, CancellationToken ct)
+    private async Task<int> BackfillEra5Async(DateOnly start, DateOnly end, IReadOnlyList<LocationConfig> locations, CancellationToken ct)
     {
         var errors = 0;
-        var cursor = start;
-        while (cursor <= end)
+        // Multi-location 2026-05-14: iterate every configured location so
+        // Membury (or any future addition) accumulates ERA5 partitions under
+        // data/truth/era5/location=<name>/ without a separate command. The
+        // monthly chunk loop is unchanged per-location — Open-Meteo's ERA5
+        // archive is keyed by (lat, lon) so each location is an independent
+        // fetch.
+        foreach (var location in locations)
         {
-            var chunkEnd = cursor.AddMonths(1).AddDays(-1);
-            if (chunkEnd > end) chunkEnd = end;
-            try
+            _log.LogInformation("era5 backfill: location={Name} ({Lat:0.0000}, {Lon:0.0000})",
+                location.Name, location.Latitude, location.Longitude);
+            var cursor = start;
+            while (cursor <= end)
             {
-                var rows = await _era5.FetchAsync(_cfg.Location, cursor, chunkEnd, ct);
-                await ParquetWriter.WriteEra5Async(_cfg.Storage.Era5Path, rows, ct);
-                _log.LogInformation("  era5 {Start:yyyy-MM-dd}..{End:yyyy-MM-dd}: {Rows} rows",
-                    cursor, chunkEnd, rows.Count);
+                var chunkEnd = cursor.AddMonths(1).AddDays(-1);
+                if (chunkEnd > end) chunkEnd = end;
+                try
+                {
+                    var rows = await _era5.FetchAsync(location, cursor, chunkEnd, ct);
+                    await ParquetWriter.WriteEra5Async(_cfg.Storage.Era5Path, rows, ct);
+                    _log.LogInformation("  era5/{Name} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd}: {Rows} rows",
+                        location.Name, cursor, chunkEnd, rows.Count);
+                }
+                catch (Exception ex)
+                {
+                    errors++;
+                    _log.LogError(ex, "  era5/{Name} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} FAILED",
+                        location.Name, cursor, chunkEnd);
+                }
+                await Task.Delay(TimeSpan.FromSeconds(2), ct);
+                cursor = chunkEnd.AddDays(1);
             }
-            catch (Exception ex)
-            {
-                errors++;
-                _log.LogError(ex, "  era5 {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} FAILED",
-                    cursor, chunkEnd);
-            }
-            await Task.Delay(TimeSpan.FromSeconds(2), ct);
-            cursor = chunkEnd.AddDays(1);
         }
         return errors;
     }
 
     // ---- OGIMET METAR (per station, 7-day chunks, 5s polite delay) ---------------
 
-    private async Task<int> BackfillMetarAsync(DateOnly start, DateOnly end, CancellationToken ct)
+    private async Task<int> BackfillMetarAsync(DateOnly start, DateOnly end, IReadOnlyList<LocationConfig> locations, CancellationToken ct)
     {
         var errors = 0;
-        var stations = new[] { _cfg.Location.Metar.Primary, _cfg.Location.Metar.Fallback }
-            .Where(s => !string.IsNullOrWhiteSpace(s))
-            .Distinct()
-            .ToArray();
-
-        foreach (var station in stations)
+        // METAR text is per-ICAO. Two locations can map to the same airport
+        // (Bonehill + Membury both use EGTE/EGDY). Dedupe by ICAO across all
+        // locations so we only hit OGIMET once per unique station per chunk;
+        // pick the FIRST location that lists each ICAO as its data-tagger
+        // (LocationName column in the parquet). The read path
+        // (TruthRepository.GetMetarTemperature) is keyed by Station only,
+        // so subsequent locations sharing the same ICAO can read the same
+        // rows without their own backfill.
+        var seen = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var location in locations)
         {
+            foreach (var icao in new[] { location.Metar.Primary, location.Metar.Fallback })
+            {
+                if (string.IsNullOrWhiteSpace(icao)) continue;
+                if (!seen.ContainsKey(icao)) seen[icao] = location.Name;
+            }
+        }
+        if (seen.Count == 0)
+        {
+            _log.LogInformation("metar backfill: no locations have METAR ICAOs configured — skipping.");
+            return 0;
+        }
+
+        foreach (var (station, locationName) in seen)
+        {
+            _log.LogInformation("metar backfill: station={Station} tagging location={Loc} (shared across {N} locations)",
+                station, locationName,
+                locations.Count(l =>
+                    string.Equals(l.Metar.Primary, station, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(l.Metar.Fallback, station, StringComparison.OrdinalIgnoreCase)));
             var cursor = start;
             while (cursor <= end)
             {
@@ -205,7 +239,7 @@ public sealed class BackfillCommand
                 var endTime = chunkEnd.ToDateTime(new TimeOnly(23, 59), DateTimeKind.Utc);
                 try
                 {
-                    var rows = await _ogimet.FetchAsync(_cfg.Location.Name, station, begin, endTime, ct);
+                    var rows = await _ogimet.FetchAsync(locationName, station, begin, endTime, ct);
                     await ParquetWriter.WriteObservationsAsync(_cfg.Storage.ObservationsPath, rows, ct);
                     _log.LogInformation("  metar/{Station} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd}: {Rows} rows",
                         station, cursor, chunkEnd, rows.Count);

@@ -176,7 +176,9 @@ public class SitePagesTests
         // are suppressed from the sub-nav (added 2026-05-07), so the test
         // input must include at least one tile-window prediction per day
         // we expect to see in the bar.
-        var generatedAt = new DateTime(2026, 4, 24, 12, 0, 0, DateTimeKind.Utc); // Fri midday
+        // 09:00Z so the day-0 noon prediction passes the strict
+        // ValidTimeUtc > GeneratedAtUtc filter inside RenderIndex.
+        var generatedAt = new DateTime(2026, 4, 24, 9, 0, 0, DateTimeKind.Utc); // Fri morning
         // One prediction at 12:00Z on each of today + 3 forward days. 12:00Z
         // sits squarely inside the outdoor window so all four days have
         // tile content and should appear in the sub-nav.
@@ -212,7 +214,9 @@ public class SitePagesTests
         // empty days entirely. Predictions only on offsets 0 + 2 — offset 1
         // and 3-5 should be absent from the bar; the active day always
         // renders so the user knows where they are.
-        var generatedAt = new DateTime(2026, 4, 24, 12, 0, 0, DateTimeKind.Utc); // Fri midday
+        // 09:00Z so the day-0 noon prediction passes the strict
+        // ValidTimeUtc > GeneratedAtUtc filter inside RenderIndex.
+        var generatedAt = new DateTime(2026, 4, 24, 9, 0, 0, DateTimeKind.Utc); // Fri morning
         var preds = new[] { 0, 2 }.Select(n => new TempPredictionRow
         {
             LocationName = "Test", ModelVersion = "v",
@@ -1014,10 +1018,12 @@ public class SitePagesTests
         var moSpot = new[]
         {
             new SitePages.MetOfficeSpotForecastPoint(
-                RunTimeUtc: validTime.AddHours(-12),
+                RunTimeUtc: validTime.AddHours(-24),
                 ValidTimeUtc: validTime,
                 Temperature2m: 14.5,
-                PrecipitationProbabilityPercent: 30.0),
+                PrecipitationProbabilityPercent: 30.0,
+                LocationName: "bonehill_rocks",
+                LeadHours: 24),
         };
 
         var input = MakeEmptyForecastInput() with
@@ -1061,10 +1067,12 @@ public class SitePagesTests
         var moSpot = new[]
         {
             new SitePages.MetOfficeSpotForecastPoint(
-                RunTimeUtc: validTime.AddHours(-12),
+                RunTimeUtc: validTime.AddHours(-24),
                 ValidTimeUtc: validTime,
                 Temperature2m: null,
-                PrecipitationProbabilityPercent: 30.0),
+                PrecipitationProbabilityPercent: 30.0,
+                LocationName: "bonehill_rocks",
+                LeadHours: 24),
         };
         var input = MakeEmptyForecastInput() with
         {
@@ -1092,10 +1100,10 @@ public class SitePagesTests
 
         var nwpPop = new[]
         {
-            new SitePages.NwpPrecipProbForecastPoint("gfs_seamless",   validTime, 70.0),
-            new SitePages.NwpPrecipProbForecastPoint("ecmwf_ifs025",   validTime, 60.0),
-            new SitePages.NwpPrecipProbForecastPoint("icon_seamless",  validTime, 50.0),
-            new SitePages.NwpPrecipProbForecastPoint("gem_seamless",   validTime, 40.0),
+            new SitePages.NwpPrecipProbForecastPoint("gfs_seamless",   validTime, 70.0, "bonehill_rocks"),
+            new SitePages.NwpPrecipProbForecastPoint("ecmwf_ifs025",   validTime, 60.0, "bonehill_rocks"),
+            new SitePages.NwpPrecipProbForecastPoint("icon_seamless",  validTime, 50.0, "bonehill_rocks"),
+            new SitePages.NwpPrecipProbForecastPoint("gem_seamless",   validTime, 40.0, "bonehill_rocks"),
         };
 
         var input = MakeEmptyForecastInput() with
@@ -1220,7 +1228,7 @@ public class SitePagesTests
             WindowStartUtc = generatedAt.AddDays(-7),
             NwpPrecipProbabilities = new[]
             {
-                new SitePages.NwpPrecipProbForecastPoint("gfs_seamless", validTime, 70.0),
+                new SitePages.NwpPrecipProbForecastPoint("gfs_seamless", validTime, 70.0, "bonehill_rocks"),
             },
             PrecipPredictions = new[]
             {
@@ -1256,10 +1264,12 @@ public class SitePagesTests
         var moSpot = new[]
         {
             new SitePages.MetOfficeSpotForecastPoint(
-                RunTimeUtc: validTime.AddHours(-12),
+                RunTimeUtc: validTime.AddHours(-24),
                 ValidTimeUtc: validTime,
                 Temperature2m: 14.5,
-                PrecipitationProbabilityPercent: 70.0),
+                PrecipitationProbabilityPercent: 70.0,
+                LocationName: "bonehill_rocks",
+                LeadHours: 24),
         };
 
         var input = MakeEmptyForecastInput() with

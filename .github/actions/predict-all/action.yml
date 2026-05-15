@@ -31,8 +31,12 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Predict temperature
+    - name: Predict temperature (Bonehill, primary location)
       shell: bash
+      # Per-lead temperature blender for the primary location. No --location
+      # flag = the back-compat accessor on AppConfig routes to Locations[0]
+      # = Bonehill. Hard-fail on any non-zero exit; predict-and-render needs
+      # Bonehill predictions to surface the site.
       run: |
         FOR_DATE="${{ inputs.for_date }}"
         if [ -n "$FOR_DATE" ]; then
@@ -40,6 +44,26 @@ runs:
         else
           dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature
         fi
+
+    - name: Predict temperature (Membury)
+      shell: bash
+      # Per-lead temperature blender for Membury (2b lean + 2c rich, trained
+      # 2026-05-14). --location filters to the Membury station entry in the
+      # temperature manifest's Stations dict; predictions land at
+      # data/predictions/temperature/membury_devon/.... Soft-skip 2 (no
+      # Membury blender yet — fresh deploy) / 3 (no forecast rows on this
+      # cycle's Membury subtree). Membury verify/render are deferred
+      # (2026-05-14) — predictions accumulate on disk + R2 until the
+      # multi-location site rework lands.
+      run: |
+        FOR_DATE="${{ inputs.for_date }}"
+        code=0
+        if [ -n "$FOR_DATE" ]; then
+          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature --location membury_devon --for-date "$FOR_DATE" || code=$?
+        else
+          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature --location membury_devon || code=$?
+        fi
+        if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then exit "$code"; fi
 
     - name: Predict precipitation (Bonehill, primary location)
       shell: bash

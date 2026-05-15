@@ -48,15 +48,25 @@ locations:
   # Membury, East Devon — added 2026-05-11. Lowland village (~120m
   # elevation), valley climate (lower wet rate than Dartmoor's moor),
   # ~equilateral triangulation by 3 EA gauges at 6-7 km radius
-  # (Chards Snowdon Hill N, Goren SW, Raymonds Hill S). No METAR
-  # placeholder configured — train/predict for Membury is precip-only
-  # in the initial scope. ERA5 + METAR backfill skip locations missing
-  # the relevant config block.
+  # (Chards Snowdon Hill N, Goren SW, Raymonds Hill S). Temperature
+  # blender scope added 2026-05-14 (Phase 2b/2c only — exact-runtime
+  # 2d uses the same UKV bake-off-validated approach but isn't trained
+  # for Membury until the long-range bake-off catches up).
   - name: "membury_devon"
     displayName: "Membury, East Devon"
     latitude: 50.8254
     longitude: -3.0000
     elevationMeters: 120
+    # METAR truth sources. EGTE (Exeter Airport) is ~25 km SW of Membury;
+    # EGDY (Yeovilton) is ~35 km E. Same airports Bonehill uses — METAR
+    # text is per-ICAO, not per-location, so TruthRepository.GetMetarTemperature
+    # keys on Station only and a single EGTE/EGDY partition serves both.
+    # Backfill does NOT re-pull METAR for Membury; the existing
+    # data/truth/metar/location=bonehill_rocks/station=EGTE/... rows are
+    # the same physical data and the read path is location-agnostic.
+    metar:
+      primary: "EGTE"    # Exeter Airport (same as Bonehill)
+      fallback: "EGDY"   # RNAS Yeovilton
     rainfall:
       stations:
         - id: "d1803c5a-e461-404b-8750-7f946456a6c6"

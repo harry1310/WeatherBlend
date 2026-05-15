@@ -74,8 +74,11 @@ public sealed class TempVerifyCommand
         var truth = _truth.GetEra5Hourly(windowStart.AddHours(-72), windowEnd, ct);
         _log.LogInformation("Loaded {N} ERA5 truth points.", truth.Count);
 
-        var metadata = _metadata.GetTrainingMetadataForVersions("temperature",
-            predictions.Select(p => p.ModelVersion));
+        // Temperature is per-station (per-location) on disk since 2026-05-14;
+        // derive (station, version) tuples from the prediction LocationName
+        // since predictions carry the location they were scored against.
+        var metadata = _metadata.GetTemperatureTrainingMetadataForVersions(
+            predictions.Select(p => (Station: p.LocationName, Version: p.ModelVersion)));
         _log.LogInformation("Loaded metadata for {N} versions: {Versions}",
             metadata.Count, string.Join(", ", metadata.Keys));
 
