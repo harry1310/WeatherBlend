@@ -101,20 +101,25 @@ jobs:
       # ParquetSerializer plumbing as the rest of the predict path.
       #
       # Exit code semantics (per-station soft-skip handled inside the
-      # command; build only fails on exit > 0 meaning ALL stations
-      # produced zero rows):
-      #   0 — at least one station wrote 4b rows
-      #   2 — no precipitation stations configured (config bug)
+      # command):
+      #   0 — at least one station wrote 4b rows.
+      #   2 — no precipitation stations configured (config bug) — FATAL.
       #   3 — every station fell through (no 4b manifest entry AND no
-      #       4a/3e match anywhere) — should now be impossible after
-      #       the back-look fix shipped 2026-05-13 unless 4a or 3e are
-      #       both completely absent from R2.
-      # Pre-2026-05-13 this step was `continue-on-error: true` which
-      # silently swallowed every exit code — including exit 3 firing
-      # daily because of the same-anchor join bug. Now propagates.
+      #       4a/3e match anywhere). Common at the start of the UTC
+      #       day on manual triggers that land before WeatherProb's
+      #       03:00/09:00/15:00/21:00 UTC 4a cron has fired for the
+      #       current anchor; the natural 03:15/09:15/15:15/21:15 UTC
+      #       predict-and-render ticks pick it up once 4a is done.
+      #       Soft-skipped since 2026-05-15 — missing 4a inputs is a
+      #       timing artefact, not a 4b failure. The original same-
+      #       anchor join bug that motivated propagation was fixed by
+      #       the 2026-05-13 back-look; if it ever regresses we'll
+      #       see "wrote 0" across every cycle and can re-tighten.
       - name: Synthesise Phase 4b (2-way mean of 4a + 3e)
         run: |
-          dotnet run --project src/WeatherBlend --no-build -c Release -- phase4b-predict
+          code=0
+          dotnet run --project src/WeatherBlend --no-build -c Release -- phase4b-predict || code=$?
+          if [ "$code" != "0" ] && [ "$code" != "3" ]; then exit "$code"; fi
 
       - name: Push predictions to R2
         # Pushed BEFORE render so the deployed site is reading the same state
