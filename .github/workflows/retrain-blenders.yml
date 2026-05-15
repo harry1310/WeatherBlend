@@ -15,9 +15,10 @@ name: retrain-blenders
 # on whether ANY step exited non-zero (final aggregator step).
 #
 # Cost ballpark on ubuntu-latest (4 vCPU):
-#   - all 11 phases sequentially: ~30-60 min total
+#   - all phases sequentially: ~30-60 min total
 #   - Per-phase wall: 2b/2c/2d/3a/3c/3d ~3-5 min each;
-#     3b ~5-8 min (per-station per-window); element 4 × ~2 min.
+#     3b ~5-8 min (per-station per-window); 3g/3j/3n/3s ~1-3 min
+#     each (MC mints, no LightGBM fit); element 4 × ~2 min.
 #
 # Adding a new .NET phase (e.g. 2e):
 #   1. Add to Config/phases.yaml with role=challenger, impl=dotnet
@@ -134,7 +135,7 @@ jobs:
           # phase's run block below.
           run_2b=false; run_2c=false; run_2d=false
           run_3a=false; run_3c=false; run_3d=false; run_3e=false
-          run_3b=false; run_3g=false; run_3j=false; run_3n=false
+          run_3b=false; run_3g=false; run_3j=false; run_3n=false; run_3s=false
           case ",$INPUT," in *,2b,*) run_2b=true ;; esac
           case ",$INPUT," in *,2c,*) run_2c=true ;; esac
           case ",$INPUT," in *,2d,*) run_2d=true ;; esac
@@ -146,7 +147,8 @@ jobs:
           case ",$INPUT," in *,3g,*) run_3g=true ;; esac
           case ",$INPUT," in *,3j,*) run_3j=true ;; esac
           case ",$INPUT," in *,3n,*) run_3n=true ;; esac
-          for v in 2b 2c 2d 3a 3c 3d 3e 3b 3g 3j 3n; do
+          case ",$INPUT," in *,3s,*) run_3s=true ;; esac
+          for v in 2b 2c 2d 3a 3c 3d 3e 3b 3g 3j 3n 3s; do
             echo "run_${v}=$(eval echo \$run_${v})" >> "$GITHUB_OUTPUT"
           done
 
@@ -356,11 +358,19 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target dry-window
 
-      # 3g is parameter-free (MC over 3a marginals at predict time);
-      # nothing to retrain. The phases.yaml entry exists so the site
-      # renders 3g as a challenger; no train block here. If yq lists
-      # 3g in "all", we silently no-op via the if-guard not matching
-      # any train step (the aggregator then sees no failures from 3g).
+      # 3g has no LightGBM fit — it's parameter-free MC over 3a's hourly
+      # P(wet) at predict time — but the bundle still BINDS one 3a champion
+      # version (captured from the precipitation manifest at mint time) and
+      # carries the day-of-year climatology. When 3a is retrained the bound
+      # version goes stale, so 3g is re-minted every Sunday after 3a so the
+      # binding tracks the current champion. Cheap (~1 min, no model fit).
+      - name: Train 3g (dry-window MC over 3a)
+        id: train_3g
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3g == 'true'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target dry-window --feature-set independence-mc
 
       - name: Train 3j (dry-window copula MC)
         id: train_3j
@@ -387,6 +397,18 @@ jobs:
           # is captured the same way as 3g / 3j.
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target dry-window --feature-set regime-mc
+
+      - name: Train 3s (dry-window MC over 3e)
+        id: train_3s
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3s == 'true'
+        continue-on-error: true
+        run: |
+          # 3s is 3g's parameter-free iid MC bound to Phase 3e's hourly
+          # P(wet) instead of 3a's. Like 3g it has no model fit, but the
+          # bundle binds one 3e champion version — re-minted weekly AFTER
+          # 3e's train step so the binding tracks the fresh 3e champion.
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target dry-window --feature-set independence-mc-3e
 
       # ---- Element blenders (wind, humidity, radiation, cloud-cover) ----
       # NOT in phases.yaml today (they're per-VARIABLE rather than
@@ -472,8 +494,10 @@ jobs:
             [3e]="${{ steps.train_3e.outcome }}"
             [4b_mint]="${{ steps.mint_4b.outcome }}"
             [3b]="${{ steps.train_3b.outcome }}"
+            [3g]="${{ steps.train_3g.outcome }}"
             [3j]="${{ steps.train_3j.outcome }}"
             [3n]="${{ steps.train_3n.outcome }}"
+            [3s]="${{ steps.train_3s.outcome }}"
             [wind]="${{ steps.train_wind.outcome }}"
             [humidity]="${{ steps.train_humidity.outcome }}"
             [radiation]="${{ steps.train_radiation.outcome }}"

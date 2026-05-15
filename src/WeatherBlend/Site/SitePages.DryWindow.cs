@@ -56,7 +56,7 @@ public static partial class SitePages
         content.Append("""
               <hgroup>
                 <h2>Dry-window forecast</h2>
-                <p>P(at least one N-hour dry block in 09:00–18:00 local). 3b champion + 3g challenger.</p>
+                <p>P(at least one N-hour dry block in 09:00–18:00 local). 3b champion plus Monte-Carlo challengers.</p>
               </hgroup>
             """);
 
@@ -96,12 +96,16 @@ public static partial class SitePages
         content.Append(Ci, $"<h3>{Escape(PrettyStation(currentStation))}</h3>");
 
         // Index the start-hour curves once per (station, window, lead,
-        // target_date) so the inner loop is O(1) per row. Empty dictionary
-        // when no curves on disk — renderer falls back gracefully to the
-        // pre-curve table layout.
+        // target_date, version) so the inner loop is O(1) per row. Version is
+        // part of the key because two iid-MC phases now write curves for the
+        // same cell — 3g (model_version v2, MC over 3a) and 3s (v2-3e, MC over
+        // 3e) — and without it the ToDictionary would throw on the collision.
+        // Each phase reads only its own curve via DryWindowPhase.StartHourCurveVersion.
+        // Empty dictionary when no curves on disk — renderer falls back
+        // gracefully to the pre-curve table layout.
         var curvesByCell = input.StartHourPredictions
             .Where(s => s.Station == currentStation)
-            .GroupBy(s => (s.Station, s.WindowHours, s.LeadHours, s.TargetDateUtc))
+            .GroupBy(s => (s.Station, s.WindowHours, s.LeadHours, s.TargetDateUtc, s.Version))
             .ToDictionary(g => g.Key, g => (IReadOnlyList<StartHourForecastPoint>)g.ToList());
         var hasCurves = curvesByCell.Count > 0;
 
@@ -135,14 +139,19 @@ public static partial class SitePages
                 //   3b — LightGBM marginal blender. Carries cross-NWP
                 //        agreement (the BSS-weighted vote of its component
                 //        models) and a conformal calibrator τ on the marginal.
-                //   3g — Monte Carlo over Phase 3a hourly P(wet). Doesn't have
-                //        cross-NWP agreement (single MC ensemble); does have
-                //        the longest-dry-run quantile band and the start-hour
-                //        curves that PickBestStart consumes. Conformal τ is a
-                //        separate fit against the MC marginal.
+                //   3g/3s — iid Monte Carlo (over Phase 3a / Phase 3e hourly
+                //        P(wet) respectively). No cross-NWP agreement (single
+                //        MC ensemble); both carry the longest-dry-run quantile
+                //        band and a start-hour curve that PickBestStart
+                //        consumes. Conformal τ is a separate fit per phase.
+                //   3j/3n — copula MC. Carry neither the quantile band nor a
+                //        start-hour curve, so they render the bare table.
                 bool showAgreement  = phase.Key == DryWindowPhases.Phase3b.Key;
-                bool showMcBand     = phase.Key == DryWindowPhases.Phase3g.Key;
-                bool showBestStart  = phase.Key == DryWindowPhases.Phase3g.Key && hasCurves;
+                bool showMcBand     = phase.Key == DryWindowPhases.Phase3g.Key
+                                   || phase.Key == DryWindowPhases.Phase3s.Key;
+                // Keys off the phase's own curve version, so any future iid-MC
+                // phase that declares a StartHourCurveVersion opts in for free.
+                bool showBestStart  = phase.StartHourCurveVersion is not null && hasCurves;
 
                 // Latest prediction per (target_date, lead) within this phase bucket.
                 var latest = phaseRows
@@ -263,7 +272,7 @@ public static partial class SitePages
                         foreach (var lead in leadOrder)
                         {
                             if (!byLead.ContainsKey(lead)) continue;
-                            if (!curvesByCell.TryGetValue((currentStation, window, lead, date), out var curve)) continue;
+                            if (!curvesByCell.TryGetValue((currentStation, window, lead, date, phase.StartHourCurveVersion!), out var curve)) continue;
                             var best = PickBestStart(curve);
                             if (best is null) continue;
                             // "10:00Z (32%)" — UTC start hour + the calibrated
@@ -321,6 +330,13 @@ public static partial class SitePages
                       </table>
                     </figure>
                     """);
+
+                // Start-hour curve panel — only the iid-MC phases (3g/3s) have
+                // one. Plots the within-day shape the "Best start" column reads
+                // its argmax from, so the reader sees the whole curve, not just
+                // the peak. Returns "" when this phase has no curve on disk.
+                if (showBestStart)
+                    content.Append(RenderStartHourCurveChart(phase, currentStation, window, cutoff, curvesByCell));
             }
 
             if (!anyRendered)
@@ -338,5 +354,92 @@ public static partial class SitePages
         // Forecasts variable sub-nav. (The empty-state branches above
         // already pass "forecasts" for the same reason.)
         return WrapPage(input, "Dry window", "forecasts", content.ToString());
+    }
+
+    /// <summary>One distinct line colour per forecast horizon on the
+    /// start-hour curve chart, indexed by position in <see cref="Leads.Short"/>
+    /// (24h / 48h / 72h).</summary>
+    private static readonly string[] StartHourLeadColors = { "#1e88e5", "#fb8c00", "#8e24aa" };
+
+    /// <summary>
+    /// Render the start-hour probability curve for one (phase, station,
+    /// window) as a line chart: x = daytime block-start hour (UTC), y =
+    /// P(this hour starts the longest dry block | a dry block exists), one
+    /// line per forecast horizon. Only the iid-MC phases carry a start-hour
+    /// curve — the phase identifies its own curve via
+    /// <see cref="DryWindowPhase.StartHourCurveVersion"/>, so 3g reads the
+    /// <c>v2</c> curve and 3s the <c>v2-3e</c> curve with no cross-talk.
+    /// For each horizon the curve from the freshest prediction run (latest
+    /// <c>PredictedAtUtc</c>) on or after <paramref name="cutoff"/> is drawn,
+    /// so the panel reads as "the next forecastable day at +24h / +48h / +72h"
+    /// and never surfaces a stale curve from an older run still on disk.
+    /// Returns an empty string when the phase has no curve version or no
+    /// curve rows on disk for this cell, so the caller can append it blind.
+    /// </summary>
+    private static string RenderStartHourCurveChart(
+        DryWindowPhase phase,
+        string station,
+        int window,
+        DateTime cutoff,
+        IReadOnlyDictionary<(string Station, int WindowHours, int LeadHours, DateTime TargetDateUtc, string Version),
+            IReadOnlyList<StartHourForecastPoint>> curvesByCell)
+    {
+        if (phase.StartHourCurveVersion is not { } version) return "";
+
+        var series = new List<LineSeries>();
+        int colorIdx = 0;
+        foreach (var lead in Leads.Short)
+        {
+            // Curve from the freshest prediction run for this horizon. A target
+            // date can have curves from several runs on disk (today's run plus
+            // older ones whose horizon happens to land on the same day); the
+            // cutoff filter alone isn't enough — ordering by TargetDateUtc would
+            // still surface a 3-day-old run's curve. Ordering by PredictedAtUtc
+            // picks the latest forecast, and its target is lead hours ahead.
+            var cell = curvesByCell
+                .Where(kv => kv.Key.Station == station
+                          && kv.Key.WindowHours == window
+                          && kv.Key.LeadHours == lead
+                          && kv.Key.Version == version
+                          && kv.Key.TargetDateUtc >= cutoff)
+                .Select(kv => (kv.Key.TargetDateUtc, Curve: kv.Value))
+                .OrderByDescending(c => c.Curve.Max(p => p.PredictedAtUtc))
+                .ThenBy(c => c.TargetDateUtc)
+                .FirstOrDefault();
+            if (cell.Curve is null || cell.Curve.Count == 0) continue;
+
+            // Dedupe to the latest run per start hour in case the freshest
+            // anchor was predicted more than once into the same parquet.
+            var points = cell.Curve
+                .GroupBy(p => p.StartHourUtc)
+                .Select(g => g.OrderByDescending(p => p.PredictedAtUtc).First())
+                .OrderBy(p => p.StartHourUtc)
+                .Select(p => ((double)p.StartHourUtc, p.ConditionalProb))
+                .ToList();
+            series.Add(new LineSeries(
+                Name: string.Create(Ci, $"+{lead}h · {cell.TargetDateUtc:ddd dd MMM}"),
+                Color: StartHourLeadColors[colorIdx % StartHourLeadColors.Length],
+                Points: points));
+            colorIdx++;
+        }
+
+        if (series.Count == 0) return "";
+
+        var spec = new LineChartSpec
+        {
+            Title = string.Create(Ci, $"{phase.ShortTitle} — best dry-block start, {window}h window"),
+            XLabel = "Block start hour (UTC)",
+            YLabel = "P(start here | block exists)",
+            Series = series,
+            Height = 300,
+            FormatX = h => string.Create(Ci, $"{Math.Round(h):00}:00Z"),
+            FormatY = v => string.Create(Ci, $"{v * 100:0}%"),
+        };
+        return string.Create(Ci, $"""
+            <figure>
+              {LineChartRenderer.Render(spec)}
+              <figcaption class="skill-line">Within-day shape of the Monte-Carlo start-hour curve — one line per forecast horizon, soonest target day shown. The peak is the hour the model thinks the dry block most likely begins; a flat curve means little opinion on when.</figcaption>
+            </figure>
+            """);
     }
 }

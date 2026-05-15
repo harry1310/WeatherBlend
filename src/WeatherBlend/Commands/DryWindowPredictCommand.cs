@@ -213,6 +213,15 @@ public sealed class DryWindowPredictCommand
                 targets, anchorDate, predictionMadeAt, ct);
         }
 
+        // Phase 3s — iid MC sibling of 3g, marginals from the 3e MLP
+        // (precip_3e_version) instead of 3a. Same predict shape as 3g.
+        if (string.Equals(metadata.Phase, DryWindow3sPredictor.Phase3s, StringComparison.Ordinal))
+        {
+            return await RunPhase3sAsync(
+                versionDir, stationSlug, windowHours, versionName, metadata, climatology,
+                targets, anchorDate, predictionMadeAt, ct);
+        }
+
         // Per-lead BlenderSpec lives in feature_schema.json.
         var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
         var canonOrder = WeatherBlend.Train.TempFeatureBuilder.CanonicalModelOrder.ToList();
@@ -477,6 +486,127 @@ public sealed class DryWindowPredictCommand
                     lead, targetDate, windowHours, prob, climProb,
                     stats.P10LongestRun, stats.P50LongestRun, stats.P90LongestRun);
             }
+        }
+
+        if (predictions.Count == 0) return false;
+        await WritePredictionsAsync(predictions, stationSlug, windowHours, anchorDate, versionName, ct);
+        return true;
+    }
+
+    /// <summary>
+    /// Phase 3s predict path. Byte-for-byte the 3g predict algorithm — read
+    /// the bound precipitation champion's live hourly prediction parquet,
+    /// extract the daytime q-vector per target_date, run iid MC — with one
+    /// difference: the bound champion is the Phase 3e MLP occurrence blender
+    /// (<c>precip_3e_version</c>) instead of the 3a LightGBM blender. See
+    /// <see cref="DryWindow3sPredictor"/> for why (the start-hour curve;
+    /// occurrence ≈ 3g by design).
+    /// </summary>
+    private async Task<bool> RunPhase3sAsync(
+        string versionDir, string stationSlug, int windowHours, string versionName,
+        ModelArtifact.TrainingMetadata metadata, DryWindowClimatology climatology,
+        IReadOnlyList<(int Lead, DateTime Date)> targets,
+        DateTime anchorDate, DateTime predictionMadeAt, CancellationToken ct)
+    {
+        var precip3eVersion = metadata.Hyperparameters.HpString(DryWindow3sPredictor.Precip3eVersionKey);
+        if (string.IsNullOrEmpty(precip3eVersion))
+        {
+            _log.LogWarning(
+                "{S}/window_{W}h 3s {V}: missing '{K}' in training_metadata.Hyperparameters; skipping.",
+                stationSlug, windowHours, versionName, DryWindow3sPredictor.Precip3eVersionKey);
+            return false;
+        }
+
+        Dictionary<DateTime, double> hourly;
+        try
+        {
+            hourly = DryWindow3gPredictor.LoadLivePredictionsHourly(
+                _cfg.Storage.PredictionsPath, stationSlug, precip3eVersion, anchorDate);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex,
+                "{S}/window_{W}h 3s {V}: failed to load 3e live predictions for anchor {A:yyyy-MM-dd} (3e version {Pv}); skipping.",
+                stationSlug, windowHours, versionName, anchorDate, precip3eVersion);
+            return false;
+        }
+        if (hourly.Count == 0)
+        {
+            _log.LogWarning(
+                "{S}/window_{W}h 3s {V}: 3e parquet for anchor {A:yyyy-MM-dd} ({Pv}) is empty; skipping.",
+                stationSlug, windowHours, versionName, anchorDate, precip3eVersion);
+            return false;
+        }
+
+        var mcSamples = metadata.Hyperparameters.HpInt("mc_samples") ?? DryWindow3sPredictor.DefaultMcSamples;
+        var seed = metadata.Hyperparameters.HpInt("seed") ?? 42;
+
+        var daytime = _cfg.DryWindow.BuildDaytimeWindow();
+        var rng = new Random(seed);
+        var predictions = new List<DryWindowPredictionRow>();
+
+        foreach (var (lead, targetDate) in targets)
+        {
+            ct.ThrowIfCancellationRequested();
+            var (startHour, endHour) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(targetDate));
+            var qDaytime = DryWindow3gPredictor.ExtractDaytimeQ(
+                hourly, targetDate, startHour, endHour);
+            if (qDaytime is null)
+            {
+                _log.LogWarning(
+                    "  {S}/window_{W}h lead {L}h ({D:yyyy-MM-dd}): 3e missing one or more daytime hours; skipping.",
+                    stationSlug, windowHours, lead, targetDate);
+                continue;
+            }
+
+            var ci80Width = DryWindow3gPredictor.TryLoadBayesianCi80Width(
+                _cfg.Storage.PredictionsPath, stationSlug, lead, targetDate);
+            var sigma = DryWindow3gPredictor.SigmaFromCi80Width(ci80Width);
+            var epi = DryWindow3gPredictor.SampleStatsWithEpistemic(
+                qDaytime, windowHours, sigma, rng, mcSamples);
+            var stats = epi.InnerStats;
+            var prob = stats.ProbAtLeast;
+            var climProb = climatology.Predict(targetDate);
+            var conformalTag = ModelArtifact.PredictConformalIfPresent(versionDir, lead, prob);
+
+            var qFloats = new float[qDaytime.Length];
+            for (int i = 0; i < qDaytime.Length; i++) qFloats[i] = (float)qDaytime[i];
+
+            predictions.Add(new DryWindowPredictionRow
+            {
+                LocationName = _cfg.Location.Name,
+                TruthStation = stationSlug,
+                WindowHours = windowHours,
+                ModelVersion = versionName,
+                PredictionMadeAtUtc = predictionMadeAt,
+                TargetDateUtc = targetDate,
+                LeadHours = lead,
+                ProbHasDryWindow = prob,
+                ClimatologyProbHasDryWindow = climProb,
+                AgreementHasDryWindow = null,
+                PrecipSumMean = null, LongestDryRunMean = null, WetHourCountMean = null,
+                HasDryWindowGfs = null, HasDryWindowEcmwf = null, HasDryWindowIcon = null,
+                HasDryWindowMf = null, HasDryWindowUkmo = null, HasDryWindowGem = null,
+                HasDryWindowAifs = null, HasDryWindowJma = null,
+                PrecipSumGfs = null, PrecipSumEcmwf = null, PrecipSumIcon = null,
+                PrecipSumMf = null, PrecipSumUkmo = null, PrecipSumGem = null,
+                PrecipSumAifs = null, PrecipSumJma = null,
+                FeatureVectorHash = FeatureHashing.HashFloats(qFloats),
+                McMeanLongestDryRunHours = stats.MeanLongestRun,
+                McP10LongestDryRunHours = stats.P10LongestRun,
+                McP50LongestDryRunHours = stats.P50LongestRun,
+                McP90LongestDryRunHours = stats.P90LongestRun,
+                EpistemicProbDryWindowMean = sigma > 0 ? epi.ProbAtLeastMean : (double?)null,
+                EpistemicProbDryWindowQ10  = sigma > 0 ? epi.ProbAtLeastQ10  : (double?)null,
+                EpistemicProbDryWindowQ90  = sigma > 0 ? epi.ProbAtLeastQ90  : (double?)null,
+                EpistemicSigmaUsed         = sigma > 0 ? sigma : (double?)null,
+                ConformalSetTag = conformalTag,
+            });
+
+            _log.LogInformation(
+                "  3s lead {L}h ({D:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (clim {C:0.000}, MC over 3e {Pv}, longest p10/50/90={P10:0.0}/{P50:0.0}/{P90:0.0}h)",
+                lead, targetDate, windowHours, prob, climProb, precip3eVersion,
+                stats.P10LongestRun, stats.P50LongestRun, stats.P90LongestRun);
         }
 
         if (predictions.Count == 0) return false;

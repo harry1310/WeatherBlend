@@ -37,9 +37,16 @@ public sealed class StartHourPredictCommand
 {
     public const string PredictionsSubdir = "dry_window_start_hour";
     /// <summary>v1 was the analytical-product derivation (deleted 2026-05-04).
-    /// v2 is the 3g-MC derivation. Bumping the version on disk means old v1
-    /// rows + new v2 rows can coexist during the transition cycle.</summary>
+    /// v2 is the 3g-MC derivation (MC over the 3a champion's hourly P(wet)).
+    /// Bumping the version on disk means old v1 rows + new v2 rows can coexist
+    /// during the transition cycle. Consumed by Phase 3g's site table.</summary>
     public const string OutputModelVersion = "v2";
+
+    /// <summary>The Phase 3s start-hour curve — same MC, but over the 3e
+    /// champion's hourly P(wet) instead of 3a's. Written alongside <see
+    /// cref="OutputModelVersion"/> every cycle; consumed by Phase 3s's site
+    /// table. Distinct on-disk model_version so the two curves coexist.</summary>
+    public const string OutputModelVersion3e = "v2-3e";
     /// <summary>MC sample count — matches DryWindow3gPredictor's default so
     /// the start-hour curve and the dry-window daily prob have identical
     /// sampling noise floors.</summary>
@@ -77,6 +84,53 @@ public sealed class StartHourPredictCommand
         }
 
         var daytime = _cfg.DryWindow.BuildDaytimeWindow();
+
+        // Two start-hour curves per cycle — same SampleStartHourCurve MC over
+        // a precip champion's hourly P(wet), only the source differs:
+        //   v2     ← 3a champion (manifest Current); Phase 3g's table consumes it.
+        //   v2-3e  ← 3e champion (newest _phase3e in Active); Phase 3s's table
+        //            consumes it. 3e's sharper hourly marginals localise the
+        //            dry block better — see DryWindow3sPredictor + the
+        //            2026-05-15 start-hour bake-off.
+        var sources = new (string OutVersion, Func<ModelArtifact.StationEntry, string?> Resolve)[]
+        {
+            (OutputModelVersion,   e => string.IsNullOrEmpty(e.Current) ? null : e.Current),
+            (OutputModelVersion3e, ResolveLatest3e),
+        };
+
+        var anyProduced = false;
+        foreach (var (outVersion, resolve) in sources)
+            anyProduced |= await ProcessSourceAsync(
+                precipManifest, dryManifest, anchor, anchorDate, predictionMadeAt,
+                daytime, resolve, outVersion, ct);
+        return anyProduced ? 0 : 3;
+    }
+
+    /// <summary>Newest <c>_phase3e</c> version in a precip station's Active
+    /// list, or null when the station has no 3e bundle. 3e is a precip
+    /// challenger — never the manifest <c>Current</c> — so it's resolved the
+    /// same way Phase 3s's train binds it.</summary>
+    private static string? ResolveLatest3e(ModelArtifact.StationEntry e)
+        => e.Active
+            .Where(v => v.Contains("phase3e", StringComparison.Ordinal))
+            .OrderBy(v => v, StringComparer.Ordinal)
+            .LastOrDefault();
+
+    /// <summary>
+    /// Build + write the start-hour curve for one precip source. Walks the
+    /// dry-window manifest composites, MCs the daytime q-vector at each lead,
+    /// and emits one StartHourPredictionRow per candidate start hour.
+    /// <paramref name="resolvePrecipVersion"/> picks which precip champion
+    /// supplies the marginals; <paramref name="outModelVersion"/> tags the
+    /// rows and their on-disk partition. Returns true if any rows were written.
+    /// </summary>
+    private async Task<bool> ProcessSourceAsync(
+        ModelArtifact.Manifest precipManifest, ModelArtifact.Manifest dryManifest,
+        DateTime anchor, DateTime anchorDate, DateTime predictionMadeAt,
+        DaytimeWindow daytime,
+        Func<ModelArtifact.StationEntry, string?> resolvePrecipVersion,
+        string outModelVersion, CancellationToken ct)
+    {
         var rng = new Random(DefaultSeed);
 
         // (station, windowHours) → all curve rows for that composite.
@@ -104,19 +158,24 @@ public sealed class StartHourPredictCommand
                 skipped++; continue;
             }
 
-            if (!precipManifest.Stations.TryGetValue(station, out var precipEntry)
-                || string.IsNullOrEmpty(precipEntry.Current))
+            if (!precipManifest.Stations.TryGetValue(station, out var precipEntry))
             {
-                _log.LogWarning("  {Composite}: no precipitation champion for {Station} — skip.",
+                _log.LogWarning("  {Composite}: no precipitation manifest entry for {Station} — skip.",
                     compositeKey, station);
                 skipped++; continue;
             }
-            var precipVersion = precipEntry.Current;
+            var precipVersion = resolvePrecipVersion(precipEntry);
+            if (string.IsNullOrEmpty(precipVersion))
+            {
+                _log.LogWarning("  {Composite} [{V}]: no precip champion resolved for {Station} — skip.",
+                    compositeKey, outModelVersion, station);
+                skipped++; continue;
+            }
 
-            // Live precip prediction parquet for THIS anchor — same file 3g
-            // reads when computing ProbHasDryWindow. Reading from the same
-            // source guarantees the start-hour curve is consistent with
-            // 3g's daily output.
+            // Live precip prediction parquet for THIS anchor — the same file
+            // the matching dry-window MC phase reads. Reading from the same
+            // source keeps the start-hour curve consistent with that phase's
+            // daily ProbHasDryWindow.
             Dictionary<DateTime, double> hourly;
             try
             {
@@ -191,7 +250,7 @@ public sealed class StartHourPredictCommand
                         LocationName = _cfg.Location.Name,
                         TruthStation = station,
                         WindowHours = windowHours,
-                        ModelVersion = OutputModelVersion,
+                        ModelVersion = outModelVersion,
                         PredictionMadeAtUtc = predictionMadeAt,
                         TargetDateUtc = DateTime.SpecifyKind(targetDate, DateTimeKind.Utc),
                         LeadHours = lead,
@@ -224,33 +283,35 @@ public sealed class StartHourPredictCommand
 
         if (rowsByComposite.Count == 0)
         {
-            _log.LogError("Start-hour: no curves produced — every composite skipped (see warnings above).");
-            return 3;
+            _log.LogWarning(
+                "Start-hour [{V}]: no curves produced — every composite skipped (see warnings above).",
+                outModelVersion);
+            return false;
         }
 
         var totalRows = 0;
         foreach (var ((station, windowHours), rows) in rowsByComposite)
         {
-            await WriteAsync(station, windowHours, rows, anchorDate, ct);
+            await WriteAsync(station, windowHours, rows, anchorDate, outModelVersion, ct);
             totalRows += rows.Count;
         }
 
         _log.LogInformation(
-            "Start-hour: {Total} rows across {Composites} composites ({Skipped} skipped).",
-            totalRows, rowsByComposite.Count, skipped);
-        return 0;
+            "Start-hour [{V}]: {Total} rows across {Composites} composites ({Skipped} skipped).",
+            outModelVersion, totalRows, rowsByComposite.Count, skipped);
+        return true;
     }
 
     private async Task WriteAsync(
         string station, int windowHours, List<StartHourPredictionRow> rows,
-        DateTime anchorDate, CancellationToken ct)
+        DateTime anchorDate, string outModelVersion, CancellationToken ct)
     {
         var dateStr = anchorDate.ToString("yyyy-MM-dd");
         var outDir = Path.Combine(_cfg.Storage.PredictionsPath,
             PredictionsSubdir,
             station,
             $"window_{windowHours}h",
-            $"model_version={OutputModelVersion}",
+            $"model_version={outModelVersion}",
             $"date={dateStr}");
         Directory.CreateDirectory(outDir);
         var outPath = Path.Combine(outDir, "predictions.parquet");

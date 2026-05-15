@@ -1556,10 +1556,14 @@ public class SitePagesTests
 
     // ---- start-hour curve: PickBestStart + dry-window column rendering ----
 
+    // Default version is the 3g curve's on-disk model_version so the legacy
+    // tests (written before 3s introduced a second curve) keep matching the
+    // 3g phase's StartHourCurveVersion lookup. 3s tests pass OutputModelVersion3e.
     private static SitePages.StartHourForecastPoint StartHour(
         string station, int window, int lead, DateTime target,
-        int startHour, double pi, double dailyP, double cal)
-        => new(station, window, "v1", new DateTime(2026, 4, 30, 10, 0, 0, DateTimeKind.Utc),
+        int startHour, double pi, double dailyP, double cal,
+        string version = WeatherBlend.Commands.StartHourPredictCommand.OutputModelVersion)
+        => new(station, window, version, new DateTime(2026, 4, 30, 10, 0, 0, DateTimeKind.Utc),
                target, lead, startHour, pi, cal, dailyP);
 
     [Fact]
@@ -1722,6 +1726,96 @@ public class SitePagesTests
         var html = SitePages.RenderDryWindow(input, null);
 
         html.Should().NotContain("Best start");
+    }
+
+    [Fact]
+    public void RenderDryWindow_routes_3g_and_3s_each_to_their_own_start_hour_curve()
+    {
+        // 3g and 3s are both iid-MC phases that ship a "Best start" column,
+        // but each owns a distinct on-disk curve (3g → v2, 3s → v2-3e). With
+        // both phases present and both curves on disk, each table's argmax
+        // must come from its OWN curve — proving the version-keyed lookup
+        // routes correctly and the two phases never read each other's curve.
+        var generatedAt = new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc);
+        var target = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        var rows = new[]
+        {
+            new SitePages.DryWindowForecastPoint(
+                "ea_bellever_dartmoor", 6, "v3g", generatedAt, target, 24, 0.7, 0.5, null),
+            new SitePages.DryWindowForecastPoint(
+                "ea_bellever_dartmoor", 6, "v3s", generatedAt, target, 24, 0.7, 0.5, null),
+        };
+        // 3g curve peaks at 11Z; 3s curve peaks at 09Z. Distinct peaks so a
+        // cross-wired lookup would surface the wrong hour and fail the assert.
+        var v3g = WeatherBlend.Commands.StartHourPredictCommand.OutputModelVersion;
+        var v3e = WeatherBlend.Commands.StartHourPredictCommand.OutputModelVersion3e;
+        var curve = new[]
+        {
+            StartHour("ea_bellever_dartmoor", 6, 24, target, 9,  0.20, 0.7, 0.18, v3g),
+            StartHour("ea_bellever_dartmoor", 6, 24, target, 11, 0.45, 0.7, 0.32, v3g),
+            StartHour("ea_bellever_dartmoor", 6, 24, target, 9,  0.50, 0.7, 0.40, v3e),
+            StartHour("ea_bellever_dartmoor", 6, 24, target, 11, 0.10, 0.7, 0.09, v3e),
+        };
+
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            DryWindowPredictions = rows,
+            StartHourPredictions = curve,
+            PhaseByVersion = new Dictionary<string, string>
+            {
+                ["v3g"] = "3g",
+                ["v3s"] = "3s",
+            },
+        };
+
+        var html = SitePages.RenderDryWindow(input, null);
+
+        // Both phases render their own table + best-start column.
+        html.Should().Contain(DryWindowPhases.Phase3g.LongTitle)
+            .And.Contain(DryWindowPhases.Phase3s.LongTitle);
+        html.Should().Contain("11:00Z").And.Contain("(32%)"); // 3g argmax
+        html.Should().Contain("09:00Z").And.Contain("(40%)"); // 3s argmax
+        // One start-hour curve chart per curve-bearing phase, each titled
+        // with its own phase's short name.
+        html.Should().Contain($"{DryWindowPhases.Phase3g.ShortTitle} — best dry-block start")
+            .And.Contain($"{DryWindowPhases.Phase3s.ShortTitle} — best dry-block start");
+    }
+
+    [Fact]
+    public void RenderDryWindow_3s_best_start_is_blank_when_only_the_3g_curve_is_on_disk()
+    {
+        // A 3s-tagged row with only the 3g (v2) curve present must NOT borrow
+        // it — the version-keyed lookup misses, so the cell reads "—" and no
+        // 3s chart is drawn. Guards against the pre-version-key bug where any
+        // curve at the (station, window, lead, date) cell would be picked up.
+        var generatedAt = new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc);
+        var target = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+        var dryRow = new SitePages.DryWindowForecastPoint(
+            "ea_bellever_dartmoor", 6, "v3s", generatedAt, target, 24, 0.7, 0.5, null);
+        // Curve carries the 3g version, not 3s's.
+        var curve = new[]
+        {
+            StartHour("ea_bellever_dartmoor", 6, 24, target, 11, 0.45, 0.7, 0.32,
+                WeatherBlend.Commands.StartHourPredictCommand.OutputModelVersion),
+        };
+
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            DryWindowPredictions = new[] { dryRow },
+            StartHourPredictions = curve,
+            PhaseByVersion = new Dictionary<string, string> { ["v3s"] = "3s" },
+        };
+
+        var html = SitePages.RenderDryWindow(input, null);
+
+        // The 3s table still carries the Best-start header (hasCurves is true
+        // globally) but the cell itself is blank — no v2-3e curve to read.
+        html.Should().Contain("Best start");
+        html.Should().NotContain("11:00Z");
+        html.Should().NotContain("best dry-block start");
     }
 
     [Fact]

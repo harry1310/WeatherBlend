@@ -116,3 +116,10 @@ targets:
       - id: "3n"
         role: challenger
         impl: dotnet
+      # 3s (added 2026-05-15) — 3g's iid MC, marginals from the Phase 3e
+      # MLP instead of 3a. Occurrence Brier ties 3g by design; its value
+      # is the start-hour curve (2026-05-15 start-hour bake-off: 6h
+      # start-hour Brier −4.5% / Top-1 +2.7pt vs 3g, gain at every window).
+      - id: "3s"
+        role: challenger
+        impl: dotnet

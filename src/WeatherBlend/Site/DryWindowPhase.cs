@@ -17,13 +17,23 @@ namespace WeatherBlend.Site;
 /// <param name="Description">Skill-line paragraph rendered under the section heading.</param>
 /// <param name="ChampionVsChallengerLabel">Series label for any side-by-side overlay.</param>
 /// <param name="Color">SVG colour for that overlay.</param>
+/// <param name="StartHourCurveVersion">
+/// On-disk <c>model_version</c> of this phase's start-hour curve under
+/// <c>data/predictions/dry_window_start_hour/…/model_version=…/</c>, or
+/// <c>null</c> when the phase produces no start-hour curve. Only the
+/// iid-MC phases have one — 3g (curve <c>v2</c>, MC over 3a) and 3s
+/// (curve <c>v2-3e</c>, MC over 3e). The renderer routes each phase's
+/// "best start" column + start-hour chart to its own curve via this key,
+/// so 3g and 3s never read each other's curve.
+/// </param>
 public sealed record DryWindowPhase(
     string Key,
     string LongTitle,
     string ShortTitle,
     string Description,
     string ChampionVsChallengerLabel,
-    string Color);
+    string Color,
+    string? StartHourCurveVersion = null);
 
 /// <summary>
 /// The three dry-window phase buckets and helpers for mapping a prediction row's
@@ -47,7 +57,8 @@ public static class DryWindowPhases
         ShortTitle: "Phase 3g (MC)",
         Description: "Parameter-free MC over 3a hourly P(wet). Monotonic by construction.",
         ChampionVsChallengerLabel: "Phase 3g (MC)",
-        Color: "#43a047");
+        Color: "#43a047",
+        StartHourCurveVersion: WeatherBlend.Commands.StartHourPredictCommand.OutputModelVersion);
 
     public static readonly DryWindowPhase Phase3j = new(
         Key: "3j",
@@ -65,6 +76,15 @@ public static class DryWindowPhases
         ChampionVsChallengerLabel: "Phase 3n (regime)",
         Color: "#00897b");
 
+    public static readonly DryWindowPhase Phase3s = new(
+        Key: "3s",
+        LongTitle: "Phase 3s — iid MC over Phase 3e hourly P(wet)",
+        ShortTitle: "Phase 3s (MC over 3e)",
+        Description: "The 3g algorithm — parameter-free iid MC — but over the Phase 3e MLP's hourly P(wet) instead of 3a's. Occurrence probability ties 3g; 3e's sharper hourly marginals localise the dry block better, so 3s's value is the best-start-time curve (start-hour Brier −4.5% / Top-1 +2.7pt vs 3g at 6h).",
+        ChampionVsChallengerLabel: "Phase 3s (MC/3e)",
+        Color: "#ec407a",
+        StartHourCurveVersion: WeatherBlend.Commands.StartHourPredictCommand.OutputModelVersion3e);
+
     /// <summary>
     /// Display-metadata records keyed by phase string. Source of truth for
     /// "if this phase ever ships, here's what its card / heading looks like";
@@ -78,6 +98,7 @@ public static class DryWindowPhases
             [Phase3g.Key] = Phase3g,
             [Phase3j.Key] = Phase3j,
             [Phase3n.Key] = Phase3n,
+            [Phase3s.Key] = Phase3s,
         };
 
     /// <summary>

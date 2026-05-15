@@ -120,14 +120,23 @@ public sealed class TempTrainCommand
         }
 
         var fs = (featureSet ?? "lean").ToLowerInvariant();
-        if (fs is not ("lean" or "rich" or "independence-mc" or "copula-mc" or "regime-mc" or "exact" or "mlp"))
+        if (fs is not ("lean" or "rich" or "independence-mc" or "independence-mc-3e"
+                       or "copula-mc" or "regime-mc" or "exact" or "mlp"))
         {
-            _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich | independence-mc | copula-mc | regime-mc | exact | mlp.", featureSet);
+            _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich | independence-mc | independence-mc-3e | copula-mc | regime-mc | exact | mlp.", featureSet);
             return 2;
         }
         // "independence-mc" = Phase 3g (parameter-free MC over 3a marginals);
         // dry-window-only.
         if (fs == "independence-mc" && t != "dry-window")
+        {
+            _log.LogError(
+                "--feature-set {Fs} is only supported for target dry-window.", fs);
+            return 2;
+        }
+        // "independence-mc-3e" = Phase 3s (3g's iid MC, marginals from the
+        // 3e MLP instead of 3a); dry-window-only.
+        if (fs == "independence-mc-3e" && t != "dry-window")
         {
             _log.LogError(
                 "--feature-set {Fs} is only supported for target dry-window.", fs);
@@ -231,6 +240,7 @@ public sealed class TempTrainCommand
             },
             // dry-window: lean → Phase 3b (53 features),
             //             independence-mc → Phase 3g (parameter-free MC over 3a marginals),
+            //             independence-mc-3e → Phase 3s (3g's iid MC over 3e marginals),
             //             copula-mc → Phase 3j (Gaussian copula MC + per-(station, lead) Σ),
             //             regime-mc → Phase 3n (3j with regime-conditioned Σ_settled / Σ_unsettled),
             //             mlp → Phase 3f (local-only MLP, not on the site).
@@ -241,11 +251,12 @@ public sealed class TempTrainCommand
                                    station ?? "all", window ?? "all", leads,
                                    fs switch
                                    {
-                                       "independence-mc" => Train.DryWindow.DryWindow3gPredictor.Phase3g,
-                                       "copula-mc"       => Train.DryWindow.DryWindow3jPredictor.Phase3j,
-                                       "regime-mc"       => Train.DryWindow.DryWindow3nPredictor.Phase3n,
-                                       "mlp"             => Train.DryWindow.DryWindowFeatureBuilder.Phase3f,
-                                       _                 => Train.DryWindow.DryWindowFeatureBuilder.Phase3b,
+                                       "independence-mc"    => Train.DryWindow.DryWindow3gPredictor.Phase3g,
+                                       "independence-mc-3e" => Train.DryWindow.DryWindow3sPredictor.Phase3s,
+                                       "copula-mc"          => Train.DryWindow.DryWindow3jPredictor.Phase3j,
+                                       "regime-mc"          => Train.DryWindow.DryWindow3nPredictor.Phase3n,
+                                       "mlp"                => Train.DryWindow.DryWindowFeatureBuilder.Phase3f,
+                                       _                    => Train.DryWindow.DryWindowFeatureBuilder.Phase3b,
                                    },
                                    ct),
             // Per-variable element blenders: one dispatcher routes wind / humidity /

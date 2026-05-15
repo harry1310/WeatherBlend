@@ -150,6 +150,8 @@ public sealed class DryWindowConformalFitCommand
                     => Score3jOnVal(versionDir, metadata, stationSlug, lead, ds, daytime, ct),
                 var p when p == DryWindow3nPredictor.Phase3n
                     => Score3nOnVal(versionDir, metadata, stationSlug, lead, ds, daytime, ct),
+                var p when p == DryWindow3sPredictor.Phase3s
+                    => Score3sOnVal(metadata, stationSlug, lead, ds, daytime, ct),
                 _   => Score3bOnVal(versionDir, spec, lead, ds, stationName),
             };
 
@@ -212,6 +214,39 @@ public sealed class DryWindowConformalFitCommand
             // as Hyperparameters["window_hours"]. ds came from the same window,
             // so the row-vector window naturally matches; pull from metadata
             // to be explicit.
+            var window = metadata.Hyperparameters.HpInt("window_hours") ?? 3;
+            probs.Add(DryWindow3gPredictor.ProbDryWindow(q, window, rng, DefaultMcSamples));
+            labels.Add(row.Label);
+        }
+        return (probs, labels);
+    }
+
+    /// 3s path: identical to 3g (iid MC), but the replay hourly P(wet) comes
+    /// from the bound Phase 3e champion (precip_3e_version) rather than 3a.
+    private (List<double> Probs, List<bool> Labels) Score3sOnVal(
+        ModelArtifact.TrainingMetadata metadata, string stationSlug, int lead,
+        DryWindowDataset ds, DaytimeWindow daytime, CancellationToken ct)
+    {
+        var probs = new List<double>();
+        var labels = new List<bool>();
+
+        var v3e = metadata.Hyperparameters.HpString(DryWindow3sPredictor.Precip3eVersionKey);
+        if (string.IsNullOrEmpty(v3e))
+        {
+            _log.LogWarning("  3s version missing {Key} metadata; skipping",
+                DryWindow3sPredictor.Precip3eVersionKey);
+            return (probs, labels);
+        }
+        var hourly = DryWindow3gPredictor.LoadReplayHourly(
+            _cfg.Storage.PredictionsPath, stationSlug, v3e, lead);
+
+        var rng = new Random(42);
+        foreach (var row in ds.Val)
+        {
+            ct.ThrowIfCancellationRequested();
+            var (s, e) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(row.TargetDateUtc));
+            var q = DryWindow3gPredictor.ExtractDaytimeQ(hourly, row.TargetDateUtc, s, e);
+            if (q is null) continue;
             var window = metadata.Hyperparameters.HpInt("window_hours") ?? 3;
             probs.Add(DryWindow3gPredictor.ProbDryWindow(q, window, rng, DefaultMcSamples));
             labels.Add(row.Label);
