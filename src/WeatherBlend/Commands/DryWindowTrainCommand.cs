@@ -32,9 +32,15 @@ public sealed class DryWindowTrainCommand
     // `dry-window-conformal-fit` ran.
     private readonly DryWindowConformalFitCommand _conformal;
 
+    // --location resolves into _activeLocation at RunAsync entry; every
+    // former _cfg.Location read downstream now goes through this field.
+    // Defaults to the primary location (set in the constructor) so a
+    // no-flag invocation behaves exactly as before (Phase B, commit 3).
+    private Config.LocationConfig _activeLocation;
+
     private static readonly int[] DefaultLeads = Leads.Short;
     private static readonly int[] DefaultWindows = { 3, 4, 6 };
-    // Trained stations are now read from `_cfg.Location.Rainfall.Stations`. A
+    // Trained stations are now read from `_activeLocation.Rainfall.Stations`. A
     // hardcoded two-station list was set in Phase 3b before Hexworthy joined
     // the rainfall config (2026-04-26) and never got updated, leaving the
     // dry-window family with 2 stations while precip had 3. Reading from
@@ -50,13 +56,18 @@ public sealed class DryWindowTrainCommand
         _cfg = cfg;
         _metadata = metadata;
         _conformal = conformal;
+        _activeLocation = cfg.Location;
     }
 
     public Task<int> RunAsync(string stationArg, string windowArg, int[] leads, CancellationToken ct)
-        => RunAsync(stationArg, windowArg, leads, DryWindowFeatureBuilder.Phase3b, ct);
+        => RunAsync(stationArg, windowArg, leads, DryWindowFeatureBuilder.Phase3b, _cfg.Location, ct);
 
-    public async Task<int> RunAsync(string stationArg, string windowArg, int[] leads, string phase, CancellationToken ct)
+    public async Task<int> RunAsync(
+        string stationArg, string windowArg, int[] leads, string phase,
+        Config.LocationConfig location, CancellationToken ct)
     {
+        _activeLocation = location;
+
         if (phase != DryWindowFeatureBuilder.Phase3b
             && phase != DryWindow3gPredictor.Phase3g
             && phase != DryWindowFeatureBuilder.Phase3f
@@ -153,7 +164,7 @@ public sealed class DryWindowTrainCommand
             return 2;
         }
 
-        if (_cfg.Location.Rainfall.Stations.Count == 0)
+        if (_activeLocation.Rainfall.Stations.Count == 0)
         {
             _log.LogError("No rainfall stations configured.");
             return 2;
@@ -216,7 +227,7 @@ public sealed class DryWindowTrainCommand
                     var rows = DryWindowFeatureBuilder.BuildForLead(
                         _cfg.Storage.ForecastsPath,
                         _cfg.Storage.RainfallPath,
-                        _cfg.Location.Name,
+                        _activeLocation.Name,
                         stationName,
                         spec,
                         window,
@@ -385,7 +396,7 @@ public sealed class DryWindowTrainCommand
                     Version = versionName,
                     Target = "dry_window",
                     Phase = phase,
-                    LocationName = _cfg.Location.Name,
+                    LocationName = _activeLocation.Name,
                     DataSource = "previous_runs_api+ea_rainfall",
                     TrainedAtUtc = now,
                     Hyperparameters = BuildHpDict(hp, window),
@@ -418,7 +429,7 @@ public sealed class DryWindowTrainCommand
                     featureNames: specsPerLead.TryGetValue(firstLead3b, out var sp3b)
                         ? sp3b.FeatureNames.ToList() : Array.Empty<string>(),
                     labelRates: labelRates3b,
-                    locationName: _cfg.Location.Name);
+                    locationName: _activeLocation.Name);
                 if (!guardResult3b.Passed)
                 {
                     // Single-(station, window) guard fail aborts JUST this
@@ -548,7 +559,7 @@ public sealed class DryWindowTrainCommand
                     var spec = DryWindowFeatureBuilder.BuildSpec(_cfg.Blenders, lead, DryWindowFeatureBuilder.Phase3b);
                     var rows = DryWindowFeatureBuilder.BuildForLead(
                         _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
-                        _cfg.Location.Name, stationName,
+                        _activeLocation.Name, stationName,
                         spec, window, daytime, ct);
 
                     if (rows.Count < 100)
@@ -651,7 +662,7 @@ public sealed class DryWindowTrainCommand
                     Version = versionName,
                     Target = "dry_window",
                     Phase = DryWindow3gPredictor.Phase3g,
-                    LocationName = _cfg.Location.Name,
+                    LocationName = _activeLocation.Name,
                     DataSource = $"precipitation_replay@{precip3aVersion}",
                     TrainedAtUtc = now,
                     Hyperparameters = new Dictionary<string, object>
@@ -786,7 +797,7 @@ public sealed class DryWindowTrainCommand
                     var spec = DryWindowFeatureBuilder.BuildSpec(_cfg.Blenders, lead, DryWindowFeatureBuilder.Phase3b);
                     var rows = DryWindowFeatureBuilder.BuildForLead(
                         _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
-                        _cfg.Location.Name, stationName,
+                        _activeLocation.Name, stationName,
                         spec, window, daytime, ct);
 
                     if (rows.Count < 100)
@@ -889,7 +900,7 @@ public sealed class DryWindowTrainCommand
                     Version = versionName,
                     Target = "dry_window",
                     Phase = DryWindow3sPredictor.Phase3s,
-                    LocationName = _cfg.Location.Name,
+                    LocationName = _activeLocation.Name,
                     DataSource = $"precipitation_replay@{precip3eVersion}",
                     TrainedAtUtc = now,
                     Hyperparameters = new Dictionary<string, object>
@@ -1030,7 +1041,7 @@ public sealed class DryWindowTrainCommand
                     var spec = DryWindowFeatureBuilder.BuildSpec(_cfg.Blenders, lead, DryWindowFeatureBuilder.Phase3b);
                     var rows = DryWindowFeatureBuilder.BuildForLead(
                         _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
-                        _cfg.Location.Name, stationName,
+                        _activeLocation.Name, stationName,
                         spec, window, daytime, ct);
 
                     if (rows.Count < 100)
@@ -1188,7 +1199,7 @@ public sealed class DryWindowTrainCommand
                     Version = versionName,
                     Target = "dry_window",
                     Phase = DryWindow3jPredictor.Phase3j,
-                    LocationName = _cfg.Location.Name,
+                    LocationName = _activeLocation.Name,
                     DataSource = $"precipitation_replay@{precip3aVersion}",
                     TrainedAtUtc = now,
                     Hyperparameters = new Dictionary<string, object>
@@ -1272,7 +1283,7 @@ public sealed class DryWindowTrainCommand
         foreach (var lead in leads)
         {
             var matrices = DryWindowNwpAgreement.LoadOffsetDayPerNwpDaytime(
-                _cfg.Storage.ForecastsPath, _cfg.Location.Name, lead,
+                _cfg.Storage.ForecastsPath, _activeLocation.Name, lead,
                 canonicalModels, DaytimeFor);
             var byDate = new Dictionary<DateTime, double>(matrices.Count);
             foreach (var (date, mat) in matrices)
@@ -1339,7 +1350,7 @@ public sealed class DryWindowTrainCommand
                     var spec = DryWindowFeatureBuilder.BuildSpec(_cfg.Blenders, lead, DryWindowFeatureBuilder.Phase3b);
                     var rows = DryWindowFeatureBuilder.BuildForLead(
                         _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
-                        _cfg.Location.Name, stationName,
+                        _activeLocation.Name, stationName,
                         spec, window, daytime, ct);
 
                     if (rows.Count < 100)
@@ -1519,7 +1530,7 @@ public sealed class DryWindowTrainCommand
                     Version = versionName,
                     Target = "dry_window",
                     Phase = DryWindow3nPredictor.Phase3n,
-                    LocationName = _cfg.Location.Name,
+                    LocationName = _activeLocation.Name,
                     DataSource = $"precipitation_replay@{precip3aVersion}",
                     TrainedAtUtc = now,
                     Hyperparameters = new Dictionary<string, object>
@@ -1661,7 +1672,7 @@ public sealed class DryWindowTrainCommand
 
                     var rows = DryWindowFeatureBuilder.BuildForLead(
                         _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
-                        _cfg.Location.Name, stationName,
+                        _activeLocation.Name, stationName,
                         spec, window, daytime, ct);
 
                     if (rows.Count < 100)
@@ -1766,7 +1777,7 @@ public sealed class DryWindowTrainCommand
                     Version = versionName,
                     Target = "dry_window",
                     Phase = DryWindowFeatureBuilder.Phase3f,
-                    LocationName = _cfg.Location.Name,
+                    LocationName = _activeLocation.Name,
                     DataSource = "previous_runs_api+ea_rainfall",
                     TrainedAtUtc = now,
                     Hyperparameters = new Dictionary<string, object>
@@ -1834,7 +1845,7 @@ public sealed class DryWindowTrainCommand
     {
         if (string.IsNullOrWhiteSpace(stationArg) || stationArg.Equals("all", StringComparison.OrdinalIgnoreCase))
         {
-            var found = _cfg.Location.Rainfall.Stations.Select(s => s.Name).ToArray();
+            var found = _activeLocation.Rainfall.Stations.Select(s => s.Name).ToArray();
             if (found.Length == 0)
             {
                 _log.LogError("No rainfall stations in config — nothing to train.");
@@ -1843,13 +1854,13 @@ public sealed class DryWindowTrainCommand
             return found;
         }
 
-        var match = _cfg.Location.Rainfall.Stations
+        var match = _activeLocation.Rainfall.Stations
             .FirstOrDefault(s => s.Name.Equals(stationArg, StringComparison.OrdinalIgnoreCase)
                               || SlugMatch(s.Name, stationArg));
         if (match is null)
         {
             _log.LogError("Station '{Arg}' not in config. Available: [{Names}]",
-                stationArg, string.Join(", ", _cfg.Location.Rainfall.Stations.Select(s => s.Name)));
+                stationArg, string.Join(", ", _activeLocation.Rainfall.Stations.Select(s => s.Name)));
             return null;
         }
         return new[] { match.Name };

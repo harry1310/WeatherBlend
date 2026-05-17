@@ -201,10 +201,10 @@ public sealed class TempTrainCommand
             leads = leads.Where(l => l != 96 && l != 120).ToArray();
         }
 
-        // Resolve --location for the precipitation 3a/3c paths. Other targets
-        // ignore it for now — those trainers still hardcode _cfg.Location
-        // (the primary). When/if temperature or dry-window need multi-location
-        // support, thread `location` through the same way.
+        // Resolve --location into the active LocationConfig. Every target's
+        // trainer reads from this — temperature 2b/2c/2d, precipitation
+        // 3a/3c/3d/3e, dry-window, and the element blenders (Phase B,
+        // commit 3). No trainer hardcodes _cfg.Location any more.
         Config.LocationConfig? location = _cfg.Location;
         if (!string.IsNullOrWhiteSpace(locationOverride))
         {
@@ -216,10 +216,6 @@ public sealed class TempTrainCommand
                     locationOverride,
                     string.Join(", ", _cfg.Locations.Select(l => l.Name)));
                 return 2;
-            }
-            if (t != "precipitation" && t != "temperature")
-            {
-                _log.LogWarning("--location only affects precipitation 3a/3c and temperature 2b/2c/2d today; ignoring for target '{T}'.", t);
             }
         }
 
@@ -234,7 +230,7 @@ public sealed class TempTrainCommand
             "precipitation" => fs switch
             {
                 "rich"  => await RunPhase3cAsync(leads, station, location, ct),
-                "exact" => await RunPhase3dAsync(station, tier, includeUkv, exactLeads, cycles, ct),
+                "exact" => await RunPhase3dAsync(station, tier, includeUkv, exactLeads, cycles, location, ct),
                 "mlp"   => await RunPhase3eAsync(leads, station, location, ct),
                 _       => await RunPhase3aAsync(leads, station, location, ct),
             },
@@ -258,11 +254,11 @@ public sealed class TempTrainCommand
                                        "mlp"                => Train.DryWindow.DryWindowFeatureBuilder.Phase3f,
                                        _                    => Train.DryWindow.DryWindowFeatureBuilder.Phase3b,
                                    },
-                                   ct),
+                                   location, ct),
             // Per-variable element blenders: one dispatcher routes wind / humidity /
             // shortwave-radiation / cloud-cover to its dedicated IElementBlender.
             _ when elementTarget is not null
-                   => await _element.RunAsync(elementTarget, leads, ct),
+                   => await _element.RunAsync(elementTarget, leads, location, ct),
             _ => 2,
         };
     }
@@ -1668,27 +1664,27 @@ public sealed class TempTrainCommand
 
     private static readonly int[] DefaultPhase3dLeads = { 12, 24 };
 
-    private async Task<int> RunPhase3dAsync(string? stationOverride, string? tierName, bool? includeUkvOpt, int[]? exactLeads, int[]? cycleHoursFilter, CancellationToken ct)
+    private async Task<int> RunPhase3dAsync(string? stationOverride, string? tierName, bool? includeUkvOpt, int[]? exactLeads, int[]? cycleHoursFilter, Config.LocationConfig location, CancellationToken ct)
     {
-        if (_cfg.Location.Rainfall.Stations.Count == 0)
+        if (location.Rainfall.Stations.Count == 0)
         {
-            _log.LogError("No rainfall stations configured — cannot train precipitation blender.");
+            _log.LogError("No rainfall stations configured for location '{Loc}' — cannot train precipitation blender.", location.Name);
             return 2;
         }
 
         IReadOnlyList<string> stationsToTrain;
         if (string.IsNullOrWhiteSpace(stationOverride))
         {
-            stationsToTrain = _cfg.Location.Rainfall.Stations.Select(s => s.Name).ToList();
+            stationsToTrain = location.Rainfall.Stations.Select(s => s.Name).ToList();
         }
         else
         {
-            var match = _cfg.Location.Rainfall.Stations
+            var match = location.Rainfall.Stations
                 .FirstOrDefault(s => s.Name.Equals(stationOverride, StringComparison.OrdinalIgnoreCase));
             if (match is null)
             {
-                _log.LogError("Station '{Station}' not found in config. Available: {Available}",
-                    stationOverride, string.Join(", ", _cfg.Location.Rainfall.Stations.Select(s => s.Name)));
+                _log.LogError("Station '{Station}' not found in location '{Loc}' config. Available: {Available}",
+                    stationOverride, location.Name, string.Join(", ", location.Rainfall.Stations.Select(s => s.Name)));
                 return 2;
             }
             stationsToTrain = new[] { match.Name };
@@ -1710,7 +1706,7 @@ public sealed class TempTrainCommand
         foreach (var station in stationsToTrain)
         {
             ct.ThrowIfCancellationRequested();
-            var rc = await TrainPhase3dStationAsync(station, modelsRoot, tier, hp, IncludeUkv, leadsToTrain, cycleHoursFilter, ct);
+            var rc = await TrainPhase3dStationAsync(station, modelsRoot, tier, hp, IncludeUkv, leadsToTrain, cycleHoursFilter, location, ct);
             if (rc != 0) anyFail = true;
         }
         return anyFail ? 3 : 0;
@@ -1724,6 +1720,7 @@ public sealed class TempTrainCommand
         bool includeUkv,
         int[] leadsToTrain,
         int[]? cycleHoursFilter,
+        Config.LocationConfig location,
         CancellationToken ct)
     {
         var stationSlug = StationSlug.WithEaPrefix(primaryStation);
@@ -1759,7 +1756,7 @@ public sealed class TempTrainCommand
             var rows = PrecipExactFeatureBuilder.Build(
                 _cfg.Storage.ForecastsPath,
                 _cfg.Storage.RainfallPath,
-                _cfg.Location.Name,
+                location.Name,
                 stationName: primaryStation,
                 tier, spec,
                 targetLead: lead,
@@ -1853,10 +1850,7 @@ public sealed class TempTrainCommand
             Version = versionName,
             Target = "precipitation",
             Phase = "3d",
-            // 3d (exact-runtime) is bonehill-only today — no Membury exact
-            // archive yet. When it lands, plumb a location arg through
-            // TrainPhase3dStationAsync's signature like 3a/3c/3e do.
-            LocationName = _cfg.Location.Name,
+            LocationName = location.Name,
             DataSource = "exact_runtime_s3_archive+ea_rainfall",
             TrainedAtUtc = DateTime.UtcNow,
             Hyperparameters = BuildPrecipHpDict(hp),
@@ -1884,8 +1878,7 @@ public sealed class TempTrainCommand
             computedAtUtc: now,
             rowsTrain: totalTrainRows, rowsVal: totalValRows, rowsTest: totalTestRows,
             trainFeatures: firstLeadTrainFeatures,
-            // 3d (exact-runtime) is bonehill-only — see TrainingMetadata above.
-            locationName: _cfg.Location.Name,
+            locationName: location.Name,
             featureNames: specsPerLead.TryGetValue(firstLead3d, out var sp3d)
                 ? sp3d.FeatureNames.ToList() : Array.Empty<string>(),
             labelRates: labelRates3d);

@@ -11,5 +11,5 @@ public interface IElementBlender
 {
     ElementTarget Target { get; }
 
-    Task<int> TrainAsync(int[] leads, CancellationToken ct);
+    Task<int> TrainAsync(int[] leads, WeatherBlend.Config.LocationConfig location, CancellationToken ct);
 }

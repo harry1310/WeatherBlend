@@ -24,7 +24,7 @@ public sealed class ElementTrainCommand
         _blenders = blenders.ToList();
     }
 
-    public Task<int> RunAsync(ElementTarget target, int[] leads, CancellationToken ct)
+    public Task<int> RunAsync(ElementTarget target, int[] leads, WeatherBlend.Config.LocationConfig location, CancellationToken ct)
     {
         var blender = _blenders.FirstOrDefault(b => b.Target == target);
         if (blender is null)
@@ -34,7 +34,7 @@ public sealed class ElementTrainCommand
                 target.CliName, string.Join(", ", _blenders.Select(b => b.Target.CliName)));
             return Task.FromResult(2);
         }
-        return blender.TrainAsync(leads, ct);
+        return blender.TrainAsync(leads, location, ct);
     }
 
     public static int[] DefaultLeadsArray => DefaultLeads;

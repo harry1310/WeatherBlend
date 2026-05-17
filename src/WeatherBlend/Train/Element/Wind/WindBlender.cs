@@ -22,7 +22,7 @@ public sealed class WindBlender : IElementBlender
 
     public ElementTarget Target => ElementTargets.Wind;
 
-    public Task<int> TrainAsync(int[] leads, CancellationToken ct)
+    public Task<int> TrainAsync(int[] leads, LocationConfig location, CancellationToken ct)
     {
         var inputs = new ElementTrainerHarness.ElementTrainerInputs(
             Target: Target,
@@ -35,7 +35,7 @@ public sealed class WindBlender : IElementBlender
             ModelsRoot: _cfg.Storage.ModelsPath,
             BuildSpec: lead => WindFeatureBuilder.BuildSpec(_cfg.Blenders, lead),
             LoadRowsForSpec: (spec, c) => WindFeatureBuilder.BuildForLead(
-                _cfg.Storage.ForecastsPath, _cfg.Storage.Era5Path, _cfg.Location.Name, spec, c),
+                _cfg.Storage.ForecastsPath, _cfg.Storage.Era5Path, location.Name, spec, c),
             DeviationsFromBrief: new[]
             {
                 "MétéoFrance excluded — Open-Meteo Previous Runs API ships no MF wind " +
@@ -48,7 +48,7 @@ public sealed class WindBlender : IElementBlender
                 "marginally hurts wind at every lead, unlike every other target. Wind keeps " +
                 "the deterministic ML.NET defaults.",
             },
-            LocationName: _cfg.Location.Name);
+            LocationName: location.Name);
 
         return ElementTrainerHarness.RunAsync(_log, inputs, leads, ct);
     }

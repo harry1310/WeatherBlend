@@ -17,7 +17,7 @@ public sealed class CloudBlender : IElementBlender
 
     public ElementTarget Target => ElementTargets.CloudCover;
 
-    public Task<int> TrainAsync(int[] leads, CancellationToken ct)
+    public Task<int> TrainAsync(int[] leads, LocationConfig location, CancellationToken ct)
     {
         var inputs = new ElementTrainerHarness.ElementTrainerInputs(
             Target: Target,
@@ -25,7 +25,7 @@ public sealed class CloudBlender : IElementBlender
             ModelsRoot: _cfg.Storage.ModelsPath,
             BuildSpec: lead => CloudFeatureBuilder.BuildSpec(_cfg.Blenders, lead),
             LoadRowsForSpec: (spec, c) => CloudFeatureBuilder.BuildForLead(
-                _cfg.Storage.ForecastsPath, _cfg.Storage.Era5Path, _cfg.Location.Name, spec, c),
+                _cfg.Storage.ForecastsPath, _cfg.Storage.Era5Path, location.Name, spec, c),
             DeviationsFromBrief: new[]
             {
                 "Layered cloud (low/mid/high) features omitted — Open-Meteo Previous Runs " +
@@ -34,7 +34,7 @@ public sealed class CloudBlender : IElementBlender
                 "Objective is L2; MAE used only as early-stopping metric (Microsoft.ML.LightGbm 4.0 limit).",
                 "No monotone constraints (same Microsoft.ML.LightGbm 4.0 limit).",
             },
-            LocationName: _cfg.Location.Name);
+            LocationName: location.Name);
 
         return ElementTrainerHarness.RunAsync(_log, inputs, leads, ct);
     }
