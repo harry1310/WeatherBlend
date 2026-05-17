@@ -39,36 +39,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Inference table — DO NOT widen this without checking the bundle's actual
-# training data partition. These mappings are derived from
-# WeatherBlend/src/WeatherBlend/config.yaml (locations[].rainfall.stations).
-# ---------------------------------------------------------------------------
-
-STATION_TO_LOCATION: dict[str, str] = {
-    # Bonehill rainfall stations
-    "ea_bellever_dartmoor":      "bonehill_rocks",
-    "ea_bovey_tracey":           "bonehill_rocks",
-    "ea_dartmoor_nr_hexworthy":  "bonehill_rocks",
-    "ea_princetown":             "bonehill_rocks",  # historical, dropped 2026-05-04
-    # Membury rainfall stations (added 2026-05-11)
-    "ea_chards_snowdon_hill":    "membury_devon",
-    "ea_goren":                  "membury_devon",
-    "ea_raymonds_hill":          "membury_devon",
-}
-
-# Single-location targets. Anything matching these target names whose path
-# doesn't carry a station slug is assumed bonehill_rocks (the only location
-# trained for these targets to date).
-SINGLE_LOCATION_TARGETS: set[str] = {
-    "temperature",
-    "wind",
-    "cloud_cover",
-    "humidity",
-    "shortwave_radiation",
-    "feels_like",      # joined output, not strictly trained per-location
-    "start_hour",      # ditto
-}
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from station_locations import STATION_TO_LOCATION, SINGLE_LOCATION_TARGETS
 
 R2_PREFIX = "r2:weatherblend/data/models"
 
