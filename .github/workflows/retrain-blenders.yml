@@ -58,9 +58,10 @@ concurrency:
 jobs:
   retrain:
     runs-on: ubuntu-latest
-    # 90 min ceiling. The whole sweep fits in 30-60 min on a healthy
-    # runner; padding covers a slow R2 pull or runner cold-start.
-    timeout-minutes: 90
+    # 120 min ceiling. Core sweep fits in 30-60 min; the precipitation
+    # replay regen for the dry-window MC phases adds ~15-25 min, plus
+    # padding for a slow R2 pull or runner cold-start.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -172,18 +173,23 @@ jobs:
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
-          # Forecasts (all configured models): blender input.
-          mkdir -p data/forecasts/location=bonehill_rocks
-          for m in gfs_seamless ecmwf_ifs025 icon_seamless meteofrance_seamless gem_seamless ukmo_seamless ecmwf_aifs025_single jma_seamless; do
-            rclone copy "r2:${R2_BUCKET}/data/forecasts/location=bonehill_rocks/model=$m" \
-              "data/forecasts/location=bonehill_rocks/model=$m" \
+          # Forecasts (all configured models): blender input. Both locations —
+          # bonehill_rocks (all phases) and membury_devon (Membury 2b/2c/3a/3c).
+          for loc in bonehill_rocks membury_devon; do
+            mkdir -p "data/forecasts/location=$loc"
+            for m in gfs_seamless ecmwf_ifs025 icon_seamless meteofrance_seamless gem_seamless ukmo_seamless ecmwf_aifs025_single jma_seamless; do
+              rclone copy "r2:${R2_BUCKET}/data/forecasts/location=$loc/model=$m" \
+                "data/forecasts/location=$loc/model=$m" \
+                --fast-list --transfers 16 --checkers 32 || true
+            done
+          done
+          # ERA5 truth (training) — both locations.
+          for loc in bonehill_rocks membury_devon; do
+            mkdir -p "data/truth/era5/location=$loc"
+            rclone copy "r2:${R2_BUCKET}/data/truth/era5/location=$loc" \
+              "data/truth/era5/location=$loc" \
               --fast-list --transfers 16 --checkers 32 || true
           done
-          # ERA5 truth (training).
-          mkdir -p data/truth/era5/location=bonehill_rocks
-          rclone copy "r2:${R2_BUCKET}/data/truth/era5/location=bonehill_rocks" \
-            data/truth/era5/location=bonehill_rocks \
-            --fast-list --transfers 16 --checkers 32 || true
           # METAR truth (verify) + EA rainfall truth (precip + dry-window).
           mkdir -p data/truth/metar
           rclone copy "r2:${R2_BUCKET}/data/truth/metar" data/truth/metar \
@@ -357,6 +363,39 @@ jobs:
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target dry-window
+
+      # 3g / 3j / 3n / 3s are parameter-free MC over precipitation hourly
+      # P(wet). They TRAIN by reading a replay parquet of the bound 3a / 3e
+      # champion under data/predictions/precipitation_replay/. That tree is
+      # neither pulled from R2 nor a by-product of 3a/3e training, so without
+      # this step LoadReplayHourly throws on the missing file and every MC
+      # phase fails. Regenerate it here — after 3a/3e retrain, before the MC
+      # phases — for the current 3a champion (feeds 3g/3j/3n) and the latest
+      # phase3e in Active (feeds 3s), per dry-window station. Each replay is
+      # made non-fatal so one station's miss only skips that cell.
+      - name: Generate precipitation replay for dry-window MC phases
+        id: precip_replay
+        if: steps.gate.outputs.proceed == 'true' && (steps.phases.outputs.run_3g == 'true' || steps.phases.outputs.run_3j == 'true' || steps.phases.outputs.run_3n == 'true' || steps.phases.outputs.run_3s == 'true')
+        continue-on-error: true
+        run: |
+          MANIFEST=data/models/precipitation/MANIFEST.json
+          for slug in ea_bellever_dartmoor ea_bovey_tracey ea_dartmoor_nr_hexworthy; do
+            # 3a champion replay — feeds 3g / 3j / 3n.
+            dotnet run --project src/WeatherBlend --no-build -c Release -- \
+              precip-replay --truth-station "$slug" --model-version current --leads 24,48,72 \
+              || echo "::warning::3a replay failed for $slug — 3g/3j/3n may skip it."
+            # Latest phase3e in Active — feeds 3s.
+            v3e=$(jq -r --arg s "$slug" \
+              '.Stations[$s].Active | map(select(contains("phase3e"))) | sort | last // ""' \
+              "$MANIFEST")
+            if [ -n "$v3e" ]; then
+              dotnet run --project src/WeatherBlend --no-build -c Release -- \
+                precip-replay --truth-station "$slug" --model-version "$v3e" --leads 24,48,72 \
+                || echo "::warning::3e replay failed for $slug — 3s may skip it."
+            else
+              echo "::warning::No phase3e version in $MANIFEST for $slug — 3s replay skipped."
+            fi
+          done
 
       # 3g has no LightGBM fit — it's parameter-free MC over 3a's hourly
       # P(wet) at predict time — but the bundle still BINDS one 3a champion
