@@ -638,7 +638,7 @@ public static class Program
             getDefaultValue: () => "all");
         var predictLocationOpt = new Option<string?>(
             name: "--location",
-            description: "Precipitation + temperature: override the primary location (e.g. 'membury_devon'). For precip, filters stationsToRun to that location's rainfall config + reads forecasts from that location's tree. For temperature (post-2026-05-14 station-keyed layout), filters to that station entry's bundles + that location's forecasts. Without --location, temperature iterates EVERY station entry in the manifest; precipitation defaults to the primary location only.",
+            description: "Override the primary location for any predict target (e.g. 'membury_devon') — precipitation, temperature, dry-window, feels-like, start-hour, and the element blenders all honour it. For precip, filters stationsToRun to that location's rainfall config + reads forecasts from that location's tree. For temperature (post-2026-05-14 station-keyed layout), filters to that station entry's bundles + that location's forecasts. Without --location, temperature iterates EVERY station entry in the manifest; every other target defaults to the primary location only.",
             getDefaultValue: () => null);
         var predict = new Command(
             "predict",
@@ -663,22 +663,22 @@ public static class Program
             else if (string.Equals(target, "dry-window", StringComparison.OrdinalIgnoreCase))
             {
                 var cmd = host.Services.GetRequiredService<DryWindowPredictCommand>();
-                ctx.ExitCode = await cmd.RunAsync(truthStation, window, version, forDate, ctx.GetCancellationToken());
+                ctx.ExitCode = await cmd.RunAsync(truthStation, window, version, forDate, locationOverride, ctx.GetCancellationToken());
             }
             else if (string.Equals(target, "feels-like", StringComparison.OrdinalIgnoreCase))
             {
                 var cmd = host.Services.GetRequiredService<FeelsLikePredictCommand>();
-                ctx.ExitCode = await cmd.RunAsync(forDate, ctx.GetCancellationToken());
+                ctx.ExitCode = await cmd.RunAsync(forDate, locationOverride, ctx.GetCancellationToken());
             }
             else if (string.Equals(target, "start-hour", StringComparison.OrdinalIgnoreCase))
             {
                 var cmd = host.Services.GetRequiredService<StartHourPredictCommand>();
-                ctx.ExitCode = await cmd.RunAsync(forDate, ctx.GetCancellationToken());
+                ctx.ExitCode = await cmd.RunAsync(forDate, locationOverride, ctx.GetCancellationToken());
             }
             else if (elementTarget is not null)
             {
                 var cmd = host.Services.GetRequiredService<ElementPredictCommand>();
-                ctx.ExitCode = await cmd.RunAsync(elementTarget, version, forDate, ctx.GetCancellationToken());
+                ctx.ExitCode = await cmd.RunAsync(elementTarget, version, forDate, locationOverride, ctx.GetCancellationToken());
             }
             else
             {

@@ -32,14 +32,39 @@ public sealed class DryWindowPredictCommand
     private readonly ILogger<DryWindowPredictCommand> _log;
     private readonly AppConfig _cfg;
 
+    // --location resolves into _activeLocation at RunAsync entry; every
+    // forecast read + LocationName pin downstream goes through this field.
+    // Defaults to the primary location so a no-flag predict is unchanged
+    // (Phase B, commit 4).
+    private Config.LocationConfig _activeLocation;
+
     public DryWindowPredictCommand(ILogger<DryWindowPredictCommand> log, AppConfig cfg)
     {
         _log = log;
         _cfg = cfg;
+        _activeLocation = cfg.Location;
     }
 
-    public async Task<int> RunAsync(string stationArg, string windowArg, string modelVersion, DateOnly? forDate, CancellationToken ct)
+    public Task<int> RunAsync(string stationArg, string windowArg, string modelVersion, DateOnly? forDate, CancellationToken ct)
+        => RunAsync(stationArg, windowArg, modelVersion, forDate, locationOverride: null, ct);
+
+    public async Task<int> RunAsync(string stationArg, string windowArg, string modelVersion, DateOnly? forDate, string? locationOverride, CancellationToken ct)
     {
+        _activeLocation = _cfg.Location;
+        if (!string.IsNullOrWhiteSpace(locationOverride))
+        {
+            var match = _cfg.Locations.FirstOrDefault(l =>
+                l.Name.Equals(locationOverride, StringComparison.OrdinalIgnoreCase));
+            if (match is null)
+            {
+                _log.LogError("Location '{Name}' not found in config.yaml's `locations:` list. Available: [{All}]",
+                    locationOverride, string.Join(", ", _cfg.Locations.Select(l => l.Name)));
+                return 2;
+            }
+            _activeLocation = match;
+            _log.LogInformation("Predict location override → '{Loc}'.", _activeLocation.Name);
+        }
+
         var modelsRoot = _cfg.Storage.ModelsPath;
         var manifestPath = Path.Combine(modelsRoot, "dry_window", ModelArtifact.ManifestFileName);
         if (!File.Exists(manifestPath))
@@ -77,7 +102,7 @@ public sealed class DryWindowPredictCommand
         var earliest = targets.Min(t => t.Date);
         var latest = targets.Max(t => t.Date).AddHours(23);
         var perDayPerModel = QueryForecastDaysByTarget(
-            _cfg.Storage.ForecastsPath, _cfg.Location.Name, earliest, latest, anchor, ct);
+            _cfg.Storage.ForecastsPath, _activeLocation.Name, earliest, latest, anchor, ct);
 
         var anyWritten = false;
         foreach (var (compositeKey, station) in entries)
@@ -134,11 +159,11 @@ public sealed class DryWindowPredictCommand
         var metadata = ModelArtifact.LoadTrainingMetadata(versionDir);
         // Phase A multi-location safety: metadata.LocationName is
         // [JsonRequired] so a missing field already threw at deserialise.
-        if (!string.Equals(metadata.LocationName, _cfg.Location.Name, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(metadata.LocationName, _activeLocation.Name, StringComparison.OrdinalIgnoreCase))
         {
             _log.LogError(
                 "{Key} bundle {V} was trained on location '{Trained}' but predict is using NWP from '{Active}' — refusing to score.",
-                compositeKey, versionName, metadata.LocationName, _cfg.Location.Name);
+                compositeKey, versionName, metadata.LocationName, _activeLocation.Name);
             return false;
         }
         var climPath = Path.Combine(versionDir, "dry_window_climatology.json");
@@ -294,7 +319,7 @@ public sealed class DryWindowPredictCommand
 
             predictions.Add(new DryWindowPredictionRow
             {
-                LocationName = _cfg.Location.Name,
+                LocationName = _activeLocation.Name,
                 TruthStation = stationSlug,
                 WindowHours = windowHours,
                 ModelVersion = metadata.Version,
@@ -431,7 +456,7 @@ public sealed class DryWindowPredictCommand
 
             predictions.Add(new DryWindowPredictionRow
             {
-                LocationName = _cfg.Location.Name,
+                LocationName = _activeLocation.Name,
                 TruthStation = stationSlug,
                 WindowHours = windowHours,
                 ModelVersion = versionName,
@@ -565,7 +590,7 @@ public sealed class DryWindowPredictCommand
 
             predictions.Add(new DryWindowPredictionRow
             {
-                LocationName = _cfg.Location.Name,
+                LocationName = _activeLocation.Name,
                 TruthStation = stationSlug,
                 WindowHours = windowHours,
                 ModelVersion = versionName,
@@ -700,7 +725,7 @@ public sealed class DryWindowPredictCommand
 
             predictions.Add(new DryWindowPredictionRow
             {
-                LocationName = _cfg.Location.Name,
+                LocationName = _activeLocation.Name,
                 TruthStation = stationSlug,
                 WindowHours = windowHours,
                 ModelVersion = versionName,
@@ -807,7 +832,7 @@ public sealed class DryWindowPredictCommand
             var winStart = anchorDate.Date;
             var winEnd   = winStart.AddDays(6);
             var matrices = DryWindowNwpAgreement.LoadLivePerNwpDaytime(
-                _cfg.Storage.ForecastsPath, _cfg.Location.Name, lead,
+                _cfg.Storage.ForecastsPath, _activeLocation.Name, lead,
                 canonical, DaytimeFor, winStart, winEnd);
             var perDay = new Dictionary<DateTime, double>(matrices.Count);
             foreach (var (date, mat) in matrices)
@@ -855,7 +880,7 @@ public sealed class DryWindowPredictCommand
 
             predictions.Add(new DryWindowPredictionRow
             {
-                LocationName = _cfg.Location.Name,
+                LocationName = _activeLocation.Name,
                 TruthStation = stationSlug,
                 WindowHours = windowHours,
                 ModelVersion = versionName,

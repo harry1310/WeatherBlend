@@ -59,14 +59,38 @@ public sealed class StartHourPredictCommand
     private readonly ILogger<StartHourPredictCommand> _log;
     private readonly AppConfig _cfg;
 
+    // --location resolves into _activeLocation at RunAsync entry; the
+    // start-hour rows pin LocationName from it. Defaults to the primary
+    // location (Phase B, commit 4).
+    private Config.LocationConfig _activeLocation;
+
     public StartHourPredictCommand(ILogger<StartHourPredictCommand> log, AppConfig cfg)
     {
         _log = log;
         _cfg = cfg;
+        _activeLocation = cfg.Location;
     }
 
-    public async Task<int> RunAsync(DateOnly? forDate, CancellationToken ct)
+    public Task<int> RunAsync(DateOnly? forDate, CancellationToken ct)
+        => RunAsync(forDate, locationOverride: null, ct);
+
+    public async Task<int> RunAsync(DateOnly? forDate, string? locationOverride, CancellationToken ct)
     {
+        _activeLocation = _cfg.Location;
+        if (!string.IsNullOrWhiteSpace(locationOverride))
+        {
+            var match = _cfg.Locations.FirstOrDefault(l =>
+                l.Name.Equals(locationOverride, StringComparison.OrdinalIgnoreCase));
+            if (match is null)
+            {
+                _log.LogError("Location '{Name}' not found in config.yaml's `locations:` list. Available: [{All}]",
+                    locationOverride, string.Join(", ", _cfg.Locations.Select(l => l.Name)));
+                return 2;
+            }
+            _activeLocation = match;
+            _log.LogInformation("Predict location override → '{Loc}'.", _activeLocation.Name);
+        }
+
         var modelsRoot = _cfg.Storage.ModelsPath;
         var predictionMadeAt = DateTime.UtcNow;
         var anchor = PredictAnchor.Compute(predictionMadeAt, forDate);
@@ -247,7 +271,7 @@ public sealed class StartHourPredictCommand
                 {
                     bucket.Add(new StartHourPredictionRow
                     {
-                        LocationName = _cfg.Location.Name,
+                        LocationName = _activeLocation.Name,
                         TruthStation = station,
                         WindowHours = windowHours,
                         ModelVersion = outModelVersion,
