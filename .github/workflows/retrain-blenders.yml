@@ -173,15 +173,19 @@ jobs:
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
-          # Forecasts (all configured models): blender input. Both locations —
-          # bonehill_rocks (all phases) and membury_devon (Membury 2b/2c/3a/3c).
+          # Forecasts — the WHOLE per-location tree (every model= dir), not a
+          # hardcoded model list. The Open-Meteo seamless models feed the
+          # offset_day blenders; the raw S3 cycle models (gfs_ncep,
+          # ecmwf_ifs_oper, met_office_ukv, …) feed the exact-runtime 2d/3d
+          # blenders. A hardcoded 8-model list silently starved 2d/3d of
+          # input (0 rows) on the first CI retrain — pull everything instead.
+          # Both locations: bonehill_rocks (all phases) + membury_devon
+          # (Membury 2b/2c/3a/3c).
           for loc in bonehill_rocks membury_devon; do
             mkdir -p "data/forecasts/location=$loc"
-            for m in gfs_seamless ecmwf_ifs025 icon_seamless meteofrance_seamless gem_seamless ukmo_seamless ecmwf_aifs025_single jma_seamless; do
-              rclone copy "r2:${R2_BUCKET}/data/forecasts/location=$loc/model=$m" \
-                "data/forecasts/location=$loc/model=$m" \
-                --fast-list --transfers 16 --checkers 32 || true
-            done
+            rclone copy "r2:${R2_BUCKET}/data/forecasts/location=$loc" \
+              "data/forecasts/location=$loc" \
+              --fast-list --transfers 16 --checkers 32 || true
           done
           # ERA5 truth (training) — both locations.
           for loc in bonehill_rocks membury_devon; do
