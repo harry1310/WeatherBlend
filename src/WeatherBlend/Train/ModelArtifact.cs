@@ -94,6 +94,21 @@ public static class ModelArtifact
         /// same shape as 2d's lead-12-only championship for temperature.
         /// </summary>
         public Dictionary<int, string> ChampionByLead { get; set; } = new();
+
+        /// <summary>
+        /// Configured location this station belongs to (e.g.
+        /// <c>bonehill_rocks</c>, <c>membury_devon</c>). Populated by
+        /// <see cref="PromoteStationVersionAsChampion"/> /
+        /// <see cref="PromoteStationVersionAsChallenger"/> from the
+        /// freshly-trained bundle's <c>training_metadata.json</c>
+        /// LocationName, and asserted never to change once set — a
+        /// promote that would swap the location under an existing entry
+        /// throws (Phase B multi-location safety, 2026-05-17). Empty on
+        /// legacy manifests written before Phase B; the location
+        /// backfill tool fills those in. Read via
+        /// <see cref="ResolveStationLocation"/>.
+        /// </summary>
+        public string Location { get; set; } = "";
     }
 
     public sealed class FeatureSchema
@@ -933,12 +948,32 @@ public static class ModelArtifact
         string modelsRoot, string target, string station, string newVersionName, string newPhase, bool asChampion)
     {
         var newLeadSet = TryReadVersionLeads(Path.Combine(modelsRoot, target, station, newVersionName));
+        var newLocation = TryReadVersionLocation(Path.Combine(modelsRoot, target, station, newVersionName));
         MutateManifest(modelsRoot, target, m =>
         {
             if (!m.Stations.TryGetValue(station, out var entry))
             {
                 entry = new StationEntry();
                 m.Stations[station] = entry;
+            }
+            // Pin the station's location from the freshly-trained bundle's
+            // metadata. Once set it must never change: a promote that
+            // would swap bonehill_rocks <-> membury_devon under an
+            // existing entry is the catastrophic "wrong location's bundle
+            // in this slot" scenario — throw rather than corrupt the
+            // manifest. A bundle whose location can't be read (legacy /
+            // unreadable metadata) leaves the entry's Location untouched.
+            if (newLocation is not null)
+            {
+                if (!string.IsNullOrEmpty(entry.Location)
+                    && !string.Equals(entry.Location, newLocation, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException(
+                        $"Refusing to promote version '{newVersionName}' into station " +
+                        $"'{station}' of target '{target}': the bundle's location is " +
+                        $"'{newLocation}' but the manifest entry is pinned to " +
+                        $"'{entry.Location}'. A station never changes location — this is " +
+                        "either the wrong bundle or a misrouted trainer.");
+                entry.Location = newLocation;
             }
             if (asChampion) entry.Current = newVersionName;
             if (!entry.Versions.Contains(newVersionName)) entry.Versions.Add(newVersionName);
@@ -1084,6 +1119,30 @@ public static class ModelArtifact
     }
 
     /// <summary>
+    /// Read the <c>LocationName</c> from <c>training_metadata.json</c> at
+    /// <paramref name="versionDir"/>. Returns null on missing dir, missing
+    /// file, or any deserialise error — callers treat null as "location
+    /// unknown, leave the manifest entry's Location untouched". Phase B
+    /// (2026-05-17): used by <see cref="PromoteStationVersionInternal"/>
+    /// to pin a station's location from the bundle it just trained.
+    /// </summary>
+    private static string? TryReadVersionLocation(string versionDir)
+    {
+        try
+        {
+            if (!Directory.Exists(versionDir)) return null;
+            var path = Path.Combine(versionDir, TrainingMetadataFileName);
+            if (!File.Exists(path)) return null;
+            var meta = LoadTrainingMetadata(versionDir);
+            return string.IsNullOrWhiteSpace(meta.LocationName) ? null : meta.LocationName;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Append a single version to the station's Active list (champion + challengers).
     /// Idempotent: a version that's already Active is left in place. Doesn't touch
     /// Current. Used by 3e to register itself as a challenger alongside the existing
@@ -1116,6 +1175,48 @@ public static class ModelArtifact
         if (entry.Active.Count > 0) return entry.Active;
         if (!string.IsNullOrWhiteSpace(entry.Current)) return new[] { entry.Current };
         return Array.Empty<string>();
+    }
+
+    /// <summary>
+    /// Location-checked variant of
+    /// <see cref="ResolveStationActive(string,string,string)"/>. Resolves
+    /// the station's Active versions but first asserts the manifest
+    /// entry's <see cref="StationEntry.Location"/> matches
+    /// <paramref name="location"/> — a predict / verify pass that names
+    /// the location it expects gets a loud failure if the station has
+    /// been re-homed under a different location (Phase B multi-location
+    /// safety). An entry with an empty Location (legacy, pre-backfill) is
+    /// permitted against any location since there's nothing to check.
+    /// </summary>
+    public static IReadOnlyList<string> ResolveStationActive(
+        string modelsRoot, string target, string location, string station)
+    {
+        var manifest = ReadJson<Manifest>(Path.Combine(modelsRoot, target, ManifestFileName));
+        if (manifest is null) return Array.Empty<string>();
+        if (!manifest.Stations.TryGetValue(station, out var entry)) return Array.Empty<string>();
+        if (!string.IsNullOrEmpty(entry.Location)
+            && !string.Equals(entry.Location, location, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                $"Station '{station}' in target '{target}' is pinned to location " +
+                $"'{entry.Location}' but was resolved for location '{location}'. " +
+                "Predict/verify must request the station's own location.");
+        if (entry.Active.Count > 0) return entry.Active;
+        if (!string.IsNullOrWhiteSpace(entry.Current)) return new[] { entry.Current };
+        return Array.Empty<string>();
+    }
+
+    /// <summary>
+    /// The location a station is pinned to, or empty string when the
+    /// station isn't in the manifest / has no Location set (legacy
+    /// pre-backfill entries). Phase B (2026-05-17); consumed by
+    /// predict / verify / render fanout to route a station to its own
+    /// location's NWP + truth.
+    /// </summary>
+    public static string ResolveStationLocation(string modelsRoot, string target, string station)
+    {
+        var manifest = ReadJson<Manifest>(Path.Combine(modelsRoot, target, ManifestFileName));
+        if (manifest is null) return "";
+        return manifest.Stations.TryGetValue(station, out var entry) ? entry.Location : "";
     }
 
     /// <summary>
