@@ -43,6 +43,16 @@ public static class ActivePhasePolicy
         => PhaseRegistry.Default.IsActive(target, phase);
 
     /// <summary>
+    /// Champion-first phase-ID list for a (target, location) pair — like
+    /// <see cref="ByTarget"/> but filtered to phases applicable to
+    /// <paramref name="location"/> per each phase's optional phases.yaml
+    /// <c>locations:</c> filter. A phase with no filter applies to every
+    /// configured location. Phase B (commit 7).
+    /// </summary>
+    public static IReadOnlyList<string> ByTargetAndLocation(string target, string location)
+        => PhaseRegistry.Default.ByTargetAndLocation(target, location);
+
+    /// <summary>
     /// Index of <paramref name="phase"/> in <paramref name="target"/>'s
     /// champion-first list — low = champion, high = challenger. Returns
     /// <see cref="int.MaxValue"/> for unknown / inactive phases so callers

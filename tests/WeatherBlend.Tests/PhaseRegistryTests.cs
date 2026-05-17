@@ -151,6 +151,71 @@ public class PhaseRegistryTests
     }
 
     [Fact]
+    public void ByTargetAndLocation_excludes_a_phase_scoped_to_another_location()
+    {
+        // 2d carries `locations: [bonehill_rocks]`; 2b has no filter.
+        // For membury_devon only 2b survives; for bonehill_rocks both do.
+        const string yaml = """
+            targets:
+              temperature:
+                phases:
+                  - id: "2b"
+                    role: champion
+                    impl: dotnet
+                  - id: "2d"
+                    role: challenger
+                    impl: dotnet
+                    locations: ["bonehill_rocks"]
+            """;
+        var reg = PhaseRegistry.LoadFromYaml(yaml);
+
+        reg.ByTargetAndLocation("temperature", "bonehill_rocks")
+            .Should().BeEquivalentTo(new[] { "2b", "2d" }, o => o.WithStrictOrdering());
+        reg.ByTargetAndLocation("temperature", "membury_devon")
+            .Should().BeEquivalentTo(new[] { "2b" },
+                "2d is scoped to bonehill_rocks; 2b has no filter so it applies everywhere");
+        reg.ByTargetAndLocation("wind", "bonehill_rocks")
+            .Should().BeEmpty("unknown target");
+    }
+
+    [Fact]
+    public void AppliesToLocation_is_case_insensitive_and_true_when_filter_absent()
+    {
+        const string yaml = """
+            targets:
+              temperature:
+                phases:
+                  - id: "2b"
+                    role: champion
+                    impl: dotnet
+                  - id: "2d"
+                    role: challenger
+                    impl: dotnet
+                    locations: ["Bonehill_Rocks"]
+            """;
+        var reg = PhaseRegistry.LoadFromYaml(yaml);
+        var phases = reg.AllPhases("temperature");
+
+        phases.Single(p => p.Id == "2b").AppliesToLocation("anywhere").Should().BeTrue(
+            "a phase with no locations: filter applies to every location");
+        phases.Single(p => p.Id == "2d").AppliesToLocation("bonehill_rocks").Should().BeTrue(
+            "location match is case-insensitive");
+        phases.Single(p => p.Id == "2d").AppliesToLocation("membury_devon").Should().BeFalse();
+    }
+
+    [Fact]
+    public void Default_phases_yaml_scopes_2d_and_3d_to_bonehill_only()
+    {
+        // The shipped phases.yaml pins the exact-runtime phases to
+        // bonehill_rocks — they have no Membury S3 archive yet.
+        var reg = PhaseRegistry.Default;
+        reg.ByTargetAndLocation("temperature", "membury_devon").Should().NotContain("2d");
+        reg.ByTargetAndLocation("temperature", "bonehill_rocks").Should().Contain("2d");
+        reg.ByTargetAndLocation("precipitation", "membury_devon").Should().NotContain("3d");
+        reg.ByTargetAndLocation("precipitation", "bonehill_rocks").Should().Contain("3d");
+    }
+
+    [Fact]
     public void LoadFromYaml_throws_when_targets_block_missing()
     {
         // Catch a copy-paste accident that nukes the targets block. We

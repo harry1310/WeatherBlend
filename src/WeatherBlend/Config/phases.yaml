@@ -23,6 +23,13 @@
 #   dotnet      — trained by WeatherBlend (Microsoft.ML / LightGBM)
 #   python      — trained by WeatherProbabilistic (rpy2 / pymc / blackjax)
 #
+# locations (optional list): per-phase location filter (Phase B). Absent
+#   means "every configured location". A non-empty list scopes the phase
+#   to exactly those locations — e.g. the exact-runtime 2d/3d phases are
+#   bonehill_rocks-only until a Membury-cell S3 archive backfill lands.
+#   Read via PhaseRegistry.ByTargetAndLocation / PhaseEntry.AppliesToLocation;
+#   the per-location retrain fanout skips a phase a location can't train.
+#
 # IsActive() / Models-page filtering EXCLUDES role=confidence so 5a doesn't
 # render as a prediction line. Train workflows include role=confidence so
 # the Sunday auto-retrain catches it.
@@ -42,6 +49,9 @@ targets:
       - id: "2d"
         role: challenger
         impl: dotnet
+        # Exact-runtime (raw S3 cycle archive) — bonehill_rocks only until
+        # a Membury-cell S3 archive backfill lands.
+        locations: ["bonehill_rocks"]
 
   precipitation:
     phases:
@@ -62,6 +72,9 @@ targets:
       - id: "3d"
         role: challenger
         impl: dotnet
+        # Exact-runtime (raw S3 cycle archive) — bonehill_rocks only until
+        # a Membury-cell S3 archive backfill lands.
+        locations: ["bonehill_rocks"]
       # 3e (TorchSharp MLP) added 2026-05-11 as the first .NET-native
       # tabular-NN bake-off vs 3a/3c. Same 59-feat rich input as 3c so
       # the comparison is GBT-vs-MLP-on-identical-data; per-station,

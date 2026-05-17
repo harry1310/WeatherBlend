@@ -56,6 +56,24 @@ public sealed class PhaseRegistry
     }
 
     /// <summary>
+    /// Champion-first phase-ID list for a (target, location) pair —
+    /// <see cref="ByTarget"/> filtered to phases whose phases.yaml
+    /// <c>locations:</c> filter admits <paramref name="location"/> (a
+    /// phase with no filter applies everywhere). Confidence-role phases
+    /// are excluded, same as <see cref="ByTarget"/>. Phase B (commit 7):
+    /// lets the per-location retrain fanout skip a phase that has no
+    /// archive for a given location (e.g. 2d / 3d for membury_devon).
+    /// </summary>
+    public IReadOnlyList<string> ByTargetAndLocation(string target, string location)
+    {
+        if (!_byTarget.TryGetValue(target, out var phases)) return Array.Empty<string>();
+        return phases
+            .Where(p => p.Role != PhaseRole.Confidence && p.AppliesToLocation(location))
+            .Select(p => p.Id)
+            .ToArray();
+    }
+
+    /// <summary>
     /// Returns true iff the (target, phase) pair is in the shipping
     /// lineup AS A PREDICTION LINE — i.e. champion or challenger, NOT
     /// confidence-role. Empty / null phase strings are never active.
@@ -157,7 +175,13 @@ public sealed class PhaseRegistry
 
                 var role = ParseRole(raw.Role, target, raw.Id);
                 var impl = ParseImpl(raw.Impl, target, raw.Id);
-                entries.Add(new PhaseEntry(raw.Id, role, impl));
+                IReadOnlyList<string> locations = raw.Locations is null
+                    ? Array.Empty<string>()
+                    : raw.Locations
+                        .Where(l => !string.IsNullOrWhiteSpace(l))
+                        .Select(l => l.Trim())
+                        .ToArray();
+                entries.Add(new PhaseEntry(raw.Id, role, impl, locations));
             }
 
             // Sanity: at most one champion per target. Multiple champions
@@ -225,6 +249,10 @@ public sealed class PhaseRegistry
         public string? Id { get; set; }
         public string? Role { get; set; }
         public string? Impl { get; set; }
+
+        /// <summary>Optional per-phase location filter (Phase B, commit 7).
+        /// Absent / empty = all configured locations.</summary>
+        public List<string>? Locations { get; set; }
     }
 }
 
@@ -233,7 +261,22 @@ public sealed class PhaseRegistry
 /// future iterators (e.g. an <c>export-phases</c> CLI) can pattern-match
 /// on the role/impl enums without re-reading the YAML.
 /// </summary>
-public sealed record PhaseEntry(string Id, PhaseRole Role, PhaseImpl Impl);
+public sealed record PhaseEntry(
+    string Id, PhaseRole Role, PhaseImpl Impl, IReadOnlyList<string> Locations)
+{
+    /// <summary>
+    /// True if this phase should be trained / shipped for
+    /// <paramref name="location"/>. An empty <see cref="Locations"/> list
+    /// means "all configured locations" — the default for a phase whose
+    /// phases.yaml entry has no <c>locations:</c> key. A non-empty list
+    /// scopes the phase to exactly those locations (e.g. 2d / 3d are
+    /// bonehill_rocks-only until a Membury exact-runtime S3 archive lands).
+    /// Case-insensitive.
+    /// </summary>
+    public bool AppliesToLocation(string location)
+        => Locations.Count == 0
+           || Locations.Any(l => string.Equals(l, location, StringComparison.OrdinalIgnoreCase));
+}
 
 /// <summary>
 /// Phase rendering / lifecycle role per phases.yaml.
