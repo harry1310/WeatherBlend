@@ -282,6 +282,29 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
   const branch = wfRun.head_branch ?? "(unknown)";
   const sha = (wfRun.head_sha ?? "").slice(0, 7);
 
+  // ---- Sunday retrain chain: retrain-python → retrain-blenders --------
+  // The two Sunday retrains run SERIALLY so retrain-blenders' 4b mint
+  // reads this cycle's fresh 4a (minted by retrain-python) instead of
+  // racing it. previous-runs-refresh dispatches ONLY retrain-python; when
+  // that run completes we dispatch retrain-blenders here.
+  //
+  // Gated on event=repository_dispatch so only the Sunday cron chain
+  // triggers it — a manual `gh workflow run retrain-python` does not.
+  // Fires on ANY completion, not just success: the 22 non-4b blender
+  // phases are independent of 4a, so a failed retrain-python must not
+  // skip the whole .NET sweep (4b then just mints from the prior 4a).
+  if ((wfRun.path ?? "").endsWith("/retrain-python.yml")
+      && wfRun.event === "repository_dispatch") {
+    try {
+      await dispatchWorkflow(env, "retrain-blenders.yml", "harry1310/WeatherBlend", { force: "true" });
+      console.log(`retrain chain: retrain-python ${conclusion} → dispatched retrain-blenders`);
+    } catch (e) {
+      console.error(`retrain chain: failed to dispatch retrain-blenders: ${e}`);
+    }
+    // Fall through — the ci-failure issue logic below still runs for the
+    // retrain-python result itself.
+  }
+
   const issueTitle = `[ci-fail] ${wfName}`;
   const failureConclusions = new Set(["failure", "timed_out", "startup_failure"]);
   const isFailure = conclusion !== null && failureConclusions.has(conclusion);
@@ -342,6 +365,10 @@ interface WorkflowRunPayload {
   workflow_run: {
     id: number;
     name: string;
+    /** Workflow file path, e.g. ".github/workflows/retrain-python.yml". */
+    path?: string;
+    /** Event that triggered the run, e.g. "repository_dispatch", "schedule". */
+    event?: string;
     run_number: number;
     head_branch: string | null;
     head_sha: string | null;

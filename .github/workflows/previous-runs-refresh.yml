@@ -164,11 +164,18 @@ jobs:
       # ---- Sunday retrain chain (Phase 2b of AUTO_RETRAIN_PLAN.md) ------
       # The Cloudflare scheduler-worker passes inputs.train_after_refresh =
       # "true" only on the Sunday noon tick. When set, mint a GitHub App
-      # installation token (same App as Cloudflare uses for cron-dispatch)
-      # and fire repository_dispatch at WeatherProbabilistic's
-      # retrain-python.yml. Future slice adds retrain-blenders.yml dispatch
-      # for the .NET side. The chain is success-gated so a failed refresh
-      # never triggers a retrain on stale data.
+      # installation token and fire repository_dispatch at
+      # WeatherProbabilistic's retrain-python.yml. Success-gated so a
+      # failed refresh never triggers a retrain on stale data.
+      #
+      # retrain-blenders is deliberately NOT dispatched here. The two
+      # retrains run SERIALLY (python → blenders) so retrain-blenders'
+      # 4b mint sees this cycle's fresh 4a instead of racing it. The
+      # Cloudflare worker already receives retrain-python's workflow_run
+      # completion webhook — it dispatches retrain-blenders from there
+      # (see scheduler-worker handleWorkflowRun). Serialising via the
+      # worker, not a blocking poll here, keeps this job off the shared
+      # weatherblend-data lock (a 1-2 h wait would stall collect/predict).
 
       - name: Get GitHub App installation token (Sunday only)
         if: success() && inputs.train_after_refresh == 'true'
@@ -201,23 +208,7 @@ jobs:
             -F "client_payload[phases]=all" \
             -F "client_payload[trigger]=sunday-cron"
           echo "::notice::Dispatched retrain-python in WeatherProbabilistic (phases=all)"
-
-      - name: Fire repository_dispatch for retrain-blenders (Sunday only)
-        if: success() && inputs.train_after_refresh == 'true'
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          # Self-dispatch within WeatherBlend — same GitHub App auth path
-          # we use for the cross-repo trigger. Could also be a workflow_run
-          # trigger (same-repo so it works) but using repository_dispatch
-          # for both keeps the Sunday-trigger pattern uniform across both
-          # retrain workflows. Runs in parallel with retrain-python on a
-          # separate runner since they're disjoint work.
-          gh api repos/harry1310/WeatherBlend/dispatches \
-            -f event_type=retrain \
-            -F "client_payload[phases]=all" \
-            -F "client_payload[trigger]=sunday-cron"
-          echo "::notice::Dispatched retrain-blenders in WeatherBlend (phases=all)"
+          echo "::notice::retrain-blenders will be chained by the Cloudflare worker on retrain-python completion."
 
       - name: Upload logs as artifact
         if: failure()
