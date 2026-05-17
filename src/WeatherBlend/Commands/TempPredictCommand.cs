@@ -190,17 +190,12 @@ public sealed class TempPredictCommand
             return false;
         }
 
-        // Phase A multi-location safety (2026-05-12). Now the station key
-        // pre-filters versions to the right location, but keep the LocationName
-        // pin as a belt-and-braces check (corrupt metadata is still possible).
-        if (string.IsNullOrEmpty(metadata.LocationName))
-        {
-            _log.LogWarning(
-                "Bundle {V} has no LocationName pinned (legacy bundle predating 2026-05-12 backfill). " +
-                "Proceeding under the active location '{Active}'.",
-                version, activeLocation.Name);
-        }
-        else if (!string.Equals(metadata.LocationName, activeLocation.Name, StringComparison.OrdinalIgnoreCase))
+        // Phase A multi-location safety: the station key already pre-filters
+        // versions to the right location; this LocationName pin is the
+        // belt-and-braces check against corrupt metadata. metadata.LocationName
+        // is [JsonRequired] so a missing field already threw at deserialise —
+        // only the mismatch case remains to guard.
+        if (!string.Equals(metadata.LocationName, activeLocation.Name, StringComparison.OrdinalIgnoreCase))
         {
             _log.LogError(
                 "Bundle {V} (under station '{Station}') was trained on location '{Trained}' but predict is using NWP from '{Active}' — refusing to score.",

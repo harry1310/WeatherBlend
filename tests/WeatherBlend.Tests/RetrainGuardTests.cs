@@ -403,19 +403,16 @@ public class RetrainGuardTests
     }
 
     [Fact]
-    public void Check_passes_when_either_LocationName_is_unset()
+    public void Check_passes_when_both_LocationNames_are_default_empty()
     {
-        // Backfill window: previous summary predates the field, current
-        // summary is the first pinned write. Guard treats the missing side
-        // as "no info to compare" rather than a breach — refusing legacy
-        // pairings would block every retrain until backfill is done.
-        // Symmetric in the other direction (newly-empty current would
-        // signal trainer regression but isn't a hard block — the schema-
-        // level [JsonRequired] bumped in Task #21 catches that case at
-        // load time anyway).
-        var prev = MakeSummary();              // LocationName = null
-        var curr = MakeSummary();
-        curr.LocationName = "bonehill_rocks";
+        // After Task #21 LocationName is [JsonRequired] (load throws on
+        // missing) but the in-memory POCO still defaults to "" for tests
+        // and fixtures that don't set it. The guard must treat empty ==
+        // empty as "no info to compare" rather than a phantom breach,
+        // otherwise unit tests (and the test harness's MakeSummary) would
+        // all fail with a noisy locationName breach.
+        var prev = MakeSummary();   // LocationName = ""
+        var curr = MakeSummary();   // LocationName = ""
 
         var result = RetrainGuard.Check(curr, prev, RetrainGuard.Defaults);
 

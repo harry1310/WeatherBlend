@@ -246,20 +246,23 @@ public class ModelArtifactTests : IDisposable
     }
 
     [Fact]
-    public void TrainingMetadata_loads_legacy_bundle_with_no_LocationName_field()
+    public void TrainingMetadata_throws_when_LocationName_field_is_missing()
     {
-        // Bundles trained before the Phase A multi-location safety work
-        // (2026-05-12) wrote no LocationName field. The deserialiser MUST
-        // tolerate that during the backfill window, surfacing the value as
-        // null so callers can either fall back to a station→location lookup
-        // or warn-and-skip. After Task #21 lands the field becomes
-        // [JsonRequired] and this test is replaced by a "throws on missing"
-        // counterpart.
-        var versionDir = Path.Combine(_root, "temperature", "v-legacy");
+        // Phase A tightening (Task #21): LocationName is [JsonRequired].
+        // A bundle without it is a corrupt/incomplete write and must fail
+        // at deserialise — silently treating it as null lets the predict
+        // path either pick the wrong NWP source or fall back to legacy
+        // behaviour, both of which are the bug we shipped Phase A to kill.
+        // Pre-tightening (Tasks 15-20) the loader returned null and the
+        // predict commands warn-then-fallback. After tightening, only
+        // bundles written by trainers that thread LocationName through
+        // RetrainGuard.BuildCheckAndSave will load — every other path is
+        // a bundle we should not score against.
+        var versionDir = Path.Combine(_root, "temperature", "v-no-location");
         Directory.CreateDirectory(versionDir);
-        var legacyJson = """
+        var jsonWithoutLocation = """
             {
-              "Version": "v-legacy",
+              "Version": "v-no-location",
               "Target": "temperature",
               "Phase": "2b",
               "DataSource": "previous_runs_api",
@@ -272,12 +275,12 @@ public class ModelArtifactTests : IDisposable
             """;
         File.WriteAllText(
             Path.Combine(versionDir, ModelArtifact.TrainingMetadataFileName),
-            legacyJson);
+            jsonWithoutLocation);
 
-        var loaded = ModelArtifact.LoadTrainingMetadata(versionDir);
+        var act = () => ModelArtifact.LoadTrainingMetadata(versionDir);
 
-        loaded.Phase.Should().Be("2b");
-        loaded.LocationName.Should().BeNull();
+        act.Should().Throw<JsonException>()
+            .WithMessage("*LocationName*");
     }
 
     [Fact]

@@ -160,13 +160,13 @@ public static class ModelArtifact
         /// Configured location whose NWP fed this bundle's training data.
         /// Pinned at train time so predict can refuse to score the bundle
         /// against any other location's NWP (Phase A multi-location safety,
-        /// 2026-05-12). Nullable for the duration of the backfill window;
-        /// empty string treated as "legacy bundle, location unknown" by
-        /// callers — they should fall back to the station's home-location
-        /// in config and emit a one-shot warning. Will tighten to
-        /// <c>[JsonRequired]</c> once every bundle on R2 is backfilled.
+        /// 2026-05-12). Required at deserialise — every bundle on R2 was
+        /// backfilled and every trainer writes it. A bundle without this
+        /// field is a corrupt/incomplete write and should fail loudly at
+        /// load time rather than slipping through to predict.
         /// </summary>
-        public string? LocationName { get; set; }
+        [System.Text.Json.Serialization.JsonRequired]
+        public string LocationName { get; set; } = "";
 
         /// <summary>Free-form tag — e.g. "previous_runs_api" so the report can explain data source at a glance.</summary>
         public string DataSource { get; set; } = "";
