@@ -103,7 +103,7 @@ export interface Env {
 
 export default {
   async scheduled(event: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
-    let targets = WORKFLOW_FOR_CRON[event.cron];
+    const targets = WORKFLOW_FOR_CRON[event.cron];
     if (!targets || targets.length === 0) {
       // Unknown cron string means wrangler.toml and this file have drifted
       // out of sync. Throwing surfaces it as a failed Cloudflare scheduled
@@ -112,21 +112,13 @@ export default {
         `unknown cron expression: '${event.cron}'. Update WORKFLOW_FOR_CRON in src/index.ts.`,
       );
     }
-    // Sunday-only retrain chain (Phase 2b of AUTO_RETRAIN_PLAN.md):
-    // on the noon tick, attach train_after_refresh=true to the
-    // previous-runs-refresh dispatch when the schedule fires on a Sunday.
-    // The workflow's final step reads that input and (on success) fires
-    // repository_dispatch at the WeatherProbabilistic retrain workflows.
-    // No new cron triggers added — stays within the 5-trigger free-tier
-    // cap by piggybacking the existing noon refresh tick.
-    if (event.cron === "0 12 * * *") {
-      const isSunday = new Date(event.scheduledTime).getUTCDay() === 0;
-      targets = targets.map((t) =>
-        t.workflow === "previous-runs-refresh.yml"
-          ? { ...t, inputs: { train_after_refresh: isSunday ? "true" : "false" } }
-          : t,
-      );
-    }
+    // The Sunday retrain chain is driven entirely from handleWorkflowRun
+    // (the workflow_run webhook handler), not from here. This cron just
+    // dispatches the noon refresh; when previous-runs-refresh completes
+    // on a Sunday the worker chains retrain-python, and on retrain-python's
+    // completion it chains retrain-blenders. Keeping every hop in the
+    // worker means one place owns the cadence.
+    //
     // Fire all dispatches in parallel — they go to (potentially) different
     // repos and don't depend on each other. If one fails the others still
     // run; we surface aggregate failure at the end so a partial outage is
@@ -282,28 +274,48 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
   const branch = wfRun.head_branch ?? "(unknown)";
   const sha = (wfRun.head_sha ?? "").slice(0, 7);
 
-  // ---- Sunday retrain chain: retrain-python → retrain-blenders --------
-  // The two Sunday retrains run SERIALLY so retrain-blenders' 4b mint
-  // reads this cycle's fresh 4a (minted by retrain-python) instead of
-  // racing it. previous-runs-refresh dispatches ONLY retrain-python; when
-  // that run completes we dispatch retrain-blenders here.
-  //
-  // Gated on event=repository_dispatch so only the Sunday cron chain
-  // triggers it — a manual `gh workflow run retrain-python` does not.
-  // Fires on ANY completion, not just success: the 22 non-4b blender
-  // phases are independent of 4a, so a failed retrain-python must not
-  // skip the whole .NET sweep (4b then just mints from the prior 4a).
-  if ((wfRun.path ?? "").endsWith("/retrain-python.yml")
-      && wfRun.event === "repository_dispatch") {
+  // ---- Sunday retrain chain (worker-orchestrated) ---------------------
+  // The worker owns the whole chain. The noon cron dispatches
+  // previous-runs-refresh; the two hops below advance it on workflow_run
+  // completions, so the three run strictly serially:
+  //   previous-runs-refresh ──(success, Sunday)──► retrain-python
+  //   retrain-python        ──(any completion)───► retrain-blenders
+  // Serial so retrain-blenders' 4b mint reads this cycle's fresh 4a
+  // rather than racing it. Both hops dispatch via workflow_dispatch
+  // (force=true) — the same path the cron uses, so no GitHub App
+  // permission beyond the actions:write the worker already relies on.
+
+  // Hop A — refresh → python. Gated on a successful refresh (no retrain
+  // on stale data) AND on it being a Sunday: previous-runs-refresh runs
+  // daily, so the Sunday test (at completion, ~12:15 UTC, same day it
+  // started) is what scopes the retrain to once a week.
+  if ((wfRun.path ?? "").endsWith("/previous-runs-refresh.yml")
+      && conclusion === "success"
+      && new Date().getUTCDay() === 0) {
+    try {
+      await dispatchWorkflow(env, "retrain-python.yml", "harry1310/WeatherProbabilistic", { force: "true" });
+      console.log("retrain chain: previous-runs-refresh success (Sunday) → dispatched retrain-python");
+    } catch (e) {
+      console.error(`retrain chain: failed to dispatch retrain-python: ${e}`);
+    }
+  }
+
+  // Hop B — python → blenders. Fires on ANY retrain-python completion
+  // (success or failure): the non-4b blender phases are independent of
+  // 4a, so a failed retrain-python must not skip the .NET sweep — 4b
+  // just mints from the prior 4a. NOTE: this also chains a *manual*
+  // retrain-python run into retrain-blenders — an accepted trade-off for
+  // dispatching via workflow_dispatch (no repository_dispatch App perm).
+  if ((wfRun.path ?? "").endsWith("/retrain-python.yml")) {
     try {
       await dispatchWorkflow(env, "retrain-blenders.yml", "harry1310/WeatherBlend", { force: "true" });
       console.log(`retrain chain: retrain-python ${conclusion} → dispatched retrain-blenders`);
     } catch (e) {
       console.error(`retrain chain: failed to dispatch retrain-blenders: ${e}`);
     }
-    // Fall through — the ci-failure issue logic below still runs for the
-    // retrain-python result itself.
   }
+  // Both hops fall through — the ci-failure issue logic below still runs
+  // for the workflow_run that triggered this handler.
 
   const issueTitle = `[ci-fail] ${wfName}`;
   const failureConclusions = new Set(["failure", "timed_out", "startup_failure"]);
