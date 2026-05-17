@@ -50,6 +50,15 @@ public sealed class Phase4bMintCommand
         _cfg = cfg;
     }
 
+    /// <summary>
+    /// Per-station outcome. <see cref="Skipped"/> is NOT a failure: a
+    /// station with no 4a or 3e bundle simply isn't provisioned for 4b
+    /// (e.g. Membury — 4a was never trained there). Skips must not fail
+    /// the mint step, otherwise the Sunday retrain red-Xes over a model
+    /// that was never meant to exist at that location.
+    /// </summary>
+    private enum MintOutcome { Minted, Skipped, Failed }
+
     public async Task<int> RunAsync(CancellationToken ct)
     {
         var stations = ResolveStations();
@@ -67,15 +76,28 @@ public sealed class Phase4bMintCommand
             "Mint Phase 4b: version={Version}, stations=[{Stations}]",
             version, string.Join(", ", stations));
 
-        int nOk = 0, nErr = 0;
+        int nOk = 0, nSkip = 0, nErr = 0;
         foreach (var station in stations)
         {
             ct.ThrowIfCancellationRequested();
-            var (ok, note) = await MintForStationAsync(modelsRoot, station, version, trainedAt, ct);
-            _log.LogInformation("{Tag} {Station}: {Note}", ok ? "OK " : "ERR", station, note);
-            if (ok) nOk++; else nErr++;
+            var (outcome, note) = await MintForStationAsync(modelsRoot, station, version, trainedAt, ct);
+            var tag = outcome switch
+            {
+                MintOutcome.Minted  => "OK  ",
+                MintOutcome.Skipped => "SKIP",
+                _                   => "ERR ",
+            };
+            _log.LogInformation("{Tag} {Station}: {Note}", tag, station, note);
+            switch (outcome)
+            {
+                case MintOutcome.Minted:  nOk++;   break;
+                case MintOutcome.Skipped: nSkip++; break;
+                default:                  nErr++;  break;
+            }
         }
-        _log.LogInformation("Done. Minted: {OK}, failed: {Err}.", nOk, nErr);
+        _log.LogInformation("Done. Minted: {OK}, skipped: {Skip}, failed: {Err}.", nOk, nSkip, nErr);
+        // Skips don't fail the step — only genuine errors (4a+3e present
+        // but the mint itself broke) escalate to exit 3.
         return nErr == 0 ? 0 : 3;
     }
 
@@ -90,19 +112,27 @@ public sealed class Phase4bMintCommand
         return slugs;
     }
 
-    private async Task<(bool ok, string note)> MintForStationAsync(
+    private async Task<(MintOutcome outcome, string note)> MintForStationAsync(
         string modelsRoot, string station, string version, DateTime trainedAt, CancellationToken ct)
     {
         var stationDir = Path.Combine(modelsRoot, "precipitation", station);
         if (!Directory.Exists(stationDir))
-            return (false, $"station dir missing at {stationDir}");
+            return (MintOutcome.Skipped, $"no precipitation models dir at {stationDir} — not provisioned for 4b");
 
-        var bundle4a = FindLatestBundleWithTestPredictions(stationDir, "_phase4a");
-        var bundle3e = FindLatestBundleWithTestPredictions(stationDir, "_phase3e");
-        var bundle3a = FindLatestBundleWithTestPredictions(stationDir, phaseSuffix: null);
-        if (bundle4a is null) return (false, $"no 4a bundle with test_predictions.parquet under {stationDir}");
-        if (bundle3e is null) return (false, $"no 3e bundle with test_predictions.parquet under {stationDir}");
-        if (bundle3a is null) return (false, $"no 3a bundle (needed for climatology copy) under {stationDir}");
+        // 4a / 3e supply the test_predictions to join. 3a supplies only
+        // the location pin (training_metadata) + climatology copy — it does
+        // NOT need a test_predictions.parquet, so resolve it on the file 4b
+        // actually consumes. Requiring test_predictions there was the bug
+        // that 403'd Bovey/Hexworthy 4b on the first CI retrain.
+        var bundle4a = FindLatestBundle(stationDir, "_phase4a", "test_predictions.parquet");
+        var bundle3e = FindLatestBundle(stationDir, "_phase3e", "test_predictions.parquet");
+        var bundle3a = FindLatestBundle(stationDir, phaseSuffix: null, ModelArtifact.TrainingMetadataFileName);
+        // No 4a or no 3e ⇒ this station isn't a 4b station (e.g. Membury,
+        // where 4a has never been trained). Skip, don't fail.
+        if (bundle4a is null) return (MintOutcome.Skipped, $"no 4a bundle — station not provisioned for 4b ({stationDir})");
+        if (bundle3e is null) return (MintOutcome.Skipped, $"no 3e bundle — station not provisioned for 4b ({stationDir})");
+        // With 4a + 3e present, a missing 3a bundle IS a genuine fault.
+        if (bundle3a is null) return (MintOutcome.Failed, $"no 3a bundle (needed for location + climatology) under {stationDir}");
 
         // Pull the active location from the 3a bundle's metadata — 4b
         // inherits the location pinning. If a station ever ends up with
@@ -120,7 +150,7 @@ public sealed class Phase4bMintCommand
             Path.Combine(bundle4a, "test_predictions.parquet"),
             Path.Combine(bundle3e, "test_predictions.parquet"));
         if (joined.Count == 0)
-            return (false, "inner-join of 4a + 3e test_predictions produced 0 rows");
+            return (MintOutcome.Failed, "inner-join of 4a + 3e test_predictions produced 0 rows");
 
         // Write bundle dir + artefacts.
         var outDir = Path.Combine(stationDir, version);
@@ -262,10 +292,19 @@ public sealed class Phase4bMintCommand
         // entry for this station (ComposeActive is lead-overlap-aware).
         ModelArtifact.PromoteStationVersionAsChampion(modelsRoot, "precipitation", station, version, newPhase: Phase);
 
-        return (true, $"minted {version} ({joined.Count:N0} test rows, mean Brier {perLead.Values.Average(s => s.BlendTestMae):F4}); promoted to MANIFEST.Active");
+        return (MintOutcome.Minted, $"minted {version} ({joined.Count:N0} test rows, mean Brier {perLead.Values.Average(s => s.BlendTestMae):F4}); promoted to MANIFEST.Active");
     }
 
-    private static string? FindLatestBundleWithTestPredictions(string stationDir, string? phaseSuffix)
+    /// <summary>
+    /// Latest version dir under <paramref name="stationDir"/> that carries
+    /// <paramref name="requiredFile"/>. <paramref name="phaseSuffix"/> null
+    /// matches the suffix-less 3a champion dirs; a non-null suffix matches
+    /// exactly (e.g. <c>_phase4a</c>). The required-file gate differs per
+    /// caller: 4a/3e are resolved on <c>test_predictions.parquet</c> (the
+    /// data 4b joins), 3a on <c>training_metadata.json</c> (4b only needs
+    /// 3a for the location pin + a best-effort climatology copy).
+    /// </summary>
+    private static string? FindLatestBundle(string stationDir, string? phaseSuffix, string requiredFile)
     {
         if (!Directory.Exists(stationDir)) return null;
         var candidates = new List<string>();
@@ -280,7 +319,7 @@ public sealed class Phase4bMintCommand
             {
                 if (!name.EndsWith(phaseSuffix, StringComparison.Ordinal)) continue;
             }
-            if (File.Exists(Path.Combine(d, "test_predictions.parquet"))) candidates.Add(d);
+            if (File.Exists(Path.Combine(d, requiredFile))) candidates.Add(d);
         }
         return candidates.OrderByDescending(d => Path.GetFileName(d), StringComparer.Ordinal).FirstOrDefault();
     }
