@@ -529,12 +529,12 @@ jobs:
             --fast-list --transfers 16 --checkers 32 --s3-no-check-bucket
 
       - name: Upload run logs
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: retrain-blenders-logs-${{ github.run_id }}
           path: |
             *.log
             logs/
-          retention-days: 14
+          retention-days: 5
           if-no-files-found: ignore

@@ -182,10 +182,10 @@ jobs:
           fi
 
       - name: Upload logs as artifact
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: s3-collect-${{ github.run_id }}
           path: logs/
-          retention-days: 14
+          retention-days: 5
           if-no-files-found: ignore

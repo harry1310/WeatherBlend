@@ -69,10 +69,10 @@ jobs:
           rclone copy ./data/predictions "r2:${R2_BUCKET}/data/predictions" --fast-list --transfers 16 --checkers 32 --progress
 
       - name: Upload logs as artifact
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: predict-logs-${{ github.run_id }}
           path: logs/
-          retention-days: 14
+          retention-days: 5
           if-no-files-found: ignore

@@ -119,10 +119,10 @@ jobs:
           rclone copy ./data "r2:${R2_BUCKET}/data" --fast-list --transfers 16 --checkers 32 --progress
 
       - name: Upload logs as artifact
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: backfill-logs-${{ github.run_id }}
           path: logs/
-          retention-days: 30
+          retention-days: 5
           if-no-files-found: ignore

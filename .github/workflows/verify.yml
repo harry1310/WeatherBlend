@@ -210,14 +210,14 @@ jobs:
           rclone copy ./data/reports "r2:${R2_BUCKET}/data/reports" --fast-list --transfers 16 --checkers 32 --progress
 
       - name: Upload logs + report as artifact
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: verify-output-${{ github.run_id }}
           path: |
             logs/
             data/reports/verify_*.md
-          retention-days: 30
+          retention-days: 5
           if-no-files-found: ignore
 
       - name: Flag drift in job summary + alert

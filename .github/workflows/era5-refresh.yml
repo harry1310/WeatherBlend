@@ -104,10 +104,10 @@ jobs:
           rclone copy ./data/truth/era5 "r2:${R2_BUCKET}/data/truth/era5" --fast-list --transfers 16 --checkers 32 --progress
 
       - name: Upload logs as artifact
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: era5-refresh-logs-${{ github.run_id }}
           path: logs/
-          retention-days: 14
+          retention-days: 5
           if-no-files-found: ignore
