@@ -58,10 +58,20 @@ concurrency:
 jobs:
   retrain:
     runs-on: ubuntu-latest
-    # 120 min ceiling. Core sweep fits in 30-60 min; the precipitation
-    # replay regen for the dry-window MC phases adds ~15-25 min, plus
-    # padding for a slow R2 pull or runner cold-start.
+    # 120 min ceiling PER LOCATION job. Core sweep fits in 30-60 min; the
+    # precipitation replay regen for the dry-window MC phases adds ~15-25 min,
+    # plus padding for a slow R2 pull or runner cold-start.
     timeout-minutes: 120
+    strategy:
+      # One job per location. SERIAL (max-parallel: 1) is load-bearing: every
+      # job pushes the shared data/models/MANIFEST.json, so a parallel job 2
+      # would overwrite job 1's just-pushed manifest. Serial means job 2
+      # re-pulls the manifest job 1 wrote, then merges its own entries in.
+      max-parallel: 1
+      # A Membury failure must not cancel the Bonehill job, or vice versa.
+      fail-fast: false
+      matrix:
+        location: [bonehill_rocks, membury_devon]
     steps:
       - uses: actions/checkout@v4
 
@@ -111,18 +121,30 @@ jobs:
           EOF
 
       - name: Decide which phases to run
-        # phases.yaml is in the checked-out source — no R2 fetch needed.
-        # Same yq logic as retrain-python.yml but filtered to impl=dotnet.
+        # phases.yaml is the single source of truth for which models run for
+        # which locations. For each impl=dotnet phase this reads the optional
+        # `locations:` filter (absent = every location) and emits a run_<id>
+        # flag that is true only when the phase was requested AND the matrix
+        # location admits it. Every train step gates purely on its run_<id>,
+        # so a Bonehill-only phase auto-skips the Membury job — no location
+        # string is hardcoded anywhere in this workflow.
         id: phases
         if: steps.gate.outputs.proceed == 'true'
         env:
           PHASES_DISPATCH: ${{ inputs.phases }}
           PHASES_PAYLOAD: ${{ github.event.client_payload.phases }}
+          MATRIX_LOCATION: ${{ matrix.location }}
         run: |
-          DOTNET_PHASES=$(yq -r '
-            [.targets | to_entries[].value.phases[] | select(.impl == "dotnet") | .id] | join(",")
-          ' src/WeatherBlend/Config/phases.yaml)
+          PHASES_YAML=src/WeatherBlend/Config/phases.yaml
+          # One "id|loc1,loc2" row per impl=dotnet phase (empty = all locations).
+          mapfile -t PHASE_ROWS < <(yq -r '
+            .targets | to_entries[].value.phases[]
+            | select(.impl == "dotnet")
+            | .id + "|" + ((.locations // []) | join(","))
+          ' "$PHASES_YAML")
+          DOTNET_PHASES=$(printf '%s\n' "${PHASE_ROWS[@]}" | cut -d'|' -f1 | paste -sd, -)
           echo "impl=dotnet phases from phases.yaml: $DOTNET_PHASES"
+          echo "Matrix location: $MATRIX_LOCATION"
 
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
             INPUT="${PHASES_PAYLOAD:-all}"
@@ -130,31 +152,10 @@ jobs:
             INPUT="${PHASES_DISPATCH:-all}"
           fi
           if [ "$INPUT" = "all" ]; then INPUT="$DOTNET_PHASES"; fi
-          echo "Resolved phase list: $INPUT"
+          echo "Requested phase list: $INPUT"
 
-          # Per-phase run flags. Add a new flag here when wiring a new
-          # phase's run block below.
-          run_2b=false; run_2c=false; run_2d=false
-          run_3a=false; run_3c=false; run_3d=false; run_3e=false
-          run_3b=false; run_3g=false; run_3j=false; run_3n=false; run_3s=false
-          case ",$INPUT," in *,2b,*) run_2b=true ;; esac
-          case ",$INPUT," in *,2c,*) run_2c=true ;; esac
-          case ",$INPUT," in *,2d,*) run_2d=true ;; esac
-          case ",$INPUT," in *,3a,*) run_3a=true ;; esac
-          case ",$INPUT," in *,3c,*) run_3c=true ;; esac
-          case ",$INPUT," in *,3d,*) run_3d=true ;; esac
-          case ",$INPUT," in *,3e,*) run_3e=true ;; esac
-          case ",$INPUT," in *,3b,*) run_3b=true ;; esac
-          case ",$INPUT," in *,3g,*) run_3g=true ;; esac
-          case ",$INPUT," in *,3j,*) run_3j=true ;; esac
-          case ",$INPUT," in *,3n,*) run_3n=true ;; esac
-          case ",$INPUT," in *,3s,*) run_3s=true ;; esac
-          for v in 2b 2c 2d 3a 3c 3d 3e 3b 3g 3j 3n 3s; do
-            echo "run_${v}=$(eval echo \$run_${v})" >> "$GITHUB_OUTPUT"
-          done
-
-          # Validate against phases.yaml — typo / missing-from-yaml
-          # catches pre-emptive 5b before it's actually registered.
+          # Validate the request against phases.yaml — typo / missing-from-yaml
+          # catches a pre-emptive phase before it's actually registered.
           IFS=',' read -ra REQUESTED <<< "$INPUT"
           IFS=',' read -ra KNOWN <<< "$DOTNET_PHASES"
           for p in "${REQUESTED[@]}"; do
@@ -168,10 +169,29 @@ jobs:
             fi
           done
 
+          # run_<id> = requested AND admitted by this matrix location.
+          for row in "${PHASE_ROWS[@]}"; do
+            id="${row%%|*}"
+            locs="${row#*|}"
+            requested=false
+            case ",$INPUT," in *",${id},"*) requested=true ;; esac
+            applies=false
+            if [ -z "$locs" ]; then
+              applies=true
+            else
+              case ",$locs," in *",${MATRIX_LOCATION},"*) applies=true ;; esac
+            fi
+            run=false
+            if [ "$requested" = "true" ] && [ "$applies" = "true" ]; then run=true; fi
+            echo "run_${id}=${run}" >> "$GITHUB_OUTPUT"
+            echo "  ${id}: requested=${requested} applies(${MATRIX_LOCATION})=${applies} -> run_${id}=${run}"
+          done
+
       - name: Pull data trees from R2
         if: steps.gate.outputs.proceed == 'true'
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          MATRIX_LOCATION: ${{ matrix.location }}
         run: |
           # Forecasts — the WHOLE per-location tree (every model= dir), not a
           # hardcoded model list. The Open-Meteo seamless models feed the
@@ -179,21 +199,16 @@ jobs:
           # ecmwf_ifs_oper, met_office_ukv, …) feed the exact-runtime 2d/3d
           # blenders. A hardcoded 8-model list silently starved 2d/3d of
           # input (0 rows) on the first CI retrain — pull everything instead.
-          # Both locations: bonehill_rocks (all phases) + membury_devon
-          # (Membury 2b/2c/3a/3c).
-          for loc in bonehill_rocks membury_devon; do
-            mkdir -p "data/forecasts/location=$loc"
-            rclone copy "r2:${R2_BUCKET}/data/forecasts/location=$loc" \
-              "data/forecasts/location=$loc" \
-              --fast-list --transfers 16 --checkers 32 || true
-          done
-          # ERA5 truth (training) — both locations.
-          for loc in bonehill_rocks membury_devon; do
-            mkdir -p "data/truth/era5/location=$loc"
-            rclone copy "r2:${R2_BUCKET}/data/truth/era5/location=$loc" \
-              "data/truth/era5/location=$loc" \
-              --fast-list --transfers 16 --checkers 32 || true
-          done
+          # This matrix job trains one location, so pull only its tree.
+          mkdir -p "data/forecasts/location=$MATRIX_LOCATION"
+          rclone copy "r2:${R2_BUCKET}/data/forecasts/location=$MATRIX_LOCATION" \
+            "data/forecasts/location=$MATRIX_LOCATION" \
+            --fast-list --transfers 16 --checkers 32 || true
+          # ERA5 truth (training) — this location.
+          mkdir -p "data/truth/era5/location=$MATRIX_LOCATION"
+          rclone copy "r2:${R2_BUCKET}/data/truth/era5/location=$MATRIX_LOCATION" \
+            "data/truth/era5/location=$MATRIX_LOCATION" \
+            --fast-list --transfers 16 --checkers 32 || true
           # METAR truth (verify) + EA rainfall truth (precip + dry-window).
           mkdir -p data/truth/metar
           rclone copy "r2:${R2_BUCKET}/data/truth/metar" data/truth/metar \
@@ -215,45 +230,25 @@ jobs:
       # Each step's exit code is captured; the aggregator at the end
       # decides the workflow's overall outcome.
 
-      - name: Train 2b (temperature lean) — Bonehill
+      - name: Train 2b (temperature lean)
+        # One step per matrix location. The bundle lands under
+        # data/models/temperature/{location}/v.../ (Stations-keyed manifest);
+        # RetrainGuard reads the previous summary on the same per-station
+        # path, so locations don't cross-drift.
         id: train_2b
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_2b == 'true'
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target temperature
+            train --target temperature --location ${{ matrix.location }}
 
-      - name: Train 2b (temperature lean) — Membury
-        # Phase B of the Membury ship plan (2026-05-15): temperature now
-        # trains per location, matching precip 3a/3c. Bundle lands at
-        # data/models/temperature/membury_devon/v.../ thanks to the
-        # 2026-05-14 Stations-keyed manifest layout. RetrainGuard reads
-        # the previous training_summary.json under the same per-station
-        # path, so Membury and Bonehill don't cross-drift.
-        # 2d (exact-runtime) deliberately not trained for Membury yet —
-        # needs S3 archive backfill for Membury's grid cell first.
-        id: train_2b_membury
-        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_2b == 'true'
-        continue-on-error: true
-        run: |
-          dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target temperature --location membury_devon
-
-      - name: Train 2c (temperature rich) — Bonehill
+      - name: Train 2c (temperature rich)
         id: train_2c
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_2c == 'true'
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target temperature --feature-set rich
-
-      - name: Train 2c (temperature rich) — Membury
-        id: train_2c_membury
-        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_2c == 'true'
-        continue-on-error: true
-        run: |
-          dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target temperature --feature-set rich --location membury_devon
+            train --target temperature --feature-set rich --location ${{ matrix.location }}
 
       - name: Train 2d (temperature exact-runtime, leads 12/24/48)
         # 2d is a SHORT-lead exact-runtime phase: its strict UKV picker
@@ -270,59 +265,37 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target temperature --feature-set exact --leads 12,24,48
 
-      - name: Train 3a (precipitation lean) — Bonehill
+      - name: Train 3a (precipitation lean)
         # 3a is one-station-per-call (unlike rich 3c/3d/3e which auto-iterate
-        # every station of the location), so loop the 3 Bonehill-cell EA
-        # gauges explicitly via --station. Without the loop only the default
-        # station (Bellever) trained — Bovey + Hexworthy 3a went stale for
-        # weeks. Mirrors the Membury 3a step below.
+        # every station of the location), so loop this location's rainfall
+        # gauges via --station. The station list is read from config.yaml —
+        # no hardcoded station list in the workflow.
         id: train_3a
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3a == 'true'
         continue-on-error: true
+        env:
+          MATRIX_LOCATION: ${{ matrix.location }}
         run: |
-          for s in "Bellever Dartmoor" "Bovey Tracey" "Dartmoor nr Hexworthy"; do
-            echo "=== 3a Bonehill station: $s ==="
+          STATIONS=$(yq -r ".locations[] | select(.name == \"$MATRIX_LOCATION\") | .rainfall.stations[].name" \
+            src/WeatherBlend/config.yaml)
+          echo "3a stations for $MATRIX_LOCATION:"
+          echo "$STATIONS"
+          while IFS= read -r s; do
+            [ -z "$s" ] && continue
+            echo "=== 3a station: $s ==="
             dotnet run --project src/WeatherBlend --no-build -c Release -- \
-              train --target precipitation --station "$s"
-          done
+              train --target precipitation --location "$MATRIX_LOCATION" --station "$s"
+          done <<< "$STATIONS"
 
-      - name: Train 3a (precipitation lean) — Membury
-        # Phase A of the Membury ship plan: Sunday retrain now refreshes
-        # both locations. Each location is a separate `dotnet run` —
-        # bundles land at data/models/precipitation/{station}/v..._phase3a/
-        # with station-unique slugs (ea_chards_snowdon_hill / ea_goren /
-        # ea_raymonds_hill), so no path collision with Bonehill.
-        # RetrainGuard reads the previous training_summary.json for each
-        # cell independently, so Membury and Bonehill don't cross-drift.
-        # 3a is one-station-per-call so we loop the 3 EA gauges via
-        # --station; each call trains all 5 leads for that station.
-        id: train_3a_membury
-        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3a == 'true'
-        continue-on-error: true
-        run: |
-          for s in "Chards Snowdon Hill" "Goren" "Raymonds Hill"; do
-            echo "=== 3a Membury station: $s ==="
-            dotnet run --project src/WeatherBlend --no-build -c Release -- \
-              train --target precipitation --location membury_devon --station "$s"
-          done
-
-      - name: Train 3c (precipitation rich) — Bonehill
+      - name: Train 3c (precipitation rich)
+        # 3c auto-iterates all stations of the given location — one call
+        # trains every gauge for the matrix location.
         id: train_3c
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3c == 'true'
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target precipitation --feature-set rich
-
-      - name: Train 3c (precipitation rich) — Membury
-        # 3c auto-iterates all stations of the given location, so one call
-        # trains all 3 Membury gauges (no inner loop needed).
-        id: train_3c_membury
-        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3c == 'true'
-        continue-on-error: true
-        run: |
-          dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target precipitation --feature-set rich --location membury_devon
+            train --target precipitation --feature-set rich --location ${{ matrix.location }}
 
       - name: Train 3e (precipitation MLP)
         # Phase 3e is a TorchSharp MLP on the same 59-feature rich set as
@@ -443,18 +416,14 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target dry-window --feature-set independence-mc-3e
 
-      # ---- Element blenders (wind, humidity, radiation, cloud-cover) ----
-      # NOT in phases.yaml today (they're per-VARIABLE rather than
-      # per-PHASE; one champion each, no challenger axis). Hardcoded
-      # here so the Sunday sweep retrains them too. Include them with
-      # any non-empty `phases` input — they're cheap (~2 min each)
-      # and orthogonal to the temp/precip phase competition. Skip
-      # entirely with phases="2b" etc to avoid a partial sweep
-      # accidentally bumping element bundles.
+      # ---- Element blenders (wind / humidity / shortwave radiation /
+      # cloud cover) ---- Each is a first-class phases.yaml target now, so
+      # it gates on its own location-aware run flag exactly like every
+      # other model — no hardcoded location or phases== check.
 
       - name: Train element wind
         id: train_wind
-        if: steps.gate.outputs.proceed == 'true' && (inputs.phases == 'all' || github.event.client_payload.phases == 'all' || github.event.client_payload.phases == '')
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_wind == 'true'
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
@@ -462,7 +431,7 @@ jobs:
 
       - name: Train element humidity
         id: train_humidity
-        if: steps.gate.outputs.proceed == 'true' && (inputs.phases == 'all' || github.event.client_payload.phases == 'all' || github.event.client_payload.phases == '')
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_humidity == 'true'
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
@@ -470,7 +439,7 @@ jobs:
 
       - name: Train element shortwave-radiation
         id: train_radiation
-        if: steps.gate.outputs.proceed == 'true' && (inputs.phases == 'all' || github.event.client_payload.phases == 'all' || github.event.client_payload.phases == '')
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_shortwave_radiation == 'true'
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
@@ -478,7 +447,7 @@ jobs:
 
       - name: Train element cloud-cover
         id: train_cloud
-        if: steps.gate.outputs.proceed == 'true' && (inputs.phases == 'all' || github.event.client_payload.phases == 'all' || github.event.client_payload.phases == '')
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_cloud_cover == 'true'
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
@@ -499,7 +468,7 @@ jobs:
         # Fires only if 3e succeeded (the binding constraint — 4a
         # refresh is a separate Sunday job).
         id: mint_4b
-        if: steps.gate.outputs.proceed == 'true' && steps.train_3e.outcome == 'success'
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_4b == 'true' && steps.train_3e.outcome == 'success'
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- phase4b-mint
@@ -513,14 +482,10 @@ jobs:
         run: |
           declare -A outcomes=(
             [2b]="${{ steps.train_2b.outcome }}"
-            [2b_membury]="${{ steps.train_2b_membury.outcome }}"
             [2c]="${{ steps.train_2c.outcome }}"
-            [2c_membury]="${{ steps.train_2c_membury.outcome }}"
             [2d]="${{ steps.train_2d_short.outcome }}"
             [3a]="${{ steps.train_3a.outcome }}"
-            [3a_membury]="${{ steps.train_3a_membury.outcome }}"
             [3c]="${{ steps.train_3c.outcome }}"
-            [3c_membury]="${{ steps.train_3c_membury.outcome }}"
             [3d]="${{ steps.train_3d_short.outcome }}"
             [3e]="${{ steps.train_3e.outcome }}"
             [4b_mint]="${{ steps.mint_4b.outcome }}"
