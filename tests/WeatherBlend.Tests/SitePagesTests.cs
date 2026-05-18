@@ -526,6 +526,59 @@ public class SitePagesTests
     }
 
     [Fact]
+    public void RenderModels_shows_training_delta_badge_when_previous_cycle_was_split()
+    {
+        // 2d/3d regression: the previous training cycle was split into a
+        // short-leads version and a long-leads version on the SAME day.
+        // The badge must merge that cycle so its full lead set ({24} ∪ {72})
+        // overlaps the latest cycle's {24} — picking either split half alone
+        // would be disjoint from {24} and silently suppress the badge.
+        var prevDay = new DateTime(2026, 5, 3, 0, 0, 0, DateTimeKind.Utc);
+        var prevShort = new SitePages.ModelSummary(
+            Composite: "temperature", Version: "v2026-05-03_080000_phase2d",
+            Phase: "2d", DataSource: "exact",
+            TrainedAtUtc: prevDay.AddHours(8),
+            MetricLabel: "Test MAE (°C)",
+            PerLead: new Dictionary<int, SitePages.PerLeadMetric>
+            {
+                [24] = new(24, "gfs", 1.15, 1.10, 1.000, 1.35, 0.02, 400, 6),
+            });
+        var prevLong = new SitePages.ModelSummary(
+            Composite: "temperature", Version: "v2026-05-03_084400_phase2d",
+            Phase: "2d", DataSource: "exact",
+            TrainedAtUtc: prevDay.AddHours(8).AddMinutes(44),
+            MetricLabel: "Test MAE (°C)",
+            PerLead: new Dictionary<int, SitePages.PerLeadMetric>
+            {
+                [72] = new(72, "gfs", 1.70, 1.60, 1.800, 1.95, 0.05, 400, 6),
+            });
+        var latest = new SitePages.ModelSummary(
+            Composite: "temperature", Version: "v2026-05-10_120000_phase2d",
+            Phase: "2d", DataSource: "exact",
+            TrainedAtUtc: new DateTime(2026, 5, 10, 12, 0, 0, DateTimeKind.Utc),
+            MetricLabel: "Test MAE (°C)",
+            PerLead: new Dictionary<int, SitePages.PerLeadMetric>
+            {
+                [24] = new(24, "gfs", 1.10, 1.05, 0.900, 1.30, 0.02, 400, 6),
+            });
+
+        var input = MakeEmptyForecastInput() with
+        {
+            ModelSummaries = new[] { latest, prevShort, prevLong },
+        };
+
+        var html = SitePages.RenderModels(input, "temperature");
+
+        // Shared lead {24}: latest 0.900 vs previous-cycle (merged) 1.000
+        // → delta -0.100, green. The long half's lead 72 isn't shared but
+        // its presence in the merged previous cycle must not break the merge.
+        html.Should().Contain("delta-badge");
+        html.Should().Contain("delta-good");
+        html.Should().Contain("-0.100");
+        html.Should().Contain("vs prev train");
+    }
+
+    [Fact]
     public void RenderModels_renders_per_card_verify_history_when_matching_phase_present()
     {
         // Verify history table appears below the per-card test-score table

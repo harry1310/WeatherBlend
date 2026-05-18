@@ -88,11 +88,9 @@ public static partial class SitePages
         // version tag and TrainedAt label). Per lead, the freshest version
         // containing that lead supplies the metric.
         //
-        // Also tracks the previous-train ModelSummary per family for the
-        // "Δ vs previous train" badge (Phase 4 of AUTO_RETRAIN_PLAN.md).
-        // "Previous" = the latest version whose TrainedAtUtc.Date differs
-        // from the freshest's; the date boundary dedupes split-version
-        // training where short+long halves land on the same calendar day.
+        // Also tracks the previous training CYCLE per family for the
+        // "Δ vs previous train" badge (Phase 4 of AUTO_RETRAIN_PLAN.md) —
+        // see MergeTrainingCycle and the per-cycle merge in the Select below.
         var latestPerFamily = targetSummaries
             .GroupBy(m => (m.Composite, m.Phase), comparer: null!)
             .Select(g =>
@@ -103,22 +101,35 @@ public static partial class SitePages
                     .SelectMany(s => s.PerLead)
                     .GroupBy(kv => kv.Key)
                     .ToDictionary(grp => grp.Key, grp => grp.First().Value);
-                var previous = ordered
-                    .Where(m => m.TrainedAtUtc.Date != latest.TrainedAtUtc.Date)
-                    .FirstOrDefault();
-                // The badge compares THIS train cycle's raw per-lead scores
-                // against the previous cycle's, before merge — so a phase
-                // whose lead-set changed between trainings (e.g. retired one
-                // lead and added another) correctly produces an empty intersect
-                // and skips the badge. Using the merged PerLead would silently
-                // backfill last cycle's scores into "latest" and hide the
-                // disjoint-set case.
-                var latestRaw = latest;
+                // The "Δ vs previous train" badge compares two TRAINING
+                // CYCLES, not two single versions. A cycle = every version of
+                // this (composite, phase) sharing a calendar date. 2d/3d
+                // routinely split a cycle into a short-leads version and a
+                // long-leads version on the same day, so any single version
+                // covers only part of the cycle's lead set. Merge each cycle
+                // independently so the badge sees its full lead coverage —
+                // without this, a latest {12,24,48} vs a previous long-half
+                // {72,96,120} are disjoint and the badge silently never
+                // renders. Per-cycle (not the all-versions mergedPerLead
+                // above), so a lead's score is never backfilled across
+                // cycles; a genuine cross-cycle lead-set change still yields
+                // an empty intersect and correctly skips the badge.
+                var latestDate = latest.TrainedAtUtc.Date;
+                var latestCycle = MergeTrainingCycle(
+                    ordered.Where(m => m.TrainedAtUtc.Date == latestDate).ToList());
+                var olderCycles = ordered
+                    .Where(m => m.TrainedAtUtc.Date != latestDate)
+                    .ToList();
+                ModelSummary? previousCycle = olderCycles.Count == 0
+                    ? null
+                    : MergeTrainingCycle(olderCycles
+                        .Where(m => m.TrainedAtUtc.Date == olderCycles[0].TrainedAtUtc.Date)
+                        .ToList());
                 return (
                     Composite: latest.Composite,
                     LatestForDisplay: latest with { PerLead = mergedPerLead },
-                    LatestRaw: latestRaw,
-                    Previous: previous);
+                    LatestCycle: latestCycle,
+                    Previous: previousCycle);
             })
             .GroupBy(t => t.Composite, StringComparer.Ordinal)
             .OrderBy(g => g.Key, StringComparer.Ordinal);
@@ -135,7 +146,7 @@ public static partial class SitePages
                 .ToList();
             foreach (var t in ordered)
                 content.Append(RenderBlenderCard(group.Key, t.LatestForDisplay,
-                    t.LatestRaw, t.Previous, input.VerifyHistory));
+                    t.LatestCycle, t.Previous, input.VerifyHistory));
         }
 
         content.Append("</section>");
@@ -190,17 +201,17 @@ public static partial class SitePages
     }
 
     private static string RenderBlenderCard(string composite, ModelSummary m,
-        ModelSummary latestRaw,
+        ModelSummary latestCycle,
         ModelSummary? previous,
         IReadOnlyList<WeatherBlend.Models.VerifyHistoryFile> verifyHistory)
     {
         var description = PhaseDescription(composite, m.Phase);
         var phaseLabel = string.IsNullOrEmpty(m.Phase) ? "—" : m.Phase;
-        // Badge takes the un-merged latest so a disjoint-lead-set retrain
-        // (lead scope changed between cycles) correctly suppresses the
-        // badge. The merged ModelSummary `m` continues to drive the
-        // table below for its existing fill-from-older-versions behaviour.
-        var deltaBadge = RenderTrainingDeltaBadge(latestRaw, previous);
+        // Badge compares the latest training cycle against the previous one
+        // — each merged across its same-day split versions (see
+        // MergeTrainingCycle). The merged ModelSummary `m` continues to
+        // drive the metrics table below.
+        var deltaBadge = RenderTrainingDeltaBadge(latestCycle, previous);
 
         var tbody = new StringBuilder();
         // ForecastsTempRain (= Leads.Full + lead 12) so 2d/3d's lead-12 row
@@ -311,6 +322,27 @@ public static partial class SitePages
                       + "see verify history for real-world skill trend.";
 
         return $"""<span class="delta-badge {cls}" title="{Escape(tooltip)}">Δ {sign}{delta.ToString("0.000", Ci)} vs prev train</span>""";
+    }
+
+    /// <summary>
+    /// Merge every <see cref="ModelSummary"/> of one training cycle — the
+    /// versions of a (composite, phase) that share a calendar date — into a
+    /// single summary whose <c>PerLead</c> spans the cycle's full lead
+    /// coverage. 2d/3d routinely split a cycle into a short-leads version and
+    /// a long-leads version; this stitches them back so the "Δ vs previous
+    /// train" badge compares whole cycles rather than half a cycle. Header
+    /// fields (version tag, TrainedAt) come from the newest version in the
+    /// cycle; per lead, the newest version carrying that lead supplies the
+    /// score. <paramref name="cycleVersions"/> must be non-empty and ordered
+    /// newest-first.
+    /// </summary>
+    private static ModelSummary MergeTrainingCycle(IReadOnlyList<ModelSummary> cycleVersions)
+    {
+        var perLead = cycleVersions
+            .SelectMany(s => s.PerLead)
+            .GroupBy(kv => kv.Key)
+            .ToDictionary(grp => grp.Key, grp => grp.First().Value);
+        return cycleVersions[0] with { PerLead = perLead };
     }
 
     /// <summary>
