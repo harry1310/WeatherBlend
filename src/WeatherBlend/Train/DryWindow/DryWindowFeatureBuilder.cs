@@ -387,10 +387,20 @@ ORDER BY 1";
             foreach (var modelId in spec.Models)
                 modelDays.Add(perModelDay.TryGetValue((date, modelId), out var d) ? d : null);
 
-            // Drop the day if no model supplied any hour — would yield an all-NaN feature vector.
-            if (!modelDays.Any(d => d is { AnyPresent: true })) continue;
-
             var (startHour, endHour) = daytime.UtcHourRangeFor(date);
+
+            // Drop the day unless at least one model supplied a COMPLETE precip
+            // window across the daytime hours. A bare AnyPresent check (any
+            // forecast row exists at all) is too loose: the offset_day archive
+            // carries temperature-only rows for 2022-2023 (precip is backfilled
+            // only from 2024-01), and those would otherwise enter as all-NaN-
+            // precip training rows — doubling the row count and tripping the
+            // RetrainGuard (the 2026-05-17 dry-window 3b retrain failure).
+            // IsCompleteWithin requires a real precip value at every daytime
+            // hour, so a precip-less day is correctly excluded.
+            if (!modelDays.Any(d => d is not null && d.IsCompleteWithin(startHour, endHour)))
+                continue;
+
             var row = ComposeRow(spec, date, windowHours, modelDays, label,
                 truthMmByDate.TryGetValue(date, out var mmDay) ? mmDay : 0.0,
                 startHour, endHour);
