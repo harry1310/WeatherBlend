@@ -252,15 +252,23 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
  *   - Compute issueTitle = "[ci-fail] {workflow_name}". Per-repo issues —
  *     same workflow name in two repos files into each repo independently
  *     because the issue API call uses payload.repository.full_name.
- *   - On `conclusion = failure | timed_out | startup_failure`:
+ *   - On `conclusion = failure | timed_out | startup_failure | cancelled`:
  *       Look up open issues with label `ci-failure` matching the title.
  *       If none → create a new issue assigned to the repo owner.
  *       If one exists → comment on it with the new failure's run URL.
  *   - On `conclusion = success`:
  *       Look up open issues with the same title.
  *       If any → close them with a "now passing" comment.
- *   - Other conclusions (cancelled, skipped, neutral) are ignored — they
- *     usually mean someone deliberately stopped the run, not a real fault.
+ *   - `cancelled` counts as a failure here. A job that exceeds its
+ *     `timeout-minutes` (e.g. a wedged rclone transfer) completes as
+ *     `cancelled`, NOT `failure` — predict-4a hung exactly this way on
+ *     2026-05-18 and slipped past this alerting silently. No production
+ *     workflow uses concurrency `cancel-in-progress: true`, so a
+ *     `cancelled` run is never a benign supersede — it's a timeout or a
+ *     manual stop. A manual stop filing a `[ci-fail]` issue is a
+ *     tolerable false positive (just close it); a hung workflow going
+ *     unnoticed is not.
+ *   - Other conclusions (skipped, neutral) are still ignored.
  */
 async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise<string> {
   if (payload.action !== "completed") {
@@ -318,7 +326,10 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
   // for the workflow_run that triggered this handler.
 
   const issueTitle = `[ci-fail] ${wfName}`;
-  const failureConclusions = new Set(["failure", "timed_out", "startup_failure"]);
+  // `cancelled` included: a timeout-minutes breach completes as `cancelled`,
+  // not `failure` (see handleWorkflowRun doc above). No workflow here uses
+  // cancel-in-progress, so `cancelled` is never a benign supersede.
+  const failureConclusions = new Set(["failure", "timed_out", "startup_failure", "cancelled"]);
   const isFailure = conclusion !== null && failureConclusions.has(conclusion);
   const isSuccess = conclusion === "success";
 

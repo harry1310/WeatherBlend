@@ -68,13 +68,17 @@ runs:
         # MetOfficeSpotForecasts}, both filtered to ValidTimeUtc ∈
         # [now-windowDays, now+6d] (windowDays defaults to 30). So we
         # restrict the copy to the last 40 cycle dates — covers the render
-        # window plus a 168h lead + 1d headroom. ~25-30x fewer files. The
-        # other trees (truth/predictions/models) are ≤50 MiB combined and
-        # stay full-copy. Predict-and-render's predict step shares this
-        # workspace and also only needs recent cycles (lead ≤ 168h), so a
-        # 40-day forecast slice covers it too. Training (which needs
-        # multi-year history) runs from a different workflow and pulls
-        # without filters.
+        # window plus a 168h lead + 1d headroom. ~25-30x fewer files.
+        # Predict-and-render's predict step shares this workspace and also
+        # only needs recent cycles (lead ≤ 168h), so a 40-day forecast slice
+        # covers it too. Training (which needs multi-year history) runs from
+        # a different workflow and pulls without filters.
+        #
+        # data/models is the other heavy tree (~585 MiB) — but ~474 MiB of
+        # that is Phase 4a's per-cell BART artefacts (state_lead_*.rds +
+        # arrays_lead_*.npz), excluded below since nothing here reads them.
+        # The remaining trees (predictions / era5 / metar / rainfall /
+        # reports) are tens of MiB each and stay full-copy.
         FORECAST_INCLUDES=""
         for i in $(seq 0 40); do
           d=$(date -u -d "$i days ago" +%Y-%m-%d)
@@ -92,13 +96,20 @@ runs:
             data/forecasts; do
           mkdir -p "${tree}"
           echo "::group::sync ${tree}"
+          # Per-tree extra rclone flags (word-split, same as FORECAST_INCLUDES).
+          EXTRA=""
           if [ "$tree" = "data/forecasts" ]; then
-            rclone copy "r2:${R2_BUCKET}/${tree}" "./${tree}" \
-              --fast-list --transfers 16 --checkers 32 --progress \
-              $FORECAST_INCLUDES
-          else
-            rclone copy "r2:${R2_BUCKET}/${tree}" "./${tree}" \
-              --fast-list --transfers 16 --checkers 32 --progress
+            EXTRA="$FORECAST_INCLUDES"
+          elif [ "$tree" = "data/models" ]; then
+            # Phase 4a's per-cell BART artefacts — state_lead_*.rds (~452 MiB)
+            # + arrays_lead_*.npz (~21 MiB) — are consumed ONLY by
+            # WeatherProbabilistic's predict-4a workflow (its own bundle pull).
+            # Neither the .NET predict step nor RenderSiteCommand here opens an
+            # R .rds or numpy .npz, so excluding them drops ~474 MiB — most of
+            # data/models, and most of this sync's runtime.
+            EXTRA="--exclude **/*.rds --exclude **/*.npz"
           fi
+          rclone copy "r2:${R2_BUCKET}/${tree}" "./${tree}" \
+            --fast-list --transfers 16 --checkers 32 --progress $EXTRA
           echo "::endgroup::"
         done

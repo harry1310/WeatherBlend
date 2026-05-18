@@ -1,5 +1,15 @@
 name: era5-refresh
 
+env:
+  # rclone hang guard — every R2 transfer in this workflow inherits these.
+  # A failed/stalled transfer retries hard and a dead connection times out
+  # fast, instead of hanging silently to the job ceiling (a job timeout
+  # surfaces as a `cancelled` run, easy to miss).
+  RCLONE_TIMEOUT: 5m
+  RCLONE_CONTIMEOUT: 1m
+  RCLONE_LOW_LEVEL_RETRIES: "20"
+  RCLONE_RETRIES: "5"
+
 # Daily ERA5 truth refresh. Open-Meteo's ERA5 feed mirrors ECMWF's release
 # cadence — roughly once a day with ~5-day lag — so polling more often is
 # wasted calls. We backfill a rolling 7-day window each refresh to catch

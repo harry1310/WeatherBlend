@@ -1,5 +1,15 @@
 name: verify
 
+env:
+  # rclone hang guard — every R2 transfer in this workflow inherits these.
+  # A failed/stalled transfer retries hard and a dead connection times out
+  # fast, instead of hanging silently to the job ceiling (a job timeout
+  # surfaces as a `cancelled` run, easy to miss).
+  RCLONE_TIMEOUT: 5m
+  RCLONE_CONTIMEOUT: 1m
+  RCLONE_LOW_LEVEL_RETRIES: "20"
+  RCLONE_RETRIES: "5"
+
 # Twice-weekly rolling verification. Joins the prediction tree against the ERA5
 # truth tree, stratifies by (model_version, lead), and flags drift when rolling
 # MAE exceeds 1.5× the training-time test MAE for that lead.
