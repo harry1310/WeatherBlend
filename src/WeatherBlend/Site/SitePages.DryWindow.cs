@@ -6,17 +6,17 @@ namespace WeatherBlend.Site;
 public static partial class SitePages
 {
     /// <summary>
-    /// Pick the highest-calibrated-probability start hour from a curve, or
-    /// return <c>null</c> when the row carries no useful signal at all
+    /// Pick the start hour with the highest P(an N-hour dry block runs from
+    /// it) — <see cref="StartHourForecastPoint.RawProduct"/> — from a curve,
+    /// or return <c>null</c> when the row carries no useful signal at all
     /// (daily P(any block) is so low that picking ANY start hour would
     /// mislead the reader into chasing a near-certainly-not-happening
     /// block). For curves where daily P is meaningful but the curve itself
-    /// is near-uniform — high daily P with little variation across start
-    /// hours — we still surface the argmax because the calibrated <c>(NN%)</c>
-    /// printed alongside it is itself the curve-sharpness signal: a flat
-    /// curve renders as "10:00Z (24%)", a peaked one as "10:00Z (45%)", and
-    /// the reader gets to judge from the number whether the model has a
-    /// real opinion. Earlier we also gated on a 10pp peak−trough range and
+    /// is near-uniform we still surface the argmax because the <c>(NN%)</c>
+    /// printed alongside it is itself the signal: a poor day renders as
+    /// "10:00Z (24%)", a good one as "10:00Z (58%)", and the reader judges
+    /// from the number how likely a dry walk actually is. Earlier we also
+    /// gated on a 10pp peak−trough range and
     /// it suppressed lead-48 / lead-72 cells where the daily P was 90%+ but
     /// the within-day shape was flat — the user couldn't tell the
     /// difference between "model has weak opinion on when" and "no curve
@@ -31,7 +31,9 @@ public static partial class SitePages
         double maxProb = double.NegativeInfinity;
         foreach (var r in curveForOneCell)
         {
-            if (r.ConditionalProb > maxProb) { maxProb = r.ConditionalProb; best = r; }
+            // Best = the start hour with the highest P(an N-hour dry block
+            // runs from it) — RawProduct, the per-hour marginal.
+            if (r.RawProduct > maxProb) { maxProb = r.RawProduct; best = r; }
         }
         if (best is null) return null;
         if (best.DailyProbAnyBlock < StartHourMinDailyProb) return null;
@@ -275,10 +277,10 @@ public static partial class SitePages
                             if (!curvesByCell.TryGetValue((currentStation, window, lead, date, phase.StartHourCurveVersion!), out var curve)) continue;
                             var best = PickBestStart(curve);
                             if (best is null) continue;
-                            // "10:00Z (32%)" — UTC start hour + the calibrated
-                            // marginal so the reader sees both location and
-                            // confidence.
-                            bestStartCell = $"{best.StartHourUtc:00}:00Z <small>({(best.CalibratedProb * 100).ToString("0", Ci)}%)</small>";
+                            // "10:00Z (58%)" — UTC start hour + P(an N-hour dry
+                            // block runs from it), so the reader sees both when
+                            // to set off and how likely it stays dry.
+                            bestStartCell = $"{best.StartHourUtc:00}:00Z <small>({(best.RawProduct * 100).ToString("0", Ci)}%)</small>";
                             break;
                         }
                         bestStartTd = $"<td>{bestStartCell}</td>";
@@ -308,7 +310,7 @@ public static partial class SitePages
 
                 var agreementHeader = showAgreement ? "<th class=\"num\">Model agreement</th>" : "";
                 var mcHeader        = showMcBand    ? "<th>MC longest dry run</th>"           : "";
-                var bestStartHeader = showBestStart ? "<th>Best start <small>(UTC, calibrated %)</small></th>" : "";
+                var bestStartHeader = showBestStart ? "<th>Best start <small>(UTC, P dry block)</small></th>" : "";
 
                 content.Append(Ci, $"""
                     <figure>
@@ -364,8 +366,9 @@ public static partial class SitePages
     /// <summary>
     /// Render the start-hour probability curve for one (phase, station,
     /// window) as a line chart: x = daytime block-start hour (UTC), y =
-    /// P(this hour starts the longest dry block | a dry block exists), one
-    /// line per forecast horizon. Only the iid-MC phases carry a start-hour
+    /// P(an N-hour dry block runs from this hour) — the per-start-hour
+    /// marginal (RawProduct), one line per forecast horizon. Only the
+    /// iid-MC phases carry a start-hour
     /// curve — the phase identifies its own curve via
     /// <see cref="DryWindowPhase.StartHourCurveVersion"/>, so 3g reads the
     /// <c>v2</c> curve and 3s the <c>v2-3e</c> curve with no cross-talk.
@@ -414,7 +417,7 @@ public static partial class SitePages
                 .GroupBy(p => p.StartHourUtc)
                 .Select(g => g.OrderByDescending(p => p.PredictedAtUtc).First())
                 .OrderBy(p => p.StartHourUtc)
-                .Select(p => ((double)p.StartHourUtc, p.ConditionalProb))
+                .Select(p => ((double)p.StartHourUtc, p.RawProduct))
                 .ToList();
             series.Add(new LineSeries(
                 Name: string.Create(Ci, $"+{lead}h · {cell.TargetDateUtc:ddd dd MMM}"),
@@ -427,9 +430,9 @@ public static partial class SitePages
 
         var spec = new LineChartSpec
         {
-            Title = string.Create(Ci, $"{phase.ShortTitle} — best dry-block start, {window}h window"),
+            Title = string.Create(Ci, $"{phase.ShortTitle} — dry-block chance by start hour, {window}h window"),
             XLabel = "Block start hour (UTC)",
-            YLabel = "P(start here | block exists)",
+            YLabel = "P(dry block starts here)",
             Series = series,
             Height = 300,
             FormatX = h => string.Create(Ci, $"{Math.Round(h):00}:00Z"),
@@ -438,7 +441,7 @@ public static partial class SitePages
         return string.Create(Ci, $"""
             <figure>
               {LineChartRenderer.Render(spec)}
-              <figcaption class="skill-line">Within-day shape of the Monte-Carlo start-hour curve — one line per forecast horizon, soonest target day shown. The peak is the hour the model thinks the dry block most likely begins; a flat curve means little opinion on when.</figcaption>
+              <figcaption class="skill-line">Monte-Carlo P(an {window}-hour dry block runs from each start hour) — one line per forecast horizon, soonest target day shown. The peak is the best time to set off; the height is how likely it stays dry. Each hour is its own probability, so the lines need not sum to the daily "any dry window" figure.</figcaption>
             </figure>
             """);
     }

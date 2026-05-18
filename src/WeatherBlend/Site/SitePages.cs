@@ -759,6 +759,7 @@ public static partial class SitePages
         DateTime TargetDateUtc,
         int LeadHours,
         int StartHourUtc,
+        double RawProduct,
         double ConditionalProb,
         double CalibratedProb,
         double DailyProbAnyBlock);

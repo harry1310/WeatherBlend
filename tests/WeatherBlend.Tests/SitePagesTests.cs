@@ -1612,19 +1612,23 @@ public class SitePagesTests
     // Default version is the 3g curve's on-disk model_version so the legacy
     // tests (written before 3s introduced a second curve) keep matching the
     // 3g phase's StartHourCurveVersion lookup. 3s tests pass OutputModelVersion3e.
+    // `raw` is the per-start-hour marginal (RawProduct) — the value the
+    // start-hour chart plots and PickBestStart's argmax runs on. `cal` feeds
+    // the (now display-unused) CalibratedProb column.
     private static SitePages.StartHourForecastPoint StartHour(
         string station, int window, int lead, DateTime target,
-        int startHour, double pi, double dailyP, double cal,
+        int startHour, double raw, double dailyP, double cal,
         string version = WeatherBlend.Commands.StartHourPredictCommand.OutputModelVersion)
         => new(station, window, version, new DateTime(2026, 4, 30, 10, 0, 0, DateTimeKind.Utc),
-               target, lead, startHour, pi, cal, dailyP);
+               target, lead, startHour,
+               RawProduct: raw, ConditionalProb: raw, CalibratedProb: cal, DailyProbAnyBlock: dailyP);
 
     [Fact]
     public void PickBestStart_returns_argmax_when_curve_has_meaningful_shape()
     {
         // Peak − trough = 0.45 − 0.05 = 0.40, well above the 0.10 suppression
-        // threshold. Daily P = 0.7 > 0.10. The 11Z start should win on
-        // ConditionalProb (0.45) and its CalibratedProb is what the renderer
+        // threshold. Daily P = 0.7 > 0.10. The 11Z start wins on RawProduct
+        // (0.45) — P(a dry block runs from 11Z) — which is what the renderer
         // surfaces.
         var t = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
         var curve = new[]
@@ -1667,9 +1671,9 @@ public class SitePagesTests
         // I have no strong opinion on when". The reader was left looking
         // at "—" and couldn't tell missing-curve from uniform-shape, which
         // was the wrong trade-off. Now we surface the argmax and let the
-        // calibrated (NN%) printed alongside it carry the sharpness
-        // signal: a flat curve renders as "09:00Z (~26%)", a peaked one
-        // as "09:00Z (45%)", and the reader judges from the number.
+        // RawProduct (NN%) printed alongside it carry the signal: a poor
+        // day renders as "09:00Z (27%)", a good one as "09:00Z (58%)",
+        // and the reader judges a dry walk's odds from the number.
         var t = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
         var curve = new[]
         {
@@ -1723,7 +1727,7 @@ public class SitePagesTests
 
         html.Should().Contain("Best start")
             .And.Contain("11:00Z")
-            .And.Contain("(32%)"); // 0.315 → 32% rounded
+            .And.Contain("(45%)"); // RawProduct 0.45 → 45%
     }
 
     [Fact]
@@ -1828,12 +1832,12 @@ public class SitePagesTests
         // Both phases render their own table + best-start column.
         html.Should().Contain(DryWindowPhases.Phase3g.LongTitle)
             .And.Contain(DryWindowPhases.Phase3s.LongTitle);
-        html.Should().Contain("11:00Z").And.Contain("(32%)"); // 3g argmax
-        html.Should().Contain("09:00Z").And.Contain("(40%)"); // 3s argmax
+        html.Should().Contain("11:00Z").And.Contain("(45%)"); // 3g argmax — RawProduct 0.45
+        html.Should().Contain("09:00Z").And.Contain("(50%)"); // 3s argmax — RawProduct 0.50
         // One start-hour curve chart per curve-bearing phase, each titled
         // with its own phase's short name.
-        html.Should().Contain($"{DryWindowPhases.Phase3g.ShortTitle} — best dry-block start")
-            .And.Contain($"{DryWindowPhases.Phase3s.ShortTitle} — best dry-block start");
+        html.Should().Contain($"{DryWindowPhases.Phase3g.ShortTitle} — dry-block chance by start hour")
+            .And.Contain($"{DryWindowPhases.Phase3s.ShortTitle} — dry-block chance by start hour");
     }
 
     [Fact]

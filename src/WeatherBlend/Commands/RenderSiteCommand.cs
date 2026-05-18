@@ -1360,7 +1360,7 @@ FROM ranked WHERE rn = 1 ORDER BY LocationName, ValidTimeUtc, LeadHours";
         // re-joining to the dry-window tree.
         var sql = $@"
 SELECT TruthStation, WindowHours, ModelVersion, PredictionMadeAtUtc, TargetDateUtc, LeadHours,
-       StartHourUtc, ConditionalProb, CalibratedProb, DailyProbAnyBlock
+       StartHourUtc, RawProduct, ConditionalProb, CalibratedProb, DailyProbAnyBlock
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
 WHERE LocationName = '{_cfg.Location.Name}'
   AND TargetDateUtc >= TIMESTAMP '{start.Date:yyyy-MM-dd HH:mm:ss}'
@@ -1375,9 +1375,10 @@ ORDER BY TruthStation, WindowHours, LeadHours, TargetDateUtc, StartHourUtc";
             TargetDateUtc:     r.GetDateTime(4),
             LeadHours:         r.GetInt32(5),
             StartHourUtc:      r.GetInt32(6),
-            ConditionalProb:   r.GetDouble(7),
-            CalibratedProb:    r.GetDouble(8),
-            DailyProbAnyBlock: r.GetDouble(9)),
+            RawProduct:        r.GetDouble(7),
+            ConditionalProb:   r.GetDouble(8),
+            CalibratedProb:    r.GetDouble(9),
+            DailyProbAnyBlock: r.GetDouble(10)),
             _log, "Start-hour curves tree empty — best-start column will be absent.", ct);
     }
 

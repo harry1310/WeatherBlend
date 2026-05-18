@@ -13,11 +13,12 @@ namespace WeatherBlend.Models;
 ///   - daily P(∃ N-hour dry block) at lead L from the Phase-3b/3d dry-window
 ///     blender (<see cref="DryWindowPredictionRow"/>).
 ///
-/// The interesting derivative is <see cref="ConditionalProb"/> — the
-/// distribution of <em>where in the day the dry block is, conditional on one
-/// existing</em>. <see cref="CalibratedProb"/> multiplies that conditional by
-/// the dry-window blender's marginal so the row reads as "P(dry block of N
-/// hours starting at StartHourUtc, given today's forecast)".
+/// <see cref="RawProduct"/> is the per-start-hour marginal — P(an N-hour dry
+/// block starting at this hour), the "chance of a dry walk if you set off
+/// then" number the site plots. <see cref="ConditionalProb"/> normalises that
+/// to a sum-to-1 shape (where in the day, given a block exists); it is NOT a
+/// probability of dryness. <see cref="CalibratedProb"/> rescales the shape to
+/// sum to the daily P(any block).
 /// </summary>
 public sealed class StartHourPredictionRow
 {
@@ -51,11 +52,12 @@ public sealed class StartHourPredictionRow
     /// <c>[StartHourUtc, StartHourUtc + WindowHours)</c>.</summary>
     public required int StartHourUtc { get; init; }
 
-    /// <summary>Raw hourly-independence product
-    /// <c>p_s = ∏_{h=s..s+N-1} (1 − q_h)</c> before normalisation. Sums across
-    /// starts can exceed 1 (it's an upper bound on P(any block)) so it's not
-    /// directly interpretable as a probability — we keep it for diagnostics
-    /// and as an audit trail of the derivation.</summary>
+    /// <summary>Per-start-hour marginal: P(the N-hour block starting at this
+    /// hour is entirely dry) — the MC fraction of samples in which hours
+    /// <c>[s, s+N)</c> were all dry. This IS a probability (each value in
+    /// [0,1]); only the SUM across overlapping starts can exceed 1. This is
+    /// the "chance of a dry block if you start at this hour" the site's
+    /// start-hour chart plots.</summary>
     public required double RawProduct { get; init; }
 
     /// <summary>Conditional probability the block starts at this hour, given

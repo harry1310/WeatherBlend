@@ -46,11 +46,12 @@ public static partial class SitePages
                   (single MC pass, three indicators read off the same Bernoulli sequence).
                 </li>
                 <li>
-                  <strong>Start-hour curve</strong> — for each (station, window, lead, day), a
-                  conditional distribution over candidate start hours within the daytime window.
-                  Derived from the same 3g MC pass as the dry-window prob, so per-row
-                  Σ start-hour ≈ daily P(any block) by construction. The start-hour curve sits
-                  alongside each window's dry-window cards.
+                  <strong>Start-hour curve</strong> — for each (station, window, lead, day),
+                  P(an N-hour dry block runs from each candidate start hour within the daytime
+                  window). Derived from the same 3g MC pass as the dry-window prob — each hour
+                  is its own marginal probability (overlapping windows, so the curve need not
+                  sum to the daily "any block" figure). Sits alongside each window's
+                  dry-window cards.
                 </li>
                 <li>
                   <strong>Feels-like</strong> — Bröde 2012 <abbr title="Universal Thermal Climate Index">UTCI</abbr>
