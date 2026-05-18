@@ -180,6 +180,14 @@ public sealed class DryWindowTrainCommand
 
         var overallStart = DateTime.UtcNow;
         int modelsTrained = 0, modelsSkipped = 0;
+        // Cells (station, window) that failed for a bad reason — guard
+        // rejection or no lead trainable. Distinct from modelsSkipped (which
+        // also counts benign per-lead thin-data skips). RunAsync exits
+        // non-zero when this is > 0 so the retrain workflow's aggregator can
+        // never report a guard-failed sweep as a silent success — the
+        // 2026-05-17 dry-window 3b freeze went unnoticed for 3 days because
+        // the old `modelsTrained` counted leads, not cells.
+        int cellFailures = 0;
 
         foreach (var stationName in stations)
         {
@@ -361,8 +369,9 @@ public sealed class DryWindowTrainCommand
 
                 if (!anyLeadTrained)
                 {
-                    _log.LogWarning("No leads trained for ({Station}, {W}h); skipping artefact save.",
-                        stationName, window);
+                    _log.LogError("No leads trained for ({Station}, {W}h) — every lead had too few " +
+                        "rows; cell not produced. Counts as a failure.", stationName, window);
+                    cellFailures++;
                     continue;
                 }
 
@@ -434,19 +443,19 @@ public sealed class DryWindowTrainCommand
                 {
                     // Single-(station, window) guard fail aborts JUST this
                     // combo's promotion + conformal fit; the outer sweep
-                    // continues training other (station, window) cells. Bumps
-                    // modelsSkipped so the final summary log still reflects
-                    // partial success.
+                    // continues training other cells. cellFailures is bumped
+                    // so the command exits non-zero — a guard fail must never
+                    // be reported as a silent success (2026-05-17 regression).
                     _log.LogError(
                         "Aborting Phase {Phase} promotion for ({Station}, {W}h) — sanity guard failed. Orphan dir {Dir} not promoted; previous version stays Current.",
                         phase, stationName, window, versionDir);
-                    modelsSkipped++;
+                    cellFailures++;
                     continue;
                 }
                 // Promote the new 3b version: replace any prior 3b entry in
-                // Active with this one and set Current = newVersion. Any
-                // OTHER active phases (3g challengers today) survive.
-                ModelArtifact.PromoteStationVersionAsChampion(
+                // Active with this one. Any OTHER active phases (3g/3j/3n/3s
+                // today) survive untouched.
+                ModelArtifact.PromoteStationVersion(
                     modelsRoot, "dry_window", compositeKey, versionName,
                     newPhase: DryWindowFeatureBuilder.Phase3b);
                 var (cf, cs) = await _conformal.FitOneAsync(
@@ -459,11 +468,20 @@ public sealed class DryWindowTrainCommand
         }
 
         var elapsed = DateTime.UtcNow - overallStart;
-        _log.LogInformation("Phase 3b training complete. Trained={T} Skipped={S} Elapsed={E}",
-            modelsTrained, modelsSkipped, elapsed);
+        _log.LogInformation("Phase 3b training complete. LeadsTrained={T} Skipped={S} CellFailures={F} Elapsed={E}",
+            modelsTrained, modelsSkipped, cellFailures, elapsed);
 
         await Task.CompletedTask;
-        return modelsTrained == 0 ? 3 : 0;
+        // Exit non-zero if ANY (station, window) cell failed its guard or
+        // produced no model. The retrain workflow's aggregator keys off the
+        // exit code, so returning 0 here on a partial/total failure hides a
+        // broken phase — the bug behind the 2026-05-17 dry-window 3b freeze.
+        if (cellFailures > 0)
+        {
+            _log.LogError("Phase 3b: {F} cell(s) failed — see errors above. Exiting non-zero.", cellFailures);
+            return 4;
+        }
+        return 0;
     }
 
 
@@ -513,15 +531,16 @@ public sealed class DryWindowTrainCommand
         foreach (var stationName in stations)
         {
             var stationSlug = StationSlug.WithEaPrefix(stationName);
-            if (!precipManifest.Stations.TryGetValue(stationSlug, out var precipEntry)
-                || string.IsNullOrEmpty(precipEntry.Current))
+            var precip3aVersion = ModelArtifact.ResolveStationPhaseVersion(
+                _cfg.Storage.ModelsPath, "precipitation", stationSlug,
+                DryWindowMcSources.SourcePhaseFor(DryWindow3gPredictor.Phase3g));
+            if (string.IsNullOrEmpty(precip3aVersion))
             {
                 _log.LogWarning(
-                    "{S}: no 3a champion in precipitation manifest; skipping 3g.",
+                    "{S}: no Active 3a version in the precipitation manifest; skipping 3g.",
                     stationName);
                 continue;
             }
-            var precip3aVersion = precipEntry.Current;
 
             // Pre-load all needed replay parquets once per station.
             var replayByLead = new Dictionary<int, Dictionary<DateTime, double>>();
@@ -684,7 +703,7 @@ public sealed class DryWindowTrainCommand
                 };
                 ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
 
-                ModelArtifact.PromoteStationVersionAsChallenger(
+                ModelArtifact.PromoteStationVersion(
                     modelsRoot, "dry_window", compositeKey, versionName,
                     newPhase: DryWindow3gPredictor.Phase3g);
 
@@ -699,7 +718,11 @@ public sealed class DryWindowTrainCommand
 
         _log.LogInformation("Phase 3g training complete. Scored={T} Skipped={S}", trained, skipped);
         await Task.CompletedTask;
-        return trained == 0 ? 3 : 0;
+        // A skipped cell = a challenger that silently didn't refresh. Fail the
+        // run so it surfaces rather than passing unnoticed (2026-05-17 audit).
+        if (skipped > 0)
+            _log.LogError("Phase 3g: {S} cell(s) skipped — not all challengers refreshed. Exiting non-zero.", skipped);
+        return (trained == 0 || skipped > 0) ? 3 : 0;
     }
 
     /// <summary>
@@ -741,23 +764,15 @@ public sealed class DryWindowTrainCommand
         foreach (var stationName in stations)
         {
             var stationSlug = StationSlug.WithEaPrefix(stationName);
-            if (!precipManifest.Stations.TryGetValue(stationSlug, out var precipEntry))
-            {
-                _log.LogWarning("{S}: no precipitation manifest entry; skipping 3s.", stationName);
-                continue;
-            }
-            // 3e is a precip challenger — pick the newest _phase3e version
-            // from the station's Active list (Active is champion-first but
-            // not sorted, so take the lexicographically-latest, which is
-            // chronological for the v{yyyy-MM-dd_HHmmss} naming).
-            var precip3eVersion = precipEntry.Active
-                .Where(v => v.Contains("phase3e", StringComparison.Ordinal))
-                .OrderBy(v => v, StringComparer.Ordinal)
-                .LastOrDefault();
+            // 3s samples Phase 3e (DryWindowMcSources binds it structurally);
+            // resolve 3e's newest Active version for this station.
+            var precip3eVersion = ModelArtifact.ResolveStationPhaseVersion(
+                _cfg.Storage.ModelsPath, "precipitation", stationSlug,
+                DryWindowMcSources.SourcePhaseFor(DryWindow3sPredictor.Phase3s));
             if (string.IsNullOrEmpty(precip3eVersion))
             {
                 _log.LogWarning(
-                    "{S}: no _phase3e version in the precipitation manifest's Active list; skipping 3s.",
+                    "{S}: no Active 3e version in the precipitation manifest; skipping 3s.",
                     stationName);
                 continue;
             }
@@ -922,7 +937,7 @@ public sealed class DryWindowTrainCommand
                 };
                 ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
 
-                ModelArtifact.PromoteStationVersionAsChallenger(
+                ModelArtifact.PromoteStationVersion(
                     modelsRoot, "dry_window", compositeKey, versionName,
                     newPhase: DryWindow3sPredictor.Phase3s);
 
@@ -937,7 +952,11 @@ public sealed class DryWindowTrainCommand
 
         _log.LogInformation("Phase 3s training complete. Scored={T} Skipped={S}", trained, skipped);
         await Task.CompletedTask;
-        return trained == 0 ? 3 : 0;
+        // A skipped cell = a challenger that silently didn't refresh. Fail the
+        // run so it surfaces rather than passing unnoticed (2026-05-17 audit).
+        if (skipped > 0)
+            _log.LogError("Phase 3s: {S} cell(s) skipped — not all challengers refreshed. Exiting non-zero.", skipped);
+        return (trained == 0 || skipped > 0) ? 3 : 0;
     }
 
     /// <summary>
@@ -988,15 +1007,16 @@ public sealed class DryWindowTrainCommand
         foreach (var stationName in stations)
         {
             var stationSlug = StationSlug.WithEaPrefix(stationName);
-            if (!precipManifest.Stations.TryGetValue(stationSlug, out var precipEntry)
-                || string.IsNullOrEmpty(precipEntry.Current))
+            var precip3aVersion = ModelArtifact.ResolveStationPhaseVersion(
+                _cfg.Storage.ModelsPath, "precipitation", stationSlug,
+                DryWindowMcSources.SourcePhaseFor(DryWindow3jPredictor.Phase3j));
+            if (string.IsNullOrEmpty(precip3aVersion))
             {
                 _log.LogWarning(
-                    "{S}: no 3a champion in precipitation manifest; skipping 3j.",
+                    "{S}: no Active 3a version in the precipitation manifest; skipping 3j.",
                     stationName);
                 continue;
             }
-            var precip3aVersion = precipEntry.Current;
 
             // Pre-load per-lead q (for test MC) AND observed hourly labels
             // (for Σ fit). Both come from the same replay parquet so a
@@ -1223,7 +1243,7 @@ public sealed class DryWindowTrainCommand
                 };
                 ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
 
-                ModelArtifact.PromoteStationVersionAsChallenger(
+                ModelArtifact.PromoteStationVersion(
                     modelsRoot, "dry_window", compositeKey, versionName,
                     newPhase: DryWindow3jPredictor.Phase3j);
 
@@ -1238,7 +1258,11 @@ public sealed class DryWindowTrainCommand
 
         _log.LogInformation("Phase 3j training complete. Scored={T} Skipped={S}", trained, skipped);
         await Task.CompletedTask;
-        return trained == 0 ? 3 : 0;
+        // A skipped cell = a challenger that silently didn't refresh. Fail the
+        // run so it surfaces rather than passing unnoticed (2026-05-17 audit).
+        if (skipped > 0)
+            _log.LogError("Phase 3j: {S} cell(s) skipped — not all challengers refreshed. Exiting non-zero.", skipped);
+        return (trained == 0 || skipped > 0) ? 3 : 0;
     }
 
     /// <summary>
@@ -1300,15 +1324,16 @@ public sealed class DryWindowTrainCommand
         foreach (var stationName in stations)
         {
             var stationSlug = StationSlug.WithEaPrefix(stationName);
-            if (!precipManifest.Stations.TryGetValue(stationSlug, out var precipEntry)
-                || string.IsNullOrEmpty(precipEntry.Current))
+            var precip3aVersion = ModelArtifact.ResolveStationPhaseVersion(
+                _cfg.Storage.ModelsPath, "precipitation", stationSlug,
+                DryWindowMcSources.SourcePhaseFor(DryWindow3nPredictor.Phase3n));
+            if (string.IsNullOrEmpty(precip3aVersion))
             {
                 _log.LogWarning(
-                    "{S}: no 3a champion in precipitation manifest; skipping 3n.",
+                    "{S}: no Active 3a version in the precipitation manifest; skipping 3n.",
                     stationName);
                 continue;
             }
-            var precip3aVersion = precipEntry.Current;
 
             // Same per-lead Q/label load as 3j — same replay parquets.
             var replayQByLead = new Dictionary<int, Dictionary<DateTime, double>>();
@@ -1555,7 +1580,7 @@ public sealed class DryWindowTrainCommand
                 };
                 ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
 
-                ModelArtifact.PromoteStationVersionAsChallenger(
+                ModelArtifact.PromoteStationVersion(
                     modelsRoot, "dry_window", compositeKey, versionName,
                     newPhase: DryWindow3nPredictor.Phase3n);
 
@@ -1570,7 +1595,11 @@ public sealed class DryWindowTrainCommand
 
         _log.LogInformation("Phase 3n training complete. Scored={T} Skipped={S}", trained, skipped);
         await Task.CompletedTask;
-        return trained == 0 ? 3 : 0;
+        // A skipped cell = a challenger that silently didn't refresh. Fail the
+        // run so it surfaces rather than passing unnoticed (2026-05-17 audit).
+        if (skipped > 0)
+            _log.LogError("Phase 3n: {S} cell(s) skipped — not all challengers refreshed. Exiting non-zero.", skipped);
+        return (trained == 0 || skipped > 0) ? 3 : 0;
     }
 
     private static double MeanOffDiagonal(double[,] m)
@@ -1827,7 +1856,11 @@ public sealed class DryWindowTrainCommand
         }
 
         _log.LogInformation("Phase 3f training complete. Trained={T} Skipped={S}", trained, skipped);
-        return trained == 0 ? 3 : 0;
+        // A skipped cell = a challenger that silently didn't refresh. Fail the
+        // run so it surfaces rather than passing unnoticed (2026-05-17 audit).
+        if (skipped > 0)
+            _log.LogError("Phase 3f: {S} cell(s) skipped — not all challengers refreshed. Exiting non-zero.", skipped);
+        return (trained == 0 || skipped > 0) ? 3 : 0;
     }
 
     private static double Brier(IReadOnlyList<double> probs, IReadOnlyList<bool> labels)

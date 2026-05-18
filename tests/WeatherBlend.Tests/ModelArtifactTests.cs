@@ -34,12 +34,11 @@ public class ModelArtifactTests : IDisposable
 
         var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(File.ReadAllText(path))!;
         manifest.Target.Should().Be("temperature");
-        manifest.Current.Should().Be("v2026-04-21_201231");
         manifest.Versions.Should().ContainSingle().Which.Should().Be("v2026-04-21_201231");
     }
 
     [Fact]
-    public void UpdateManifest_appends_new_version_and_advances_Current()
+    public void UpdateManifest_appends_new_version_and_advances_Active()
     {
         ModelArtifact.UpdateManifest(_root, "temperature", "v1");
         ModelArtifact.UpdateManifest(_root, "temperature", "v2");
@@ -48,7 +47,7 @@ public class ModelArtifactTests : IDisposable
         var path = Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName);
         var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(File.ReadAllText(path))!;
 
-        manifest.Current.Should().Be("v3");
+        manifest.Active.Should().Equal("v3");
         manifest.Versions.Should().ContainInOrder("v1", "v2", "v3");
     }
 
@@ -57,12 +56,12 @@ public class ModelArtifactTests : IDisposable
     {
         ModelArtifact.UpdateManifest(_root, "temperature", "v1");
         ModelArtifact.UpdateManifest(_root, "temperature", "v2");
-        ModelArtifact.UpdateManifest(_root, "temperature", "v1"); // re-pointing Current back to v1
+        ModelArtifact.UpdateManifest(_root, "temperature", "v1"); // re-pointing Active back to v1
 
         var path = Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName);
         var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(File.ReadAllText(path))!;
 
-        manifest.Current.Should().Be("v1");
+        manifest.Active.Should().Equal("v1");
         manifest.Versions.Should().Equal("v1", "v2");
     }
 
@@ -90,7 +89,7 @@ public class ModelArtifactTests : IDisposable
     }
 
     [Fact]
-    public void AppendVersion_adds_to_Versions_without_changing_Current_or_Active()
+    public void AppendVersion_adds_to_Versions_without_changing_Active()
     {
         ModelArtifact.UpdateManifest(_root, "temperature", "v1");
         ModelArtifact.AppendVersion(_root, "temperature", "v2-challenger");
@@ -98,14 +97,13 @@ public class ModelArtifactTests : IDisposable
         var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
             File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
 
-        manifest.Current.Should().Be("v1");
         manifest.Versions.Should().Equal("v1", "v2-challenger");
         manifest.Active.Should().ContainSingle().Which.Should().Be("v1",
             "AppendVersion must not touch Active — training a challenger doesn't promote it");
     }
 
     [Fact]
-    public void SetActive_overrides_Active_list_without_touching_Current()
+    public void SetActive_overrides_Active_list()
     {
         ModelArtifact.UpdateManifest(_root, "temperature", "v1");
         ModelArtifact.AppendVersion(_root, "temperature", "v2");
@@ -114,7 +112,6 @@ public class ModelArtifactTests : IDisposable
         var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
             File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
 
-        manifest.Current.Should().Be("v1");
         manifest.Active.Should().Equal("v1", "v2");
     }
 
@@ -141,17 +138,17 @@ public class ModelArtifactTests : IDisposable
     }
 
     [Fact]
-    public void ResolveActive_falls_back_to_Current_when_Active_empty_legacy_manifest()
+    public void ResolveActive_returns_empty_when_Active_empty()
     {
-        // Simulate a manifest written by an older build that predates the Active field.
+        // A manifest with an empty Active list has nothing live — there is
+        // no Current pointer to fall back to any more.
         var dir = Path.Combine(_root, "temperature");
         Directory.CreateDirectory(dir);
         File.WriteAllText(
             Path.Combine(dir, ModelArtifact.ManifestFileName),
-            """{"Target":"temperature","Current":"v-legacy","Versions":["v-legacy"],"Active":[],"Stations":{}}""");
+            """{"Target":"temperature","Versions":["v-legacy"],"Active":[],"Stations":{}}""");
 
-        ModelArtifact.ResolveActive(_root, "temperature").Should()
-            .ContainSingle().Which.Should().Be("v-legacy");
+        ModelArtifact.ResolveActive(_root, "temperature").Should().BeEmpty();
     }
 
     [Fact]
@@ -185,7 +182,7 @@ public class ModelArtifactTests : IDisposable
     {
         var act = () => ModelArtifact.ResolveVersionDir(_root, "temperature", "current");
         act.Should().Throw<InvalidOperationException>()
-            .WithMessage("*train a model first*");
+            .WithMessage("*champion version*");
     }
 
     // ---- TrainingMetadata round-trip -------------------------------------------
@@ -568,7 +565,7 @@ public class ModelArtifactTests : IDisposable
     }
 
     [Fact]
-    public void PromoteVersionAsChampion_replaces_same_phase_and_preserves_others()
+    public void PromoteVersion_replaces_same_phase_and_preserves_others()
     {
         // Setup: 2b champion (v_base_old) + 2c challenger (v_2c).
         WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base_old"), "v_base_old", "2b");
@@ -579,18 +576,17 @@ public class ModelArtifactTests : IDisposable
         // Retrain 2b → v_base_new. Expected: v_base_old is dropped from Active
         // (replaced by v_base_new), v_2c stays.
         WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base_new"), "v_base_new", "2b");
-        ModelArtifact.PromoteVersionAsChampion(_root, "temperature", "v_base_new", newPhase: "2b");
+        ModelArtifact.PromoteVersion(_root, "temperature", "v_base_new", newPhase: "2b");
 
         var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
             File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
 
-        manifest.Current.Should().Be("v_base_new");
         manifest.Active.Should().BeEquivalentTo(new[] { "v_2c", "v_base_new" });   // 2c preserved
         manifest.Versions.Should().Contain(new[] { "v_base_old", "v_base_new" });
     }
 
     [Fact]
-    public void PromoteVersionAsChallenger_replaces_same_phase_and_does_not_change_Current()
+    public void PromoteVersion_replaces_same_phase_challenger_and_preserves_champion()
     {
         WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base"),    "v_base",    "2b");
         WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2c_old"),  "v_2c_old",  "2c");
@@ -598,14 +594,13 @@ public class ModelArtifactTests : IDisposable
         ModelArtifact.SetActive(_root, "temperature", new[] { "v_base", "v_2c_old" });
 
         // Retrain 2c → v_2c_new. Expected: v_2c_old replaced by v_2c_new in
-        // Active, v_base preserved, Current still v_base.
+        // Active, v_base preserved.
         WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2c_new"), "v_2c_new", "2c");
-        ModelArtifact.PromoteVersionAsChallenger(_root, "temperature", "v_2c_new", newPhase: "2c");
+        ModelArtifact.PromoteVersion(_root, "temperature", "v_2c_new", newPhase: "2c");
 
         var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
             File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
 
-        manifest.Current.Should().Be("v_base");                                  // unchanged
         manifest.Active.Should().BeEquivalentTo(new[] { "v_base", "v_2c_new" }); // 2c rotated
     }
 
@@ -618,10 +613,10 @@ public class ModelArtifactTests : IDisposable
         ModelArtifact.UpdateManifest(_root, "temperature", "v_base");
 
         WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2c_a"), "v_2c_a", "2c");
-        ModelArtifact.PromoteVersionAsChallenger(_root, "temperature", "v_2c_a", newPhase: "2c");
+        ModelArtifact.PromoteVersion(_root, "temperature", "v_2c_a", newPhase: "2c");
 
         WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2c_b"), "v_2c_b", "2c");
-        ModelArtifact.PromoteVersionAsChallenger(_root, "temperature", "v_2c_b", newPhase: "2c");
+        ModelArtifact.PromoteVersion(_root, "temperature", "v_2c_b", newPhase: "2c");
 
         var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
             File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
@@ -646,7 +641,7 @@ public class ModelArtifactTests : IDisposable
         // Add a 2d at the OTHER lead bucket — disjoint from v_2d_short's
         // {12,24,48}. Both 2d versions should survive Active.
         WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2d_long"), "v_2d_long", "2d", 72, 96, 120);
-        ModelArtifact.PromoteVersionAsChallenger(_root, "temperature", "v_2d_long", newPhase: "2d");
+        ModelArtifact.PromoteVersion(_root, "temperature", "v_2d_long", newPhase: "2d");
 
         var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
             File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
@@ -674,7 +669,7 @@ public class ModelArtifactTests : IDisposable
         // Retrain 2d covering MORE leads. {12,24,48,72} ∩ {48,72} = {48,72}
         // ≠ ∅ → V_old superseded.
         WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2d_wide"), "v_2d_wide", "2d", 12, 24, 48, 72);
-        ModelArtifact.PromoteVersionAsChallenger(_root, "temperature", "v_2d_wide", newPhase: "2d");
+        ModelArtifact.PromoteVersion(_root, "temperature", "v_2d_wide", newPhase: "2d");
 
         var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
             File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
@@ -701,7 +696,7 @@ public class ModelArtifactTests : IDisposable
         ModelArtifact.SetActive(_root, "temperature", new[] { "v_base", "v_2d_wide" });
 
         WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2d_narrow"), "v_2d_narrow", "2d", 24);
-        ModelArtifact.PromoteVersionAsChallenger(_root, "temperature", "v_2d_narrow", newPhase: "2d");
+        ModelArtifact.PromoteVersion(_root, "temperature", "v_2d_narrow", newPhase: "2d");
 
         var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
             File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
@@ -724,7 +719,7 @@ public class ModelArtifactTests : IDisposable
 
         // Re-train 2d on the SAME leads.
         WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2d_b"), "v_2d_b", "2d", 12, 24, 48);
-        ModelArtifact.PromoteVersionAsChallenger(_root, "temperature", "v_2d_b", newPhase: "2d");
+        ModelArtifact.PromoteVersion(_root, "temperature", "v_2d_b", newPhase: "2d");
 
         var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
             File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
@@ -754,7 +749,7 @@ public class ModelArtifactTests : IDisposable
         WritePhaseMetadata(newDir, "v_2d_new", "2d", 12, 24);
         File.Delete(Path.Combine(newDir, ModelArtifact.FeatureSchemaFileName));
 
-        ModelArtifact.PromoteVersionAsChallenger(_root, "temperature", "v_2d_new", newPhase: "2d");
+        ModelArtifact.PromoteVersion(_root, "temperature", "v_2d_new", newPhase: "2d");
 
         var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
             File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
@@ -775,7 +770,7 @@ public class ModelArtifactTests : IDisposable
         ModelArtifact.SetActive(_root, "temperature", new[] { "v_base", "v_orphan" });
 
         WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base_new"), "v_base_new", "2b");
-        ModelArtifact.PromoteVersionAsChampion(_root, "temperature", "v_base_new", newPhase: "2b");
+        ModelArtifact.PromoteVersion(_root, "temperature", "v_base_new", newPhase: "2b");
 
         var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
             File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
@@ -785,7 +780,7 @@ public class ModelArtifactTests : IDisposable
     }
 
     [Fact]
-    public void PromoteStationVersionAsChampion_replaces_same_phase_per_station_only()
+    public void PromoteStationVersion_replaces_same_phase_per_station_only()
     {
         // Phase 3a champion + 3c challenger at one station. Retraining 3a
         // replaces only the 3a entry, leaves 3c — and doesn't touch the
@@ -802,21 +797,19 @@ public class ModelArtifactTests : IDisposable
         ModelArtifact.UpdateStationManifest(_root, "precipitation", stationB, "v_3a_b");
 
         WritePhaseMetadata(Path.Combine(_root, "precipitation", stationA, "v_3a_new"), "v_3a_new", "3a");
-        ModelArtifact.PromoteStationVersionAsChampion(
+        ModelArtifact.PromoteStationVersion(
             _root, "precipitation", stationA, "v_3a_new", newPhase: "3a");
 
         var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
             File.ReadAllText(Path.Combine(_root, "precipitation", ModelArtifact.ManifestFileName)))!;
 
-        manifest.Stations[stationA].Current.Should().Be("v_3a_new");
         manifest.Stations[stationA].Active.Should().BeEquivalentTo(new[] { "v_3c", "v_3a_new" });
         // Other station untouched.
-        manifest.Stations[stationB].Current.Should().Be("v_3a_b");
         manifest.Stations[stationB].Active.Should().BeEquivalentTo(new[] { "v_3a_b" });
     }
 
     [Fact]
-    public void PromoteStationVersionAsChallenger_replaces_same_phase_3e_idempotently()
+    public void PromoteStationVersion_replaces_same_phase_3e_idempotently()
     {
         // Direct regression for the dry-window 3e use case the user shipped:
         // re-running 3e training should replace the previous 3e in Active
@@ -829,13 +822,12 @@ public class ModelArtifactTests : IDisposable
         ModelArtifact.SetStationActive(_root, "dry_window", station, new[] { "v_3b", "v_3e_a" });
 
         WritePhaseMetadata(Path.Combine(_root, "dry_window", station, "v_3e_b"), "v_3e_b", "3e");
-        ModelArtifact.PromoteStationVersionAsChallenger(
+        ModelArtifact.PromoteStationVersion(
             _root, "dry_window", station, "v_3e_b", newPhase: "3e");
 
         var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
             File.ReadAllText(Path.Combine(_root, "dry_window", ModelArtifact.ManifestFileName)))!;
 
-        manifest.Stations[station].Current.Should().Be("v_3b");                          // unchanged
         manifest.Stations[station].Active.Should().BeEquivalentTo(new[] { "v_3b", "v_3e_b" });
     }
 
@@ -881,7 +873,7 @@ public class ModelArtifactTests : IDisposable
     // ---- ChampionByLead -------------------------------------------------------
 
     [Fact]
-    public void ResolveChampionForLead_falls_back_to_Current_when_no_per_lead_override()
+    public void ResolveChampionForLead_falls_back_to_champion_version_when_no_per_lead_override()
     {
         ModelArtifact.UpdateManifest(_root, "temperature", "v-2b");
         ModelArtifact.ResolveChampionForLead(_root, "temperature", 24).Should().Be("v-2b");
@@ -889,7 +881,7 @@ public class ModelArtifactTests : IDisposable
     }
 
     [Fact]
-    public void SetChampionForLead_pins_per_lead_override_without_touching_Current()
+    public void SetChampionForLead_pins_per_lead_override()
     {
         ModelArtifact.UpdateManifest(_root, "temperature", "v-2b");
         ModelArtifact.SetChampionForLead(_root, "temperature", 12, "v-2d");
@@ -899,7 +891,6 @@ public class ModelArtifactTests : IDisposable
 
         var path = Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName);
         var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(File.ReadAllText(path))!;
-        manifest.Current.Should().Be("v-2b"); // Current untouched
         manifest.ChampionByLead.Should().ContainKey(12).WhoseValue.Should().Be("v-2d");
     }
 
@@ -917,29 +908,7 @@ public class ModelArtifactTests : IDisposable
         manifest.ChampionByLead.Should().NotContainKey(12);
     }
 
-    [Fact]
-    public void ResolveChampionForLead_pure_overload_works_against_in_memory_manifest()
-    {
-        var manifest = new ModelArtifact.Manifest
-        {
-            Current = "v-2b",
-            ChampionByLead = new Dictionary<int, string> { [12] = "v-2d" },
-        };
-        ModelArtifact.ResolveChampionForLead(manifest, 12).Should().Be("v-2d");
-        ModelArtifact.ResolveChampionForLead(manifest, 24).Should().Be("v-2b");
-    }
-
     // ---- Per-station ChampionByLead (Phase 3d) -------------------------------
-
-    [Fact]
-    public void ResolveStationChampionForLead_falls_back_to_StationEntry_Current()
-    {
-        ModelArtifact.UpdateStationManifest(_root, "precipitation", "ea_bellever_dartmoor", "v-3a");
-        ModelArtifact.ResolveStationChampionForLead(_root, "precipitation", "ea_bellever_dartmoor", 24)
-            .Should().Be("v-3a");
-        ModelArtifact.ResolveStationChampionForLead(_root, "precipitation", "ea_bellever_dartmoor", 12)
-            .Should().Be("v-3a");
-    }
 
     [Fact]
     public void SetStationChampionForLead_pins_per_lead_override_per_station()
@@ -948,18 +917,12 @@ public class ModelArtifactTests : IDisposable
         ModelArtifact.UpdateStationManifest(_root, "precipitation", "ea_dartmoor_nr_hexworthy", "v-3a-h");
         ModelArtifact.SetStationChampionForLead(_root, "precipitation", "ea_bellever_dartmoor", 12, "v-3d");
 
-        ModelArtifact.ResolveStationChampionForLead(_root, "precipitation", "ea_bellever_dartmoor", 12)
-            .Should().Be("v-3d");
-        ModelArtifact.ResolveStationChampionForLead(_root, "precipitation", "ea_bellever_dartmoor", 24)
-            .Should().Be("v-3a", "lead 24 falls back to StationEntry.Current");
-        ModelArtifact.ResolveStationChampionForLead(_root, "precipitation", "ea_dartmoor_nr_hexworthy", 12)
-            .Should().Be("v-3a-h", "the other station's pin is independent");
-
         var path = Path.Combine(_root, "precipitation", ModelArtifact.ManifestFileName);
         var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(File.ReadAllText(path))!;
-        manifest.Stations["ea_bellever_dartmoor"].Current.Should().Be("v-3a", "Current untouched");
         manifest.Stations["ea_bellever_dartmoor"].ChampionByLead.Should().ContainKey(12)
             .WhoseValue.Should().Be("v-3d");
+        // The other station's per-lead pins are independent.
+        manifest.Stations["ea_dartmoor_nr_hexworthy"].ChampionByLead.Should().BeEmpty();
     }
 
     [Fact]
@@ -968,19 +931,9 @@ public class ModelArtifactTests : IDisposable
         ModelArtifact.UpdateStationManifest(_root, "precipitation", "ea_bellever_dartmoor", "v-3a");
         ModelArtifact.SetStationChampionForLead(_root, "precipitation", "ea_bellever_dartmoor", 12, "v-3d");
         ModelArtifact.SetStationChampionForLead(_root, "precipitation", "ea_bellever_dartmoor", 12, "");
-        ModelArtifact.ResolveStationChampionForLead(_root, "precipitation", "ea_bellever_dartmoor", 12)
-            .Should().Be("v-3a");
-    }
 
-    [Fact]
-    public void ResolveStationChampionForLead_pure_overload_works_against_in_memory_entry()
-    {
-        var entry = new ModelArtifact.StationEntry
-        {
-            Current = "v-3a",
-            ChampionByLead = new Dictionary<int, string> { [12] = "v-3d" },
-        };
-        ModelArtifact.ResolveStationChampionForLead(entry, 12).Should().Be("v-3d");
-        ModelArtifact.ResolveStationChampionForLead(entry, 24).Should().Be("v-3a");
+        var path = Path.Combine(_root, "precipitation", ModelArtifact.ManifestFileName);
+        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(File.ReadAllText(path))!;
+        manifest.Stations["ea_bellever_dartmoor"].ChampionByLead.Should().NotContainKey(12);
     }
 }

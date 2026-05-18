@@ -109,6 +109,27 @@ public sealed class PhaseRegistry
     }
 
     /// <summary>
+    /// The champion phase ID for <paramref name="target"/> — the sole
+    /// role=champion entry (<see cref="LoadFromYaml"/> asserts exactly one
+    /// per target). This is the canonical "headline model": the site, the
+    /// per-station champion-version resolver
+    /// (<see cref="WeatherBlend.Train.ModelArtifact.ResolveStationChampionVersion"/>),
+    /// and the dry-window MC source binding all derive from it — there is no
+    /// mutable per-station champion pointer any more. Throws for an unknown
+    /// target or a registry with no champion for it.
+    /// </summary>
+    public string ChampionPhase(string target)
+    {
+        if (!_byTarget.TryGetValue(target, out var phases))
+            throw new ArgumentException(
+                $"Unknown target '{target}' in the phase registry.", nameof(target));
+        foreach (var p in phases)
+            if (p.Role == PhaseRole.Champion) return p.Id;
+        throw new InvalidOperationException(
+            $"Target '{target}' has no champion phase in the registry.");
+    }
+
+    /// <summary>
     /// Full per-target phase list INCLUDING confidence-role entries.
     /// Train workflows use this so role=confidence phases (5a) are still
     /// retrained on the Sunday sweep even though they don't render as

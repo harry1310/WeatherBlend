@@ -21,9 +21,10 @@ namespace WeatherBlend.Commands;
 ///
 /// Runs once per Sunday auto-retrain (after 4a + 3e are minted) plus
 /// any time the user wants to refresh the bundle manually. Updates
-/// MANIFEST.Active via PromoteVersionAsChampion so the new 4b
-/// version replaces the previous one (lead-overlap-aware: same phase,
-/// same lead set → replace, no accumulation).
+/// MANIFEST.Active via PromoteStationVersion so the new 4b version
+/// replaces the previous one (lead-overlap-aware: same phase, same lead
+/// set → replace, no accumulation). 4b is a challenger — phases.yaml,
+/// not this promote, decides the champion (3a).
 ///
 /// What the bundle contains:
 ///   training_metadata.json   Phase=4b, LocationName, PerLead Brier
@@ -290,7 +291,7 @@ public sealed class Phase4bMintCommand
 
         // 7. Promote into MANIFEST.Active — replaces any prior _phase4b
         // entry for this station (ComposeActive is lead-overlap-aware).
-        ModelArtifact.PromoteStationVersionAsChampion(modelsRoot, "precipitation", station, version, newPhase: Phase);
+        ModelArtifact.PromoteStationVersion(modelsRoot, "precipitation", station, version, newPhase: Phase);
 
         return (MintOutcome.Minted, $"minted {version} ({joined.Count:N0} test rows, mean Brier {perLead.Values.Average(s => s.BlendTestMae):F4}); promoted to MANIFEST.Active");
     }

@@ -435,7 +435,7 @@ public sealed class TempTrainCommand
         // Promote 2b: replaces any prior 2b entry in this station's Active and
         // sets Current. Any active 2c challenger survives untouched. Other
         // locations' Stations entries are left untouched.
-        ModelArtifact.PromoteStationVersionAsChampion(modelsRoot, "temperature", stationKey, versionName, newPhase: "2b");
+        ModelArtifact.PromoteStationVersion(modelsRoot, "temperature", stationKey, versionName, newPhase: "2b");
 
         _log.LogInformation("Phase 2b artefacts → {Dir}", versionDir);
         _log.LogInformation("Summary — {Summary}",
@@ -594,7 +594,7 @@ public sealed class TempTrainCommand
         // prior 2c entry in Active (so re-training is idempotent) and leaves
         // Current = 2b champion. Predict + verify iterate both versions every
         // cycle.
-        ModelArtifact.PromoteStationVersionAsChallenger(modelsRoot, "temperature", stationKey, versionName, newPhase: "2c");
+        ModelArtifact.PromoteStationVersion(modelsRoot, "temperature", stationKey, versionName, newPhase: "2c");
         var newActive = ModelArtifact.ResolveStationActive(modelsRoot, "temperature", stationKey);
 
         _log.LogInformation("Phase 2c artefacts → {Dir}", versionDir);
@@ -798,7 +798,7 @@ public sealed class TempTrainCommand
         // at a version with no lead 12 in its schema (silently broke the
         // home-page lead-12 tile filter).
         const int Phase2dChampionLead = 12;
-        ModelArtifact.PromoteStationVersionAsChallenger(modelsRoot, "temperature", stationKey, versionName, newPhase: "2d");
+        ModelArtifact.PromoteStationVersion(modelsRoot, "temperature", stationKey, versionName, newPhase: "2d");
         if (leads.Contains(Phase2dChampionLead))
         {
             ModelArtifact.SetStationChampionForLead(modelsRoot, "temperature", stationKey, Phase2dChampionLead, versionName);
@@ -1073,7 +1073,7 @@ public sealed class TempTrainCommand
         }
         // Promote 3a: replaces any prior 3a entry in the per-station Active
         // and sets Current. Any active 3c challenger survives untouched.
-        ModelArtifact.PromoteStationVersionAsChampion(
+        ModelArtifact.PromoteStationVersion(
             modelsRoot, "precipitation", stationSlug, versionName, newPhase: "3a");
 
         _log.LogInformation("Phase 3a artefacts → {Dir}", versionDir);
@@ -1341,7 +1341,7 @@ public sealed class TempTrainCommand
         // Promote 3c as a challenger: replaces any prior 3c entry in Active
         // (idempotent re-train) and leaves Current = 3a champion. Any other
         // active phases survive untouched.
-        ModelArtifact.PromoteStationVersionAsChallenger(
+        ModelArtifact.PromoteStationVersion(
             modelsRoot, "precipitation", stationSlug, versionName, newPhase: "3c");
         var newActive = ModelArtifact.ResolveStationActive(modelsRoot, "precipitation", stationSlug);
 
@@ -1630,7 +1630,7 @@ public sealed class TempTrainCommand
             return 4;
         }
 
-        ModelArtifact.PromoteStationVersionAsChallenger(
+        ModelArtifact.PromoteStationVersion(
             modelsRoot, "precipitation", stationSlug, versionName, newPhase: "3e");
         var newActive = ModelArtifact.ResolveStationActive(modelsRoot, "precipitation", stationSlug);
 
@@ -1895,7 +1895,7 @@ public sealed class TempTrainCommand
         // with a sibling 3d at {12,24,48,72} when their lead-sets differ.
         // ChampionByLead pin gated on whether THIS run trained lead 12.
         const int Phase3dChampionLead = 12;
-        ModelArtifact.PromoteStationVersionAsChallenger(
+        ModelArtifact.PromoteStationVersion(
             modelsRoot, "precipitation", stationSlug, versionName, newPhase: "3d");
         if (leadsToTrain.Contains(Phase3dChampionLead))
         {

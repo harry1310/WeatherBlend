@@ -90,13 +90,14 @@ public sealed class DryWindowRhoBakeoffCommand
         {
             ct.ThrowIfCancellationRequested();
             var stationSlug = StationSlug.WithEaPrefix(stationName);
-            if (!precipManifest.Stations.TryGetValue(stationSlug, out var precipEntry)
-                || string.IsNullOrEmpty(precipEntry.Current))
+            var precip3aVersion = ModelArtifact.ResolveStationPhaseVersion(
+                _cfg.Storage.ModelsPath, "precipitation", stationSlug,
+                DryWindowMcSources.SourcePhaseFor(DryWindow3jPredictor.Phase3j));
+            if (string.IsNullOrEmpty(precip3aVersion))
             {
-                _log.LogWarning("{S}: no 3a champion in precipitation manifest; skipping.", stationName);
+                _log.LogWarning("{S}: no Active 3a version in precipitation manifest; skipping.", stationName);
                 continue;
             }
-            var precip3aVersion = precipEntry.Current;
             _log.LogInformation("=== Station '{S}' (3a champion {V}) ===", stationName, precip3aVersion);
 
             // Pre-load replay parquets once per station (one per lead).

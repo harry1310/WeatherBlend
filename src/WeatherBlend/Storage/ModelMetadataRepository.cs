@@ -55,16 +55,13 @@ public sealed class ModelMetadataRepository
     public ModelArtifact.Manifest? TryGetManifest(string target) => TryReadManifest(target);
 
     /// <summary>
-    /// Champion version for a flat-target manifest (<c>temperature</c>,
-    /// <c>element_*</c>, etc.) — i.e. <c>MANIFEST.json#Current</c>. Returns
-    /// empty string when the manifest is missing or has no champion; callers
-    /// degrade to "no filter" rather than crashing.
+    /// Champion version for a flat-target manifest (<c>element_*</c>) — the
+    /// newest Active version (<see cref="ModelArtifact.ResolveChampionVersion"/>).
+    /// Returns empty string when the manifest is missing or has no Active
+    /// entries; callers degrade to "no filter" rather than crashing.
     /// </summary>
     public string GetChampion(string target)
-    {
-        var manifest = TryReadManifest(target);
-        return manifest?.Current ?? "";
-    }
+        => ModelArtifact.ResolveChampionVersion(_modelsRoot, target);
 
     /// <summary>
     /// Per-lead champion overrides for a flat-target manifest
@@ -107,11 +104,13 @@ public sealed class ModelMetadataRepository
     }
 
     /// <summary>
-    /// Per-station champions for the per-station manifest layout
-    /// (<c>precipitation</c>, dry-window-style targets if they ever switch
-    /// to a station axis). Returns an ordinal-keyed dict of
-    /// (station-slug → champion-version), filtered to entries whose
-    /// <c>Current</c> is non-empty. Empty dict on missing manifest.
+    /// Per-station champion versions for the per-station manifest layout
+    /// (<c>precipitation</c>, <c>temperature</c>). Returns an ordinal-keyed
+    /// dict of (station-slug → champion-version), where the champion is
+    /// derived — the newest Active version of the target's phases.yaml
+    /// champion phase (<see cref="ModelArtifact.ResolveStationChampionVersion"/>).
+    /// Stations with no Active version of the champion phase are omitted.
+    /// Empty dict on a missing manifest.
     /// </summary>
     public IReadOnlyDictionary<string, string> GetChampionsByStation(string target)
     {
@@ -119,9 +118,14 @@ public sealed class ModelMetadataRepository
         if (manifest?.Stations is null)
             return new Dictionary<string, string>(StringComparer.Ordinal);
 
-        return manifest.Stations
-            .Where(kv => !string.IsNullOrEmpty(kv.Value.Current))
-            .ToDictionary(kv => kv.Key, kv => kv.Value.Current, StringComparer.Ordinal);
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var station in manifest.Stations.Keys)
+        {
+            var champion = ModelArtifact.ResolveStationChampionVersion(_modelsRoot, target, station);
+            if (!string.IsNullOrEmpty(champion))
+                result[station] = champion;
+        }
+        return result;
     }
 
     // ------------------------------------------------------------------

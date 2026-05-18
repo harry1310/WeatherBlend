@@ -930,7 +930,7 @@ public sealed class DryWindowPredictCommand
             {
                 if (!int.TryParse(windowArg, out var w) || w != window) continue;
             }
-            if (string.IsNullOrWhiteSpace(kv.Value.Current)) continue;
+            if (kv.Value.Active.Count == 0) continue;
             result.Add(kv);
         }
         return result;

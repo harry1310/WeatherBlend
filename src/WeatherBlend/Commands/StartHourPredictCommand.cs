@@ -110,49 +110,41 @@ public sealed class StartHourPredictCommand
         var daytime = _cfg.DryWindow.BuildDaytimeWindow();
 
         // Two start-hour curves per cycle — same SampleStartHourCurve MC over
-        // a precip champion's hourly P(wet), only the source differs:
-        //   v2     ← 3a champion (manifest Current); Phase 3g's table consumes it.
-        //   v2-3e  ← 3e champion (newest _phase3e in Active); Phase 3s's table
-        //            consumes it. 3e's sharper hourly marginals localise the
-        //            dry block better — see DryWindow3sPredictor + the
-        //            2026-05-15 start-hour bake-off.
-        var sources = new (string OutVersion, Func<ModelArtifact.StationEntry, string?> Resolve)[]
+        // a precip phase's hourly P(wet), only the source phase differs. The
+        // source is bound structurally via DryWindowMcSources, exactly like
+        // the dry-window MC phases that consume each curve:
+        //   v2     ← Phase 3g's source (3a); Phase 3g's site table consumes it.
+        //   v2-3e  ← Phase 3s's source (3e); Phase 3s's table consumes it. 3e's
+        //            sharper hourly marginals localise the dry block better —
+        //            see DryWindow3sPredictor + the 2026-05-15 bake-off.
+        var sources = new (string OutVersion, string McPhase)[]
         {
-            (OutputModelVersion,   e => string.IsNullOrEmpty(e.Current) ? null : e.Current),
-            (OutputModelVersion3e, ResolveLatest3e),
+            (OutputModelVersion,   DryWindow3gPredictor.Phase3g),
+            (OutputModelVersion3e, DryWindow3sPredictor.Phase3s),
         };
 
         var anyProduced = false;
-        foreach (var (outVersion, resolve) in sources)
+        foreach (var (outVersion, mcPhase) in sources)
             anyProduced |= await ProcessSourceAsync(
                 precipManifest, dryManifest, anchor, anchorDate, predictionMadeAt,
-                daytime, resolve, outVersion, ct);
+                daytime, mcPhase, outVersion, ct);
         return anyProduced ? 0 : 3;
     }
-
-    /// <summary>Newest <c>_phase3e</c> version in a precip station's Active
-    /// list, or null when the station has no 3e bundle. 3e is a precip
-    /// challenger — never the manifest <c>Current</c> — so it's resolved the
-    /// same way Phase 3s's train binds it.</summary>
-    private static string? ResolveLatest3e(ModelArtifact.StationEntry e)
-        => e.Active
-            .Where(v => v.Contains("phase3e", StringComparison.Ordinal))
-            .OrderBy(v => v, StringComparer.Ordinal)
-            .LastOrDefault();
 
     /// <summary>
     /// Build + write the start-hour curve for one precip source. Walks the
     /// dry-window manifest composites, MCs the daytime q-vector at each lead,
     /// and emits one StartHourPredictionRow per candidate start hour.
-    /// <paramref name="resolvePrecipVersion"/> picks which precip champion
-    /// supplies the marginals; <paramref name="outModelVersion"/> tags the
-    /// rows and their on-disk partition. Returns true if any rows were written.
+    /// <paramref name="mcPhase"/> is the consuming dry-window MC phase
+    /// (3g / 3s); its precip source phase is resolved via DryWindowMcSources.
+    /// <paramref name="outModelVersion"/> tags the rows and their on-disk
+    /// partition. Returns true if any rows were written.
     /// </summary>
     private async Task<bool> ProcessSourceAsync(
         ModelArtifact.Manifest precipManifest, ModelArtifact.Manifest dryManifest,
         DateTime anchor, DateTime anchorDate, DateTime predictionMadeAt,
         DaytimeWindow daytime,
-        Func<ModelArtifact.StationEntry, string?> resolvePrecipVersion,
+        string mcPhase,
         string outModelVersion, CancellationToken ct)
     {
         var rng = new Random(DefaultSeed);
@@ -162,7 +154,7 @@ public sealed class StartHourPredictCommand
         var composites = 0;
         var skipped = 0;
 
-        foreach (var (compositeKey, dryEntry) in dryManifest.Stations)
+        foreach (var compositeKey in dryManifest.Stations.Keys)
         {
             ct.ThrowIfCancellationRequested();
             composites++;
@@ -174,21 +166,25 @@ public sealed class StartHourPredictCommand
                 skipped++; continue;
             }
 
-            // Demoted dry-window stations (Current="") skip silently;
+            // Demoted dry-window composites (no Active version) skip silently;
             // predict skipped them already.
-            var dryVersion = dryEntry.Current;
+            var dryVersion = ModelArtifact.ResolveStationChampionVersion(
+                _cfg.Storage.ModelsPath, "dry_window", compositeKey);
             if (string.IsNullOrEmpty(dryVersion))
             {
                 skipped++; continue;
             }
 
-            if (!precipManifest.Stations.TryGetValue(station, out var precipEntry))
+            if (!precipManifest.Stations.ContainsKey(station))
             {
                 _log.LogWarning("  {Composite}: no precipitation manifest entry for {Station} — skip.",
                     compositeKey, station);
                 skipped++; continue;
             }
-            var precipVersion = resolvePrecipVersion(precipEntry);
+            // Source phase (3a for 3g, 3e for 3s) is fixed by DryWindowMcSources.
+            var precipVersion = ModelArtifact.ResolveStationPhaseVersion(
+                _cfg.Storage.ModelsPath, "precipitation", station,
+                DryWindowMcSources.SourcePhaseFor(mcPhase));
             if (string.IsNullOrEmpty(precipVersion))
             {
                 _log.LogWarning("  {Composite} [{V}]: no precip champion resolved for {Station} — skip.",

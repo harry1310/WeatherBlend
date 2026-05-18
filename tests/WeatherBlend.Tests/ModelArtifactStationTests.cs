@@ -12,11 +12,14 @@ public class ModelArtifactStationTests
     private static string Norm(string p) => p.Replace('\\', '/');
 
     /// <summary>Create a station version dir with a training_metadata.json
-    /// carrying the given phase + location, so the promote helpers can
-    /// read the bundle's pinned location back off disk.</summary>
+    /// carrying the given phase + location. The promote helpers read the
+    /// pinned location back off disk, and the derived-champion resolver
+    /// (<see cref="ModelArtifact.ResolveStationChampionVersion"/>) reads the
+    /// phase — so a version that should resolve as champion must be seeded
+    /// with the target's champion phase ("3a" for precipitation).</summary>
     private static void SeedBundle(
         string root, string target, string station, string version,
-        string phase, string location)
+        string phase, string location = "bonehill_rocks")
     {
         var dir = Path.Combine(root, target, station, version);
         Directory.CreateDirectory(dir);
@@ -47,6 +50,12 @@ public class ModelArtifactStationTests
         var root = FreshRoot();
         try
         {
+            // Seed bundle metadata (phase 3a = precipitation champion) so the
+            // derived-champion "current" resolver can identify each version.
+            SeedBundle(root, "precipitation", "ea_bellever_dartmoor", "v2026-04-23_120000", "3a");
+            SeedBundle(root, "precipitation", "ea_bovey_tracey",        "v2026-04-23_120500", "3a");
+            SeedBundle(root, "precipitation", "ea_bellever_dartmoor", "v2026-04-23_121000", "3a");
+
             ModelArtifact.UpdateStationManifest(root, "precipitation", "ea_bellever_dartmoor", "v2026-04-23_120000");
             ModelArtifact.UpdateStationManifest(root, "precipitation", "ea_bovey_tracey",        "v2026-04-23_120500");
             ModelArtifact.UpdateStationManifest(root, "precipitation", "ea_bellever_dartmoor", "v2026-04-23_121000");
@@ -54,7 +63,8 @@ public class ModelArtifactStationTests
             ModelArtifact.ListStations(root, "precipitation")
                 .Should().BeEquivalentTo(new[] { "ea_bellever_dartmoor", "ea_bovey_tracey" });
 
-            // Bellever now points to the second train, with both versions recorded.
+            // Bellever's champion is now the second train (UpdateStationManifest
+            // resets Active to the single new version).
             var bellDir = ModelArtifact.ResolveStationVersionDir(root, "precipitation", "ea_bellever_dartmoor", "current");
             Norm(bellDir).Should().EndWith("ea_bellever_dartmoor/v2026-04-23_121000");
 
@@ -123,7 +133,7 @@ public class ModelArtifactStationTests
     }
 
     [Fact]
-    public void UpdateStationManifest_seeds_Active_as_single_current_for_backcompat()
+    public void UpdateStationManifest_seeds_Active_as_single_entry()
     {
         var root = FreshRoot();
         try
@@ -137,11 +147,14 @@ public class ModelArtifactStationTests
     }
 
     [Fact]
-    public void SetStationActive_replaces_list_independently_of_Current()
+    public void SetStationActive_replaces_list_and_champion_stays_the_3a_version()
     {
         var root = FreshRoot();
         try
         {
+            // 3a-lean champion + 3c-rich challenger both Active.
+            SeedBundle(root, "precipitation", "ea_bellever_dartmoor", "v3a_lean", "3a");
+            SeedBundle(root, "precipitation", "ea_bellever_dartmoor", "v3c_rich", "3c");
             ModelArtifact.UpdateStationManifest(root, "precipitation", "ea_bellever_dartmoor", "v3a_lean");
             ModelArtifact.AppendStationVersion(root, "precipitation", "ea_bellever_dartmoor", "v3c_rich");
             ModelArtifact.SetStationActive(root, "precipitation", "ea_bellever_dartmoor",
@@ -150,25 +163,28 @@ public class ModelArtifactStationTests
             ModelArtifact.ResolveStationActive(root, "precipitation", "ea_bellever_dartmoor")
                 .Should().Equal("v3a_lean", "v3c_rich");
 
-            // Current is unchanged by SetStationActive — the lean 3a remains the champion.
-            var dir = ModelArtifact.ResolveStationVersionDir(root, "precipitation", "ea_bellever_dartmoor", "current");
-            Norm(dir).Should().EndWith("ea_bellever_dartmoor/v3a_lean");
+            // The champion is derived: the newest Active version of the
+            // precipitation champion phase (3a) — the 3c challenger never
+            // becomes the headline even though it's Active.
+            ModelArtifact.ResolveStationChampionVersion(root, "precipitation", "ea_bellever_dartmoor")
+                .Should().Be("v3a_lean");
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
     }
 
     [Fact]
-    public void ResolveStationActive_falls_back_to_Current_when_Active_empty()
+    public void ResolveStationActive_returns_empty_when_Active_cleared()
     {
         var root = FreshRoot();
         try
         {
             ModelArtifact.UpdateStationManifest(root, "precipitation", "ea_bovey_tracey", "v_legacy");
-            // Simulate a legacy manifest: clear Active so we fall back to [Current].
+            // Clearing Active demotes the station — there is no Current
+            // pointer to fall back to any more.
             ModelArtifact.SetStationActive(root, "precipitation", "ea_bovey_tracey", Array.Empty<string>());
 
             ModelArtifact.ResolveStationActive(root, "precipitation", "ea_bovey_tracey")
-                .Should().Equal("v_legacy");
+                .Should().BeEmpty();
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
     }
@@ -188,10 +204,11 @@ public class ModelArtifactStationTests
     }
 
     [Fact]
-    public void AppendStationVersion_creates_entry_with_empty_Current_and_Active()
+    public void AppendStationVersion_creates_entry_with_empty_Active()
     {
-        // Mirrors the temperature AppendVersion semantics: registers a version in history
-        // without making it the champion or adding it to Active.
+        // Mirrors the temperature AppendVersion semantics: registers a version
+        // in history without adding it to Active. A station with no Active
+        // version has no champion.
         var root = FreshRoot();
         try
         {
@@ -214,7 +231,7 @@ public class ModelArtifactStationTests
         try
         {
             SeedBundle(root, "precipitation", "ea_bellever_dartmoor", "v1_phase3a", "3a", "bonehill_rocks");
-            ModelArtifact.PromoteStationVersionAsChampion(
+            ModelArtifact.PromoteStationVersion(
                 root, "precipitation", "ea_bellever_dartmoor", "v1_phase3a", "3a");
 
             ModelArtifact.ResolveStationLocation(root, "precipitation", "ea_bellever_dartmoor")
@@ -230,13 +247,13 @@ public class ModelArtifactStationTests
         try
         {
             SeedBundle(root, "precipitation", "ea_bellever_dartmoor", "v1_phase3a", "3a", "bonehill_rocks");
-            ModelArtifact.PromoteStationVersionAsChampion(
+            ModelArtifact.PromoteStationVersion(
                 root, "precipitation", "ea_bellever_dartmoor", "v1_phase3a", "3a");
 
             // A bundle whose metadata claims a different location for the
             // same station slot — a misrouted trainer; promote must refuse.
             SeedBundle(root, "precipitation", "ea_bellever_dartmoor", "v2_phase3a", "3a", "membury_devon");
-            var act = () => ModelArtifact.PromoteStationVersionAsChampion(
+            var act = () => ModelArtifact.PromoteStationVersion(
                 root, "precipitation", "ea_bellever_dartmoor", "v2_phase3a", "3a");
 
             act.Should().Throw<InvalidOperationException>()
@@ -256,7 +273,7 @@ public class ModelArtifactStationTests
         try
         {
             SeedBundle(root, "precipitation", "ea_bellever_dartmoor", "v1_phase3a", "3a", "bonehill_rocks");
-            ModelArtifact.PromoteStationVersionAsChampion(
+            ModelArtifact.PromoteStationVersion(
                 root, "precipitation", "ea_bellever_dartmoor", "v1_phase3a", "3a");
 
             ModelArtifact.ResolveStationActive(
@@ -273,7 +290,7 @@ public class ModelArtifactStationTests
         try
         {
             SeedBundle(root, "precipitation", "ea_bellever_dartmoor", "v1_phase3a", "3a", "bonehill_rocks");
-            ModelArtifact.PromoteStationVersionAsChampion(
+            ModelArtifact.PromoteStationVersion(
                 root, "precipitation", "ea_bellever_dartmoor", "v1_phase3a", "3a");
 
             var act = () => ModelArtifact.ResolveStationActive(

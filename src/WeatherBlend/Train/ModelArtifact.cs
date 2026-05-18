@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.ML;
+using WeatherBlend.Models;
 using WeatherBlend.Train.Common;
 
 namespace WeatherBlend.Train;
@@ -30,40 +31,45 @@ public static class ModelArtifact
     public static string LeadModelFileName(int leadHours) => $"lead_{leadHours}h.zip";
 
     /// <summary>
-    /// MANIFEST.json for a target. Temperature uses the flat
-    /// <see cref="Current"/>/<see cref="Versions"/> fields; precipitation uses
-    /// <see cref="Stations"/> (one entry per truth source, e.g. <c>ea_bellever_dartmoor</c>)
-    /// because each station is a distinct blender. Exactly one of the two sides
-    /// is populated for a given target; the other stays at its default.
+    /// MANIFEST.json for a target. element_* targets use the flat
+    /// <see cref="Versions"/>/<see cref="Active"/> fields; precipitation and
+    /// temperature use <see cref="Stations"/> (one entry per truth source,
+    /// e.g. <c>ea_bellever_dartmoor</c>) because each station is a distinct
+    /// blender. Exactly one of the two sides is populated for a given target;
+    /// the other stays at its default.
+    ///
+    /// There is no stored champion pointer. The headline version is derived:
+    /// <see cref="ResolveChampionVersion"/> (flat) /
+    /// <see cref="ResolveStationChampionVersion"/> (per-station) read the
+    /// phases.yaml champion phase and pick its newest Active version.
     /// </summary>
     public sealed class Manifest
     {
         public string Target { get; set; } = "";
 
-        // Flat layout (temperature).
-        public string Current { get; set; } = "";
+        // Flat layout (element_* — single-model targets with no
+        // champion/challenger split). The headline version is simply the
+        // newest Active entry; there is no stored champion pointer.
         public List<string> Versions { get; set; } = new();
 
         /// <summary>
-        /// Versions that predict + verify should treat as live. Empty means "fall back
-        /// to [Current]" (back-compat for manifests written before Phase 2c). Used by
-        /// the champion/challenger pattern: 2b stays as Current, 2c is added to Active
-        /// alongside it so both produce predictions every cycle.
+        /// Versions that predict + verify should treat as live. Used by the
+        /// champion/challenger pattern: every shipping phase's latest version
+        /// sits here so they all produce predictions every cycle. Which one
+        /// is champion is decided by phases.yaml, not by this list.
         /// </summary>
         public List<string> Active { get; set; } = new();
 
         /// <summary>
         /// Per-lead champion override (Phase 2d, 2026-05-05). Maps lead-hours →
         /// version that should be treated as champion AT THAT LEAD ONLY. Falls
-        /// back to <see cref="Current"/> for any lead not listed. Used so 2d
-        /// can take over as champion at lead 12 (where it's the only model
-        /// trained) without touching 2b's championship at 24/48/72/96/120 —
-        /// 2d isn't trained at those leads, so falling back to Current keeps
-        /// the headline forecast intact.
+        /// back to the derived champion (<see cref="ResolveChampionVersion"/>)
+        /// for any lead not listed. Used so 2d can take over as champion at
+        /// lead 12 (where it's the only model trained) without touching 2b's
+        /// championship at 24/48/72/96/120.
         ///
         /// Read via <see cref="ResolveChampionForLead"/>; null / missing key
-        /// → <see cref="Current"/> wins. Empty dict on legacy manifests so
-        /// nothing changes for existing callers.
+        /// → the derived champion wins. Empty dict when no per-lead pin is set.
         /// </summary>
         public Dictionary<int, string> ChampionByLead { get; set; } = new();
 
@@ -73,33 +79,30 @@ public static class ModelArtifact
 
     public sealed class StationEntry
     {
-        public string Current { get; set; } = "";
         public List<string> Versions { get; set; } = new();
 
         /// <summary>
-        /// Versions that should produce predictions/verify rows for this station. Empty
-        /// means "fall back to [Current]" (back-compat). Used by Phase 3c champion/
-        /// challenger: the 3a-lean stays as Current while 3c-rich is appended to Active
-        /// so both versions emit predictions every cycle.
+        /// Versions that should produce predictions/verify rows for this
+        /// station. Used by the Phase 3c champion/challenger pattern: every
+        /// shipping phase's latest version sits here so they all emit
+        /// predictions every cycle. Which one is champion is decided by
+        /// phases.yaml, not by this list.
         /// </summary>
         public List<string> Active { get; set; } = new();
 
         /// <summary>
         /// Per-lead champion override (Phase 3d, 2026-05-05). Maps lead-hours
         /// → version pinned as champion AT THAT LEAD ONLY for this station.
-        /// Falls back to <see cref="Current"/> for any lead not listed.
         /// Mirrors <see cref="Manifest.ChampionByLead"/> on the flat-target
         /// side so 3d (exact-runtime precip) can take over as champion at
-        /// lead 12 per station while 3a stays Current at 24/48/72/96/120 —
-        /// same shape as 2d's lead-12-only championship for temperature.
+        /// lead 12 per station while the champion phase owns the other leads.
         /// </summary>
         public Dictionary<int, string> ChampionByLead { get; set; } = new();
 
         /// <summary>
         /// Configured location this station belongs to (e.g.
         /// <c>bonehill_rocks</c>, <c>membury_devon</c>). Populated by
-        /// <see cref="PromoteStationVersionAsChampion"/> /
-        /// <see cref="PromoteStationVersionAsChallenger"/> from the
+        /// <see cref="PromoteStationVersion"/> from the
         /// freshly-trained bundle's <c>training_metadata.json</c>
         /// LocationName, and asserted never to change once set — a
         /// promote that would swap the location under an existing entry
@@ -522,15 +525,15 @@ public static class ModelArtifact
     /// <summary>
     /// Write/update MANIFEST.json under data/models/{target}/. Atomic:
     /// serialize to temp file, then move over the existing manifest.
-    /// Sets Current and resets Active = [Current] — single-active legacy semantics.
-    /// Use <see cref="AppendVersion"/> + <see cref="SetActive"/> for champion/challenger
-    /// flows where multiple versions should stay live concurrently.
+    /// Resets Active = [version] — single-active semantics for flat
+    /// single-model targets (element_*). Use <see cref="AppendVersion"/> +
+    /// <see cref="SetActive"/> for champion/challenger flows where multiple
+    /// versions should stay live concurrently.
     /// </summary>
     public static void UpdateManifest(string modelsRoot, string target, string versionDirName)
     {
         MutateManifest(modelsRoot, target, m =>
         {
-            m.Current = versionDirName;
             if (!m.Versions.Contains(versionDirName))
                 m.Versions.Add(versionDirName);
             m.Active = new List<string> { versionDirName };
@@ -563,50 +566,37 @@ public static class ModelArtifact
     }
 
     /// <summary>
-    /// Versions that should produce predictions/verify rows. Falls back to [Current]
-    /// when Active is empty (legacy manifests). Returns empty if neither is populated.
+    /// Versions that should produce predictions/verify rows. Empty when the
+    /// manifest is absent or has no Active entries.
     /// </summary>
     public static IReadOnlyList<string> ResolveActive(string modelsRoot, string target)
     {
         var manifest = ReadJson<Manifest>(Path.Combine(modelsRoot, target, ManifestFileName));
         if (manifest is null) return Array.Empty<string>();
-        if (manifest.Active.Count > 0) return manifest.Active;
-        if (!string.IsNullOrWhiteSpace(manifest.Current)) return new[] { manifest.Current };
-        return Array.Empty<string>();
+        return manifest.Active.Count > 0 ? manifest.Active : Array.Empty<string>();
     }
 
     /// <summary>
-    /// Champion version for a specific lead. Reads
-    /// <see cref="Manifest.ChampionByLead"/> when populated, otherwise falls
-    /// back to <see cref="Manifest.Current"/>. Empty string when neither is
-    /// set (legacy or freshly-initialised manifests). Per-lead champion is
-    /// the right granularity for the home-page tile-per-hour rendering once
-    /// different phases own different leads (2d at 12, 2b elsewhere) —
-    /// using the flat Current would force one phase across the whole day.
+    /// Per-lead champion version for a flat target. Returns the
+    /// <see cref="Manifest.ChampionByLead"/> override pinned for
+    /// <paramref name="leadHours"/> when present, else the flat champion
+    /// (<see cref="ResolveChampionVersion"/>). Empty when neither resolves.
     /// </summary>
     public static string ResolveChampionForLead(string modelsRoot, string target, int leadHours)
     {
         var manifest = ReadJson<Manifest>(Path.Combine(modelsRoot, target, ManifestFileName));
         if (manifest is null) return "";
-        return ResolveChampionForLead(manifest, leadHours);
-    }
-
-    /// <summary>Pure overload for tests / pre-loaded manifests.</summary>
-    public static string ResolveChampionForLead(Manifest manifest, int leadHours)
-    {
         if (manifest.ChampionByLead.TryGetValue(leadHours, out var perLead)
             && !string.IsNullOrWhiteSpace(perLead))
             return perLead;
-        return manifest.Current ?? "";
+        return ResolveChampionVersion(modelsRoot, target);
     }
 
     /// <summary>
     /// Set the per-lead champion override for one lead. Pass an empty
-    /// <paramref name="versionDirName"/> to clear the entry (falls back to
-    /// <see cref="Manifest.Current"/>). Idempotent. Doesn't touch
-    /// <see cref="Manifest.Current"/> or <see cref="Manifest.Active"/> — the
-    /// version is assumed to already be in <c>Active</c> so predict + verify
-    /// keep producing rows for it.
+    /// <paramref name="versionDirName"/> to clear the entry. Idempotent.
+    /// Doesn't touch <see cref="Manifest.Active"/> — the version is assumed
+    /// already Active so predict + verify keep producing rows for it.
     /// </summary>
     public static void SetChampionForLead(
         string modelsRoot, string target, int leadHours, string versionDirName)
@@ -621,39 +611,69 @@ public static class ModelArtifact
     }
 
     // ------------------------------------------------------------------
-    // Per-station champion-by-lead (precipitation, dry-window-style targets)
+    // Champion resolution — derived, never stored
+    //
+    // The headline ("champion") version is computed from the canonical
+    // phases.yaml registry (one champion phase per target) + the manifest's
+    // Active set. There is no stored Current pointer: a mutable field any
+    // trainer could clobber was exactly the bug this replaced — Phase 4b's
+    // mint silently re-pointed the precipitation champion away from 3a.
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// Per-lead champion for a station entry. Reads
-    /// <see cref="StationEntry.ChampionByLead"/> when populated, otherwise
-    /// falls back to <see cref="StationEntry.Current"/>. Returns empty
-    /// string when neither is set (legacy or freshly-initialised entries).
+    /// Newest Active version of a flat (single-model) target — the headline
+    /// version for element_* manifests. Lexical max of Active (version
+    /// strings are <c>vYYYY-MM-DD_HHmmss</c> so lexical == chronological).
+    /// Empty when the manifest is absent or has no Active entries.
     /// </summary>
-    public static string ResolveStationChampionForLead(
-        string modelsRoot, string target, string station, int leadHours)
+    public static string ResolveChampionVersion(string modelsRoot, string target)
     {
         var manifest = ReadJson<Manifest>(Path.Combine(modelsRoot, target, ManifestFileName));
         if (manifest is null) return "";
-        if (!manifest.Stations.TryGetValue(station, out var entry)) return "";
-        return ResolveStationChampionForLead(entry, leadHours);
+        return manifest.Active
+            .OrderByDescending(v => v, StringComparer.Ordinal)
+            .FirstOrDefault() ?? "";
     }
 
-    /// <summary>Pure overload for tests / pre-loaded entries.</summary>
-    public static string ResolveStationChampionForLead(StationEntry entry, int leadHours)
+    /// <summary>
+    /// The champion VERSION for a (target, station) — the newest Active
+    /// entry whose trained phase equals the target's phases.yaml champion
+    /// phase (<see cref="ActivePhasePolicy.ChampionPhase"/>). Replaces the
+    /// retired per-station <c>Current</c> pointer. Empty when the station
+    /// has no Active version of the champion phase.
+    /// </summary>
+    public static string ResolveStationChampionVersion(
+        string modelsRoot, string target, string station)
+        => ResolveStationPhaseVersion(
+            modelsRoot, target, station, ActivePhasePolicy.ChampionPhase(target));
+
+    /// <summary>
+    /// The newest Active version of a specific <paramref name="phase"/> for
+    /// a (target, station) — lexical max over Active entries whose
+    /// <c>training_metadata</c> Phase matches. Empty when none match. Backs
+    /// <see cref="ResolveStationChampionVersion"/> and the dry-window MC
+    /// source binding (<c>DryWindowMcSources</c>), where the source phase is
+    /// fixed structurally (3g/3j/3n → 3a, 3s → 3e) rather than tracking
+    /// whichever phase is champion.
+    /// </summary>
+    public static string ResolveStationPhaseVersion(
+        string modelsRoot, string target, string station, string phase)
     {
-        if (entry.ChampionByLead.TryGetValue(leadHours, out var perLead)
-            && !string.IsNullOrWhiteSpace(perLead))
-            return perLead;
-        return entry.Current ?? "";
+        var manifest = ReadJson<Manifest>(Path.Combine(modelsRoot, target, ManifestFileName));
+        if (manifest is null || !manifest.Stations.TryGetValue(station, out var entry))
+            return "";
+        var stationDir = Path.Combine(modelsRoot, target, station);
+        return entry.Active
+            .Where(v => string.Equals(
+                TryReadVersionPhase(Path.Combine(stationDir, v)), phase, StringComparison.Ordinal))
+            .OrderByDescending(v => v, StringComparer.Ordinal)
+            .FirstOrDefault() ?? "";
     }
 
     /// <summary>
     /// Set the per-lead champion override for one (station, lead). Pass an
-    /// empty <paramref name="versionDirName"/> to clear the entry (falls
-    /// back to <see cref="StationEntry.Current"/>). Idempotent. Doesn't
-    /// touch <see cref="StationEntry.Current"/> or
-    /// <see cref="StationEntry.Active"/>.
+    /// empty <paramref name="versionDirName"/> to clear the entry.
+    /// Idempotent. Doesn't touch <see cref="StationEntry.Active"/>.
     /// </summary>
     public static void SetStationChampionForLead(
         string modelsRoot, string target, string station, int leadHours, string versionDirName)
@@ -784,18 +804,22 @@ public static class ModelArtifact
             "another writer is wedged or holding it for an unusually long time.");
     }
 
-    /// <summary>Resolve "current" / explicit version string → absolute directory path.</summary>
+    /// <summary>
+    /// Resolve <c>"current"</c> / explicit version string → absolute
+    /// directory path. <c>"current"</c> for a flat target resolves to the
+    /// champion (<see cref="ResolveChampionVersion"/> — newest Active).
+    /// </summary>
     public static string ResolveVersionDir(string modelsRoot, string target, string versionOrCurrent)
     {
         var dir = Path.Combine(modelsRoot, target);
         if (!string.Equals(versionOrCurrent, "current", StringComparison.OrdinalIgnoreCase))
             return Path.Combine(dir, versionOrCurrent);
 
-        var manifest = ReadJson<Manifest>(Path.Combine(dir, ManifestFileName))
-            ?? throw new InvalidOperationException($"No manifest at {dir} — train a model first.");
-        if (string.IsNullOrWhiteSpace(manifest.Current))
-            throw new InvalidOperationException("Manifest has no current pointer.");
-        return Path.Combine(dir, manifest.Current);
+        var champion = ResolveChampionVersion(modelsRoot, target);
+        if (string.IsNullOrWhiteSpace(champion))
+            throw new InvalidOperationException(
+                $"No champion version for target '{target}' — manifest absent or Active empty.");
+        return Path.Combine(dir, champion);
     }
 
     /// <summary>
@@ -819,11 +843,10 @@ public static class ModelArtifact
             entry = new StationEntry();
             manifest.Stations[station] = entry;
         }
-        entry.Current = versionDirName;
         if (!entry.Versions.Contains(versionDirName))
             entry.Versions.Add(versionDirName);
-        // Single-active legacy semantics (mirrors the flat-layout UpdateManifest): a
-        // plain UpdateStationManifest resets Active to [Current]. For Phase 3c
+        // Single-active semantics (mirrors the flat-layout UpdateManifest): a
+        // plain UpdateStationManifest resets Active to [version]. For Phase 3c
         // champion/challenger, call SetStationActive afterwards with the full list.
         entry.Active = new List<string> { versionDirName };
 
@@ -886,57 +909,27 @@ public static class ModelArtifact
     // phase twice converges to a one-entry-per-phase Active list rather
     // than accumulating dead versions or wiping siblings.
     //
-    // Champion vs challenger is just a two-line difference:
-    //   PromoteVersionAsChampion sets Current = newVersionName too
-    //   PromoteVersionAsChallenger leaves Current alone
-    // Both add to Versions and Active. Pass the Phase string from the
-    // training_metadata you just wrote — the helper doesn't try to infer
-    // it from the version-name suffix because the suffix scheme isn't
-    // load-bearing (some phases have suffixes, some don't).
+    // There is no champion/challenger distinction at the manifest level any
+    // more: promote just registers the version in Versions + Active (with
+    // lead-set-aware replacement of the same phase). WHICH phase is champion
+    // is decided solely by phases.yaml (ActivePhasePolicy.ChampionPhase); the
+    // headline version is derived from that — see ResolveChampionVersion /
+    // ResolveStationChampionVersion. Pass the Phase string from the
+    // training_metadata you just wrote — the helper doesn't infer it from the
+    // version-name suffix because the suffix scheme isn't load-bearing.
 
     /// <summary>
-    /// Promote a freshly-trained version to champion of a flat-target
-    /// manifest (temperature, element_*). Sets <c>Current = newVersionName</c>;
-    /// the Active list replacement uses lead-set-aware semantics — see
-    /// <see cref="ComposeActive"/>.
+    /// Register a freshly-trained version in a flat-target manifest
+    /// (element_*). Adds to Versions and replaces any existing same-phase
+    /// Active entry (lead-set-aware — see <see cref="ComposeActive"/>),
+    /// leaving other phases untouched. Idempotent on re-run.
     /// </summary>
-    public static void PromoteVersionAsChampion(
+    public static void PromoteVersion(
         string modelsRoot, string target, string newVersionName, string newPhase)
-        => PromoteVersionFlat(modelsRoot, target, newVersionName, newPhase, asChampion: true);
-
-    /// <summary>
-    /// Register a challenger version in a flat-target manifest. Same as
-    /// <see cref="PromoteVersionAsChampion"/> but does NOT touch
-    /// <c>Current</c> — the existing champion stays the headline forecast.
-    /// </summary>
-    public static void PromoteVersionAsChallenger(
-        string modelsRoot, string target, string newVersionName, string newPhase)
-        => PromoteVersionFlat(modelsRoot, target, newVersionName, newPhase, asChampion: false);
-
-    /// <summary>
-    /// Per-station variant of <see cref="PromoteVersionAsChampion"/>. Same
-    /// semantics on a station entry within a station-keyed manifest
-    /// (precipitation, dry_window).
-    /// </summary>
-    public static void PromoteStationVersionAsChampion(
-        string modelsRoot, string target, string station, string newVersionName, string newPhase)
-        => PromoteStationVersionInternal(modelsRoot, target, station, newVersionName, newPhase, asChampion: true);
-
-    /// <summary>
-    /// Per-station variant of <see cref="PromoteVersionAsChallenger"/>.
-    /// Lead-set-aware replacement, no <c>Current</c> change.
-    /// </summary>
-    public static void PromoteStationVersionAsChallenger(
-        string modelsRoot, string target, string station, string newVersionName, string newPhase)
-        => PromoteStationVersionInternal(modelsRoot, target, station, newVersionName, newPhase, asChampion: false);
-
-    private static void PromoteVersionFlat(
-        string modelsRoot, string target, string newVersionName, string newPhase, bool asChampion)
     {
         var newLeadSet = TryReadVersionLeads(Path.Combine(modelsRoot, target, newVersionName));
         MutateManifest(modelsRoot, target, m =>
         {
-            if (asChampion) m.Current = newVersionName;
             if (!m.Versions.Contains(newVersionName)) m.Versions.Add(newVersionName);
             m.Active = ComposeActive(m.Active, newVersionName, newPhase, newLeadSet,
                 phaseOfVersion: v => TryReadVersionPhase(Path.Combine(modelsRoot, target, v)),
@@ -944,8 +937,14 @@ public static class ModelArtifact
         });
     }
 
-    private static void PromoteStationVersionInternal(
-        string modelsRoot, string target, string station, string newVersionName, string newPhase, bool asChampion)
+    /// <summary>
+    /// Per-station variant of <see cref="PromoteVersion"/> — registers the
+    /// version in a station entry of a station-keyed manifest (precipitation,
+    /// temperature, dry_window). Pins the station's location on first write
+    /// and refuses a later location change (Phase B multi-location safety).
+    /// </summary>
+    public static void PromoteStationVersion(
+        string modelsRoot, string target, string station, string newVersionName, string newPhase)
     {
         var newLeadSet = TryReadVersionLeads(Path.Combine(modelsRoot, target, station, newVersionName));
         var newLocation = TryReadVersionLocation(Path.Combine(modelsRoot, target, station, newVersionName));
@@ -975,7 +974,6 @@ public static class ModelArtifact
                         "either the wrong bundle or a misrouted trainer.");
                 entry.Location = newLocation;
             }
-            if (asChampion) entry.Current = newVersionName;
             if (!entry.Versions.Contains(newVersionName)) entry.Versions.Add(newVersionName);
             entry.Active = ComposeActive(entry.Active, newVersionName, newPhase, newLeadSet,
                 phaseOfVersion: v => TryReadVersionPhase(Path.Combine(modelsRoot, target, station, v)),
@@ -1123,7 +1121,7 @@ public static class ModelArtifact
     /// <paramref name="versionDir"/>. Returns null on missing dir, missing
     /// file, or any deserialise error — callers treat null as "location
     /// unknown, leave the manifest entry's Location untouched". Phase B
-    /// (2026-05-17): used by <see cref="PromoteStationVersionInternal"/>
+    /// (2026-05-17): used by <see cref="PromoteStationVersion"/>
     /// to pin a station's location from the bundle it just trained.
     /// </summary>
     private static string? TryReadVersionLocation(string versionDir)
@@ -1163,18 +1161,15 @@ public static class ModelArtifact
     }
 
     /// <summary>
-    /// Versions that should produce predictions/verify rows for this station. Falls
-    /// back to [Current] when Active is empty (legacy per-station entries written
-    /// before Phase 3c). Returns empty if neither is populated.
+    /// Versions that should produce predictions/verify rows for this station.
+    /// Empty when the station isn't in the manifest or has no Active entries.
     /// </summary>
     public static IReadOnlyList<string> ResolveStationActive(string modelsRoot, string target, string station)
     {
         var manifest = ReadJson<Manifest>(Path.Combine(modelsRoot, target, ManifestFileName));
         if (manifest is null) return Array.Empty<string>();
         if (!manifest.Stations.TryGetValue(station, out var entry)) return Array.Empty<string>();
-        if (entry.Active.Count > 0) return entry.Active;
-        if (!string.IsNullOrWhiteSpace(entry.Current)) return new[] { entry.Current };
-        return Array.Empty<string>();
+        return entry.Active.Count > 0 ? entry.Active : Array.Empty<string>();
     }
 
     /// <summary>
@@ -1200,9 +1195,7 @@ public static class ModelArtifact
                 $"Station '{station}' in target '{target}' is pinned to location " +
                 $"'{entry.Location}' but was resolved for location '{location}'. " +
                 "Predict/verify must request the station's own location.");
-        if (entry.Active.Count > 0) return entry.Active;
-        if (!string.IsNullOrWhiteSpace(entry.Current)) return new[] { entry.Current };
-        return Array.Empty<string>();
+        return entry.Active.Count > 0 ? entry.Active : Array.Empty<string>();
     }
 
     /// <summary>
@@ -1220,10 +1213,11 @@ public static class ModelArtifact
     }
 
     /// <summary>
-    /// Resolve a per-station version dir: <c>"current"</c> reads the station's
-    /// current pointer from MANIFEST.json; any other string is treated as an
-    /// explicit <c>v…</c> folder name. Returned path always points inside the
-    /// <c>{target}/{station}/</c> subtree.
+    /// Resolve a per-station version dir: <c>"current"</c> resolves to the
+    /// station's champion version (<see cref="ResolveStationChampionVersion"/>
+    /// — newest Active version of the phases.yaml champion phase); any other
+    /// string is treated as an explicit <c>v…</c> folder name. Returned path
+    /// always points inside the <c>{target}/{station}/</c> subtree.
     /// </summary>
     public static string ResolveStationVersionDir(string modelsRoot, string target, string station, string versionOrCurrent)
     {
@@ -1231,34 +1225,33 @@ public static class ModelArtifact
         if (!string.Equals(versionOrCurrent, "current", StringComparison.OrdinalIgnoreCase))
             return Path.Combine(stationDir, versionOrCurrent);
 
-        var manifest = ReadJson<Manifest>(Path.Combine(modelsRoot, target, ManifestFileName))
-            ?? throw new InvalidOperationException($"No manifest for target '{target}' — train a model first.");
-        if (!manifest.Stations.TryGetValue(station, out var entry) || string.IsNullOrWhiteSpace(entry.Current))
-            throw new InvalidOperationException($"Manifest has no current pointer for station '{station}'.");
-        return Path.Combine(stationDir, entry.Current);
+        var champion = ResolveStationChampionVersion(modelsRoot, target, station);
+        if (string.IsNullOrWhiteSpace(champion))
+            throw new InvalidOperationException(
+                $"No champion version for station '{station}' in target '{target}' — "
+                + "no Active version of the champion phase.");
+        return Path.Combine(stationDir, champion);
     }
 
     /// <summary>
     /// Stations currently ACTIVE in the manifest for this target — i.e. those
-    /// with a non-empty <c>Current</c> pointer. Stations with empty
-    /// <c>Current</c> (demoted-to-archive entries kept around so their
-    /// historical parquets remain readable) are silently filtered out.
-    /// Returns empty when the manifest is absent or flat-layout.
+    /// with a non-empty <c>Active</c> list. Stations with an empty Active list
+    /// (demoted-to-archive entries kept around so their historical parquets
+    /// remain readable) are silently filtered out. Returns empty when the
+    /// manifest is absent or flat-layout.
     ///
     /// Was previously "every key in manifest.Stations" — that broke
-    /// PrecipPredictCommand on 2026-05-04 when a station-swap left a
-    /// demoted entry with <c>Current=""</c>: predict iterated all
-    /// stations, then ResolveStationVersionDir threw "no current pointer
-    /// for station '...'". Filter at the source so every caller
-    /// (predict / verify / ablate) gets the demoted-archive semantics
-    /// without each having to re-encode the rule.
+    /// PrecipPredictCommand on 2026-05-04 when a station-swap left a demoted
+    /// entry behind: predict iterated all stations and then threw. Filter at
+    /// the source so every caller (predict / verify / ablate) gets the
+    /// demoted-archive semantics without re-encoding the rule.
     /// </summary>
     public static IReadOnlyList<string> ListStations(string modelsRoot, string target)
     {
         var manifest = ReadJson<Manifest>(Path.Combine(modelsRoot, target, ManifestFileName));
         if (manifest is null) return Array.Empty<string>();
         return manifest.Stations
-            .Where(kv => !string.IsNullOrWhiteSpace(kv.Value.Current))
+            .Where(kv => kv.Value.Active.Count > 0)
             .Select(kv => kv.Key)
             .OrderBy(s => s, StringComparer.Ordinal)
             .ToArray();

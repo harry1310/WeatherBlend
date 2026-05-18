@@ -302,10 +302,12 @@ public static partial class SitePages
             = new HashSet<string>(StringComparer.Ordinal);
 
         /// <summary>
-        /// Temperature <c>Manifest.Current</c> — the official champion. When set, the home
-        /// page filters its forecast cards to this version so results are deterministic
-        /// even while a challenger is also active. Empty string → no filter (fall back to
-        /// "latest by PredictionMadeAt" across all versions).
+        /// Temperature champion version — the newest Active version of the
+        /// phases.yaml champion phase (resolved, not a stored pointer). When
+        /// set, the home page filters its forecast cards to this version so
+        /// results are deterministic even while a challenger is also active.
+        /// Empty string → no filter (fall back to "latest by PredictionMadeAt"
+        /// across all versions).
         /// </summary>
         public string CurrentVersion { get; init; } = "";
 
@@ -320,10 +322,12 @@ public static partial class SitePages
             = new Dictionary<int, string>();
 
         /// <summary>
-        /// Per-station precipitation champion (<c>StationEntry.Current</c>) keyed by EA
-        /// station slug (e.g. <c>ea_bellever_dartmoor</c>). The home page pulls the P(wet)
-        /// chip from this version only, so a challenger that happens to write the same
-        /// (lead, valid_time) never leaks onto the headline card.
+        /// Per-station precipitation champion version, keyed by EA station
+        /// slug (e.g. <c>ea_bellever_dartmoor</c>) — the newest Active version
+        /// of the phases.yaml champion phase (3a), resolved per station. The
+        /// home page pulls the P(wet) chip from this version only, so a
+        /// challenger that happens to write the same (lead, valid_time) never
+        /// leaks onto the headline card.
         /// </summary>
         public IReadOnlyDictionary<string, string> PrecipCurrentByStation { get; init; }
             = new Dictionary<string, string>();
@@ -335,7 +339,7 @@ public static partial class SitePages
         /// lead) not present here fall back to <see cref="PrecipCurrentByStation"/>.
         /// Mirrors <see cref="ChampionByLead"/> on the temperature side so 3d
         /// (exact-runtime precip) can take over as champion at lead 12 per
-        /// station while 3a stays Current at 24+. Empty dict on legacy renders.
+        /// station while 3a owns 24+. Empty dict when no per-lead pin is set.
         /// </summary>
         public IReadOnlyDictionary<(string Station, int LeadHours), string> PrecipChampionByStationLead { get; init; }
             = new Dictionary<(string, int), string>();

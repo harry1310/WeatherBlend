@@ -60,4 +60,12 @@ public static class ActivePhasePolicy
     /// </summary>
     public static int Priority(string target, string phase)
         => PhaseRegistry.Default.Priority(target, phase);
+
+    /// <summary>
+    /// The champion phase ID for <paramref name="target"/> — the canonical
+    /// headline model, from <c>phases.yaml</c>. Replaces the old mutable
+    /// per-station <c>Current</c> manifest pointer.
+    /// </summary>
+    public static string ChampionPhase(string target)
+        => PhaseRegistry.Default.ChampionPhase(target);
 }

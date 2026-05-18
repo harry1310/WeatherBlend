@@ -231,7 +231,7 @@ public static class RetrainGuard
             composite, phase, version, computedAtUtc,
             rowsTrain, rowsVal, rowsTest,
             trainFeatures, featureNames, labelRates);
-        summary.LocationName = locationName;
+        summary.LocationName = locationName ?? "";
 
         var parentDir = Path.GetDirectoryName(versionDir)
             ?? throw new InvalidOperationException(

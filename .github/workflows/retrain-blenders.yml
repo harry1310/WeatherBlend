@@ -271,12 +271,20 @@ jobs:
             train --target temperature --feature-set exact --leads 12,24,48
 
       - name: Train 3a (precipitation lean) — Bonehill
+        # 3a is one-station-per-call (unlike rich 3c/3d/3e which auto-iterate
+        # every station of the location), so loop the 3 Bonehill-cell EA
+        # gauges explicitly via --station. Without the loop only the default
+        # station (Bellever) trained — Bovey + Hexworthy 3a went stale for
+        # weeks. Mirrors the Membury 3a step below.
         id: train_3a
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3a == 'true'
         continue-on-error: true
         run: |
-          dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target precipitation
+          for s in "Bellever Dartmoor" "Bovey Tracey" "Dartmoor nr Hexworthy"; do
+            echo "=== 3a Bonehill station: $s ==="
+            dotnet run --project src/WeatherBlend --no-build -c Release -- \
+              train --target precipitation --station "$s"
+          done
 
       - name: Train 3a (precipitation lean) — Membury
         # Phase A of the Membury ship plan: Sunday retrain now refreshes

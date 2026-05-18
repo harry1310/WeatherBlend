@@ -65,28 +65,29 @@ public static partial class SitePages
 
         // P(wet) lookup keyed by valid_time across all leads, smallest-lead-wins
         // mirroring the temperature pick. Bellever as the headline gauge.
-        // Per-lead champion override for precip (mirrors temperature
-        // ChampionByLead): a (Station, Lead) pin in
-        // input.PrecipChampionByStationLead beats the per-station Current.
+        //
+        // The home tiles show the precipitation CHAMPION — phases.yaml's
+        // champion phase (3a), resolved per station to its newest Active
+        // version (input.PrecipCurrentByStation, from
+        // ModelMetadataRepository.GetChampionsByStation → ResolveStation-
+        // ChampionVersion). 3a predicts hourly (.NET predict, 2026-05-04
+        // hourly-spread change) so it covers every hourly tile. This is
+        // deliberately the champion phase, not a 6-hourly challenger: 4a/4b
+        // predict only at exact leads {24,48,72,96,120} (a 6-hourly valid
+        // grid) and would leave the hourly tiles with P(wet) gaps. The
+        // challengers lead the per-lead forecast + Models pages instead.
         const string PwetStation = "ea_bellever_dartmoor";
         input.PrecipCurrentByStation.TryGetValue(PwetStation, out var pwetChampion);
-        string PwetChampionForLead(int lead)
-        {
-            if (input.PrecipChampionByStationLead.TryGetValue((PwetStation, lead), out var perLead)
-                && !string.IsNullOrEmpty(perLead))
-                return perLead;
-            return pwetChampion ?? "";
-        }
-        var pwetByValid = input.PrecipPredictions
-            .Where(r => r.Station == PwetStation
-                        && !string.IsNullOrEmpty(PwetChampionForLead(r.LeadHours))
-                        && r.Version == PwetChampionForLead(r.LeadHours))
-            .GroupBy(r => r.ValidTimeUtc)
-            .ToDictionary(
-                g => g.Key,
-                g => g.OrderBy(r => r.LeadHours)
-                      .ThenByDescending(r => r.PredictedAtUtc)
-                      .First());
+        var pwetByValid = string.IsNullOrEmpty(pwetChampion)
+            ? new Dictionary<DateTime, PrecipForecastPoint>()
+            : input.PrecipPredictions
+                .Where(r => r.Station == PwetStation && r.Version == pwetChampion)
+                .GroupBy(r => r.ValidTimeUtc)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.OrderBy(r => r.LeadHours)
+                          .ThenByDescending(r => r.PredictedAtUtc)
+                          .First());
 
         var feelsLikeByValid = input.FeelsLikePredictions
             .GroupBy(u => u.ValidTimeUtc)

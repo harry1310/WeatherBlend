@@ -186,12 +186,12 @@ public static class ElementTrainerHarness
                 inputs.Target.CliName, versionDir);
             return 4;
         }
-        // Promote: replaces any prior entry with the same Phase in Active and
-        // sets Current. Element targets currently have a single phase each
-        // (lean-wind / lean-humidity / lean-shortwave-radiation / lean-cloud-cover)
-        // so this is functionally equivalent to UpdateManifest today, but the
-        // promote helper future-proofs against a challenger ever being added.
-        ModelArtifact.PromoteVersionAsChampion(
+        // Promote: replaces any prior entry with the same Phase in Active.
+        // Element targets currently have a single phase each (lean-wind /
+        // lean-humidity / lean-shortwave-radiation / lean-cloud-cover) so this
+        // is functionally equivalent to UpdateManifest today, but the promote
+        // helper future-proofs against a challenger ever being added.
+        ModelArtifact.PromoteVersion(
             modelsRoot, inputs.Target.ModelDirName, versionName, newPhase: inputs.Target.PhaseTag);
 
         log.LogInformation("Element ({Target}) artefacts → {Dir}", inputs.Target.CliName, versionDir);
