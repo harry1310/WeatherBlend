@@ -776,7 +776,7 @@ public static class Program
             getDefaultValue: () => "all");
         var verifyLocationOpt = new Option<string?>(
             name: "--location",
-            description: "Temperature target only: scope verify to one location's predictions (e.g. 'membury_devon'). Default = primary location (Bonehill). Other targets ignore this flag for now — precip verify is location-agnostic via station partitioning.",
+            description: "Scope verify to one location's predictions (e.g. 'membury_devon'). Default = primary location (Bonehill / Locations[0]). Honoured by temperature, element, and start-hour verify (Phase C commit 3b). Precip + dry-window are location-agnostic via station partitioning and ignore the flag.",
             getDefaultValue: () => null);
         var verify = new Command(
             "verify",
@@ -812,13 +812,13 @@ public static class Program
             {
                 var cmd = host.Services.GetRequiredService<StartHourVerifyCommand>();
                 ctx.ExitCode = await cmd.RunAsync(
-                    asOf, windowDays ?? 30, latencyDays, ctx.GetCancellationToken());
+                    asOf, windowDays ?? 30, latencyDays, locationOverride, ctx.GetCancellationToken());
             }
             else if (elementTarget is not null)
             {
                 var cmd = host.Services.GetRequiredService<ElementVerifyCommand>();
                 ctx.ExitCode = await cmd.RunAsync(
-                    elementTarget, asOf, windowDays ?? 14, latencyDays, drift, ctx.GetCancellationToken());
+                    elementTarget, asOf, windowDays ?? 14, latencyDays, drift, locationOverride, ctx.GetCancellationToken());
             }
             else
             {

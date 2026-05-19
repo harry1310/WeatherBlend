@@ -169,25 +169,40 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- verify $ARGS
           echo "exit=$?" >> "$GITHUB_OUTPUT"
 
-      - name: Verify dry-window start-hour curves
+      - name: Verify dry-window start-hour curves (all configured locations)
         # Scores the per-start-hour curves derived from precip + dry-window
         # blender outputs. No drift threshold — the curve is a derivation, not
         # a model, so the negative-skill warning in the report itself is the
         # signal. 30-day window matches the dry-window verify default.
+        # Phase C commit 3b: loops every configured location; non-primary
+        # locations get a `{location}` segment in the report filename so
+        # Bonehill and Membury don't overwrite each other.
         id: verify_start_hour_run
         run: |
           AS_OF="${{ github.event.inputs.as_of }}"
           WINDOW="${{ github.event.inputs.window_days }}"
-          ARGS="--target start-hour"
-          if [ -n "$AS_OF" ]; then ARGS="$ARGS --as-of $AS_OF"; fi
-          if [ -n "$WINDOW" ]; then ARGS="$ARGS --window-days $WINDOW"; fi
-          set +e
-          dotnet run --project src/WeatherBlend --no-build -c Release -- verify $ARGS
-          echo "exit=$?" >> "$GITHUB_OUTPUT"
+          fail=0
+          for loc in bonehill_rocks membury_devon; do
+            ARGS="--target start-hour --location $loc"
+            if [ -n "$AS_OF" ]; then ARGS="$ARGS --as-of $AS_OF"; fi
+            if [ -n "$WINDOW" ]; then ARGS="$ARGS --window-days $WINDOW"; fi
+            set +e
+            dotnet run --project src/WeatherBlend --no-build -c Release -- verify $ARGS
+            code=$?
+            set -e
+            case "$code" in
+              0) ;;
+              *) echo "::error::Start-hour verify $loc exited $code."; fail=1 ;;
+            esac
+          done
+          echo "exit=$fail" >> "$GITHUB_OUTPUT"
 
-      - name: Verify element blenders (wind / humidity / shortwave-radiation / cloud-cover)
-        # One verify step per element. Independent exit codes — drift on any element
-        # surfaces in the job summary. Empty windows (no predictions yet) exit 0.
+      - name: Verify element blenders (wind / humidity / shortwave-radiation / cloud-cover, all configured locations)
+        # One verify step per (location, element). Independent exit codes —
+        # drift on any element surfaces in the job summary. Empty windows
+        # (no predictions yet — typical for Membury element blenders that
+        # aren't trained yet) exit 0. Phase C commit 3b: loops locations;
+        # non-primary reports get a `{location}` segment in the filename.
         id: verify_elements_run
         run: |
           AS_OF="${{ github.event.inputs.as_of }}"
@@ -195,20 +210,22 @@ jobs:
           DRIFT="${{ github.event.inputs.drift }}"
           drift=0
           fail=0
-          for tgt in wind humidity shortwave-radiation cloud-cover; do
-            ARGS="--target $tgt"
-            if [ -n "$AS_OF" ]; then ARGS="$ARGS --as-of $AS_OF"; fi
-            if [ -n "$WINDOW" ]; then ARGS="$ARGS --window-days $WINDOW"; fi
-            if [ -n "$DRIFT" ]; then ARGS="$ARGS --drift $DRIFT"; fi
-            set +e
-            dotnet run --project src/WeatherBlend --no-build -c Release -- verify $ARGS
-            code=$?
-            set -e
-            case "$code" in
-              0) ;;
-              4) echo "::warning::Element drift on $tgt — see verify report."; drift=1 ;;
-              *) echo "::error::Element verify $tgt exited $code (non-drift failure)."; fail=1 ;;
-            esac
+          for loc in bonehill_rocks membury_devon; do
+            for tgt in wind humidity shortwave-radiation cloud-cover; do
+              ARGS="--target $tgt --location $loc"
+              if [ -n "$AS_OF" ]; then ARGS="$ARGS --as-of $AS_OF"; fi
+              if [ -n "$WINDOW" ]; then ARGS="$ARGS --window-days $WINDOW"; fi
+              if [ -n "$DRIFT" ]; then ARGS="$ARGS --drift $DRIFT"; fi
+              set +e
+              dotnet run --project src/WeatherBlend --no-build -c Release -- verify $ARGS
+              code=$?
+              set -e
+              case "$code" in
+                0) ;;
+                4) echo "::warning::Element drift on $loc/$tgt — see verify report."; drift=1 ;;
+                *) echo "::error::Element verify $loc/$tgt exited $code (non-drift failure)."; fail=1 ;;
+              esac
+            done
           done
           echo "drift=$drift" >> "$GITHUB_OUTPUT"
           echo "fail=$fail" >> "$GITHUB_OUTPUT"

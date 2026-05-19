@@ -36,14 +36,33 @@ public sealed class ElementVerifyCommand
         _metadata = metadata;
     }
 
-    public async Task<int> RunAsync(
+    public Task<int> RunAsync(
         ElementTarget target,
         DateOnly? asOf,
         int windowDays,
         int era5LatencyDays,
         double driftThreshold,
         CancellationToken ct)
+        => RunAsync(target, asOf, windowDays, era5LatencyDays, driftThreshold, locationOverride: null, ct);
+
+    public async Task<int> RunAsync(
+        ElementTarget target,
+        DateOnly? asOf,
+        int windowDays,
+        int era5LatencyDays,
+        double driftThreshold,
+        string? locationOverride,
+        CancellationToken ct)
     {
+        // Phase C commit 3b: location is explicit, not _cfg.Location-driven.
+        // Default = primary (Locations[0]). The verify workflow loops
+        // configured locations per target so element verify lands per loc.
+        if (_cfg.Locations.Count == 0)
+            throw new InvalidOperationException("No locations configured.");
+        var primaryName = _cfg.Locations[0].Name;
+        var locationName = string.IsNullOrWhiteSpace(locationOverride) ? primaryName : locationOverride!;
+        var isPrimary = string.Equals(locationName, primaryName, StringComparison.OrdinalIgnoreCase);
+
         var asOfUtc = asOf.HasValue
             ? asOf.Value.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc).AddDays(1)
             : DateTime.UtcNow;
@@ -51,10 +70,10 @@ public sealed class ElementVerifyCommand
         var windowEnd   = asOfUtc.AddDays(-era5LatencyDays);
 
         _log.LogInformation(
-            "Verify {Target}: as-of {AsOf:yyyy-MM-dd HH:mm}Z, window [{Start:yyyy-MM-dd}..{End:yyyy-MM-dd}], latency {Latency}d, drift {Drift:0.00}×",
-            target.CliName, asOfUtc, windowStart, windowEnd, era5LatencyDays, driftThreshold);
+            "Verify {Target}: location={Loc}, as-of {AsOf:yyyy-MM-dd HH:mm}Z, window [{Start:yyyy-MM-dd}..{End:yyyy-MM-dd}], latency {Latency}d, drift {Drift:0.00}×",
+            target.CliName, locationName, asOfUtc, windowStart, windowEnd, era5LatencyDays, driftThreshold);
 
-        var predictions = QueryPredictions(target, windowStart, windowEnd, ct);
+        var predictions = QueryPredictions(target, locationName, windowStart, windowEnd, ct);
         _log.LogInformation("Loaded {N} prediction rows in window.", predictions.Count);
 
         if (predictions.Count == 0)
@@ -64,14 +83,11 @@ public sealed class ElementVerifyCommand
         }
 
         var truthCol = TruthColumnFor(target);
-        // Phase C commit 3: locationName is now required on GetEra5Hourly.
-        // 3a passes primary explicitly here; 3b will loop _cfg.Locations and
-        // emit per-loc verify rows. See [[project_phase_c_status]].
-        var truth = _truth.GetEra5Hourly(_cfg.Location.Name, windowStart, windowEnd, ct, truthCol);
+        var truth = _truth.GetEra5Hourly(locationName, windowStart, windowEnd, ct, truthCol);
         _log.LogInformation("Loaded {N} ERA5 truth points (column={Col}).", truth.Count, truthCol);
 
         var metadata = _metadata.GetTrainingMetadataForVersions(
-            target.ModelDirName, _cfg.Location.Name,
+            target.ModelDirName, locationName,
             predictions.Select(p => p.ModelVersion));
         _log.LogInformation("Loaded metadata for {N} versions.", metadata.Count);
 
@@ -92,8 +108,12 @@ public sealed class ElementVerifyCommand
             target, asOfUtc, windowDays, era5LatencyDays, driftThreshold, rows, metadata);
 
         Directory.CreateDirectory(_cfg.Storage.ReportsPath);
-        var outPath = Path.Combine(_cfg.Storage.ReportsPath,
-            $"verify_element_{target.ModelDirName}_{asOfUtc:yyyy-MM-dd}.md");
+        // Non-primary location adds a {location} segment so per-loc reports
+        // don't overwrite each other (mirrors TempVerifyCommand 2026-05-15).
+        var mdName = isPrimary
+            ? $"verify_element_{target.ModelDirName}_{asOfUtc:yyyy-MM-dd}.md"
+            : $"verify_element_{target.ModelDirName}_{locationName}_{asOfUtc:yyyy-MM-dd}.md";
+        var outPath = Path.Combine(_cfg.Storage.ReportsPath, mdName);
         await File.WriteAllTextAsync(outPath, md, ct);
         _log.LogInformation("Report written → {Path}", outPath);
 
@@ -125,7 +145,18 @@ public sealed class ElementVerifyCommand
                 DriftFlag = r.DriftFlag,
             }).ToList(),
         };
-        await WeatherBlend.Evaluate.VerifyHistoryWriter.WriteAsync(_cfg.Storage.ReportsPath, history, ct);
+        // Models-page history sidecar: skip for non-primary locations until
+        // the multi-location site rework lands (mirrors TempVerifyCommand).
+        if (isPrimary)
+        {
+            await WeatherBlend.Evaluate.VerifyHistoryWriter.WriteAsync(_cfg.Storage.ReportsPath, history, ct);
+        }
+        else
+        {
+            _log.LogInformation(
+                "Skipping verify-history JSON for non-primary location '{Loc}' — Models-page integration deferred.",
+                locationName);
+        }
 
         foreach (var r in rows)
         {
@@ -149,10 +180,11 @@ public sealed class ElementVerifyCommand
     };
 
     private IReadOnlyList<ElementPredictionRow> QueryPredictions(
-        ElementTarget target, DateTime start, DateTime end, CancellationToken ct)
+        ElementTarget target, string locationName, DateTime start, DateTime end, CancellationToken ct)
     {
         var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath, target.ModelDirName, "**", "*.parquet"));
 
+        // Phase C commit 3b: scope to the verifying location, not _cfg.Location.
         var sql = $@"
 SELECT LocationName, Element, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
        BlendValue,
@@ -161,7 +193,7 @@ SELECT LocationName, Element, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, L
        Mean, Std, Range,
        FeatureVectorHash
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name}'
+WHERE LocationName = '{locationName.Replace("'", "''")}'
   AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 ORDER BY ModelVersion, LeadHours, ValidTimeUtc";

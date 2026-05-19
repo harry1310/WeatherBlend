@@ -61,11 +61,14 @@ public sealed class TempVerifyCommand
         }
 
         // Resolve which location's predictions to verify. Default = primary
-        // (Bonehill back-compat). When --location is passed, scope to that
-        // location's prediction partition; the per-station temperature
+        // (Locations[0] — back-compat). When --location is passed, scope to
+        // that location's prediction partition; the per-station temperature
         // manifest (2026-05-14 layout) means each location's predictions
         // live under temperature/{location}/... so the filter is precise.
-        var primaryName = _cfg.Location.Name;
+        // Phase C commit 3b: no more _cfg.Location reads — primary = first.
+        if (_cfg.Locations.Count == 0)
+            throw new InvalidOperationException("No locations configured.");
+        var primaryName = _cfg.Locations[0].Name;
         var locationName = string.IsNullOrWhiteSpace(locationOverride) ? primaryName : locationOverride!;
         var isPrimary = string.Equals(locationName, primaryName, StringComparison.OrdinalIgnoreCase);
 
@@ -91,10 +94,9 @@ public sealed class TempVerifyCommand
 
         // ERA5 lookup needs to cover the whole window plus the persistence-lookback
         // (up to 72h before windowStart) so persistence MAE can resolve.
-        // Phase C commit 3: locationName is now required on GetEra5Hourly.
-        // 3a passes primary explicitly here; 3b will loop _cfg.Locations and
-        // emit per-loc verify rows. See [[project_phase_c_status]].
-        var truth = _truth.GetEra5Hourly(_cfg.Location.Name, windowStart.AddHours(-72), windowEnd, ct);
+        // Phase C commit 3b: ERA5 truth is per-loc — scope to the location
+        // we're verifying, not a stale _cfg.Location read.
+        var truth = _truth.GetEra5Hourly(locationName, windowStart.AddHours(-72), windowEnd, ct);
         _log.LogInformation("Loaded {N} ERA5 truth points.", truth.Count);
 
         // Temperature is per-station (per-location) on disk since 2026-05-14;

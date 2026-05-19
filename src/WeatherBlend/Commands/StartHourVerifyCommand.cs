@@ -41,12 +41,36 @@ public sealed class StartHourVerifyCommand
         _truth = truth;
     }
 
-    public async Task<int> RunAsync(
+    public Task<int> RunAsync(
         DateOnly? asOf,
         int windowDays,
         int latencyDays,
         CancellationToken ct)
+        => RunAsync(asOf, windowDays, latencyDays, locationOverride: null, ct);
+
+    public async Task<int> RunAsync(
+        DateOnly? asOf,
+        int windowDays,
+        int latencyDays,
+        string? locationOverride,
+        CancellationToken ct)
     {
+        // Phase C commit 3b: location is explicit, not _cfg.Location-driven.
+        // Default = primary (Locations[0]). The verify workflow loops
+        // configured locations so per-loc start-hour curves get their own
+        // report.
+        if (_cfg.Locations.Count == 0)
+            throw new InvalidOperationException("No locations configured.");
+        var primaryName = _cfg.Locations[0].Name;
+        var locationName = string.IsNullOrWhiteSpace(locationOverride) ? primaryName : locationOverride!;
+        var isPrimary = string.Equals(locationName, primaryName, StringComparison.OrdinalIgnoreCase);
+        // Resolve the active LocationConfig so per-loc rainfall stations
+        // drive the slug→friendly mapping below (was _cfg.Location.Rainfall).
+        var activeLocation = _cfg.Locations.FirstOrDefault(
+            l => string.Equals(l.Name, locationName, StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException(
+                $"Location '{locationName}' is not in _cfg.Locations.");
+
         var asOfUtc = asOf.HasValue
             ? asOf.Value.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc).AddDays(1)
             : DateTime.UtcNow;
@@ -54,10 +78,10 @@ public sealed class StartHourVerifyCommand
         var windowEnd = asOfUtc.AddDays(-latencyDays);
 
         _log.LogInformation(
-            "StartHourVerify: as-of {AsOf:yyyy-MM-dd}Z, window [{S:yyyy-MM-dd}..{E:yyyy-MM-dd}], latency {L}d",
-            asOfUtc, windowStart, windowEnd, latencyDays);
+            "StartHourVerify: location={Loc}, as-of {AsOf:yyyy-MM-dd}Z, window [{S:yyyy-MM-dd}..{E:yyyy-MM-dd}], latency {L}d",
+            locationName, asOfUtc, windowStart, windowEnd, latencyDays);
 
-        var curveRows = QueryCurves(windowStart, windowEnd, ct);
+        var curveRows = QueryCurves(locationName, windowStart, windowEnd, ct);
         if (curveRows.Count == 0)
         {
             _log.LogWarning("No start-hour curves in window — nothing to verify.");
@@ -91,7 +115,7 @@ public sealed class StartHourVerifyCommand
             var (station, window, lead, targetDate) = group.Key;
             var (startUtc, endUtc) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(targetDate));
 
-            var stationFriendly = ResolveFriendlyStationName(station);
+            var stationFriendly = ResolveFriendlyStationName(activeLocation, station);
             if (stationFriendly is null
                 || !rainfall.TryGetValue(stationFriendly, out var rainByDate)
                 || !rainByDate.TryGetValue(targetDate.Date, out var hourlyMm))
@@ -140,9 +164,12 @@ public sealed class StartHourVerifyCommand
             scored, dropped_partial, dropped_uninformative);
 
         var md = BuildMarkdown(aggregator, asOfUtc, windowDays, latencyDays);
-        var reportPath = Path.Combine(
-            _cfg.Storage.ReportsPath,
-            $"verify_start_hour_{asOfUtc:yyyy-MM-dd}.md");
+        // Non-primary location adds a {location} segment so per-loc reports
+        // don't overwrite each other (mirrors TempVerifyCommand 2026-05-15).
+        var mdName = isPrimary
+            ? $"verify_start_hour_{asOfUtc:yyyy-MM-dd}.md"
+            : $"verify_start_hour_{locationName}_{asOfUtc:yyyy-MM-dd}.md";
+        var reportPath = Path.Combine(_cfg.Storage.ReportsPath, mdName);
         Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
         await File.WriteAllTextAsync(reportPath, md, ct);
         _log.LogInformation("Wrote report → {Path}", reportPath);
@@ -213,7 +240,7 @@ public sealed class StartHourVerifyCommand
                             DateTime TargetDateUtc, int StartHourUtc,
                             double ConditionalProb, DateTime PredictionMadeAtUtc);
 
-    private IReadOnlyList<CurveRow> QueryCurves(DateTime start, DateTime end, CancellationToken ct)
+    private IReadOnlyList<CurveRow> QueryCurves(string locationName, DateTime start, DateTime end, CancellationToken ct)
     {
         var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath,
             StartHourPredictCommand.PredictionsSubdir, "**", "*.parquet"));
@@ -222,11 +249,12 @@ public sealed class StartHourVerifyCommand
         if (!ParquetReader.HasColumn(conn, glob, "ConditionalProb"))
             return Array.Empty<CurveRow>();
 
+        // Phase C commit 3b: scope to the verifying location, not _cfg.Location.
         var sql = $@"
 SELECT TruthStation, WindowHours, LeadHours, TargetDateUtc, StartHourUtc,
        ConditionalProb, PredictionMadeAtUtc
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
+WHERE LocationName = '{locationName.Replace("'", "''")}'
   AND TargetDateUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
   AND TargetDateUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'";
 
@@ -269,11 +297,14 @@ WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
     }
 
     /// <summary>Map "ea_bellever_dartmoor" → "Bellever Dartmoor" via the
-    /// configured rainfall stations. Returns null if no match.</summary>
-    private string? ResolveFriendlyStationName(string slug)
+    /// configured rainfall stations on the verifying location. Phase C
+    /// commit 3b: takes the active LocationConfig instead of reading
+    /// _cfg.Location, so Membury slugs resolve when verify scopes to Membury.
+    /// Returns null if no match.</summary>
+    private static string? ResolveFriendlyStationName(LocationConfig location, string slug)
     {
         var bare = slug.StartsWith("ea_", StringComparison.Ordinal) ? slug[3..] : slug;
-        foreach (var s in _cfg.Location.Rainfall.Stations)
+        foreach (var s in location.Rainfall.Stations)
             if (StationSlug.Of(s.Name).Equals(bare, StringComparison.Ordinal)) return s.Name;
         return null;
     }
