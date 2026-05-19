@@ -56,7 +56,8 @@ const WORKFLOW_FOR_CRON: Record<string, Dispatch[]> = {
   // *phase4a*). No shared lock; all three finish well before
   // predict-and-render at HH+1:15. (predict-5a renamed 2026-05-09 from
   // predict-bayesian.yml; predict-4a moved here from the noon tick on
-  // the same day once train and predict were split — see train-4a.yml.)
+  // the same day once train and predict were split; 4a now retrains via
+  // retrain-python.yml.)
   "0 3,9,15,21 * * *": [
     { workflow: "s3-collect.yml" },
     { workflow: "predict-5a.yml", repo: "harry1310/WeatherProbabilistic" },
@@ -68,14 +69,14 @@ const WORKFLOW_FOR_CRON: Record<string, Dispatch[]> = {
   // different data trees: truth/era5/ vs forecasts/) past Open-Meteo's
   // publish window so neither lands on null partitions. They share the
   // weatherblend-data lock so writes serialise; either ordering is
-  // safe. previous-runs-refresh keeps the offset_day archive that
-  // train-4a.yml feeds on current — without it, on-demand BART
-  // retrains would regress to whatever date the last manual backfill
-  // covered.
+  // safe. previous-runs-refresh keeps the offset_day archive that 4a
+  // training (retrain-python.yml) feeds on current — without it,
+  // on-demand BART retrains would regress to whatever date the last
+  // manual backfill covered.
   //
   // Used to also fire predict-4a (daily train+predict combo, ~24 min
-  // wall) but that's gone — train-4a.yml is now workflow_dispatch only
-  // and predict-4a runs on the 6-hourly tick above as a state-loading-
+  // wall) but that's gone — 4a training moved to retrain-python.yml and
+  // predict-4a runs on the 6-hourly tick above as a state-loading-
   // only step (~2 min wall). The split was unblocked once we verified
   // dbarts state round-trips bit-exactly via storeState() + setState();
   // see scripts/smoke_dbarts_roundtrip.py.

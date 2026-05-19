@@ -18,8 +18,8 @@ env:
 # refresh the offset_day tree stops at whatever date the last manual
 # `backfill --source previous-runs` covered.
 #
-# Why this exists: train-4a.yml is workflow_dispatch-only and trains on
-# the offset_day archive. Without a daily incremental pull, an on-
+# Why this exists: 4a training (retrain-python.yml) trains on the
+# offset_day archive. Without a daily incremental pull, an on-
 # demand retrain would regress to whatever stale data was last
 # backfilled. Refreshing daily means the on-demand button always sees
 # fresh training data, and a weekly auto-retrain cron (if/when added)

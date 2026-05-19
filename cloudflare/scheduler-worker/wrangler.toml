@@ -31,13 +31,13 @@ compatibility_date = "2025-04-01"
 #                                                   (predict-5a renamed 2026-05-09 from predict-bayesian.yml when
 #                                                    Phase 5 → 5a moved from CI-only output to first-class
 #                                                    predictions tree. predict-4a moved here from "0 12 * * *"
-#                                                    on the same day once train and predict were split — see
-#                                                    train-4a.yml; predict-4a now just rehydrates a saved BART
-#                                                    state and runs in ~2 min, not the previous ~24 min combo.)
+#                                                    on the same day once train and predict were split; 4a now
+#                                                    retrains via retrain-python.yml. predict-4a just rehydrates
+#                                                    a saved BART state, ~2 min, not the previous ~24 min combo.)
 #   "15 3,9,15,21 * * *"  → predict-and-render.yml  every 6h, 15 min after s3-collect (WeatherBlend)
 #   "0 12 * * *"          → era5-refresh.yml        daily at 12:00 UTC (WeatherBlend)
 #                         + previous-runs-refresh.yml  rolling 14-day OM previous_runs pull, keeps the
-#                                                   offset_day archive train-4a.yml depends on current.
+#                                                   offset_day archive 4a training depends on current.
 #                                                   Both share weatherblend-data lock; serialised writes.
 #                                                   (predict-4a removed from this tick 2026-05-09 — train+
 #                                                    predict were split, predict-4a moved to the 6-hourly
