@@ -57,30 +57,32 @@ public sealed class TruthRepository
     }
 
     /// <summary>
-    /// Hourly ERA5 reading at the configured location, keyed by
+    /// Hourly ERA5 reading at the named location, keyed by
     /// <c>ValidTimeUtc</c>. Default column is <c>Temperature2m</c>; element
     /// verify passes the per-target column name (e.g. <c>RelativeHumidity2m</c>,
     /// <c>WindSpeed10m</c>, <c>ShortwaveRadiation</c>, <c>CloudCover</c>).
     /// Empty dict on missing tree (degraded with a warning).
+    ///
+    /// <paramref name="locationName"/> is required (Phase C commit 3) —
+    /// the return type is keyed by ValidTimeUtc and an IN-list across
+    /// locations would emit two values per timestamp (one per location
+    /// grid cell), throwing on the ToDictionary below. Each caller passes
+    /// the location it's rendering / verifying for; multi-loc temp pages
+    /// call this once per loc and store the results keyed by loc.
     /// </summary>
     public IReadOnlyDictionary<DateTime, double> GetEra5Hourly(
-        DateTime start, DateTime end, CancellationToken ct, string column = "Temperature2m")
+        string locationName, DateTime start, DateTime end, CancellationToken ct, string column = "Temperature2m")
     {
         ct.ThrowIfCancellationRequested();
+        if (string.IsNullOrWhiteSpace(locationName))
+            throw new ArgumentException("locationName is required.", nameof(locationName));
         ValidateColumnName(column);
 
         var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.Era5Path, "**", "*.parquet"));
-        // Stays primary-only on purpose: the return type is keyed by
-        // ValidTimeUtc and an IN-list across locations would emit two values
-        // per timestamp (one per location grid cell), throwing on the
-        // ToDictionary below. The only consumer is the primary-location temp
-        // chart; if a Membury temp/element skill page lands later it should
-        // get a per-location overload (GetEra5Hourly(string locationName, ...))
-        // rather than silently broaden this one. See TODO multi-loc-temp.
         var sql = $@"
 SELECT ValidTimeUtc, {column}
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
+WHERE LocationName = '{locationName.Replace("'", "''")}'
   AND {column} IS NOT NULL
   AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'";
@@ -255,23 +257,28 @@ ORDER BY ObservedTimeUtc";
 
     /// <summary>
     /// Met Office DataHub Land Observations temperature for the configured
-    /// geohash cell. Geohash gcj0z3 (~22 km NNW of Bonehill at Cocktree
-    /// Throat / Taw Green, north Devon, ~120-150m elevation) is closer and
-    /// less elevation-biased vs Bonehill's 393m than the EGTE METAR (~30 km
-    /// E, 31m), so it ships on the temp skill chart as a second cross-check
-    /// alongside METAR. List rather than dict — chart code wants the
-    /// time-sorted sequence, same shape as <see cref="GetMetarTemperature"/>.
-    /// Empty list when the obs tree hasn't landed for this location yet.
+    /// geohash cell at the named location. Geohash gcj0z3 (~22 km NNW of
+    /// Bonehill at Cocktree Throat / Taw Green, north Devon, ~120-150m
+    /// elevation) is closer and less elevation-biased vs Bonehill's 393m
+    /// than the EGTE METAR (~30 km E, 31m), so it ships on the temp skill
+    /// chart as a second cross-check alongside METAR. List rather than dict —
+    /// chart code wants the time-sorted sequence, same shape as
+    /// <see cref="GetMetarTemperature"/>. Empty list when the obs tree
+    /// hasn't landed for this location yet. <paramref name="locationName"/>
+    /// is required (Phase C commit 3) — each caller passes the loc it's
+    /// rendering / verifying for.
     /// </summary>
     public IReadOnlyList<(DateTime ObservedTimeUtc, double Temperature2m)> GetMetOfficeObsTemperature(
-        DateTime start, DateTime end, CancellationToken ct)
+        string locationName, DateTime start, DateTime end, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+        if (string.IsNullOrWhiteSpace(locationName))
+            throw new ArgumentException("locationName is required.", nameof(locationName));
         var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.MetOfficeObsPath, "**", "*.parquet"));
         var sql = $@"
 SELECT ObservedTimeUtc, AirTemperature
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
+WHERE LocationName = '{locationName.Replace("'", "''")}'
   AND AirTemperature IS NOT NULL
   AND ObservedTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
   AND ObservedTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'

@@ -91,7 +91,10 @@ public sealed class TempVerifyCommand
 
         // ERA5 lookup needs to cover the whole window plus the persistence-lookback
         // (up to 72h before windowStart) so persistence MAE can resolve.
-        var truth = _truth.GetEra5Hourly(windowStart.AddHours(-72), windowEnd, ct);
+        // Phase C commit 3: locationName is now required on GetEra5Hourly.
+        // 3a passes primary explicitly here; 3b will loop _cfg.Locations and
+        // emit per-loc verify rows. See [[project_phase_c_status]].
+        var truth = _truth.GetEra5Hourly(_cfg.Location.Name, windowStart.AddHours(-72), windowEnd, ct);
         _log.LogInformation("Loaded {N} ERA5 truth points.", truth.Count);
 
         // Temperature is per-station (per-location) on disk since 2026-05-14;

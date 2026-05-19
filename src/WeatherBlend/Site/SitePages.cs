@@ -164,6 +164,14 @@ public static partial class SitePages
 
     public sealed record SiteInputs
     {
+        /// <summary>Config slug (e.g. <c>bonehill_rocks</c>) of the location
+        /// this SiteInputs is being rendered for. Phase C commit 3a added it
+        /// so renderer code can filter multi-loc lists/dicts (FeelsLike,
+        /// StartHour, LowCloudByValid) to just this location. Defaulted to
+        /// empty so existing test fixtures don't have to set it — production
+        /// always populates from <c>active.Name</c>.</summary>
+        public string ActiveLocationName { get; init; } = "";
+
         public required string LocationDisplay { get; init; }
         public required double Latitude { get; init; }
         public required double Longitude { get; init; }
@@ -233,16 +241,18 @@ public static partial class SitePages
         public DaytimeWindow DryWindowDaytime { get; init; } = DryWindowLabelBuilder.FullUtcDay;
 
         /// <summary>
-        /// Per-hour low-cloud / mist signal aggregated across NWP forecasts.
-        /// Two independent counts: how many of the visibility-publishing
-        /// NWPs are forecasting sub-1km vis (mist or fog), and how many of
-        /// all NWPs are forecasting saturated air (T-Td &lt; 1.5°C, an Espy
-        /// proxy for cloud base below the 393m tor). Either threshold met
-        /// → home tile renders a warning badge with hover-tooltip naming
-        /// the firing signal(s).
+        /// Per-hour low-cloud / mist signal aggregated across NWP forecasts,
+        /// keyed by location slug then valid time. Phase C commit 3a switched
+        /// the outer key from a single-loc dict to per-loc — each rendered
+        /// home page picks its location's inner dict. Two independent inner
+        /// counts: how many of the visibility-publishing NWPs are forecasting
+        /// sub-1km vis (mist or fog), and how many of all NWPs are forecasting
+        /// saturated air (T-Td &lt; 1.5°C, an Espy proxy for cloud base below
+        /// the 393m tor). Either threshold met → home tile renders a warning
+        /// badge with hover-tooltip naming the firing signal(s).
         /// </summary>
-        public IReadOnlyDictionary<DateTime, LowCloudSignal> LowCloudByValid { get; init; }
-            = new Dictionary<DateTime, LowCloudSignal>();
+        public IReadOnlyDictionary<string, IReadOnlyDictionary<DateTime, LowCloudSignal>> LowCloudByValid { get; init; }
+            = new Dictionary<string, IReadOnlyDictionary<DateTime, LowCloudSignal>>(StringComparer.Ordinal);
 
         /// <summary>Met Office DataHub Land Observations temperature
         /// (time-sorted) for the configured geohash. Closer to Bonehill
@@ -651,7 +661,13 @@ public static partial class SitePages
         double? RelativeHumidityPct = null,
         double? WindSpeed10mMs = null,
         double? ShortwaveDownWm2 = null,
-        double? CloudCoverPct = null);
+        double? CloudCoverPct = null,
+        /// <summary>Config slug of the location this UTCI row was sourced
+        /// from (e.g. <c>bonehill_rocks</c>, <c>membury_devon</c>) so the
+        /// per-loc home-card picks the right chip. Phase C commit 3a.
+        /// Defaulted so any existing positional construction (mostly tests)
+        /// keeps compiling.</summary>
+        string LocationName = "");
 
     public sealed record DryWindowForecastPoint(
         string Station,
@@ -762,7 +778,13 @@ public static partial class SitePages
         double RawProduct,
         double ConditionalProb,
         double CalibratedProb,
-        double DailyProbAnyBlock);
+        double DailyProbAnyBlock,
+        /// <summary>Config slug of the location this curve was sourced from
+        /// (e.g. <c>bonehill_rocks</c>, <c>membury_devon</c>) so the per-loc
+        /// dry-window page picks the right rows. Phase C commit 3a.
+        /// Defaulted so any existing positional construction (mostly tests)
+        /// keeps compiling.</summary>
+        string LocationName = "");
 
     public static string Stylesheet() => """
         :root { --brand: #7c4dff; --pwet: #0288d1; }

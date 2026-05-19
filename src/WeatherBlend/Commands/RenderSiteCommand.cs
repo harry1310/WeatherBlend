@@ -54,19 +54,32 @@ public sealed class RenderSiteCommand
         // so include the full forecast horizon (leads go to 120h) plus a day of headroom.
         var predictionEnd = now.AddDays(6);
 
+        // Phase C commit 3a: every former `_cfg.Location.X` read in this
+        // method routes through `active`. Primary = Locations[0] by
+        // convention. This is the ONLY site that picks "which location is
+        // this render about?" — Phase D will wrap the render body in
+        // `foreach (var loc in _cfg.Locations) { ... }` to produce per-loc
+        // URL prefixes, with `active = loc` per iteration. The singleton
+        // SiteInputs fields (LocationDisplay, Latitude, etc.) keep their
+        // shape and are populated from `active` so consumer renderer code
+        // doesn't churn in this commit.
+        if (_cfg.Locations.Count == 0)
+            throw new InvalidOperationException("No locations configured — site cannot render.");
+        var active = _cfg.Locations[0];
+
         _log.LogInformation(
             "Render site: predictions [{Start:yyyy-MM-dd}..{End:yyyy-MM-dd}], rolling {Rolling}d, output → {Dir}",
             windowStart, predictionEnd, rollingWindowDays, outputDir);
 
-        // Site rendering is primary-location-only until the multi-loc temp
-        // page lands (deferred 2026-05-14). Pass [primary] explicitly so the
-        // repo's location filter stays an opt-in concern, not a hidden
-        // default — when the page rework wires Membury, swap to `null` for
-        // an unfiltered scan + per-loc grouping in the renderer.
-        var primaryLocFilter = new[] { _cfg.Location.Name };
-        var predictions = _predictions.GetTemperaturePredictions(primaryLocFilter, windowStart, predictionEnd, ct);
+        // Site rendering is primary-location-only until Phase D wires
+        // per-loc URL prefixes. Pass [primary] explicitly so the repo's
+        // location filter stays an opt-in concern, not a hidden default —
+        // when Phase D iterates locations this becomes `[active.Name]` per
+        // loop body and `active` is the current iteration value.
+        var activeLocFilter = new[] { active.Name };
+        var predictions = _predictions.GetTemperaturePredictions(activeLocFilter, windowStart, predictionEnd, ct);
         _log.LogInformation("Loaded {N} temperature prediction rows (location={Loc}).",
-            predictions.Count, _cfg.Location.Name);
+            predictions.Count, active.Name);
 
         // Precip + dry-window come back as the canonical domain rows from the
         // repo; the renderer projects to its lighter SitePages records below.
@@ -154,14 +167,14 @@ public sealed class RenderSiteCommand
         // ERA5 is gapless-for-past, but only past — query up to the clock time.
         // Persistence-lookback headroom (up to 72h before the earliest prediction)
         // keeps rolling-MAE truth pairs matchable at the start of the window.
-        var truth = _truth.GetEra5Hourly(windowStart.AddDays(-3), now, ct);
+        var truth = _truth.GetEra5Hourly(active.Name, windowStart.AddDays(-3), now, ct);
         _log.LogInformation("Loaded {N} ERA5 truth points.", truth.Count);
 
-        var metar = _truth.GetMetarTemperature(_cfg.Location.Metar.Primary, windowStart, now, ct);
+        var metar = _truth.GetMetarTemperature(active.Metar.Primary, windowStart, now, ct);
         _log.LogInformation("Loaded {N} METAR observations ({Station}).",
-            metar.Count, string.IsNullOrWhiteSpace(_cfg.Location.Metar.Primary) ? "none" : _cfg.Location.Metar.Primary);
+            metar.Count, string.IsNullOrWhiteSpace(active.Metar.Primary) ? "none" : active.Metar.Primary);
 
-        var moObs = _truth.GetMetOfficeObsTemperature(windowStart, now, ct);
+        var moObs = _truth.GetMetOfficeObsTemperature(active.Name, windowStart, now, ct);
         _log.LogInformation("Loaded {N} Met Office obs (geohash {GH}).",
             moObs.Count, _cfg.MetOffice.ObsGeohash);
 
@@ -189,10 +202,10 @@ public sealed class RenderSiteCommand
         _log.LogInformation("Rainfall truth: {N} stations loaded.", rainfall.Count);
 
         // Temperature manifest migrated to per-station layout 2026-05-14.
-        // The site renders the PRIMARY location's temperature only (multi-loc
-        // temp site rendering is a future Phase D-style follow-up); pick the
-        // champion + per-lead pins for the primary station entry.
-        var primaryTempStation = _cfg.Location.Name;
+        // Site renders the ACTIVE location's temperature only (multi-loc
+        // temp site rendering wraps this body in a foreach in Phase D); pick
+        // the champion + per-lead pins for the active station entry.
+        var primaryTempStation = active.Name;
         var tempChampions = _metadata.GetChampionsByStation("temperature");
         var currentVersion = tempChampions.TryGetValue(primaryTempStation, out var tcv) ? tcv : "";
         var tempChampionByStationLead = _metadata.GetChampionByStationLead("temperature");
@@ -242,11 +255,12 @@ public sealed class RenderSiteCommand
 
         var input = new SitePages.SiteInputs
         {
-            LocationDisplay = string.IsNullOrWhiteSpace(_cfg.Location.DisplayName) ? _cfg.Location.Name : _cfg.Location.DisplayName,
-            Latitude = _cfg.Location.Latitude,
-            Longitude = _cfg.Location.Longitude,
-            ElevationMeters = _cfg.Location.ElevationMeters,
-            MetarStation = _cfg.Location.Metar.Primary,
+            ActiveLocationName = active.Name,
+            LocationDisplay = string.IsNullOrWhiteSpace(active.DisplayName) ? active.Name : active.DisplayName,
+            Latitude = active.Latitude,
+            Longitude = active.Longitude,
+            ElevationMeters = active.ElevationMeters,
+            MetarStation = active.Metar.Primary,
             GeneratedAtUtc = now,
             WindowStartUtc = windowStart,
             Predictions = predictions,
@@ -877,18 +891,21 @@ public sealed class RenderSiteCommand
         // Pull element inputs alongside UTCI + Apparent so the home-page tile
         // pop-out can surface "why is UTCI this value?" without a second read.
         // All five are required-non-null at write time so no NULL defending.
+        // Phase C commit 3: multi-loc IN-list + LocationName projection;
+        // home renderer filters by active location at consume time.
+        var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
         var sql = $@"
 SELECT ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours, UtciC, Band,
        ApparentTemperatureC,
        TemperatureC, RelativeHumidityPct, WindSpeed10mMs,
-       ShortwaveDownWm2, CloudCoverPct
+       ShortwaveDownWm2, CloudCoverPct, LocationName
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name}'
+WHERE LocationName IN ({locFilter})
   AND UtciC IS NOT NULL
   AND ApparentTemperatureC IS NOT NULL
   AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
-ORDER BY LeadHours, ValidTimeUtc";
+ORDER BY LocationName, LeadHours, ValidTimeUtc";
 
         return ParquetReader.Query(conn, sql, r => new SitePages.FeelsLikeForecastPoint(
             Version:             r.GetString(0),
@@ -902,7 +919,8 @@ ORDER BY LeadHours, ValidTimeUtc";
             RelativeHumidityPct: r.IsDBNull(8)  ? null : (double?)r.GetDouble(8),
             WindSpeed10mMs:      r.IsDBNull(9)  ? null : (double?)r.GetDouble(9),
             ShortwaveDownWm2:    r.IsDBNull(10) ? null : (double?)r.GetDouble(10),
-            CloudCoverPct:       r.IsDBNull(11) ? null : (double?)r.GetDouble(11)),
+            CloudCoverPct:       r.IsDBNull(11) ? null : (double?)r.GetDouble(11),
+            LocationName:        r.GetString(12)),
             _log, "Feels-like predictions tree empty — chip will be absent on home cards.", ct);
     }
 
@@ -1043,8 +1061,8 @@ ORDER BY LeadHours, ValidTimeUtc";
         return dict;
     }
 
-    private IReadOnlyDictionary<DateTime, SitePages.LowCloudSignal> QueryLowCloudSignals(
-        DateTime start, DateTime end, CancellationToken ct)
+    private IReadOnlyDictionary<string, IReadOnlyDictionary<DateTime, SitePages.LowCloudSignal>>
+        QueryLowCloudSignals(DateTime start, DateTime end, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.ForecastsPath, "**", "*.parquet"));
@@ -1061,17 +1079,21 @@ ORDER BY LeadHours, ValidTimeUtc";
         const double VisFireThresholdM = 1000.0;
         const double TmTdFireThresholdC = 1.5;
 
+        // Phase C commit 3: multi-loc IN-list + LocationName in GROUP BY;
+        // returns Dict<location, Dict<time, signal>> so the renderer can
+        // pick the active loc's badge per page without re-querying.
+        var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
         var sql = $@"
 WITH latest AS (
-  SELECT Model, ValidTimeUtc,
+  SELECT Model, LocationName, ValidTimeUtc,
          Visibility, Temperature2m, DewPoint2m,
-         row_number() OVER (PARTITION BY Model, ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn
+         row_number() OVER (PARTITION BY Model, LocationName, ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn
   FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-  WHERE LocationName = '{_cfg.Location.Name.Replace("'", "''")}'
+  WHERE LocationName IN ({locFilter})
     AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
     AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 )
-SELECT ValidTimeUtc,
+SELECT LocationName, ValidTimeUtc,
        SUM(CASE WHEN Visibility IS NOT NULL AND Visibility < {VisFireThresholdM.ToString(System.Globalization.CultureInfo.InvariantCulture)} THEN 1 ELSE 0 END)::INTEGER AS vis_fired,
        SUM(CASE WHEN Visibility IS NOT NULL THEN 1 ELSE 0 END)::INTEGER AS vis_total,
        SUM(CASE WHEN Temperature2m IS NOT NULL AND DewPoint2m IS NOT NULL
@@ -1080,21 +1102,27 @@ SELECT ValidTimeUtc,
        SUM(CASE WHEN Temperature2m IS NOT NULL AND DewPoint2m IS NOT NULL THEN 1 ELSE 0 END)::INTEGER AS tdspread_total
 FROM latest
 WHERE rn = 1
-GROUP BY ValidTimeUtc";
+GROUP BY LocationName, ValidTimeUtc";
 
         var rows = ParquetReader.Query(sql, r => (
-            Time: r.GetDateTime(0),
-            VisFired: r.GetInt32(1),
-            VisTotal: r.GetInt32(2),
-            TdFired: r.GetInt32(3),
-            TdTotal: r.GetInt32(4)),
+            Loc: r.GetString(0),
+            Time: r.GetDateTime(1),
+            VisFired: r.GetInt32(2),
+            VisTotal: r.GetInt32(3),
+            TdFired: r.GetInt32(4),
+            TdTotal: r.GetInt32(5)),
             _log, "Forecast tree empty — low-cloud / mist warning will be absent.", ct);
 
-        return rows.ToDictionary(
-            x => x.Time,
-            x => new SitePages.LowCloudSignal(
-                VisFiredCount: x.VisFired, VisTotalCount: x.VisTotal,
-                CloudBaseFiredCount: x.TdFired, CloudBaseTotalCount: x.TdTotal));
+        var result = new Dictionary<string, IReadOnlyDictionary<DateTime, SitePages.LowCloudSignal>>(StringComparer.Ordinal);
+        foreach (var grp in rows.GroupBy(x => x.Loc, StringComparer.Ordinal))
+        {
+            result[grp.Key] = grp.ToDictionary(
+                x => x.Time,
+                x => new SitePages.LowCloudSignal(
+                    VisFiredCount: x.VisFired, VisTotalCount: x.VisTotal,
+                    CloudBaseFiredCount: x.TdFired, CloudBaseTotalCount: x.TdTotal));
+        }
+        return result;
     }
 
     /// <summary>
@@ -1357,15 +1385,18 @@ FROM ranked WHERE rn = 1 ORDER BY LocationName, ValidTimeUtc, LeadHours";
         // Bounded by TargetDateUtc so we read the same forward window the
         // dry-window page draws, no further. ProbHasDryWindow / Daily prob is
         // mirrored on every row so renderer / verify can read it without
-        // re-joining to the dry-window tree.
+        // re-joining to the dry-window tree. Phase C commit 3: multi-loc
+        // IN-list + LocationName projection (mirrors QueryNwpPrecip*);
+        // SitePages.DryWindow filters by active location at consume time.
+        var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
         var sql = $@"
 SELECT TruthStation, WindowHours, ModelVersion, PredictionMadeAtUtc, TargetDateUtc, LeadHours,
-       StartHourUtc, RawProduct, ConditionalProb, CalibratedProb, DailyProbAnyBlock
+       StartHourUtc, RawProduct, ConditionalProb, CalibratedProb, DailyProbAnyBlock, LocationName
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{_cfg.Location.Name}'
+WHERE LocationName IN ({locFilter})
   AND TargetDateUtc >= TIMESTAMP '{start.Date:yyyy-MM-dd HH:mm:ss}'
   AND TargetDateUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
-ORDER BY TruthStation, WindowHours, LeadHours, TargetDateUtc, StartHourUtc";
+ORDER BY LocationName, TruthStation, WindowHours, LeadHours, TargetDateUtc, StartHourUtc";
 
         return ParquetReader.Query(conn, sql, r => new SitePages.StartHourForecastPoint(
             Station:           r.GetString(0),
@@ -1378,7 +1409,8 @@ ORDER BY TruthStation, WindowHours, LeadHours, TargetDateUtc, StartHourUtc";
             RawProduct:        r.GetDouble(7),
             ConditionalProb:   r.GetDouble(8),
             CalibratedProb:    r.GetDouble(9),
-            DailyProbAnyBlock: r.GetDouble(10)),
+            DailyProbAnyBlock: r.GetDouble(10),
+            LocationName:      r.GetString(11)),
             _log, "Start-hour curves tree empty — best-start column will be absent.", ct);
     }
 

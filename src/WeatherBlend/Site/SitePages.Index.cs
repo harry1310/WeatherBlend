@@ -89,13 +89,25 @@ public static partial class SitePages
                           .ThenByDescending(r => r.PredictedAtUtc)
                           .First());
 
+        // Phase C commit 3a: FeelsLikePredictions is now multi-loc; filter
+        // to the active location's rows before grouping so a Membury card
+        // doesn't pick up a Bonehill chip (or vice versa).
         var feelsLikeByValid = input.FeelsLikePredictions
+            .Where(u => string.IsNullOrEmpty(input.ActiveLocationName)
+                     || string.Equals(u.LocationName, input.ActiveLocationName, StringComparison.Ordinal)
+                     || string.IsNullOrEmpty(u.LocationName))  // legacy/test rows without LocationName fall through to active
             .GroupBy(u => u.ValidTimeUtc)
             .ToDictionary(
                 g => g.Key,
                 g => g.OrderBy(u => u.LeadHours)
                       .ThenByDescending(u => u.PredictedAtUtc)
                       .First());
+
+        // Phase C commit 3a: LowCloudByValid is keyed by location slug now;
+        // pick the active loc's inner dict (empty if missing).
+        var lowCloudByValid = input.LowCloudByValid.TryGetValue(input.ActiveLocationName, out var lcInner)
+            ? lcInner
+            : (IReadOnlyDictionary<DateTime, LowCloudSignal>)new Dictionary<DateTime, LowCloudSignal>();
 
         // Day summary line above the tile grid: temp range + mean P(wet) +
         // driest hour. Falls back to a temp-only line when no P(wet) is
@@ -134,7 +146,7 @@ public static partial class SitePages
             var tiles = new StringBuilder();
             int popoverId = 0;
             foreach (var p in dayPreds)
-                tiles.Append(RenderHourTile(p, feelsLikeByValid, pwetByValid, input.LowCloudByValid, popoverId++));
+                tiles.Append(RenderHourTile(p, feelsLikeByValid, pwetByValid, lowCloudByValid, popoverId++));
             tilesHtml = string.Create(Ci, $"<div class=\"forecast-grid\">{tiles}</div>");
         }
 

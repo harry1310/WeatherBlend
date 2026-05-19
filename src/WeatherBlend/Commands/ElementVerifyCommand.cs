@@ -64,7 +64,10 @@ public sealed class ElementVerifyCommand
         }
 
         var truthCol = TruthColumnFor(target);
-        var truth = _truth.GetEra5Hourly(windowStart, windowEnd, ct, truthCol);
+        // Phase C commit 3: locationName is now required on GetEra5Hourly.
+        // 3a passes primary explicitly here; 3b will loop _cfg.Locations and
+        // emit per-loc verify rows. See [[project_phase_c_status]].
+        var truth = _truth.GetEra5Hourly(_cfg.Location.Name, windowStart, windowEnd, ct, truthCol);
         _log.LogInformation("Loaded {N} ERA5 truth points (column={Col}).", truth.Count, truthCol);
 
         var metadata = _metadata.GetTrainingMetadataForVersions(

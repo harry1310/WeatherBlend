@@ -74,6 +74,36 @@ public sealed class PhaseRegistry
     }
 
     /// <summary>
+    /// Targets (champion-first) that <paramref name="location"/> can render —
+    /// any target whose phases.yaml lineup has at least one champion-or-
+    /// challenger phase admitting <paramref name="location"/>. Used by
+    /// site rendering to decide which sections to draw per location and by
+    /// predict-all to derive its (location, target) matrix; once 3b lands,
+    /// verify uses it too. Confidence-role phases (e.g. 5a) are excluded
+    /// because they don't render as a prediction line — same rule as
+    /// <see cref="ByTarget"/> / <see cref="ByTargetAndLocation"/>. Order is
+    /// stable (yaml-target order). Returns empty list if the location has
+    /// no applicable phase at all (would happen if every target's lineup is
+    /// locations-filtered away from this loc — useful as a "should we even
+    /// render a page for this loc?" gate).
+    /// </summary>
+    public IReadOnlyList<string> TargetsForLocation(string location)
+    {
+        var result = new List<string>(_byTarget.Count);
+        foreach (var (target, phases) in _byTarget)
+        {
+            foreach (var p in phases)
+            {
+                if (p.Role == PhaseRole.Confidence) continue;
+                if (!p.AppliesToLocation(location)) continue;
+                result.Add(target);
+                break;
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
     /// Returns true iff the (target, phase) pair is in the shipping
     /// lineup AS A PREDICTION LINE — i.e. champion or challenger, NOT
     /// confidence-role. Empty / null phase strings are never active.
