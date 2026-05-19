@@ -31,49 +31,26 @@ public static class ModelArtifact
     public static string LeadModelFileName(int leadHours) => $"lead_{leadHours}h.zip";
 
     /// <summary>
-    /// MANIFEST.json for a target. element_* targets use the flat
-    /// <see cref="Versions"/>/<see cref="Active"/> fields; precipitation and
-    /// temperature use <see cref="Stations"/> (one entry per truth source,
-    /// e.g. <c>ea_bellever_dartmoor</c>) because each station is a distinct
-    /// blender. Exactly one of the two sides is populated for a given target;
-    /// the other stays at its default.
+    /// MANIFEST.json for a target. Every target is Stations-keyed via
+    /// <see cref="Stations"/>: precipitation and dry_window key by EA gauge /
+    /// composite (one entry per truth source, e.g. <c>ea_bellever_dartmoor</c>),
+    /// while temperature and the element_* single-model targets key by location
+    /// (e.g. <c>bonehill_rocks</c>) with a single entry. There is no separate
+    /// flat layout.
     ///
     /// There is no stored champion pointer. The headline version is derived:
-    /// <see cref="ResolveChampionVersion"/> (flat) /
-    /// <see cref="ResolveStationChampionVersion"/> (per-station) read the
-    /// phases.yaml champion phase and pick its newest Active version.
+    /// <see cref="ResolveStationChampionVersion"/> reads the phases.yaml
+    /// champion phase and picks its newest Active version.
     /// </summary>
     public sealed class Manifest
     {
         public string Target { get; set; } = "";
 
-        // Flat layout (element_* — single-model targets with no
-        // champion/challenger split). The headline version is simply the
-        // newest Active entry; there is no stored champion pointer.
-        public List<string> Versions { get; set; } = new();
-
-        /// <summary>
-        /// Versions that predict + verify should treat as live. Used by the
-        /// champion/challenger pattern: every shipping phase's latest version
-        /// sits here so they all produce predictions every cycle. Which one
-        /// is champion is decided by phases.yaml, not by this list.
-        /// </summary>
-        public List<string> Active { get; set; } = new();
-
-        /// <summary>
-        /// Per-lead champion override (Phase 2d, 2026-05-05). Maps lead-hours →
-        /// version that should be treated as champion AT THAT LEAD ONLY. Falls
-        /// back to the derived champion (<see cref="ResolveChampionVersion"/>)
-        /// for any lead not listed. Used so 2d can take over as champion at
-        /// lead 12 (where it's the only model trained) without touching 2b's
-        /// championship at 24/48/72/96/120.
-        ///
-        /// Read via <see cref="ResolveChampionForLead"/>; null / missing key
-        /// → the derived champion wins. Empty dict when no per-lead pin is set.
-        /// </summary>
-        public Dictionary<int, string> ChampionByLead { get; set; } = new();
-
-        // Per-station layout (precipitation).
+        // Every target — temperature, precipitation, dry_window, and the
+        // element_* single-model targets — is Stations-keyed. A target that
+        // isn't gauge-partitioned (temperature, element) uses ONE entry keyed
+        // by its location (e.g. "bonehill_rocks"); precipitation / dry_window
+        // key by EA gauge / composite. There is no separate flat layout.
         public Dictionary<string, StationEntry> Stations { get; set; } = new();
     }
 
@@ -92,10 +69,9 @@ public static class ModelArtifact
 
         /// <summary>
         /// Per-lead champion override (Phase 3d, 2026-05-05). Maps lead-hours
-        /// → version pinned as champion AT THAT LEAD ONLY for this station.
-        /// Mirrors <see cref="Manifest.ChampionByLead"/> on the flat-target
-        /// side so 3d (exact-runtime precip) can take over as champion at
-        /// lead 12 per station while the champion phase owns the other leads.
+        /// → version pinned as champion AT THAT LEAD ONLY for this station,
+        /// so 3d (exact-runtime precip) can take over as champion at lead 12
+        /// per station while the champion phase owns the other leads.
         /// </summary>
         public Dictionary<int, string> ChampionByLead { get; set; } = new();
 
@@ -257,17 +233,10 @@ public static class ModelArtifact
         public double CalibratedBlendTestMae { get; set; }
     }
 
-    public static string BuildVersionDir(string modelsRoot, string target, DateTime nowUtc, string? suffix = null)
-    {
-        var ts = nowUtc.ToString("yyyy-MM-dd_HHmmss");
-        var name = string.IsNullOrEmpty(suffix) ? $"v{ts}" : $"v{ts}_{suffix}";
-        return Path.Combine(modelsRoot, target, name).Replace('\\', '/');
-    }
-
     /// <summary>
     /// Station-scoped version dir: <c>{modelsRoot}/{target}/{station}/v{ts}/</c>.
-    /// Used by precipitation so per-station blenders live in parallel trees rather
-    /// than sharing a flat folder with station-suffixed version names.
+    /// Every target lives under a station/location key — there is no flat
+    /// <c>{modelsRoot}/{target}/v{ts}/</c> layout any more.
     /// </summary>
     public static string BuildStationVersionDir(string modelsRoot, string target, string station, DateTime nowUtc, string? suffix = null)
     {
@@ -522,94 +491,6 @@ public static class ModelArtifact
         return ReadJson<WeatherBlend.Train.Common.TrainingSummary>(path);
     }
 
-    /// <summary>
-    /// Write/update MANIFEST.json under data/models/{target}/. Atomic:
-    /// serialize to temp file, then move over the existing manifest.
-    /// Resets Active = [version] — single-active semantics for flat
-    /// single-model targets (element_*). Use <see cref="AppendVersion"/> +
-    /// <see cref="SetActive"/> for champion/challenger flows where multiple
-    /// versions should stay live concurrently.
-    /// </summary>
-    public static void UpdateManifest(string modelsRoot, string target, string versionDirName)
-    {
-        MutateManifest(modelsRoot, target, m =>
-        {
-            if (!m.Versions.Contains(versionDirName))
-                m.Versions.Add(versionDirName);
-            m.Active = new List<string> { versionDirName };
-        });
-    }
-
-    /// <summary>
-    /// Append a version to the history list without touching Current or Active.
-    /// Used by champion/challenger trainers that want to register a new artefact
-    /// without making it the default pick.
-    /// </summary>
-    public static void AppendVersion(string modelsRoot, string target, string versionDirName)
-    {
-        MutateManifest(modelsRoot, target, m =>
-        {
-            if (!m.Versions.Contains(versionDirName))
-                m.Versions.Add(versionDirName);
-        });
-    }
-
-    /// <summary>
-    /// Replace the Active list explicitly. Predict + verify iterate this list when
-    /// no specific version is requested. Caller is responsible for ensuring every
-    /// listed version exists under <c>{modelsRoot}/{target}/</c>.
-    /// </summary>
-    public static void SetActive(string modelsRoot, string target, IEnumerable<string> activeVersions)
-    {
-        var list = activeVersions.Distinct().ToList();
-        MutateManifest(modelsRoot, target, m => m.Active = list);
-    }
-
-    /// <summary>
-    /// Versions that should produce predictions/verify rows. Empty when the
-    /// manifest is absent or has no Active entries.
-    /// </summary>
-    public static IReadOnlyList<string> ResolveActive(string modelsRoot, string target)
-    {
-        var manifest = ReadJson<Manifest>(Path.Combine(modelsRoot, target, ManifestFileName));
-        if (manifest is null) return Array.Empty<string>();
-        return manifest.Active.Count > 0 ? manifest.Active : Array.Empty<string>();
-    }
-
-    /// <summary>
-    /// Per-lead champion version for a flat target. Returns the
-    /// <see cref="Manifest.ChampionByLead"/> override pinned for
-    /// <paramref name="leadHours"/> when present, else the flat champion
-    /// (<see cref="ResolveChampionVersion"/>). Empty when neither resolves.
-    /// </summary>
-    public static string ResolveChampionForLead(string modelsRoot, string target, int leadHours)
-    {
-        var manifest = ReadJson<Manifest>(Path.Combine(modelsRoot, target, ManifestFileName));
-        if (manifest is null) return "";
-        if (manifest.ChampionByLead.TryGetValue(leadHours, out var perLead)
-            && !string.IsNullOrWhiteSpace(perLead))
-            return perLead;
-        return ResolveChampionVersion(modelsRoot, target);
-    }
-
-    /// <summary>
-    /// Set the per-lead champion override for one lead. Pass an empty
-    /// <paramref name="versionDirName"/> to clear the entry. Idempotent.
-    /// Doesn't touch <see cref="Manifest.Active"/> — the version is assumed
-    /// already Active so predict + verify keep producing rows for it.
-    /// </summary>
-    public static void SetChampionForLead(
-        string modelsRoot, string target, int leadHours, string versionDirName)
-    {
-        MutateManifest(modelsRoot, target, m =>
-        {
-            if (string.IsNullOrWhiteSpace(versionDirName))
-                m.ChampionByLead.Remove(leadHours);
-            else
-                m.ChampionByLead[leadHours] = versionDirName;
-        });
-    }
-
     // ------------------------------------------------------------------
     // Champion resolution — derived, never stored
     //
@@ -619,21 +500,6 @@ public static class ModelArtifact
     // trainer could clobber was exactly the bug this replaced — Phase 4b's
     // mint silently re-pointed the precipitation champion away from 3a.
     // ------------------------------------------------------------------
-
-    /// <summary>
-    /// Newest Active version of a flat (single-model) target — the headline
-    /// version for element_* manifests. Lexical max of Active (version
-    /// strings are <c>vYYYY-MM-DD_HHmmss</c> so lexical == chronological).
-    /// Empty when the manifest is absent or has no Active entries.
-    /// </summary>
-    public static string ResolveChampionVersion(string modelsRoot, string target)
-    {
-        var manifest = ReadJson<Manifest>(Path.Combine(modelsRoot, target, ManifestFileName));
-        if (manifest is null) return "";
-        return manifest.Active
-            .OrderByDescending(v => v, StringComparer.Ordinal)
-            .FirstOrDefault() ?? "";
-    }
 
     /// <summary>
     /// The champion VERSION for a (target, station) — the newest Active
@@ -805,24 +671,6 @@ public static class ModelArtifact
     }
 
     /// <summary>
-    /// Resolve <c>"current"</c> / explicit version string → absolute
-    /// directory path. <c>"current"</c> for a flat target resolves to the
-    /// champion (<see cref="ResolveChampionVersion"/> — newest Active).
-    /// </summary>
-    public static string ResolveVersionDir(string modelsRoot, string target, string versionOrCurrent)
-    {
-        var dir = Path.Combine(modelsRoot, target);
-        if (!string.Equals(versionOrCurrent, "current", StringComparison.OrdinalIgnoreCase))
-            return Path.Combine(dir, versionOrCurrent);
-
-        var champion = ResolveChampionVersion(modelsRoot, target);
-        if (string.IsNullOrWhiteSpace(champion))
-            throw new InvalidOperationException(
-                $"No champion version for target '{target}' — manifest absent or Active empty.");
-        return Path.Combine(dir, champion);
-    }
-
-    /// <summary>
     /// Update the per-station entry in the target manifest. Atomic write via
     /// temp+move. Safe to call concurrently-ish (not truly thread-safe, but
     /// training runs are serialised).
@@ -845,9 +693,9 @@ public static class ModelArtifact
         }
         if (!entry.Versions.Contains(versionDirName))
             entry.Versions.Add(versionDirName);
-        // Single-active semantics (mirrors the flat-layout UpdateManifest): a
-        // plain UpdateStationManifest resets Active to [version]. For Phase 3c
-        // champion/challenger, call SetStationActive afterwards with the full list.
+        // Single-active semantics: a plain UpdateStationManifest resets Active
+        // to [version]. For Phase 3c champion/challenger, call SetStationActive
+        // afterwards with the full list.
         entry.Active = new List<string> { versionDirName };
 
         var tmp = manifestPath + ".tmp";
@@ -857,8 +705,7 @@ public static class ModelArtifact
     }
 
     /// <summary>
-    /// Append a station version to its history list without touching Current or Active.
-    /// Mirrors <see cref="AppendVersion"/> for per-station manifests.
+    /// Append a station version to its history list without touching Active.
     /// </summary>
     public static void AppendStationVersion(string modelsRoot, string target, string station, string versionDirName)
     {
@@ -894,17 +741,17 @@ public static class ModelArtifact
     }
 
     // ------------------------------------------------------------------
-    // Idempotent promote helpers
+    // Idempotent promote helper
     // ------------------------------------------------------------------
     //
-    // The lower-level UpdateManifest / SetActive / SetStationActive helpers
+    // The lower-level UpdateStationManifest / SetStationActive helpers
     // unconditionally REPLACE the Active list. That's wrong for any setup
     // running champion + challenger phases concurrently: retraining one phase
     // (say 2b) silently kicks the other (2c) out of Active, and predict +
-    // verify stop scoring it on the next cycle. The promote helpers below
-    // are the right-shaped operation for "I just trained version V of phase
-    // P" — they replace any existing Active entry whose Phase matches P
-    // (read from each entry's training_metadata.json) and add V, leaving
+    // verify stop scoring it on the next cycle. PromoteStationVersion below
+    // is the right-shaped operation for "I just trained version V of phase
+    // P" — it replaces any existing Active entry whose Phase matches P
+    // (read from each entry's training_metadata.json) and adds V, leaving
     // every other phase untouched. Idempotent on re-run: training the same
     // phase twice converges to a one-entry-per-phase Active list rather
     // than accumulating dead versions or wiping siblings.
@@ -913,35 +760,19 @@ public static class ModelArtifact
     // more: promote just registers the version in Versions + Active (with
     // lead-set-aware replacement of the same phase). WHICH phase is champion
     // is decided solely by phases.yaml (ActivePhasePolicy.ChampionPhase); the
-    // headline version is derived from that — see ResolveChampionVersion /
+    // headline version is derived from that — see
     // ResolveStationChampionVersion. Pass the Phase string from the
     // training_metadata you just wrote — the helper doesn't infer it from the
     // version-name suffix because the suffix scheme isn't load-bearing.
 
     /// <summary>
-    /// Register a freshly-trained version in a flat-target manifest
-    /// (element_*). Adds to Versions and replaces any existing same-phase
-    /// Active entry (lead-set-aware — see <see cref="ComposeActive"/>),
-    /// leaving other phases untouched. Idempotent on re-run.
-    /// </summary>
-    public static void PromoteVersion(
-        string modelsRoot, string target, string newVersionName, string newPhase)
-    {
-        var newLeadSet = TryReadVersionLeads(Path.Combine(modelsRoot, target, newVersionName));
-        MutateManifest(modelsRoot, target, m =>
-        {
-            if (!m.Versions.Contains(newVersionName)) m.Versions.Add(newVersionName);
-            m.Active = ComposeActive(m.Active, newVersionName, newPhase, newLeadSet,
-                phaseOfVersion: v => TryReadVersionPhase(Path.Combine(modelsRoot, target, v)),
-                leadsOfVersion: v => TryReadVersionLeads(Path.Combine(modelsRoot, target, v)));
-        });
-    }
-
-    /// <summary>
-    /// Per-station variant of <see cref="PromoteVersion"/> — registers the
-    /// version in a station entry of a station-keyed manifest (precipitation,
-    /// temperature, dry_window). Pins the station's location on first write
-    /// and refuses a later location change (Phase B multi-location safety).
+    /// Register a freshly-trained version in a station entry of a target
+    /// manifest. Adds to Versions and replaces any existing same-phase Active
+    /// entry (lead-set-aware — see <see cref="ComposeActive"/>), leaving other
+    /// phases untouched. Idempotent on re-run. Pins the station's location on
+    /// first write and refuses a later location change (Phase B multi-location
+    /// safety). Targets that aren't gauge-partitioned (temperature, element_*)
+    /// pass their location as the station key.
     /// </summary>
     public static void PromoteStationVersion(
         string modelsRoot, string target, string station, string newVersionName, string newPhase)

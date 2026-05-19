@@ -6,17 +6,17 @@ namespace WeatherBlend.Storage;
 
 /// <summary>
 /// Single source of truth for reads from <c>data/models/</c>: champion lookups
-/// (<c>MANIFEST.json#Current</c>) and per-version <c>training_metadata.json</c>
-/// loads. Lifts the four near-identical helpers that previously lived as
-/// private methods on <c>RenderSiteCommand</c> + the verify commands:
-///   <c>LoadCurrentTemperatureVersion</c>, <c>LoadCurrentPrecipByStation</c>,
-///   <c>LoadPhaseByVersion</c>, <c>LoadMetadataForVersions</c>,
-///   <c>LoadMetadataForKeys</c>.
+/// (derived from <c>MANIFEST.json</c> + phases.yaml) and per-version
+/// <c>training_metadata.json</c> loads. Lifts the near-identical helpers that
+/// previously lived as private methods on <c>RenderSiteCommand</c> + the
+/// verify commands: <c>LoadCurrentTemperatureVersion</c>,
+/// <c>LoadCurrentPrecipByStation</c>, <c>LoadPhaseByVersion</c>,
+/// <c>LoadMetadataForVersions</c>, <c>LoadMetadataForKeys</c>.
 ///
-/// Path layout it understands (mirrors <c>ModelArtifact</c>):
-///   data/models/{target}/MANIFEST.json                   — flat-target champion + active list
-///   data/models/{target}/{version}/training_metadata.json — temperature + element_*
-///   data/models/{target}/{station}/{version}/...         — precipitation
+/// Path layout it understands (mirrors <c>ModelArtifact</c>) — every target
+/// manifest is station/location-keyed, there is no flat layout:
+///   data/models/{target}/MANIFEST.json                       — per-station Active lists
+///   data/models/{target}/{station}/{version}/...             — temperature, precipitation, element_*
 ///   data/models/{target}/{station}/window_{N}h/{version}/... — dry_window
 ///
 /// Targets are passed as bare strings (<c>"temperature"</c>, <c>"precipitation"</c>,
@@ -49,39 +49,13 @@ public sealed class ModelMetadataRepository
     /// null when the file is missing/malformed. Use this when you need more
     /// than the champion pointer — the dry-window verify, for example,
     /// iterates every <c>Stations</c> entry. For the common case of "give
-    /// me the champion", prefer <see cref="GetChampion"/> /
-    /// <see cref="GetChampionsByStation"/>.
+    /// me the champion", prefer <see cref="GetChampionsByStation"/>.
     /// </summary>
     public ModelArtifact.Manifest? TryGetManifest(string target) => TryReadManifest(target);
 
     /// <summary>
-    /// Champion version for a flat-target manifest (<c>element_*</c>) — the
-    /// newest Active version (<see cref="ModelArtifact.ResolveChampionVersion"/>).
-    /// Returns empty string when the manifest is missing or has no Active
-    /// entries; callers degrade to "no filter" rather than crashing.
-    /// </summary>
-    public string GetChampion(string target)
-        => ModelArtifact.ResolveChampionVersion(_modelsRoot, target);
-
-    /// <summary>
-    /// Per-lead champion overrides for a flat-target manifest
-    /// (<see cref="ModelArtifact.Manifest.ChampionByLead"/>). Maps each
-    /// pinned lead to its champion-version. Empty dict on legacy manifests
-    /// or when no per-lead pin is set; callers fall back to
-    /// <see cref="GetChampion"/> for unpinned leads.
-    /// </summary>
-    public IReadOnlyDictionary<int, string> GetChampionByLead(string target)
-    {
-        var manifest = TryReadManifest(target);
-        if (manifest?.ChampionByLead is null) return new Dictionary<int, string>();
-        return manifest.ChampionByLead
-            .Where(kv => !string.IsNullOrEmpty(kv.Value))
-            .ToDictionary(kv => kv.Key, kv => kv.Value);
-    }
-
-    /// <summary>
-    /// Per-(station, lead) champion overrides for a per-station manifest
-    /// layout. Returns a (station-slug, lead-hours) → champion-version dict.
+    /// Per-(station, lead) champion overrides for a target manifest.
+    /// Returns a (station-slug, lead-hours) → champion-version dict.
     /// Empty when no station has any per-lead pin set. Callers fall back to
     /// <see cref="GetChampionsByStation"/> for any (station, lead) absent
     /// from this dict.
@@ -133,24 +107,20 @@ public sealed class ModelMetadataRepository
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// Bulk-load training metadata for flat-target versions (element_*).
+    /// Bulk-load training metadata for the element_* targets, whose bundles
+    /// live under <c>data/models/{target}/{location}/{version}/</c> — the
+    /// element manifests are location-keyed like every other target.
     /// Versions that don't have a metadata file on disk are silently skipped
-    /// with a debug log — same behaviour as the old <c>LoadMetadataForVersions</c>
-    /// helper.
-    ///
-    /// NOTE: Temperature migrated to a per-station (per-location) layout
-    /// 2026-05-14; use <see cref="GetTemperatureTrainingMetadataForVersions"/>
-    /// to read those. This flat-path lookup will only find legacy
-    /// pre-migration bundles for temperature.
+    /// with a debug log.
     /// </summary>
     public IReadOnlyDictionary<string, ModelArtifact.TrainingMetadata>
-        GetTrainingMetadataForVersions(string target, IEnumerable<string> versions)
+        GetTrainingMetadataForVersions(string target, string station, IEnumerable<string> versions)
     {
         var result = new Dictionary<string, ModelArtifact.TrainingMetadata>(StringComparer.Ordinal);
         foreach (var v in versions.Distinct(StringComparer.Ordinal))
         {
-            var dir = Path.Combine(_modelsRoot, target, v);
-            var meta = TryLoadFromDir(dir, $"{target}/{v}");
+            var dir = Path.Combine(_modelsRoot, target, station, v);
+            var meta = TryLoadFromDir(dir, $"{target}/{station}/{v}");
             if (meta is not null) result[v] = meta;
         }
         return result;

@@ -7,9 +7,22 @@ using Xunit;
 
 namespace WeatherBlend.Tests;
 
+/// <summary>
+/// ModelArtifact coverage for the artefact round-trips (training_metadata,
+/// blender specs, feature importance), the manifest-write concurrency
+/// guarantees, and the lead-overlap-aware PromoteStationVersion / ComposeActive
+/// rules. The basic per-station manifest CRUD (create / append / resolve /
+/// version-dir) is exercised in <see cref="ModelArtifactStationTests"/>.
+///
+/// Every target manifest is Stations-keyed — there is no flat layout.
+/// Temperature / element_* targets use a single entry keyed by location;
+/// these tests use that location slug as the station key.
+/// </summary>
 public class ModelArtifactTests : IDisposable
 {
     private readonly string _root;
+
+    private const string Station = "bonehill_rocks";
 
     public ModelArtifactTests()
     {
@@ -22,175 +35,19 @@ public class ModelArtifactTests : IDisposable
         if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
     }
 
-    // ---- UpdateManifest --------------------------------------------------------
+    private ModelArtifact.Manifest ReadManifest(string target)
+        => JsonSerializer.Deserialize<ModelArtifact.Manifest>(
+               File.ReadAllText(Path.Combine(_root, target, ModelArtifact.ManifestFileName)))!;
 
-    [Fact]
-    public void UpdateManifest_creates_manifest_on_first_call()
-    {
-        ModelArtifact.UpdateManifest(_root, "temperature", "v2026-04-21_201231");
-
-        var path = Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName);
-        File.Exists(path).Should().BeTrue();
-
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(File.ReadAllText(path))!;
-        manifest.Target.Should().Be("temperature");
-        manifest.Versions.Should().ContainSingle().Which.Should().Be("v2026-04-21_201231");
-    }
-
-    [Fact]
-    public void UpdateManifest_appends_new_version_and_advances_Active()
-    {
-        ModelArtifact.UpdateManifest(_root, "temperature", "v1");
-        ModelArtifact.UpdateManifest(_root, "temperature", "v2");
-        ModelArtifact.UpdateManifest(_root, "temperature", "v3");
-
-        var path = Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName);
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(File.ReadAllText(path))!;
-
-        manifest.Active.Should().Equal("v3");
-        manifest.Versions.Should().ContainInOrder("v1", "v2", "v3");
-    }
-
-    [Fact]
-    public void UpdateManifest_does_not_duplicate_an_already_listed_version()
-    {
-        ModelArtifact.UpdateManifest(_root, "temperature", "v1");
-        ModelArtifact.UpdateManifest(_root, "temperature", "v2");
-        ModelArtifact.UpdateManifest(_root, "temperature", "v1"); // re-pointing Active back to v1
-
-        var path = Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName);
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(File.ReadAllText(path))!;
-
-        manifest.Active.Should().Equal("v1");
-        manifest.Versions.Should().Equal("v1", "v2");
-    }
-
-    [Fact]
-    public void UpdateManifest_leaves_no_tmp_file_behind()
-    {
-        ModelArtifact.UpdateManifest(_root, "temperature", "v1");
-
-        var dir = Path.Combine(_root, "temperature");
-        Directory.EnumerateFiles(dir, "*.tmp").Should().BeEmpty(
-            "temp file should be moved over the manifest, not left behind");
-    }
-
-    // ---- Active-list semantics (champion/challenger) ---------------------------
-
-    [Fact]
-    public void UpdateManifest_resets_Active_to_single_entry_for_legacy_single_version_flow()
-    {
-        ModelArtifact.UpdateManifest(_root, "temperature", "v1");
-
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
-            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
-
-        manifest.Active.Should().ContainSingle().Which.Should().Be("v1");
-    }
-
-    [Fact]
-    public void AppendVersion_adds_to_Versions_without_changing_Active()
-    {
-        ModelArtifact.UpdateManifest(_root, "temperature", "v1");
-        ModelArtifact.AppendVersion(_root, "temperature", "v2-challenger");
-
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
-            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
-
-        manifest.Versions.Should().Equal("v1", "v2-challenger");
-        manifest.Active.Should().ContainSingle().Which.Should().Be("v1",
-            "AppendVersion must not touch Active — training a challenger doesn't promote it");
-    }
-
-    [Fact]
-    public void SetActive_overrides_Active_list()
-    {
-        ModelArtifact.UpdateManifest(_root, "temperature", "v1");
-        ModelArtifact.AppendVersion(_root, "temperature", "v2");
-        ModelArtifact.SetActive(_root, "temperature", new[] { "v1", "v2" });
-
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
-            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
-
-        manifest.Active.Should().Equal("v1", "v2");
-    }
-
-    [Fact]
-    public void SetActive_deduplicates_repeated_entries()
-    {
-        ModelArtifact.UpdateManifest(_root, "temperature", "v1");
-        ModelArtifact.SetActive(_root, "temperature", new[] { "v1", "v1", "v2", "v2" });
-
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
-            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
-
-        manifest.Active.Should().Equal("v1", "v2");
-    }
-
-    [Fact]
-    public void ResolveActive_returns_the_explicit_list_when_set()
-    {
-        ModelArtifact.UpdateManifest(_root, "temperature", "v1");
-        ModelArtifact.AppendVersion(_root, "temperature", "v2");
-        ModelArtifact.SetActive(_root, "temperature", new[] { "v1", "v2" });
-
-        ModelArtifact.ResolveActive(_root, "temperature").Should().Equal("v1", "v2");
-    }
-
-    [Fact]
-    public void ResolveActive_returns_empty_when_Active_empty()
-    {
-        // A manifest with an empty Active list has nothing live — there is
-        // no Current pointer to fall back to any more.
-        var dir = Path.Combine(_root, "temperature");
-        Directory.CreateDirectory(dir);
-        File.WriteAllText(
-            Path.Combine(dir, ModelArtifact.ManifestFileName),
-            """{"Target":"temperature","Versions":["v-legacy"],"Active":[],"Stations":{}}""");
-
-        ModelArtifact.ResolveActive(_root, "temperature").Should().BeEmpty();
-    }
-
-    [Fact]
-    public void ResolveActive_returns_empty_when_manifest_absent()
-    {
-        ModelArtifact.ResolveActive(_root, "temperature").Should().BeEmpty();
-    }
-
-    // ---- ResolveVersionDir ------------------------------------------------------
-
-    [Fact]
-    public void ResolveVersionDir_returns_explicit_version_path_without_consulting_manifest()
-    {
-        // No manifest at all — explicit lookup should still work.
-        var dir = ModelArtifact.ResolveVersionDir(_root, "temperature", "v2026-04-21_201231");
-        dir.Should().Be(Path.Combine(_root, "temperature", "v2026-04-21_201231"));
-    }
-
-    [Fact]
-    public void ResolveVersionDir_resolves_current_via_manifest()
-    {
-        ModelArtifact.UpdateManifest(_root, "temperature", "v1");
-        ModelArtifact.UpdateManifest(_root, "temperature", "v2");
-
-        var dir = ModelArtifact.ResolveVersionDir(_root, "temperature", "current");
-        dir.Should().Be(Path.Combine(_root, "temperature", "v2"));
-    }
-
-    [Fact]
-    public void ResolveVersionDir_throws_when_current_requested_without_manifest()
-    {
-        var act = () => ModelArtifact.ResolveVersionDir(_root, "temperature", "current");
-        act.Should().Throw<InvalidOperationException>()
-            .WithMessage("*champion version*");
-    }
+    private string VersionDir(string target, string station, string version)
+        => Path.Combine(_root, target, station, version);
 
     // ---- TrainingMetadata round-trip -------------------------------------------
 
     [Fact]
     public void TrainingMetadata_round_trips_through_disk()
     {
-        var versionDir = Path.Combine(_root, "temperature", "v-rt");
+        var versionDir = VersionDir("temperature", Station, "v-rt");
         Directory.CreateDirectory(versionDir);
 
         var original = new ModelArtifact.TrainingMetadata
@@ -250,12 +107,7 @@ public class ModelArtifactTests : IDisposable
         // at deserialise — silently treating it as null lets the predict
         // path either pick the wrong NWP source or fall back to legacy
         // behaviour, both of which are the bug we shipped Phase A to kill.
-        // Pre-tightening (Tasks 15-20) the loader returned null and the
-        // predict commands warn-then-fallback. After tightening, only
-        // bundles written by trainers that thread LocationName through
-        // RetrainGuard.BuildCheckAndSave will load — every other path is
-        // a bundle we should not score against.
-        var versionDir = Path.Combine(_root, "temperature", "v-no-location");
+        var versionDir = VersionDir("temperature", Station, "v-no-location");
         Directory.CreateDirectory(versionDir);
         var jsonWithoutLocation = """
             {
@@ -281,6 +133,19 @@ public class ModelArtifactTests : IDisposable
     }
 
     [Fact]
+    public void LoadTrainingMetadata_throws_for_missing_file()
+    {
+        var versionDir = VersionDir("temperature", Station, "v-missing");
+        Directory.CreateDirectory(versionDir);
+
+        var act = () => ModelArtifact.LoadTrainingMetadata(versionDir);
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*Missing training metadata*");
+    }
+
+    // ---- BlenderSpecs round-trip -----------------------------------------------
+
+    [Fact]
     public void BlenderSpecs_round_trip_through_disk_preserving_structured_fields()
     {
         // Lock the on-disk contract for the structured-spec fields added
@@ -289,7 +154,7 @@ public class ModelArtifactTests : IDisposable
         // — predict relies on FeatureNames + Models, and the Spec page now
         // relies on the structured fields. Anything dropped silently here
         // would re-introduce the dash-everywhere class of bug.
-        var versionDir = Path.Combine(_root, "temperature", "v-spec-rt");
+        var versionDir = VersionDir("temperature", Station, "v-spec-rt");
         Directory.CreateDirectory(versionDir);
 
         var original = new Dictionary<int, BlenderSpec>
@@ -346,7 +211,7 @@ public class ModelArtifactTests : IDisposable
         // empty strings / null without throwing — load happens on every
         // render-site run, so a deserialisation failure here would take
         // down the whole site.
-        var versionDir = Path.Combine(_root, "temperature", "v-legacy");
+        var versionDir = VersionDir("temperature", Station, "v-legacy");
         Directory.CreateDirectory(versionDir);
         var legacyJson = """
             {
@@ -374,23 +239,12 @@ public class ModelArtifactTests : IDisposable
         reloaded[24].FeatureNames.Should().Equal("temp_gfs", "temp_mean");
     }
 
-    [Fact]
-    public void LoadTrainingMetadata_throws_for_missing_file()
-    {
-        var versionDir = Path.Combine(_root, "temperature", "v-missing");
-        Directory.CreateDirectory(versionDir);
-
-        var act = () => ModelArtifact.LoadTrainingMetadata(versionDir);
-        act.Should().Throw<InvalidOperationException>()
-            .WithMessage("*Missing training metadata*");
-    }
-
     // ---- SavePerLeadFeatureImportance / LoadPerLeadFeatureImportance ----------
 
     [Fact]
     public void PerLeadFeatureImportance_round_trips_with_sort_order_preserved()
     {
-        var versionDir = Path.Combine(_root, "temperature", "v-fi");
+        var versionDir = VersionDir("temperature", Station, "v-fi");
         Directory.CreateDirectory(versionDir);
 
         var byLead = new Dictionary<int, IEnumerable<(string Name, double Gain)>>
@@ -413,32 +267,11 @@ public class ModelArtifactTests : IDisposable
     [Fact]
     public void LoadPerLeadFeatureImportance_returns_empty_for_missing_file()
     {
-        var versionDir = Path.Combine(_root, "temperature", "v-none");
+        var versionDir = VersionDir("temperature", Station, "v-none");
         Directory.CreateDirectory(versionDir);
 
         var loaded = ModelArtifact.LoadPerLeadFeatureImportance(versionDir);
         loaded.Should().BeEmpty();
-    }
-
-    // ---- BuildVersionDir --------------------------------------------------------
-
-    [Fact]
-    public void BuildVersionDir_encodes_utc_timestamp_and_uses_forward_slashes()
-    {
-        var ts = new DateTime(2026, 4, 21, 20, 12, 31, DateTimeKind.Utc);
-        var dir = ModelArtifact.BuildVersionDir("data/models", "temperature", ts);
-
-        dir.Should().Be("data/models/temperature/v2026-04-21_201231");
-        dir.Should().NotContain("\\", "paths are always normalised to forward slashes");
-    }
-
-    [Fact]
-    public void BuildVersionDir_appends_suffix_when_provided()
-    {
-        var ts = new DateTime(2026, 4, 21, 20, 12, 31, DateTimeKind.Utc);
-        var dir = ModelArtifact.BuildVersionDir("data/models", "temperature", ts, suffix: "retrain");
-
-        dir.Should().Be("data/models/temperature/v2026-04-21_201231_retrain");
     }
 
     // ---- Concurrency: atomic rename + file lock --------------------------------
@@ -452,20 +285,20 @@ public class ModelArtifactTests : IDisposable
     public void Manifest_is_always_present_during_concurrent_writes()
     {
         // Seed so the reader has something to read before the writer starts.
-        ModelArtifact.UpdateManifest(_root, "temperature", "v0");
+        ModelArtifact.UpdateStationManifest(_root, "temperature", Station, "v0");
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
         var observedMissing = 0;
         var observedReads = 0;
 
-        // Reader thread — hammers ResolveActive while the writer churns.
+        // Reader thread — hammers ResolveStationActive while the writer churns.
         var reader = Task.Run(() =>
         {
             while (!cts.IsCancellationRequested)
             {
                 try
                 {
-                    var active = ModelArtifact.ResolveActive(_root, "temperature");
+                    var active = ModelArtifact.ResolveStationActive(_root, "temperature", Station);
                     if (active.Count == 0) Interlocked.Increment(ref observedMissing);
                     Interlocked.Increment(ref observedReads);
                 }
@@ -473,12 +306,12 @@ public class ModelArtifactTests : IDisposable
             }
         });
 
-        // Writer thread — bumps Current 200× in tight succession.
+        // Writer thread — bumps Active 200× in tight succession.
         var writer = Task.Run(() =>
         {
             for (int i = 1; i <= 200 && !cts.IsCancellationRequested; i++)
             {
-                ModelArtifact.UpdateManifest(_root, "temperature", $"v{i}");
+                ModelArtifact.UpdateStationManifest(_root, "temperature", Station, $"v{i}");
             }
         });
 
@@ -498,36 +331,74 @@ public class ModelArtifactTests : IDisposable
     /// for the read-mutate-write trample race fixed by the file lock.
     /// </summary>
     [Fact]
-    public void Concurrent_AppendVersion_does_not_lose_updates()
+    public void Concurrent_AppendStationVersion_does_not_lose_updates()
     {
         const int N = 30;
 
         var threads = Enumerable.Range(0, N).Select(i => new Thread(() =>
         {
-            ModelArtifact.AppendVersion(_root, "temperature", $"v-thread-{i:D2}");
+            ModelArtifact.AppendStationVersion(_root, "temperature", Station, $"v-thread-{i:D2}");
         })).ToList();
 
         foreach (var t in threads) t.Start();
         foreach (var t in threads) t.Join();
 
-        var path = Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName);
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(File.ReadAllText(path))!;
-
-        manifest.Versions.Should().HaveCount(N);
+        var versions = ReadManifest("temperature").Stations[Station].Versions;
+        versions.Should().HaveCount(N);
         for (int i = 0; i < N; i++)
-            manifest.Versions.Should().Contain($"v-thread-{i:D2}");
+            versions.Should().Contain($"v-thread-{i:D2}");
     }
 
-    // ---- PromoteVersion (idempotent same-phase replacement) ------------------
+    /// <summary>
+    /// Concurrent SetStationActive + AppendStationVersion must compose: every
+    /// appended version survives, and the final SetStationActive winner is one
+    /// of the values written. Mirrors the chained train-then-calibrate flow
+    /// that previously trampled.
+    /// </summary>
+    [Fact]
+    public void Concurrent_SetStationActive_and_AppendStationVersion_compose_without_loss()
+    {
+        const int N = 20;
+        ModelArtifact.UpdateStationManifest(_root, "temperature", Station, "v-base");
+
+        var threads = new List<Thread>();
+        for (int i = 0; i < N; i++)
+        {
+            var idx = i;
+            threads.Add(new Thread(() =>
+            {
+                ModelArtifact.AppendStationVersion(_root, "temperature", Station, $"v-{idx:D2}");
+                ModelArtifact.SetStationActive(_root, "temperature", Station,
+                    new[] { "v-base", $"v-{idx:D2}" });
+            }));
+        }
+
+        foreach (var t in threads) t.Start();
+        foreach (var t in threads) t.Join();
+
+        var entry = ReadManifest("temperature").Stations[Station];
+
+        // All N appended versions plus v-base must be present.
+        entry.Versions.Should().Contain("v-base");
+        for (int i = 0; i < N; i++)
+            entry.Versions.Should().Contain($"v-{i:D2}");
+
+        // Active is whichever thread wrote last; must contain v-base + exactly one v-{i}.
+        entry.Active.Should().HaveCount(2);
+        entry.Active.Should().Contain("v-base");
+        entry.Active.Should().ContainSingle(v => v.StartsWith("v-", StringComparison.Ordinal) && v != "v-base");
+    }
+
+    // ---- PromoteStationVersion (idempotent same-phase replacement) -----------
     //
-    // The promote helpers fix the load-bearing footgun in
-    // UpdateManifest / UpdateStationManifest: the older helpers reset Active to
-    // [new], which silently kicked any active challenger phase out of the rotation
-    // on every champion retrain. The promote variants read each existing Active
-    // entry's training_metadata.Phase and only replace entries with the same
-    // phase as the new version, leaving all other phases (champions or
-    // challengers) untouched. Tests below pin both the same-phase replacement
-    // rule and the "preserve other phases" invariant.
+    // PromoteStationVersion fixes the load-bearing footgun in
+    // UpdateStationManifest / SetStationActive: those reset Active to [new],
+    // which silently kicked any active challenger phase out of the rotation on
+    // every champion retrain. Promote reads each existing Active entry's
+    // training_metadata.Phase and only replaces entries with the same phase as
+    // the new version (lead-overlap-aware via ComposeActive), leaving all other
+    // phases (champions or challengers) untouched. Tests below pin both the
+    // same-phase replacement rule and the "preserve other phases" invariant.
 
     /// <summary>
     /// Test helper. Writes both training_metadata.json (for phase) and
@@ -547,6 +418,7 @@ public class ModelArtifactTests : IDisposable
             Version = version,
             Target = "temperature",
             Phase = phase,
+            LocationName = "bonehill_rocks",
             DataSource = "test",
             TrainedAtUtc = DateTime.UtcNow,
         };
@@ -565,92 +437,84 @@ public class ModelArtifactTests : IDisposable
     }
 
     [Fact]
-    public void PromoteVersion_replaces_same_phase_and_preserves_others()
+    public void PromoteStationVersion_replaces_same_phase_and_preserves_others()
     {
         // Setup: 2b champion (v_base_old) + 2c challenger (v_2c).
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base_old"), "v_base_old", "2b");
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2c"),       "v_2c",       "2c");
-        ModelArtifact.UpdateManifest(_root, "temperature", "v_base_old");
-        ModelArtifact.SetActive(_root, "temperature", new[] { "v_base_old", "v_2c" });
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_base_old"), "v_base_old", "2b");
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_2c"),       "v_2c",       "2c");
+        ModelArtifact.UpdateStationManifest(_root, "temperature", Station, "v_base_old");
+        ModelArtifact.SetStationActive(_root, "temperature", Station, new[] { "v_base_old", "v_2c" });
 
         // Retrain 2b → v_base_new. Expected: v_base_old is dropped from Active
         // (replaced by v_base_new), v_2c stays.
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base_new"), "v_base_new", "2b");
-        ModelArtifact.PromoteVersion(_root, "temperature", "v_base_new", newPhase: "2b");
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_base_new"), "v_base_new", "2b");
+        ModelArtifact.PromoteStationVersion(_root, "temperature", Station, "v_base_new", newPhase: "2b");
 
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
-            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
-
-        manifest.Active.Should().BeEquivalentTo(new[] { "v_2c", "v_base_new" });   // 2c preserved
-        manifest.Versions.Should().Contain(new[] { "v_base_old", "v_base_new" });
+        var entry = ReadManifest("temperature").Stations[Station];
+        entry.Active.Should().BeEquivalentTo(new[] { "v_2c", "v_base_new" });   // 2c preserved
+        entry.Versions.Should().Contain(new[] { "v_base_old", "v_base_new" });
     }
 
     [Fact]
-    public void PromoteVersion_replaces_same_phase_challenger_and_preserves_champion()
+    public void PromoteStationVersion_replaces_same_phase_challenger_and_preserves_champion()
     {
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base"),    "v_base",    "2b");
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2c_old"),  "v_2c_old",  "2c");
-        ModelArtifact.UpdateManifest(_root, "temperature", "v_base");
-        ModelArtifact.SetActive(_root, "temperature", new[] { "v_base", "v_2c_old" });
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_base"),   "v_base",   "2b");
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_2c_old"), "v_2c_old", "2c");
+        ModelArtifact.UpdateStationManifest(_root, "temperature", Station, "v_base");
+        ModelArtifact.SetStationActive(_root, "temperature", Station, new[] { "v_base", "v_2c_old" });
 
         // Retrain 2c → v_2c_new. Expected: v_2c_old replaced by v_2c_new in
         // Active, v_base preserved.
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2c_new"), "v_2c_new", "2c");
-        ModelArtifact.PromoteVersion(_root, "temperature", "v_2c_new", newPhase: "2c");
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_2c_new"), "v_2c_new", "2c");
+        ModelArtifact.PromoteStationVersion(_root, "temperature", Station, "v_2c_new", newPhase: "2c");
 
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
-            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
-
-        manifest.Active.Should().BeEquivalentTo(new[] { "v_base", "v_2c_new" }); // 2c rotated
+        ReadManifest("temperature").Stations[Station].Active
+            .Should().BeEquivalentTo(new[] { "v_base", "v_2c_new" }); // 2c rotated
     }
 
     [Fact]
-    public void PromoteVersion_is_idempotent_across_repeated_same_phase_retrains()
+    public void PromoteStationVersion_is_idempotent_across_repeated_same_phase_retrains()
     {
         // Run two 2c retrains back-to-back. Active should converge to one 2c
         // entry per run, not accumulate stale 2c versions across runs.
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base"),  "v_base",  "2b");
-        ModelArtifact.UpdateManifest(_root, "temperature", "v_base");
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_base"), "v_base", "2b");
+        ModelArtifact.UpdateStationManifest(_root, "temperature", Station, "v_base");
 
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2c_a"), "v_2c_a", "2c");
-        ModelArtifact.PromoteVersion(_root, "temperature", "v_2c_a", newPhase: "2c");
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_2c_a"), "v_2c_a", "2c");
+        ModelArtifact.PromoteStationVersion(_root, "temperature", Station, "v_2c_a", newPhase: "2c");
 
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2c_b"), "v_2c_b", "2c");
-        ModelArtifact.PromoteVersion(_root, "temperature", "v_2c_b", newPhase: "2c");
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_2c_b"), "v_2c_b", "2c");
+        ModelArtifact.PromoteStationVersion(_root, "temperature", Station, "v_2c_b", newPhase: "2c");
 
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
-            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
-
+        var entry = ReadManifest("temperature").Stations[Station];
         // Active has exactly one 2c (the latest), not both.
-        manifest.Active.Should().BeEquivalentTo(new[] { "v_base", "v_2c_b" });
+        entry.Active.Should().BeEquivalentTo(new[] { "v_base", "v_2c_b" });
         // Versions accumulates both 2c entries (history is preserved).
-        manifest.Versions.Should().Contain(new[] { "v_base", "v_2c_a", "v_2c_b" });
+        entry.Versions.Should().Contain(new[] { "v_base", "v_2c_a", "v_2c_b" });
     }
 
     [Fact]
-    public void PromoteVersion_keeps_same_phase_versions_with_disjoint_lead_sets()
+    public void PromoteStationVersion_keeps_same_phase_versions_with_disjoint_lead_sets()
     {
         // Same-phase entries with FULLY DISJOINT lead sets coexist —
         // neither emits predictions at leads the other covers, so no
         // duplicate (composite, lead, valid) parquet rows on disk.
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base"), "v_base", "2b", 24, 48, 72);
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2d_short"), "v_2d_short", "2d", 12, 24, 48);
-        ModelArtifact.UpdateManifest(_root, "temperature", "v_base");
-        ModelArtifact.SetActive(_root, "temperature", new[] { "v_base", "v_2d_short" });
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_base"), "v_base", "2b", 24, 48, 72);
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_2d_short"), "v_2d_short", "2d", 12, 24, 48);
+        ModelArtifact.UpdateStationManifest(_root, "temperature", Station, "v_base");
+        ModelArtifact.SetStationActive(_root, "temperature", Station, new[] { "v_base", "v_2d_short" });
 
         // Add a 2d at the OTHER lead bucket — disjoint from v_2d_short's
         // {12,24,48}. Both 2d versions should survive Active.
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2d_long"), "v_2d_long", "2d", 72, 96, 120);
-        ModelArtifact.PromoteVersion(_root, "temperature", "v_2d_long", newPhase: "2d");
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_2d_long"), "v_2d_long", "2d", 72, 96, 120);
+        ModelArtifact.PromoteStationVersion(_root, "temperature", Station, "v_2d_long", newPhase: "2d");
 
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
-            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
-
-        manifest.Active.Should().BeEquivalentTo(new[] { "v_base", "v_2d_short", "v_2d_long" });
+        ReadManifest("temperature").Stations[Station].Active
+            .Should().BeEquivalentTo(new[] { "v_base", "v_2d_short", "v_2d_long" });
     }
 
     [Fact]
-    public void PromoteVersion_drops_same_phase_version_with_any_overlap_on_leads()
+    public void PromoteStationVersion_drops_same_phase_version_with_any_overlap_on_leads()
     {
         // Operator runs a wider 2d retrain that supersedes a narrower
         // existing 2d. Because the new lead-set {12,24,48,72} OVERLAPS
@@ -661,122 +525,106 @@ public class ModelArtifactTests : IDisposable
         // Regression test for the 2026-05-08 second-iteration bug where
         // an equality-only check kept both versions Active when one's
         // lead-set strictly contained the other's.
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base"), "v_base", "2b", 24, 48, 72);
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2d_old"), "v_2d_old", "2d", 48, 72);
-        ModelArtifact.UpdateManifest(_root, "temperature", "v_base");
-        ModelArtifact.SetActive(_root, "temperature", new[] { "v_base", "v_2d_old" });
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_base"), "v_base", "2b", 24, 48, 72);
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_2d_old"), "v_2d_old", "2d", 48, 72);
+        ModelArtifact.UpdateStationManifest(_root, "temperature", Station, "v_base");
+        ModelArtifact.SetStationActive(_root, "temperature", Station, new[] { "v_base", "v_2d_old" });
 
         // Retrain 2d covering MORE leads. {12,24,48,72} ∩ {48,72} = {48,72}
         // ≠ ∅ → V_old superseded.
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2d_wide"), "v_2d_wide", "2d", 12, 24, 48, 72);
-        ModelArtifact.PromoteVersion(_root, "temperature", "v_2d_wide", newPhase: "2d");
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_2d_wide"), "v_2d_wide", "2d", 12, 24, 48, 72);
+        ModelArtifact.PromoteStationVersion(_root, "temperature", Station, "v_2d_wide", newPhase: "2d");
 
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
-            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
-
-        manifest.Active.Should().BeEquivalentTo(new[] { "v_base", "v_2d_wide" });
-        manifest.Active.Should().NotContain("v_2d_old");
+        var entry = ReadManifest("temperature").Stations[Station];
+        entry.Active.Should().BeEquivalentTo(new[] { "v_base", "v_2d_wide" });
+        entry.Active.Should().NotContain("v_2d_old");
     }
 
     [Fact]
-    public void PromoteVersion_partial_overlap_drops_existing_even_when_existing_has_unique_leads()
+    public void PromoteStationVersion_partial_overlap_drops_existing_even_when_existing_has_unique_leads()
     {
         // The footgun documented on ComposeActive: a partial-coverage
         // retrain that overlaps an existing wider version supersedes it,
-        // potentially losing the unique-to-old leads' coverage. Tested
-        // here so the behaviour is locked, not a surprise.
+        // potentially losing the unique-to-old leads' coverage.
         //
         // V_old {12,24} + V_new {24} → overlap on {24} → drop V_old.
-        // Lead 12 loses its 2d source (would need a separate retrain to
-        // restore). Operationally: don't run partial retrains unless you
-        // mean to abandon the leads you're not touching.
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base"), "v_base", "2b", 24, 48);
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2d_wide"), "v_2d_wide", "2d", 12, 24);
-        ModelArtifact.UpdateManifest(_root, "temperature", "v_base");
-        ModelArtifact.SetActive(_root, "temperature", new[] { "v_base", "v_2d_wide" });
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_base"), "v_base", "2b", 24, 48);
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_2d_wide"), "v_2d_wide", "2d", 12, 24);
+        ModelArtifact.UpdateStationManifest(_root, "temperature", Station, "v_base");
+        ModelArtifact.SetStationActive(_root, "temperature", Station, new[] { "v_base", "v_2d_wide" });
 
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2d_narrow"), "v_2d_narrow", "2d", 24);
-        ModelArtifact.PromoteVersion(_root, "temperature", "v_2d_narrow", newPhase: "2d");
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_2d_narrow"), "v_2d_narrow", "2d", 24);
+        ModelArtifact.PromoteStationVersion(_root, "temperature", Station, "v_2d_narrow", newPhase: "2d");
 
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
-            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
-
-        manifest.Active.Should().BeEquivalentTo(new[] { "v_base", "v_2d_narrow" });
-        manifest.Active.Should().NotContain("v_2d_wide");
+        var entry = ReadManifest("temperature").Stations[Station];
+        entry.Active.Should().BeEquivalentTo(new[] { "v_base", "v_2d_narrow" });
+        entry.Active.Should().NotContain("v_2d_wide");
     }
 
     [Fact]
-    public void PromoteVersion_replaces_same_phase_same_lead_set()
+    public void PromoteStationVersion_replaces_same_phase_same_lead_set()
     {
         // Re-train idempotency: training the SAME (phase, lead-set) again
         // replaces the prior entry — no duplicate Active rows for the same
-        // configuration. This is the only case ComposeActive treats as
-        // a same-config replacement.
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base"), "v_base", "2b", 24, 48, 72);
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2d_a"), "v_2d_a", "2d", 12, 24, 48);
-        ModelArtifact.UpdateManifest(_root, "temperature", "v_base");
-        ModelArtifact.SetActive(_root, "temperature", new[] { "v_base", "v_2d_a" });
+        // configuration.
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_base"), "v_base", "2b", 24, 48, 72);
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_2d_a"), "v_2d_a", "2d", 12, 24, 48);
+        ModelArtifact.UpdateStationManifest(_root, "temperature", Station, "v_base");
+        ModelArtifact.SetStationActive(_root, "temperature", Station, new[] { "v_base", "v_2d_a" });
 
         // Re-train 2d on the SAME leads.
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2d_b"), "v_2d_b", "2d", 12, 24, 48);
-        ModelArtifact.PromoteVersion(_root, "temperature", "v_2d_b", newPhase: "2d");
-
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
-            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_2d_b"), "v_2d_b", "2d", 12, 24, 48);
+        ModelArtifact.PromoteStationVersion(_root, "temperature", Station, "v_2d_b", newPhase: "2d");
 
         // v_2d_a replaced by v_2d_b — same phase, same lead set.
-        manifest.Active.Should().BeEquivalentTo(new[] { "v_base", "v_2d_b" });
+        ReadManifest("temperature").Stations[Station].Active
+            .Should().BeEquivalentTo(new[] { "v_base", "v_2d_b" });
     }
 
     [Fact]
-    public void PromoteVersion_preserves_existing_when_new_version_lacks_schema()
+    public void PromoteStationVersion_preserves_existing_when_new_version_lacks_schema()
     {
         // If we can't read the new version's lead set (no
         // feature_schema.json on disk), TryReadVersionLeads returns null.
         // ComposeActive then falls back to the conservative "preserve
         // everything we can't compare" rule — a missing schema can't be
         // shown to overlap with anything, so the existing version stays.
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base"), "v_base", "2b", 24, 48);
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_2d_old"), "v_2d_old", "2d", 12, 24);
-        ModelArtifact.UpdateManifest(_root, "temperature", "v_base");
-        ModelArtifact.SetActive(_root, "temperature", new[] { "v_base", "v_2d_old" });
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_base"), "v_base", "2b", 24, 48);
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_2d_old"), "v_2d_old", "2d", 12, 24);
+        ModelArtifact.UpdateStationManifest(_root, "temperature", Station, "v_base");
+        ModelArtifact.SetStationActive(_root, "temperature", Station, new[] { "v_base", "v_2d_old" });
 
         // New 2d version: write the metadata + schema, then DELETE the
-        // schema to simulate an unreadable artefact (e.g. a half-written
-        // train run, or a pre-Phase-1 schema). Promote should preserve
-        // v_2d_old conservatively.
-        var newDir = Path.Combine(_root, "temperature", "v_2d_new");
+        // schema to simulate an unreadable artefact. Promote should
+        // preserve v_2d_old conservatively.
+        var newDir = VersionDir("temperature", Station, "v_2d_new");
         WritePhaseMetadata(newDir, "v_2d_new", "2d", 12, 24);
         File.Delete(Path.Combine(newDir, ModelArtifact.FeatureSchemaFileName));
 
-        ModelArtifact.PromoteVersion(_root, "temperature", "v_2d_new", newPhase: "2d");
+        ModelArtifact.PromoteStationVersion(_root, "temperature", Station, "v_2d_new", newPhase: "2d");
 
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
-            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
-
-        manifest.Active.Should().Contain("v_2d_old");  // preserved despite shared phase + leads
-        manifest.Active.Should().Contain("v_2d_new");  // appended
+        var entry = ReadManifest("temperature").Stations[Station];
+        entry.Active.Should().Contain("v_2d_old");  // preserved despite shared phase + leads
+        entry.Active.Should().Contain("v_2d_new");  // appended
     }
 
     [Fact]
-    public void PromoteVersion_preserves_entry_with_unreadable_metadata()
+    public void PromoteStationVersion_preserves_entry_with_unreadable_metadata()
     {
         // An Active entry whose training_metadata is missing or malformed has
         // unknown phase. The promote helper PRESERVES it rather than silently
-        // dropping — caller can clean up explicitly via SetActive if intended.
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base"), "v_base", "2b");
+        // dropping — caller can clean up explicitly via SetStationActive.
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_base"), "v_base", "2b");
         // v_orphan has no metadata file.
-        Directory.CreateDirectory(Path.Combine(_root, "temperature", "v_orphan"));
-        ModelArtifact.SetActive(_root, "temperature", new[] { "v_base", "v_orphan" });
+        Directory.CreateDirectory(VersionDir("temperature", Station, "v_orphan"));
+        ModelArtifact.SetStationActive(_root, "temperature", Station, new[] { "v_base", "v_orphan" });
 
-        WritePhaseMetadata(Path.Combine(_root, "temperature", "v_base_new"), "v_base_new", "2b");
-        ModelArtifact.PromoteVersion(_root, "temperature", "v_base_new", newPhase: "2b");
-
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
-            File.ReadAllText(Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName)))!;
+        WritePhaseMetadata(VersionDir("temperature", Station, "v_base_new"), "v_base_new", "2b");
+        ModelArtifact.PromoteStationVersion(_root, "temperature", Station, "v_base_new", newPhase: "2b");
 
         // v_orphan stays. Only v_base (matching phase 2b) is replaced.
-        manifest.Active.Should().BeEquivalentTo(new[] { "v_orphan", "v_base_new" });
+        ReadManifest("temperature").Stations[Station].Active
+            .Should().BeEquivalentTo(new[] { "v_orphan", "v_base_new" });
     }
 
     [Fact]
@@ -788,21 +636,19 @@ public class ModelArtifactTests : IDisposable
         var stationA = "ea_bellever_dartmoor";
         var stationB = "ea_bovey_tracey";
 
-        WritePhaseMetadata(Path.Combine(_root, "precipitation", stationA, "v_3a_old"), "v_3a_old", "3a");
-        WritePhaseMetadata(Path.Combine(_root, "precipitation", stationA, "v_3c"),     "v_3c",     "3c");
-        WritePhaseMetadata(Path.Combine(_root, "precipitation", stationB, "v_3a_b"),   "v_3a_b",   "3a");
+        WritePhaseMetadata(VersionDir("precipitation", stationA, "v_3a_old"), "v_3a_old", "3a");
+        WritePhaseMetadata(VersionDir("precipitation", stationA, "v_3c"),     "v_3c",     "3c");
+        WritePhaseMetadata(VersionDir("precipitation", stationB, "v_3a_b"),   "v_3a_b",   "3a");
 
         ModelArtifact.UpdateStationManifest(_root, "precipitation", stationA, "v_3a_old");
         ModelArtifact.SetStationActive(_root, "precipitation", stationA, new[] { "v_3a_old", "v_3c" });
         ModelArtifact.UpdateStationManifest(_root, "precipitation", stationB, "v_3a_b");
 
-        WritePhaseMetadata(Path.Combine(_root, "precipitation", stationA, "v_3a_new"), "v_3a_new", "3a");
+        WritePhaseMetadata(VersionDir("precipitation", stationA, "v_3a_new"), "v_3a_new", "3a");
         ModelArtifact.PromoteStationVersion(
             _root, "precipitation", stationA, "v_3a_new", newPhase: "3a");
 
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
-            File.ReadAllText(Path.Combine(_root, "precipitation", ModelArtifact.ManifestFileName)))!;
-
+        var manifest = ReadManifest("precipitation");
         manifest.Stations[stationA].Active.Should().BeEquivalentTo(new[] { "v_3c", "v_3a_new" });
         // Other station untouched.
         manifest.Stations[stationB].Active.Should().BeEquivalentTo(new[] { "v_3a_b" });
@@ -816,124 +662,16 @@ public class ModelArtifactTests : IDisposable
         // without disturbing the 3b champion entry.
         var station = "ea_bellever_dartmoor/window_4h";
 
-        WritePhaseMetadata(Path.Combine(_root, "dry_window", station, "v_3b"),    "v_3b",    "3b");
-        WritePhaseMetadata(Path.Combine(_root, "dry_window", station, "v_3e_a"),  "v_3e_a",  "3e");
+        WritePhaseMetadata(VersionDir("dry_window", station, "v_3b"),   "v_3b",   "3b");
+        WritePhaseMetadata(VersionDir("dry_window", station, "v_3e_a"), "v_3e_a", "3e");
         ModelArtifact.UpdateStationManifest(_root, "dry_window", station, "v_3b");
         ModelArtifact.SetStationActive(_root, "dry_window", station, new[] { "v_3b", "v_3e_a" });
 
-        WritePhaseMetadata(Path.Combine(_root, "dry_window", station, "v_3e_b"), "v_3e_b", "3e");
+        WritePhaseMetadata(VersionDir("dry_window", station, "v_3e_b"), "v_3e_b", "3e");
         ModelArtifact.PromoteStationVersion(
             _root, "dry_window", station, "v_3e_b", newPhase: "3e");
 
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(
-            File.ReadAllText(Path.Combine(_root, "dry_window", ModelArtifact.ManifestFileName)))!;
-
-        manifest.Stations[station].Active.Should().BeEquivalentTo(new[] { "v_3b", "v_3e_b" });
-    }
-
-    /// <summary>
-    /// Concurrent SetActive + AppendVersion must compose: every appended version
-    /// survives, and the final SetActive winner is one of the values written.
-    /// Mirrors the chained train-then-calibrate flow that previously trampled.
-    /// </summary>
-    [Fact]
-    public void Concurrent_SetActive_and_AppendVersion_compose_without_loss()
-    {
-        const int N = 20;
-        ModelArtifact.UpdateManifest(_root, "temperature", "v-base");
-
-        var threads = new List<Thread>();
-        for (int i = 0; i < N; i++)
-        {
-            var idx = i;
-            threads.Add(new Thread(() =>
-            {
-                ModelArtifact.AppendVersion(_root, "temperature", $"v-{idx:D2}");
-                ModelArtifact.SetActive(_root, "temperature", new[] { "v-base", $"v-{idx:D2}" });
-            }));
-        }
-
-        foreach (var t in threads) t.Start();
-        foreach (var t in threads) t.Join();
-
-        var path = Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName);
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(File.ReadAllText(path))!;
-
-        // All N appended versions plus v-base must be present.
-        manifest.Versions.Should().Contain("v-base");
-        for (int i = 0; i < N; i++)
-            manifest.Versions.Should().Contain($"v-{i:D2}");
-
-        // Active is whichever thread wrote last; must contain v-base + exactly one v-{i}.
-        manifest.Active.Should().HaveCount(2);
-        manifest.Active.Should().Contain("v-base");
-        manifest.Active.Should().ContainSingle(v => v.StartsWith("v-", StringComparison.Ordinal) && v != "v-base");
-    }
-
-    // ---- ChampionByLead -------------------------------------------------------
-
-    [Fact]
-    public void ResolveChampionForLead_falls_back_to_champion_version_when_no_per_lead_override()
-    {
-        ModelArtifact.UpdateManifest(_root, "temperature", "v-2b");
-        ModelArtifact.ResolveChampionForLead(_root, "temperature", 24).Should().Be("v-2b");
-        ModelArtifact.ResolveChampionForLead(_root, "temperature", 12).Should().Be("v-2b");
-    }
-
-    [Fact]
-    public void SetChampionForLead_pins_per_lead_override()
-    {
-        ModelArtifact.UpdateManifest(_root, "temperature", "v-2b");
-        ModelArtifact.SetChampionForLead(_root, "temperature", 12, "v-2d");
-
-        ModelArtifact.ResolveChampionForLead(_root, "temperature", 12).Should().Be("v-2d");
-        ModelArtifact.ResolveChampionForLead(_root, "temperature", 24).Should().Be("v-2b");
-
-        var path = Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName);
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(File.ReadAllText(path))!;
-        manifest.ChampionByLead.Should().ContainKey(12).WhoseValue.Should().Be("v-2d");
-    }
-
-    [Fact]
-    public void SetChampionForLead_with_empty_string_clears_the_pin()
-    {
-        ModelArtifact.UpdateManifest(_root, "temperature", "v-2b");
-        ModelArtifact.SetChampionForLead(_root, "temperature", 12, "v-2d");
-        ModelArtifact.SetChampionForLead(_root, "temperature", 12, "");
-
-        ModelArtifact.ResolveChampionForLead(_root, "temperature", 12).Should().Be("v-2b");
-
-        var path = Path.Combine(_root, "temperature", ModelArtifact.ManifestFileName);
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(File.ReadAllText(path))!;
-        manifest.ChampionByLead.Should().NotContainKey(12);
-    }
-
-    // ---- Per-station ChampionByLead (Phase 3d) -------------------------------
-
-    [Fact]
-    public void SetStationChampionForLead_pins_per_lead_override_per_station()
-    {
-        ModelArtifact.UpdateStationManifest(_root, "precipitation", "ea_bellever_dartmoor", "v-3a");
-        ModelArtifact.UpdateStationManifest(_root, "precipitation", "ea_dartmoor_nr_hexworthy", "v-3a-h");
-        ModelArtifact.SetStationChampionForLead(_root, "precipitation", "ea_bellever_dartmoor", 12, "v-3d");
-
-        var path = Path.Combine(_root, "precipitation", ModelArtifact.ManifestFileName);
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(File.ReadAllText(path))!;
-        manifest.Stations["ea_bellever_dartmoor"].ChampionByLead.Should().ContainKey(12)
-            .WhoseValue.Should().Be("v-3d");
-        // The other station's per-lead pins are independent.
-        manifest.Stations["ea_dartmoor_nr_hexworthy"].ChampionByLead.Should().BeEmpty();
-    }
-
-    [Fact]
-    public void SetStationChampionForLead_with_empty_string_clears_the_pin()
-    {
-        ModelArtifact.UpdateStationManifest(_root, "precipitation", "ea_bellever_dartmoor", "v-3a");
-        ModelArtifact.SetStationChampionForLead(_root, "precipitation", "ea_bellever_dartmoor", 12, "v-3d");
-        ModelArtifact.SetStationChampionForLead(_root, "precipitation", "ea_bellever_dartmoor", 12, "");
-
-        var path = Path.Combine(_root, "precipitation", ModelArtifact.ManifestFileName);
-        var manifest = JsonSerializer.Deserialize<ModelArtifact.Manifest>(File.ReadAllText(path))!;
-        manifest.Stations["ea_bellever_dartmoor"].ChampionByLead.Should().NotContainKey(12);
+        ReadManifest("dry_window").Stations[station].Active
+            .Should().BeEquivalentTo(new[] { "v_3b", "v_3e_b" });
     }
 }

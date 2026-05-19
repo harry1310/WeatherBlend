@@ -31,12 +31,10 @@ public static class ElementTrainerHarness
         // Configured location whose NWP fed the training data. Pinned at
         // train time so predict can refuse to score the bundle against any
         // other location's NWP (Phase A multi-location safety, 2026-05-12).
-        // Element blenders today are bonehill-only — Wind/Cloud/Humidity/
-        // Radiation pass _cfg.Location.Name. Defaulted to "" so the
-        // existing 4 blender call sites still compile during the rollout;
-        // the harness writes empty into LocationName which the assertion
-        // step (Task #19) treats as "skip with warning".
-        string LocationName = "");
+        // Load-bearing since P3: it is also the element manifest's station
+        // key — bundles live under data/models/{target}/{LocationName}/v{ts}/.
+        // Element blenders pass _cfg.Location.Name; required, no default.
+        string LocationName);
 
     public static async Task<int> RunAsync(
         ILogger log,
@@ -46,7 +44,14 @@ public static class ElementTrainerHarness
     {
         var now = DateTime.UtcNow;
         var modelsRoot = inputs.ModelsRoot;
-        var versionDir = ModelArtifact.BuildVersionDir(modelsRoot, inputs.Target.ModelDirName, now);
+        if (string.IsNullOrWhiteSpace(inputs.LocationName))
+            throw new InvalidOperationException(
+                $"Element blender ({inputs.Target.CliName}) has no LocationName — it is the " +
+                "manifest station key and the per-location bundle directory; cannot train without it.");
+        // Station-keyed (location-keyed) layout: every target's bundles live
+        // under data/models/{target}/{location}/v{ts}/. No flat layout exists.
+        var versionDir = ModelArtifact.BuildStationVersionDir(
+            modelsRoot, inputs.Target.ModelDirName, inputs.LocationName, now);
         var versionName = Path.GetFileName(versionDir);
 
         log.LogInformation(
@@ -186,13 +191,15 @@ public static class ElementTrainerHarness
                 inputs.Target.CliName, versionDir);
             return 4;
         }
-        // Promote: replaces any prior entry with the same Phase in Active.
-        // Element targets currently have a single phase each (lean-wind /
-        // lean-humidity / lean-shortwave-radiation / lean-cloud-cover) so this
-        // is functionally equivalent to UpdateManifest today, but the promote
-        // helper future-proofs against a challenger ever being added.
-        ModelArtifact.PromoteVersion(
-            modelsRoot, inputs.Target.ModelDirName, versionName, newPhase: inputs.Target.PhaseTag);
+        // Promote: replaces any prior entry with the same Phase in this
+        // location's station entry of Active. Element targets currently have a
+        // single phase each (lean-wind / lean-humidity / lean-shortwave-
+        // radiation / lean-cloud-cover) so this is functionally equivalent to
+        // a single-version write today, but the promote helper future-proofs
+        // against a challenger ever being added.
+        ModelArtifact.PromoteStationVersion(
+            modelsRoot, inputs.Target.ModelDirName, inputs.LocationName,
+            versionName, newPhase: inputs.Target.PhaseTag);
 
         log.LogInformation("Element ({Target}) artefacts → {Dir}", inputs.Target.CliName, versionDir);
         log.LogInformation(

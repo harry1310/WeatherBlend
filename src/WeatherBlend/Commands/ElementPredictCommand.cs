@@ -18,7 +18,7 @@ namespace WeatherBlend.Commands;
 /// (wind / humidity / shortwave-radiation / cloud-cover) at the standard
 /// {24, 48, 72}h horizons. Champion/challenger aware: when the user passes
 /// <c>--model-version current</c> (the default) the command iterates every
-/// version in <c>Manifest.Active</c> for the chosen element and emits a
+/// version in the active location's <c>Active</c> list and emits a
 /// parquet per version.
 ///
 /// Per-element pipelines do their own SQL pivot + row composition (each
@@ -66,7 +66,8 @@ public sealed class ElementPredictCommand
         }
 
         var modelsRoot = _cfg.Storage.ModelsPath;
-        var versions = ResolveRequestedVersions(modelsRoot, target.ModelDirName, modelVersion);
+        var versions = ResolveRequestedVersions(
+            modelsRoot, target.ModelDirName, _activeLocation.Name, modelVersion);
         if (versions.Count == 0)
         {
             _log.LogError("No versions to predict for {Target} — manifest has no Active list.", target.CliName);
@@ -91,7 +92,8 @@ public sealed class ElementPredictCommand
             ModelArtifact.TrainingMetadata metadata;
             try
             {
-                versionDir = ModelArtifact.ResolveVersionDir(modelsRoot, target.ModelDirName, version);
+                versionDir = ModelArtifact.ResolveStationVersionDir(
+                    modelsRoot, target.ModelDirName, _activeLocation.Name, version);
                 metadata = ModelArtifact.LoadTrainingMetadata(versionDir);
             }
             catch (Exception ex)
@@ -160,11 +162,12 @@ public sealed class ElementPredictCommand
         return failures == 0 ? 0 : 4;
     }
 
-    private List<string> ResolveRequestedVersions(string modelsRoot, string modelDirName, string modelVersion)
+    private List<string> ResolveRequestedVersions(
+        string modelsRoot, string modelDirName, string station, string modelVersion)
     {
         var v = modelVersion?.ToLowerInvariant() ?? "current";
         if (v is "current" or "all")
-            return ModelArtifact.ResolveActive(modelsRoot, modelDirName).ToList();
+            return ModelArtifact.ResolveStationActive(modelsRoot, modelDirName, station).ToList();
         return new List<string> { modelVersion! };
     }
 }

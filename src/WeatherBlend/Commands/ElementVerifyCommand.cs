@@ -67,7 +67,8 @@ public sealed class ElementVerifyCommand
         var truth = _truth.GetEra5Hourly(windowStart, windowEnd, ct, truthCol);
         _log.LogInformation("Loaded {N} ERA5 truth points (column={Col}).", truth.Count, truthCol);
 
-        var metadata = _metadata.GetTrainingMetadataForVersions(target.ModelDirName,
+        var metadata = _metadata.GetTrainingMetadataForVersions(
+            target.ModelDirName, _cfg.Location.Name,
             predictions.Select(p => p.ModelVersion));
         _log.LogInformation("Loaded metadata for {N} versions.", metadata.Count);
 

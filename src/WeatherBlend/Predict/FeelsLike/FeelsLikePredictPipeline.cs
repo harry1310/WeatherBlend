@@ -63,10 +63,10 @@ public static class FeelsLikePredictPipeline
         // locationName here is the FeelsLike target location, which doubles as
         // the temperature manifest station key.
         var temp = await LoadTemperatureLeanAsync(log, predictionsRoot, modelsRoot, anchor, locationName, ct);
-        var hum  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.Humidity,           anchor, ct);
-        var wnd  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.Wind,               anchor, ct);
-        var rad  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.ShortwaveRadiation, anchor, ct);
-        var cld  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.CloudCover,         anchor, ct);
+        var hum  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.Humidity,           anchor, locationName, ct);
+        var wnd  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.Wind,               anchor, locationName, ct);
+        var rad  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.ShortwaveRadiation, anchor, locationName, ct);
+        var cld  = await LoadElementAsync(log, predictionsRoot, modelsRoot, ElementTargets.CloudCover,         anchor, locationName, ct);
 
         if (temp.Rows.Count == 0 || hum.Rows.Count == 0 || wnd.Rows.Count == 0 ||
             rad.Rows.Count == 0 || cld.Rows.Count == 0)
@@ -141,19 +141,10 @@ public static class FeelsLikePredictPipeline
     private record InputStream(string Version, Dictionary<(int Lead, DateTime Valid), Sample> Rows);
     private record Sample(double Value, DateTime PredictionMadeAt);
 
-    private static string PickActiveVersion(string modelsRoot, string slug, ILogger log)
-    {
-        var active = ModelArtifact.ResolveActive(modelsRoot, slug);
-        if (active.Count == 0)
-            throw new InvalidOperationException($"No Active version for {slug}; train it first.");
-        if (active.Count > 1)
-            log.LogInformation("  {Slug}: {N} Active versions, using first ({V}).", slug, active.Count, active[0]);
-        return active[0];
-    }
-
     /// <summary>
-    /// Per-station Active version pick — used by temperature since it
-    /// migrated to a per-location manifest layout 2026-05-14. FeelsLike
+    /// Per-station Active version pick. Every target manifest is
+    /// location-keyed; temperature and the element_* blenders alike resolve
+    /// their Active version through the location/station key. FeelsLike
     /// operates on the primary location only today; revisit when a
     /// Membury FeelsLike page is wired up.
     /// </summary>
@@ -193,9 +184,9 @@ public static class FeelsLikePredictPipeline
 
     private static async Task<InputStream> LoadElementAsync(
         ILogger log, string predictionsRoot, string modelsRoot, ElementTarget target,
-        DateTime anchor, CancellationToken ct)
+        DateTime anchor, string locationName, CancellationToken ct)
     {
-        var version = PickActiveVersion(modelsRoot, target.ModelDirName, log);
+        var version = PickActiveStationVersion(modelsRoot, target.ModelDirName, locationName, log);
         var path = Path.Combine(predictionsRoot, target.ModelDirName,
             $"model_version={version}", $"date={anchor:yyyy-MM-dd}", "predictions.parquet");
         if (!File.Exists(path))
