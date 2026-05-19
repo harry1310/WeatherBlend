@@ -1,0 +1,45 @@
+name: deploy-scheduler-worker
+
+# Deploys the Cloudflare scheduler-worker (cloudflare/scheduler-worker/)
+# whenever its source changes on main, plus on manual dispatch. Replaces the
+# previous laptop-side `wrangler deploy` — keeps the live worker in lockstep
+# with the committed src/index.ts so a code change can't sit undeployed
+# (which is exactly what happened to the 2026-05-18 cancelled-alerting fix).
+#
+# `wrangler deploy` redeploys the worker CODE + the wrangler.toml cron
+# triggers only. The worker's runtime secrets (GH App creds, R2 keys,
+# GH_WEBHOOK_SECRET) live in Cloudflare's secret store and are untouched by
+# a deploy.
+#
+# Auth: the CLOUDFLARE_API_TOKEN secret must carry `Workers Scripts:Edit`.
+# The same secret already does `pages deploy` in predict-and-render, but
+# Pages-edit and Workers-edit are distinct Cloudflare token scopes — if that
+# token is Pages-only this job fails with auth error 10000 and the token
+# needs widening (Cloudflare dashboard → API Tokens).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cloudflare/scheduler-worker/**'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install deps + deploy worker
+        working-directory: cloudflare/scheduler-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npm ci
+          npx wrangler deploy
