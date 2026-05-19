@@ -1,9 +1,16 @@
 name: Run all predict targets
 description: |
-  Runs every predict target in dependency order. Single source of truth so
-  predict.yml (manual / retroactive) and predict-and-render.yml (scheduled)
-  can never drift on which targets run, in what order, or which exit codes
-  are treated as soft-skip vs hard-fail.
+  Runs every predict target in dependency order across every configured
+  location. Single source of truth so predict.yml (manual / retroactive)
+  and predict-and-render.yml (scheduled) can never drift on which targets
+  run, in what order, or which exit codes are treated as soft-skip vs
+  hard-fail.
+
+  Phase C commit 3c: the location list is derived from `_cfg.Locations`
+  via `dotnet run -- list-locations`, NOT hardcoded in this YAML. Adding
+  a new location = edit `config.yaml` (and `phases.yaml`'s `locations:`
+  filter where you want to scope phases per loc) and this composite picks
+  it up on the next run. No YAML edit needed.
 
   Dependency order matters:
     temp / precip / dry-window / elements run independently from forecasts.
@@ -11,7 +18,7 @@ description: |
     start-hour joins precip hourly + dry-window daily (same-anchor read).
 
   Soft-skip exit codes per target are documented inline below — typically:
-    2 = no model artefact yet (fresh deploy)
+    2 = no model artefact yet (fresh deploy / location-not-trained for this target)
     3 = no forecast rows for targets / no composites produced
     4 = element-specific partial coverage
 
@@ -31,143 +38,161 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Predict temperature (Bonehill, primary location)
-      shell: bash
-      # Per-lead temperature blender for the primary location. --location
-      # filters TempPredictCommand to the Bonehill entry in the temperature
-      # manifest's Stations dict (2026-05-14 layout). Same soft-skip codes
-      # as precipitation (2 = no blender / fresh deploy; 3 = no forecast
-      # rows) plus 4 = some versions wrote, others produced no predictions.
-      # Code 4 is the common case when a 2d exact-runtime bundle is in
-      # Active but the matching cycle isn't in the live forecast tree
-      # (s3-collect lagged, or the bundle was trained on a cycle that's
-      # since rotated out) — the lean/rich champion lines still publish,
-      # so the pipeline keeps moving and the site stays current.
-      run: |
-        FOR_DATE="${{ inputs.for_date }}"
-        code=0
-        if [ -n "$FOR_DATE" ]; then
-          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature --location bonehill_rocks --for-date "$FOR_DATE" || code=$?
-        else
-          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature --location bonehill_rocks || code=$?
-        fi
-        if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ] && [ "$code" != "4" ]; then exit "$code"; fi
+    # ----------------------------------------------------------------------
+    # Resolve the location list once. Each subsequent step computes its own
+    # local copy (composite-action shells don't share env reliably across
+    # `run:` blocks across runners) — the dotnet call is ~1s with --no-build
+    # so the duplication is cheap. Soft-fails to "bonehill_rocks" if the
+    # list-locations command itself errors (shouldn't, but better than
+    # blocking the whole predict if something is wrong with the helper).
+    # ----------------------------------------------------------------------
 
-    - name: Predict temperature (Membury)
+    - name: Predict temperature (all configured locations)
       shell: bash
-      # 2b lean + 2c rich for Membury, trained 2026-05-14. 2d is not on
-      # the Membury roadmap yet (needs S3 archive backfill for Membury's
-      # grid cell first). Same soft-skip semantics as the Bonehill step
-      # above; Membury verify + render are deferred (predict only for
-      # now per Harry's 2026-05-15 scope).
+      # Per-lead temperature blender, looped over every configured location.
+      # `--location` filters TempPredictCommand to that location's entry in
+      # the temperature manifest's Stations dict (2026-05-14 layout).
+      # Soft-skip codes:
+      #   2 = no blender / fresh deploy / location-not-trained
+      #   3 = no forecast rows
+      #   4 = some versions wrote, others produced no predictions (typical
+      #       when a 2d exact-runtime bundle is Active but the matching
+      #       cycle isn't in the live forecast tree — lean/rich champion
+      #       lines still publish so the pipeline keeps moving)
       run: |
         FOR_DATE="${{ inputs.for_date }}"
-        code=0
-        if [ -n "$FOR_DATE" ]; then
-          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature --location membury_devon --for-date "$FOR_DATE" || code=$?
-        else
-          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature --location membury_devon || code=$?
-        fi
-        if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ] && [ "$code" != "4" ]; then exit "$code"; fi
-
-    - name: Predict precipitation (Bonehill, primary location)
-      shell: bash
-      # Per-station P(wet) for the primary location. Soft-skip 2 (no precip
-      # blender yet) / 3 (no forecast rows for targets) — neither fatal for
-      # the overall predict.
-      run: |
-        FOR_DATE="${{ inputs.for_date }}"
-        code=0
-        if [ -n "$FOR_DATE" ]; then
-          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target precipitation --truth-station all --for-date "$FOR_DATE" || code=$?
-        else
-          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target precipitation --truth-station all || code=$?
-        fi
-        if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then exit "$code"; fi
-
-    - name: Predict precipitation (Membury)
-      shell: bash
-      # Per-station P(wet) for Membury (3 EA gauges). --location filters
-      # stationsToRun to only Membury slugs and reads forecasts from the
-      # Membury tree — Bonehill stations are scored separately above.
-      # Same soft-skip semantics. Phase B of the Membury ship plan
-      # (2026-05-11): predictions land in the standard tree under
-      # data/predictions/precipitation/{station}/...; verify picks them
-      # up automatically (already location-agnostic).
-      run: |
-        FOR_DATE="${{ inputs.for_date }}"
-        code=0
-        if [ -n "$FOR_DATE" ]; then
-          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target precipitation --location membury_devon --truth-station all --for-date "$FOR_DATE" || code=$?
-        else
-          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target precipitation --location membury_devon --truth-station all || code=$?
-        fi
-        if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then exit "$code"; fi
-
-    - name: Predict dry-window
-      shell: bash
-      # P(∃ dry window ≥ N hours in target day) per (station, window). Same
-      # soft-skip semantics as precipitation.
-      run: |
-        FOR_DATE="${{ inputs.for_date }}"
-        code=0
-        if [ -n "$FOR_DATE" ]; then
-          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target dry-window --truth-station all --window all --for-date "$FOR_DATE" || code=$?
-        else
-          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target dry-window --truth-station all --window all || code=$?
-        fi
-        if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then exit "$code"; fi
-
-    - name: Predict element blenders (wind / humidity / shortwave-radiation / cloud-cover)
-      shell: bash
-      # Per-element lean blenders. Radiation is currently expected to return
-      # 3 because live forecasts don't include SW columns (known live-
-      # collector gap). Humidity + cloud may return partial coverage at
-      # 48/72h when MF is missing. Soft-skip 2/3/4.
-      run: |
-        FOR_DATE="${{ inputs.for_date }}"
-        for tgt in wind humidity shortwave-radiation cloud-cover; do
+        LOCS=$(dotnet run --project src/WeatherBlend --no-build -c Release -- list-locations)
+        for loc in $LOCS; do
+          echo "::group::predict temperature ($loc)"
           code=0
           if [ -n "$FOR_DATE" ]; then
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target "$tgt" --for-date "$FOR_DATE" || code=$?
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature --location "$loc" --for-date "$FOR_DATE" || code=$?
           else
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target "$tgt" || code=$?
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target temperature --location "$loc" || code=$?
           fi
+          echo "::endgroup::"
           if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ] && [ "$code" != "4" ]; then
-            echo "predict $tgt failed with exit $code"; exit "$code"
+            echo "predict temperature ($loc) failed with exit $code"; exit "$code"
           fi
         done
 
-    - name: Predict feels-like (joins temperature + element outputs for the same anchor)
+    - name: Predict precipitation (all configured locations)
+      shell: bash
+      # Per-station P(wet) per location. `--location` filters stationsToRun
+      # to that location's rainfall slugs + reads forecasts from that
+      # location's tree. Predictions land in the standard tree under
+      # data/predictions/precipitation/{station}/...; verify picks them
+      # up automatically (already location-agnostic via station partitioning).
+      # Soft-skip 2 / 3 — neither fatal.
+      run: |
+        FOR_DATE="${{ inputs.for_date }}"
+        LOCS=$(dotnet run --project src/WeatherBlend --no-build -c Release -- list-locations)
+        for loc in $LOCS; do
+          echo "::group::predict precipitation ($loc)"
+          code=0
+          if [ -n "$FOR_DATE" ]; then
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target precipitation --location "$loc" --truth-station all --for-date "$FOR_DATE" || code=$?
+          else
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target precipitation --location "$loc" --truth-station all || code=$?
+          fi
+          echo "::endgroup::"
+          if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then
+            echo "predict precipitation ($loc) failed with exit $code"; exit "$code"
+          fi
+        done
+
+    - name: Predict dry-window (all configured locations)
+      shell: bash
+      # P(∃ dry window ≥ N hours in target day) per (station, window). Looped
+      # per location. Soft-skip 2 / 3 — Membury dry-window isn't trained yet
+      # (2026-05-19) so this returns 2 cleanly until those bundles ship.
+      run: |
+        FOR_DATE="${{ inputs.for_date }}"
+        LOCS=$(dotnet run --project src/WeatherBlend --no-build -c Release -- list-locations)
+        for loc in $LOCS; do
+          echo "::group::predict dry-window ($loc)"
+          code=0
+          if [ -n "$FOR_DATE" ]; then
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target dry-window --location "$loc" --truth-station all --window all --for-date "$FOR_DATE" || code=$?
+          else
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target dry-window --location "$loc" --truth-station all --window all || code=$?
+          fi
+          echo "::endgroup::"
+          if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then
+            echo "predict dry-window ($loc) failed with exit $code"; exit "$code"
+          fi
+        done
+
+    - name: Predict element blenders (wind / humidity / shortwave-radiation / cloud-cover, all configured locations)
+      shell: bash
+      # Per-(location, element) lean blenders. Radiation is currently expected
+      # to return 3 because live forecasts don't include SW columns (known
+      # live-collector gap). Humidity + cloud may return partial coverage at
+      # 48/72h when MF is missing. Membury element blenders aren't trained
+      # yet so this returns 2 cleanly per element until those bundles ship.
+      # Soft-skip 2/3/4.
+      run: |
+        FOR_DATE="${{ inputs.for_date }}"
+        LOCS=$(dotnet run --project src/WeatherBlend --no-build -c Release -- list-locations)
+        for loc in $LOCS; do
+          for tgt in wind humidity shortwave-radiation cloud-cover; do
+            echo "::group::predict $tgt ($loc)"
+            code=0
+            if [ -n "$FOR_DATE" ]; then
+              dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target "$tgt" --location "$loc" --for-date "$FOR_DATE" || code=$?
+            else
+              dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target "$tgt" --location "$loc" || code=$?
+            fi
+            echo "::endgroup::"
+            if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ] && [ "$code" != "4" ]; then
+              echo "predict $tgt ($loc) failed with exit $code"; exit "$code"
+            fi
+          done
+        done
+
+    - name: Predict feels-like (joins temperature + element outputs, all configured locations)
       shell: bash
       # MUST run AFTER temp + elements — it's a join, not an independent
       # predict. Exit 3 = at least one input missing for the anchor; non-fatal.
+      # Looped per location. Membury feels-like depends on Membury elements
+      # being trained, so it returns 3 cleanly until those ship.
       run: |
         FOR_DATE="${{ inputs.for_date }}"
-        code=0
-        if [ -n "$FOR_DATE" ]; then
-          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target feels-like --for-date "$FOR_DATE" || code=$?
-        else
-          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target feels-like || code=$?
-        fi
-        if [ "$code" != "0" ] && [ "$code" != "3" ]; then
-          echo "predict feels-like failed with exit $code"; exit "$code"
-        fi
+        LOCS=$(dotnet run --project src/WeatherBlend --no-build -c Release -- list-locations)
+        for loc in $LOCS; do
+          echo "::group::predict feels-like ($loc)"
+          code=0
+          if [ -n "$FOR_DATE" ]; then
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target feels-like --location "$loc" --for-date "$FOR_DATE" || code=$?
+          else
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target feels-like --location "$loc" || code=$?
+          fi
+          echo "::endgroup::"
+          if [ "$code" != "0" ] && [ "$code" != "3" ]; then
+            echo "predict feels-like ($loc) failed with exit $code"; exit "$code"
+          fi
+        done
 
-    - name: Predict dry-window start-hour curves (joins precip hourly + dry-window daily)
+    - name: Predict dry-window start-hour curves (joins precip hourly + dry-window daily, all configured locations)
       shell: bash
       # MUST run AFTER precip + dry-window — joins their outputs to derive a
       # per-start-hour conditional + calibrated curve. Exit 3 = no composites
       # produced (typically every input incomplete on this anchor); non-fatal.
-      # Was previously missing from predict.yml (drift bug fixed 2026-05-04).
+      # Looped per location. Membury start-hour depends on Membury dry-window
+      # being trained, so it returns 3 cleanly until those ship.
       run: |
         FOR_DATE="${{ inputs.for_date }}"
-        code=0
-        if [ -n "$FOR_DATE" ]; then
-          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target start-hour --for-date "$FOR_DATE" || code=$?
-        else
-          dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target start-hour || code=$?
-        fi
-        if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then
-          echo "predict start-hour failed with exit $code"; exit "$code"
-        fi
+        LOCS=$(dotnet run --project src/WeatherBlend --no-build -c Release -- list-locations)
+        for loc in $LOCS; do
+          echo "::group::predict start-hour ($loc)"
+          code=0
+          if [ -n "$FOR_DATE" ]; then
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target start-hour --location "$loc" --for-date "$FOR_DATE" || code=$?
+          else
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target start-hour --location "$loc" || code=$?
+          fi
+          echo "::endgroup::"
+          if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then
+            echo "predict start-hour ($loc) failed with exit $code"; exit "$code"
+          fi
+        done

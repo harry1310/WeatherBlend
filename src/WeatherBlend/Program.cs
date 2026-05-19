@@ -544,6 +544,22 @@ public static class Program
         });
         root.AddCommand(status);
 
+        // Phase C commit 3c: single source of truth for "which locations does
+        // this codebase target?". Workflow bash loops consume the stdout line-
+        // by-line — predict-all and verify both honour _cfg.Locations now, so
+        // adding a third location is a config.yaml edit, not a YAML edit.
+        var listLocations = new Command("list-locations",
+            "Print configured location slugs, one per line (single source of truth for CI workflow loops).");
+        listLocations.SetHandler(ctx =>
+        {
+            var cfg = host.Services.GetRequiredService<AppConfig>();
+            foreach (var loc in cfg.Locations)
+                Console.WriteLine(loc.Name);
+            ctx.ExitCode = 0;
+            return Task.CompletedTask;
+        });
+        root.AddCommand(listLocations);
+
         var targetOpt = new Option<string>(
             name: "--target",
             description: "Target variable: temperature | precipitation | dry-window | wind | humidity | shortwave-radiation | cloud-cover",

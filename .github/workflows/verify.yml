@@ -174,15 +174,15 @@ jobs:
         # blender outputs. No drift threshold — the curve is a derivation, not
         # a model, so the negative-skill warning in the report itself is the
         # signal. 30-day window matches the dry-window verify default.
-        # Phase C commit 3b: loops every configured location; non-primary
-        # locations get a `{location}` segment in the report filename so
-        # Bonehill and Membury don't overwrite each other.
+        # Phase C commit 3c: location list comes from `list-locations` so
+        # adding a third location is a config.yaml edit, not a YAML edit.
         id: verify_start_hour_run
         run: |
           AS_OF="${{ github.event.inputs.as_of }}"
           WINDOW="${{ github.event.inputs.window_days }}"
+          LOCS=$(dotnet run --project src/WeatherBlend --no-build -c Release -- list-locations)
           fail=0
-          for loc in bonehill_rocks membury_devon; do
+          for loc in $LOCS; do
             ARGS="--target start-hour --location $loc"
             if [ -n "$AS_OF" ]; then ARGS="$ARGS --as-of $AS_OF"; fi
             if [ -n "$WINDOW" ]; then ARGS="$ARGS --window-days $WINDOW"; fi
@@ -201,16 +201,17 @@ jobs:
         # One verify step per (location, element). Independent exit codes —
         # drift on any element surfaces in the job summary. Empty windows
         # (no predictions yet — typical for Membury element blenders that
-        # aren't trained yet) exit 0. Phase C commit 3b: loops locations;
-        # non-primary reports get a `{location}` segment in the filename.
+        # aren't trained yet) exit 0. Phase C commit 3c: location list from
+        # `list-locations` — single source of truth, `_cfg.Locations`.
         id: verify_elements_run
         run: |
           AS_OF="${{ github.event.inputs.as_of }}"
           WINDOW="${{ github.event.inputs.window_days }}"
           DRIFT="${{ github.event.inputs.drift }}"
+          LOCS=$(dotnet run --project src/WeatherBlend --no-build -c Release -- list-locations)
           drift=0
           fail=0
-          for loc in bonehill_rocks membury_devon; do
+          for loc in $LOCS; do
             for tgt in wind humidity shortwave-radiation cloud-cover; do
               ARGS="--target $tgt --location $loc"
               if [ -n "$AS_OF" ]; then ARGS="$ARGS --as-of $AS_OF"; fi
