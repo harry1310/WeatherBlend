@@ -50,20 +50,9 @@ public sealed class DryWindowPredictCommand
 
     public async Task<int> RunAsync(string stationArg, string windowArg, string modelVersion, DateOnly? forDate, string? locationOverride, CancellationToken ct)
     {
-        _activeLocation = _cfg.Location;
-        if (!string.IsNullOrWhiteSpace(locationOverride))
-        {
-            var match = _cfg.Locations.FirstOrDefault(l =>
-                l.Name.Equals(locationOverride, StringComparison.OrdinalIgnoreCase));
-            if (match is null)
-            {
-                _log.LogError("Location '{Name}' not found in config.yaml's `locations:` list. Available: [{All}]",
-                    locationOverride, string.Join(", ", _cfg.Locations.Select(l => l.Name)));
-                return 2;
-            }
-            _activeLocation = match;
-            _log.LogInformation("Predict location override → '{Loc}'.", _activeLocation.Name);
-        }
+        var (resolvedLocation, locRc) = PredictLocationResolver.Resolve(_cfg, locationOverride, _log);
+        if (resolvedLocation is null) return locRc;
+        _activeLocation = resolvedLocation;
 
         var modelsRoot = _cfg.Storage.ModelsPath;
         var manifestPath = Path.Combine(modelsRoot, "dry_window", ModelArtifact.ManifestFileName);
