@@ -59,16 +59,10 @@ public sealed class StartHourPredictCommand
     private readonly ILogger<StartHourPredictCommand> _log;
     private readonly AppConfig _cfg;
 
-    // --location resolves into _activeLocation at RunAsync entry; the
-    // start-hour rows pin LocationName from it. Defaults to the primary
-    // location (Phase B, commit 4).
-    private Config.LocationConfig _activeLocation;
-
     public StartHourPredictCommand(ILogger<StartHourPredictCommand> log, AppConfig cfg)
     {
         _log = log;
         _cfg = cfg;
-        _activeLocation = cfg.Location;
     }
 
     public Task<int> RunAsync(DateOnly? forDate, CancellationToken ct)
@@ -76,9 +70,8 @@ public sealed class StartHourPredictCommand
 
     public async Task<int> RunAsync(DateOnly? forDate, string? locationOverride, CancellationToken ct)
     {
-        var (resolvedLocation, locRc) = PredictLocationResolver.Resolve(_cfg, locationOverride, _log);
-        if (resolvedLocation is null) return locRc;
-        _activeLocation = resolvedLocation;
+        var (location, locRc) = PredictLocationResolver.Resolve(_cfg, locationOverride, _log);
+        if (location is null) return locRc;
 
         var modelsRoot = _cfg.Storage.ModelsPath;
         var predictionMadeAt = DateTime.UtcNow;
@@ -116,7 +109,7 @@ public sealed class StartHourPredictCommand
         foreach (var (outVersion, mcPhase) in sources)
             anyProduced |= await ProcessSourceAsync(
                 precipManifest, dryManifest, anchor, anchorDate, predictionMadeAt,
-                daytime, mcPhase, outVersion, ct);
+                daytime, mcPhase, outVersion, location, ct);
         return anyProduced ? 0 : 3;
     }
 
@@ -134,7 +127,9 @@ public sealed class StartHourPredictCommand
         DateTime anchor, DateTime anchorDate, DateTime predictionMadeAt,
         DaytimeWindow daytime,
         string mcPhase,
-        string outModelVersion, CancellationToken ct)
+        string outModelVersion,
+        LocationConfig location,
+        CancellationToken ct)
     {
         var rng = new Random(DefaultSeed);
 
@@ -256,7 +251,7 @@ public sealed class StartHourPredictCommand
                 {
                     bucket.Add(new StartHourPredictionRow
                     {
-                        LocationName = _activeLocation.Name,
+                        LocationName = location.Name,
                         TruthStation = station,
                         WindowHours = windowHours,
                         ModelVersion = outModelVersion,

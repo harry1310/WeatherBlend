@@ -32,17 +32,10 @@ public sealed class DryWindowPredictCommand
     private readonly ILogger<DryWindowPredictCommand> _log;
     private readonly AppConfig _cfg;
 
-    // --location resolves into _activeLocation at RunAsync entry; every
-    // forecast read + LocationName pin downstream goes through this field.
-    // Defaults to the primary location so a no-flag predict is unchanged
-    // (Phase B, commit 4).
-    private Config.LocationConfig _activeLocation;
-
     public DryWindowPredictCommand(ILogger<DryWindowPredictCommand> log, AppConfig cfg)
     {
         _log = log;
         _cfg = cfg;
-        _activeLocation = cfg.Location;
     }
 
     public Task<int> RunAsync(string stationArg, string windowArg, string modelVersion, DateOnly? forDate, CancellationToken ct)
@@ -50,9 +43,8 @@ public sealed class DryWindowPredictCommand
 
     public async Task<int> RunAsync(string stationArg, string windowArg, string modelVersion, DateOnly? forDate, string? locationOverride, CancellationToken ct)
     {
-        var (resolvedLocation, locRc) = PredictLocationResolver.Resolve(_cfg, locationOverride, _log);
-        if (resolvedLocation is null) return locRc;
-        _activeLocation = resolvedLocation;
+        var (location, locRc) = PredictLocationResolver.Resolve(_cfg, locationOverride, _log);
+        if (location is null) return locRc;
 
         var modelsRoot = _cfg.Storage.ModelsPath;
         var manifestPath = Path.Combine(modelsRoot, "dry_window", ModelArtifact.ManifestFileName);
@@ -91,7 +83,7 @@ public sealed class DryWindowPredictCommand
         var earliest = targets.Min(t => t.Date);
         var latest = targets.Max(t => t.Date).AddHours(23);
         var perDayPerModel = QueryForecastDaysByTarget(
-            _cfg.Storage.ForecastsPath, _activeLocation.Name, earliest, latest, anchor, ct);
+            _cfg.Storage.ForecastsPath, location.Name, earliest, latest, anchor, ct);
 
         var anyWritten = false;
         foreach (var (compositeKey, station) in entries)
@@ -122,7 +114,7 @@ public sealed class DryWindowPredictCommand
                 ct.ThrowIfCancellationRequested();
                 if (await RunCompositeVersionAsync(
                     modelsRoot, compositeKey, stationSlug, windowHours, versionName,
-                    targets, perDayPerModel, anchorDate, predictionMadeAt, ct))
+                    targets, perDayPerModel, anchorDate, predictionMadeAt, location, ct))
                 {
                     anyWritten = true;
                 }
@@ -137,7 +129,8 @@ public sealed class DryWindowPredictCommand
         string versionName,
         IReadOnlyList<(int Lead, DateTime Date)> targets,
         IReadOnlyDictionary<DateOnly, List<DryWindowFeatureBuilder.ForecastDay?>> perDayPerModel,
-        DateTime anchorDate, DateTime predictionMadeAt, CancellationToken ct)
+        DateTime anchorDate, DateTime predictionMadeAt,
+        LocationConfig location, CancellationToken ct)
     {
         var versionDir = Path.Combine(modelsRoot, "dry_window", compositeKey, versionName);
         if (!Directory.Exists(versionDir))
@@ -148,11 +141,11 @@ public sealed class DryWindowPredictCommand
         var metadata = ModelArtifact.LoadTrainingMetadata(versionDir);
         // Phase A multi-location safety: metadata.LocationName is
         // [JsonRequired] so a missing field already threw at deserialise.
-        if (!string.Equals(metadata.LocationName, _activeLocation.Name, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(metadata.LocationName, location.Name, StringComparison.OrdinalIgnoreCase))
         {
             _log.LogError(
                 "{Key} bundle {V} was trained on location '{Trained}' but predict is using NWP from '{Active}' — refusing to score.",
-                compositeKey, versionName, metadata.LocationName, _activeLocation.Name);
+                compositeKey, versionName, metadata.LocationName, location.Name);
             return false;
         }
         var climPath = Path.Combine(versionDir, "dry_window_climatology.json");
@@ -196,7 +189,7 @@ public sealed class DryWindowPredictCommand
         {
             return await RunPhase3gAsync(
                 versionDir, stationSlug, windowHours, versionName, metadata, climatology,
-                targets, anchorDate, predictionMadeAt, ct);
+                targets, anchorDate, predictionMadeAt, location, ct);
         }
 
         // Phase 3j — Gaussian copula MC sibling of 3g. Same 3a-live-q input
@@ -205,7 +198,7 @@ public sealed class DryWindowPredictCommand
         {
             return await RunPhase3jAsync(
                 versionDir, stationSlug, windowHours, versionName, metadata, climatology,
-                targets, anchorDate, predictionMadeAt, ct);
+                targets, anchorDate, predictionMadeAt, location, ct);
         }
 
         // Phase 3n — regime-conditioned copula MC. Same q-vector source as 3j,
@@ -215,7 +208,7 @@ public sealed class DryWindowPredictCommand
         {
             return await RunPhase3nAsync(
                 versionDir, stationSlug, windowHours, versionName, metadata, climatology,
-                targets, anchorDate, predictionMadeAt, ct);
+                targets, anchorDate, predictionMadeAt, location, ct);
         }
 
         // Phase 3s — iid MC sibling of 3g, marginals from the 3e MLP
@@ -224,7 +217,7 @@ public sealed class DryWindowPredictCommand
         {
             return await RunPhase3sAsync(
                 versionDir, stationSlug, windowHours, versionName, metadata, climatology,
-                targets, anchorDate, predictionMadeAt, ct);
+                targets, anchorDate, predictionMadeAt, location, ct);
         }
 
         // Per-lead BlenderSpec lives in feature_schema.json.
@@ -308,7 +301,7 @@ public sealed class DryWindowPredictCommand
 
             predictions.Add(new DryWindowPredictionRow
             {
-                LocationName = _activeLocation.Name,
+                LocationName = location.Name,
                 TruthStation = stationSlug,
                 WindowHours = windowHours,
                 ModelVersion = metadata.Version,
@@ -360,7 +353,8 @@ public sealed class DryWindowPredictCommand
         string versionDir, string stationSlug, int windowHours, string versionName,
         ModelArtifact.TrainingMetadata metadata, DryWindowClimatology climatology,
         IReadOnlyList<(int Lead, DateTime Date)> targets,
-        DateTime anchorDate, DateTime predictionMadeAt, CancellationToken ct)
+        DateTime anchorDate, DateTime predictionMadeAt,
+        LocationConfig location, CancellationToken ct)
     {
         // 3a champion bound at training time lives in metadata.Hyperparameters.
         // The HpString/HpInt extensions unwrap the JsonElement-after-roundtrip
@@ -445,7 +439,7 @@ public sealed class DryWindowPredictCommand
 
             predictions.Add(new DryWindowPredictionRow
             {
-                LocationName = _activeLocation.Name,
+                LocationName = location.Name,
                 TruthStation = stationSlug,
                 WindowHours = windowHours,
                 ModelVersion = versionName,
@@ -511,7 +505,8 @@ public sealed class DryWindowPredictCommand
         string versionDir, string stationSlug, int windowHours, string versionName,
         ModelArtifact.TrainingMetadata metadata, DryWindowClimatology climatology,
         IReadOnlyList<(int Lead, DateTime Date)> targets,
-        DateTime anchorDate, DateTime predictionMadeAt, CancellationToken ct)
+        DateTime anchorDate, DateTime predictionMadeAt,
+        LocationConfig location, CancellationToken ct)
     {
         var precip3eVersion = metadata.Hyperparameters.HpString(DryWindow3sPredictor.Precip3eVersionKey);
         if (string.IsNullOrEmpty(precip3eVersion))
@@ -579,7 +574,7 @@ public sealed class DryWindowPredictCommand
 
             predictions.Add(new DryWindowPredictionRow
             {
-                LocationName = _activeLocation.Name,
+                LocationName = location.Name,
                 TruthStation = stationSlug,
                 WindowHours = windowHours,
                 ModelVersion = versionName,
@@ -632,7 +627,8 @@ public sealed class DryWindowPredictCommand
         string versionDir, string stationSlug, int windowHours, string versionName,
         ModelArtifact.TrainingMetadata metadata, DryWindowClimatology climatology,
         IReadOnlyList<(int Lead, DateTime Date)> targets,
-        DateTime anchorDate, DateTime predictionMadeAt, CancellationToken ct)
+        DateTime anchorDate, DateTime predictionMadeAt,
+        LocationConfig location, CancellationToken ct)
     {
         var precip3aVersion = metadata.Hyperparameters.HpString("precip_3a_version");
         if (string.IsNullOrEmpty(precip3aVersion))
@@ -714,7 +710,7 @@ public sealed class DryWindowPredictCommand
 
             predictions.Add(new DryWindowPredictionRow
             {
-                LocationName = _activeLocation.Name,
+                LocationName = location.Name,
                 TruthStation = stationSlug,
                 WindowHours = windowHours,
                 ModelVersion = versionName,
@@ -754,7 +750,8 @@ public sealed class DryWindowPredictCommand
         string versionDir, string stationSlug, int windowHours, string versionName,
         ModelArtifact.TrainingMetadata metadata, DryWindowClimatology climatology,
         IReadOnlyList<(int Lead, DateTime Date)> targets,
-        DateTime anchorDate, DateTime predictionMadeAt, CancellationToken ct)
+        DateTime anchorDate, DateTime predictionMadeAt,
+        LocationConfig location, CancellationToken ct)
     {
         var precip3aVersion = metadata.Hyperparameters.HpString("precip_3a_version");
         if (string.IsNullOrEmpty(precip3aVersion))
@@ -821,7 +818,7 @@ public sealed class DryWindowPredictCommand
             var winStart = anchorDate.Date;
             var winEnd   = winStart.AddDays(6);
             var matrices = DryWindowNwpAgreement.LoadLivePerNwpDaytime(
-                _cfg.Storage.ForecastsPath, _activeLocation.Name, lead,
+                _cfg.Storage.ForecastsPath, location.Name, lead,
                 canonical, DaytimeFor, winStart, winEnd);
             var perDay = new Dictionary<DateTime, double>(matrices.Count);
             foreach (var (date, mat) in matrices)
@@ -869,7 +866,7 @@ public sealed class DryWindowPredictCommand
 
             predictions.Add(new DryWindowPredictionRow
             {
-                LocationName = _activeLocation.Name,
+                LocationName = location.Name,
                 TruthStation = stationSlug,
                 WindowHours = windowHours,
                 ModelVersion = versionName,

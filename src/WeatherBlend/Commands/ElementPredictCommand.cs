@@ -33,16 +33,10 @@ public sealed class ElementPredictCommand
 
     private static readonly int[] DefaultLeads = Leads.Short;
 
-    // --location resolves into _activeLocation at RunAsync entry; the
-    // element predict pipelines read forecasts + pin LocationName from
-    // it. Defaults to the primary location (Phase B, commit 4).
-    private Config.LocationConfig _activeLocation;
-
     public ElementPredictCommand(ILogger<ElementPredictCommand> log, AppConfig cfg)
     {
         _log = log;
         _cfg = cfg;
-        _activeLocation = cfg.Location;
     }
 
     public Task<int> RunAsync(ElementTarget target, string modelVersion, DateOnly? forDate, CancellationToken ct)
@@ -50,13 +44,12 @@ public sealed class ElementPredictCommand
 
     public async Task<int> RunAsync(ElementTarget target, string modelVersion, DateOnly? forDate, string? locationOverride, CancellationToken ct)
     {
-        var (resolvedLocation, locRc) = PredictLocationResolver.Resolve(_cfg, locationOverride, _log);
-        if (resolvedLocation is null) return locRc;
-        _activeLocation = resolvedLocation;
+        var (location, locRc) = PredictLocationResolver.Resolve(_cfg, locationOverride, _log);
+        if (location is null) return locRc;
 
         var modelsRoot = _cfg.Storage.ModelsPath;
         var versions = ResolveRequestedVersions(
-            modelsRoot, target.ModelDirName, _activeLocation.Name, modelVersion);
+            modelsRoot, target.ModelDirName, location.Name, modelVersion);
         if (versions.Count == 0)
         {
             _log.LogError("No versions to predict for {Target} — manifest has no Active list.", target.CliName);
@@ -82,7 +75,7 @@ public sealed class ElementPredictCommand
             try
             {
                 versionDir = ModelArtifact.ResolveStationVersionDir(
-                    modelsRoot, target.ModelDirName, _activeLocation.Name, version);
+                    modelsRoot, target.ModelDirName, location.Name, version);
                 metadata = ModelArtifact.LoadTrainingMetadata(versionDir);
             }
             catch (Exception ex)
@@ -100,11 +93,11 @@ public sealed class ElementPredictCommand
 
             // Phase A multi-location safety: metadata.LocationName is
             // [JsonRequired] so a missing field already threw at deserialise.
-            if (!string.Equals(metadata.LocationName, _activeLocation.Name, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(metadata.LocationName, location.Name, StringComparison.OrdinalIgnoreCase))
             {
                 _log.LogError(
                     "{Target} bundle {V} was trained on location '{Trained}' but predict is using NWP from '{Active}' — refusing to score.",
-                    target.CliName, version, metadata.LocationName, _activeLocation.Name);
+                    target.CliName, version, metadata.LocationName, location.Name);
                 failures++;
                 continue;
             }
@@ -116,16 +109,16 @@ public sealed class ElementPredictCommand
             List<ElementPredictionRow> predictions = target.CliName switch
             {
                 "wind" => WindPredictPipeline.PredictForCycle(
-                    _log, _activeLocation.Name, _cfg.Storage.ForecastsPath,
+                    _log, location.Name, _cfg.Storage.ForecastsPath,
                     versionDir, metadata.Version, anchor, predictionMadeAt, DefaultLeads, ct),
                 "humidity" => HumidityPredictPipeline.PredictForCycle(
-                    _log, _activeLocation.Name, _cfg.Storage.ForecastsPath,
+                    _log, location.Name, _cfg.Storage.ForecastsPath,
                     versionDir, metadata.Version, anchor, predictionMadeAt, DefaultLeads, ct),
                 "shortwave-radiation" => RadiationPredictPipeline.PredictForCycle(
-                    _log, _activeLocation.Name, _cfg.Storage.ForecastsPath,
+                    _log, location.Name, _cfg.Storage.ForecastsPath,
                     versionDir, metadata.Version, anchor, predictionMadeAt, DefaultLeads, ct),
                 "cloud-cover" => CloudPredictPipeline.PredictForCycle(
-                    _log, _activeLocation.Name, _cfg.Storage.ForecastsPath,
+                    _log, location.Name, _cfg.Storage.ForecastsPath,
                     versionDir, metadata.Version, anchor, predictionMadeAt, DefaultLeads, ct),
                 _ => throw new InvalidOperationException($"Unknown element target {target.CliName}"),
             };

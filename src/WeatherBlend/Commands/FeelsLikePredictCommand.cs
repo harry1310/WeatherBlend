@@ -26,16 +26,10 @@ public sealed class FeelsLikePredictCommand
     private readonly ILogger<FeelsLikePredictCommand> _log;
     private readonly AppConfig _cfg;
 
-    // --location resolves into _activeLocation at RunAsync entry; the
-    // feels-like composition reads that location's name + lat/lon.
-    // Defaults to the primary location (Phase B, commit 4).
-    private Config.LocationConfig _activeLocation;
-
     public FeelsLikePredictCommand(ILogger<FeelsLikePredictCommand> log, AppConfig cfg)
     {
         _log = log;
         _cfg = cfg;
-        _activeLocation = cfg.Location;
     }
 
     public Task<int> RunAsync(DateOnly? forDate, CancellationToken ct)
@@ -43,9 +37,8 @@ public sealed class FeelsLikePredictCommand
 
     public async Task<int> RunAsync(DateOnly? forDate, string? locationOverride, CancellationToken ct)
     {
-        var (resolvedLocation, locRc) = PredictLocationResolver.Resolve(_cfg, locationOverride, _log);
-        if (resolvedLocation is null) return locRc;
-        _activeLocation = resolvedLocation;
+        var (location, locRc) = PredictLocationResolver.Resolve(_cfg, locationOverride, _log);
+        if (location is null) return locRc;
 
         var modelsRoot = _cfg.Storage.ModelsPath;
         var predictionMadeAt = DateTime.UtcNow;
@@ -55,7 +48,7 @@ public sealed class FeelsLikePredictCommand
             anchor, forDate?.ToString("yyyy-MM-dd") ?? "live");
 
         var rows = await FeelsLikePredictPipeline.ComposeForAnchorAsync(
-            _log, _activeLocation.Name, _activeLocation.Latitude, _activeLocation.Longitude,
+            _log, location.Name, location.Latitude, location.Longitude,
             _cfg.Storage.PredictionsPath, modelsRoot, anchor, predictionMadeAt, ct);
 
         if (rows.Count == 0)

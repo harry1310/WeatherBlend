@@ -31,13 +31,6 @@ public sealed class PrecipPredictCommand
 {
     private readonly ILogger<PrecipPredictCommand> _log;
     private readonly AppConfig _cfg;
-    // `--location` resolves into _activeLocation at RunAsync entry; everything
-    // downstream reads from here. Defaults to the primary location for the
-    // existing call paths (predict-and-render, manual `predict` without
-    // --location), which continue to behave exactly as before. Mutable for
-    // the lifetime of one RunAsync — fine because PrecipPredictCommand is
-    // registered as Transient in DI so we get a fresh instance per call.
-    private LocationConfig _activeLocation;
 
     private static readonly int[] DefaultLeads = Leads.Full;
 
@@ -45,7 +38,6 @@ public sealed class PrecipPredictCommand
     {
         _log = log;
         _cfg = cfg;
-        _activeLocation = cfg.Location;
     }
 
     /// <summary>
@@ -95,9 +87,8 @@ public sealed class PrecipPredictCommand
     /// </summary>
     public async Task<int> RunAsync(string truthStation, string modelVersion, DateOnly? forDate, string? locationOverride, CancellationToken ct)
     {
-        var (resolvedLocation, locRc) = PredictLocationResolver.Resolve(_cfg, locationOverride, _log);
-        if (resolvedLocation is null) return locRc;
-        _activeLocation = resolvedLocation;
+        var (location, locRc) = PredictLocationResolver.Resolve(_cfg, locationOverride, _log);
+        if (location is null) return locRc;
 
         var modelsRoot = _cfg.Storage.ModelsPath;
 
@@ -116,7 +107,7 @@ public sealed class PrecipPredictCommand
         // specific slug. A Membury slug requested without --location now
         // returns 0 with a clear log message instead of silently producing
         // wrong-NWP predictions.
-        var locationSlugs = _activeLocation.Rainfall.Stations
+        var locationSlugs = location.Rainfall.Stations
             .Select(s => StationSlug.WithEaPrefix(s.Name))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var beforeCount = stationsToRun.Count;
@@ -127,7 +118,7 @@ public sealed class PrecipPredictCommand
             _log.LogInformation(
                 "Dropping {Count}/{Before} station(s) not in location '{Loc}' rainfall config: [{Dropped}]. " +
                 "Predict each station against its own location's NWP — re-run with --location <name> to score the rest.",
-                dropped.Count, beforeCount, _activeLocation.Name, string.Join(", ", dropped));
+                dropped.Count, beforeCount, location.Name, string.Join(", ", dropped));
         }
         if (stationsToRun.Count == 0)
         {
@@ -135,8 +126,8 @@ public sealed class PrecipPredictCommand
                 "No precipitation blender artefacts under {Dir} match location '{Loc}' rainfall stations [{Configured}]. " +
                 "Either add the station to that location's config or pass --location <name>.",
                 Path.Combine(modelsRoot, "precipitation"),
-                _activeLocation.Name,
-                string.Join(", ", _activeLocation.Rainfall.Stations.Select(s => s.Name)));
+                location.Name,
+                string.Join(", ", location.Rainfall.Stations.Select(s => s.Name)));
             return 2;
         }
 
@@ -164,7 +155,7 @@ public sealed class PrecipPredictCommand
             if (leadTargets.Length == 0) continue;
             var pivot = QueryLatestForecastRows(
                 _cfg.Storage.ForecastsPath,
-                _activeLocation.Name,
+                location.Name,
                 leadTargets.Min(t => t.Valid),
                 leadTargets.Max(t => t.Valid),
                 asOfRunTime: anchor,
@@ -180,7 +171,7 @@ public sealed class PrecipPredictCommand
             foreach (var version in ResolveRequestedVersions(modelsRoot, station, modelVersion))
             {
                 var wrote = await RunStationAsync(
-                    modelsRoot, station, version, predictionMadeAt, anchor, targets, perLeadValid, ct);
+                    modelsRoot, station, version, predictionMadeAt, anchor, targets, perLeadValid, location, ct);
                 anyWritten |= wrote;
             }
         }
@@ -210,6 +201,7 @@ public sealed class PrecipPredictCommand
         DateTime anchor,
         (int Lead, DateTime Valid)[] targets,
         IReadOnlyDictionary<int, IReadOnlyDictionary<DateTime, PivotedRow>> perLeadValid,
+        LocationConfig location,
         CancellationToken ct)
     {
         // Python-trained phases (4a per-cell BART, 5a INLA Bayesian) live
@@ -251,12 +243,12 @@ public sealed class PrecipPredictCommand
         // any NWP source other than the one it was trained on. metadata.
         // LocationName is [JsonRequired] post-backfill so a missing field
         // already threw at deserialise; we only need the mismatch check.
-        if (!string.Equals(metadata.LocationName, _activeLocation.Name, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(metadata.LocationName, location.Name, StringComparison.OrdinalIgnoreCase))
         {
             _log.LogError(
                 "Station {Station} bundle {V} was trained on location '{Trained}' but predict is using NWP from '{Active}' — refusing to score. " +
                 "Pass --location {TrainedRetry} or fix the manifest entry.",
-                station, modelVersion, metadata.LocationName, _activeLocation.Name, metadata.LocationName);
+                station, modelVersion, metadata.LocationName, location.Name, metadata.LocationName);
             return false;
         }
 
@@ -283,7 +275,7 @@ public sealed class PrecipPredictCommand
         {
             return await RunStationAsMlpAsync(
                 modelsRoot, station, versionDir, metadata, climatology,
-                predictionMadeAt, anchor, targets, perLeadValid, ct);
+                predictionMadeAt, anchor, targets, perLeadValid, location, ct);
         }
 
         // Phase 3d (exact-runtime) takes a separate predict path: different
@@ -296,7 +288,7 @@ public sealed class PrecipPredictCommand
         {
             return await RunStationAsExactRuntimeAsync(
                 modelsRoot, station, versionDir, metadata, climatology,
-                predictionMadeAt, anchor, ct);
+                predictionMadeAt, anchor, location, ct);
         }
 
         var isRich = PrecipPhases.IsRich(metadata.Phase);
@@ -310,15 +302,15 @@ public sealed class PrecipPredictCommand
         Dictionary<DateTime, double>? hourlyRain = null;
         if (isRich)
         {
-            var friendly = ResolveFriendlyStationName(station);
+            var friendly = ResolveFriendlyStationName(station, location);
             if (friendly is null)
             {
                 _log.LogError("Station {Station}: cannot resolve rainfall config name for phase-3c persistence lookup. Known: [{Known}]",
-                    station, string.Join(", ", _activeLocation.Rainfall.Stations.Select(s => s.Name)));
+                    station, string.Join(", ", location.Rainfall.Stations.Select(s => s.Name)));
                 return false;
             }
             hourlyRain = PrecipRichFeatureBuilder.LoadHourlyRain(
-                _cfg.Storage.RainfallPath, _activeLocation.Name, friendly, ct);
+                _cfg.Storage.RainfallPath, location.Name, friendly, ct);
             _log.LogInformation("Station {Station}: loaded {N} hourly rainfall rows for persistence features (friendly='{Friendly}')",
                 station, hourlyRain.Count, friendly);
         }
@@ -440,7 +432,7 @@ public sealed class PrecipPredictCommand
             var spreadStart = N;
             predictions.Add(new PrecipPredictionRow
             {
-                LocationName = _activeLocation.Name,
+                LocationName = location.Name,
                 TruthStation = station,
                 ModelVersion = metadata.Version,
                 PredictionMadeAtUtc = predictionMadeAt,
@@ -497,19 +489,20 @@ public sealed class PrecipPredictCommand
         DateTime anchor,
         (int Lead, DateTime Valid)[] targets,
         IReadOnlyDictionary<int, IReadOnlyDictionary<DateTime, PivotedRow>> perLeadValid,
+        LocationConfig location,
         CancellationToken ct)
     {
         // Hourly EA rainfall lookup for the rich-feature persistence block.
         // SAME source as the 3c predict path; reused verbatim.
-        var friendly = ResolveFriendlyStationName(station);
+        var friendly = ResolveFriendlyStationName(station, location);
         if (friendly is null)
         {
             _log.LogError("Station {Station}: cannot resolve rainfall config name for phase-3e persistence lookup. Known: [{Known}]",
-                station, string.Join(", ", _activeLocation.Rainfall.Stations.Select(s => s.Name)));
+                station, string.Join(", ", location.Rainfall.Stations.Select(s => s.Name)));
             return false;
         }
         var hourlyRain = PrecipRichFeatureBuilder.LoadHourlyRain(
-            _cfg.Storage.RainfallPath, _activeLocation.Name, friendly, ct);
+            _cfg.Storage.RainfallPath, location.Name, friendly, ct);
         _log.LogInformation("Station {Station}: loaded {N} hourly rainfall rows for 3e persistence features (friendly='{Friendly}')",
             station, hourlyRain.Count, friendly);
 
@@ -607,7 +600,7 @@ public sealed class PrecipPredictCommand
             var spreadStart = N;
             predictions.Add(new PrecipPredictionRow
             {
-                LocationName = _activeLocation.Name,
+                LocationName = location.Name,
                 TruthStation = station,
                 ModelVersion = metadata.Version,
                 PredictionMadeAtUtc = predictionMadeAt,
@@ -884,9 +877,9 @@ ORDER BY ValidTimeUtc, Model;";
     /// Reverse-lookup the config rainfall-station friendly name from an "ea_..." slug
     /// so predict time can reach for the same hourly rainfall series the trainer used.
     /// </summary>
-    private string? ResolveFriendlyStationName(string stationSlug)
+    private static string? ResolveFriendlyStationName(string stationSlug, LocationConfig location)
     {
-        foreach (var s in _activeLocation.Rainfall.Stations)
+        foreach (var s in location.Rainfall.Stations)
         {
             var slug = StationSlug.WithEaPrefix(s.Name);
             if (string.Equals(slug, stationSlug, StringComparison.OrdinalIgnoreCase))
@@ -917,6 +910,7 @@ ORDER BY ValidTimeUtc, Model;";
         PrecipClimatology climatology,
         DateTime predictionMadeAt,
         DateTime anchor,
+        LocationConfig location,
         CancellationToken ct)
     {
         var ml = new MLContext(seed: 42);
@@ -934,7 +928,7 @@ ORDER BY ValidTimeUtc, Model;";
 
         var pivotByLeadValid = QueryExactForecastRows(
             _cfg.Storage.ForecastsPath,
-            _activeLocation.Name,
+            location.Name,
             specs: specs,
             earliestValid: windowStart,
             latestValid: windowEnd,
@@ -1023,7 +1017,7 @@ ORDER BY ValidTimeUtc, Model;";
                 var spreadStart = spec.Models.Count + (includeUkv ? 1 : 0);
                 predictions.Add(new PrecipPredictionRow
                 {
-                    LocationName = _activeLocation.Name,
+                    LocationName = location.Name,
                     TruthStation = station,
                     ModelVersion = metadata.Version,
                     PredictionMadeAtUtc = predictionMadeAt,
