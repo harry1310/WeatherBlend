@@ -1034,29 +1034,24 @@ ORDER BY ValidTimeUtc, Model;";
         CancellationToken ct)
     {
         var dateStr = anchorDate.ToString("yyyy-MM-dd");
-        var outDir = Path.Combine(_cfg.Storage.PredictionsPath,
+        var outPath = Path.Combine(_cfg.Storage.PredictionsPath,
             "dry_window",
             stationSlug,
             $"window_{windowHours}h",
             $"model_version={modelVersion}",
-            $"date={dateStr}");
-        Directory.CreateDirectory(outDir);
-        var outPath = Path.Combine(outDir, "predictions.parquet");
+            $"date={dateStr}",
+            "predictions.parquet");
 
-        List<DryWindowPredictionRow> existing = File.Exists(outPath)
-            ? (await ParquetSerializer.DeserializeAsync<DryWindowPredictionRow>(outPath, cancellationToken: ct)).ToList()
-            : new List<DryWindowPredictionRow>();
-
-        var merged = existing.Concat(predictions)
-            .GroupBy(r => (r.PredictionMadeAtUtc, r.LeadHours))
-            .Select(g => g.MaxBy(r => r.PredictionMadeAtUtc)!)
-            .OrderBy(r => r.TargetDateUtc)
-            .ThenBy(r => r.LeadHours)
-            .ToList();
-
-        await ParquetSerializer.SerializeAsync(merged, outPath, cancellationToken: ct);
+        // Dry-window is day-granular: one row per (PMT, lead), so the dedup
+        // key omits ValidTimeUtc (unlike the hourly temp/precip/element writers).
+        var total = await PredictionParquetWriter.WriteAsync(
+            outPath, predictions,
+            dedupKey:  r => (r.PredictionMadeAtUtc, r.LeadHours),
+            freshness: r => r.PredictionMadeAtUtc,
+            orderBy:   rows => rows.OrderBy(r => r.TargetDateUtc).ThenBy(r => r.LeadHours),
+            ct);
         _log.LogInformation("Wrote {N} new predictions (file now holds {T}) → {Path}",
-            predictions.Count, merged.Count, outPath);
+            predictions.Count, total, outPath);
     }
 
     private static double? NanToNull(float v) => float.IsNaN(v) ? null : v;

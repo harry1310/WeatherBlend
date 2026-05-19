@@ -75,22 +75,15 @@ public sealed class FeelsLikePredictCommand
     private async Task WriteAsync(List<FeelsLikePredictionRow> rows, DateTime anchor, CancellationToken ct)
     {
         var dateStr = anchor.ToString("yyyy-MM-dd");
-        var outDir = Path.Combine(
+        var outPath = Path.Combine(
             _cfg.Storage.PredictionsPath, PredictionsSubdir,
             $"model_version={FeelsLikePredictPipeline.OutputModelVersion}",
-            $"date={dateStr}");
-        Directory.CreateDirectory(outDir);
-        var outPath = Path.Combine(outDir, "predictions.parquet");
+            $"date={dateStr}",
+            "predictions.parquet");
 
-        List<FeelsLikePredictionRow> existing = File.Exists(outPath)
-            ? (await ParquetSerializer.DeserializeAsync<FeelsLikePredictionRow>(outPath, cancellationToken: ct)).ToList()
-            : new List<FeelsLikePredictionRow>();
-
-        var merged = MergeRows(existing, rows);
-
-        await ParquetSerializer.SerializeAsync(merged, outPath, cancellationToken: ct);
+        var total = await PredictionParquetWriter.WriteAsync(outPath, rows, MergeRows, ct);
         _log.LogInformation("Wrote {New} new feels-like rows (file now holds {Total}) → {Path}",
-            rows.Count, merged.Count, outPath);
+            rows.Count, total, outPath);
     }
 
     /// <summary>
@@ -109,9 +102,8 @@ public sealed class FeelsLikePredictCommand
     internal static List<FeelsLikePredictionRow> MergeRows(
         IEnumerable<FeelsLikePredictionRow> existing,
         IEnumerable<FeelsLikePredictionRow> incoming)
-        => existing.Concat(incoming)
-            .GroupBy(r => (r.PredictionMadeAtUtc, r.LeadHours, r.ValidTimeUtc))
-            .Select(g => g.MaxBy(r => r.PredictionMadeAtUtc)!)
-            .OrderBy(r => r.ValidTimeUtc).ThenBy(r => r.LeadHours)
-            .ToList();
+        => PredictionParquetWriter.Merge(existing, incoming,
+            dedupKey:  r => (r.PredictionMadeAtUtc, r.LeadHours, r.ValidTimeUtc),
+            freshness: r => r.PredictionMadeAtUtc,
+            orderBy:   rows => rows.OrderBy(r => r.ValidTimeUtc).ThenBy(r => r.LeadHours));
 }

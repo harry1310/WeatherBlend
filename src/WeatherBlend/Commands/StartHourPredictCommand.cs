@@ -316,24 +316,17 @@ public sealed class StartHourPredictCommand
         DateTime anchorDate, string outModelVersion, CancellationToken ct)
     {
         var dateStr = anchorDate.ToString("yyyy-MM-dd");
-        var outDir = Path.Combine(_cfg.Storage.PredictionsPath,
+        var outPath = Path.Combine(_cfg.Storage.PredictionsPath,
             PredictionsSubdir,
             station,
             $"window_{windowHours}h",
             $"model_version={outModelVersion}",
-            $"date={dateStr}");
-        Directory.CreateDirectory(outDir);
-        var outPath = Path.Combine(outDir, "predictions.parquet");
+            $"date={dateStr}",
+            "predictions.parquet");
 
-        List<StartHourPredictionRow> existing = File.Exists(outPath)
-            ? (await ParquetSerializer.DeserializeAsync<StartHourPredictionRow>(outPath, cancellationToken: ct)).ToList()
-            : new List<StartHourPredictionRow>();
-
-        var merged = MergeRows(existing, rows);
-
-        await ParquetSerializer.SerializeAsync(merged, outPath, cancellationToken: ct);
+        var total = await PredictionParquetWriter.WriteAsync(outPath, rows, MergeRows, ct);
         _log.LogInformation("  wrote {New} {Station}/{Window}h rows (file now holds {Total}) → {Path}",
-            rows.Count, station, windowHours, merged.Count, outPath);
+            rows.Count, station, windowHours, total, outPath);
     }
 
     /// <summary>
@@ -345,13 +338,12 @@ public sealed class StartHourPredictCommand
     internal static List<StartHourPredictionRow> MergeRows(
         IEnumerable<StartHourPredictionRow> existing,
         IEnumerable<StartHourPredictionRow> incoming)
-        => existing.Concat(incoming)
-            .GroupBy(r => (r.PredictionMadeAtUtc, r.TargetDateUtc, r.LeadHours, r.StartHourUtc))
-            .Select(g => g.MaxBy(r => r.PredictionMadeAtUtc)!)
-            .OrderBy(r => r.TargetDateUtc)
-            .ThenBy(r => r.LeadHours)
-            .ThenBy(r => r.StartHourUtc)
-            .ToList();
+        => PredictionParquetWriter.Merge(existing, incoming,
+            dedupKey:  r => (r.PredictionMadeAtUtc, r.TargetDateUtc, r.LeadHours, r.StartHourUtc),
+            freshness: r => r.PredictionMadeAtUtc,
+            orderBy:   rows => rows.OrderBy(r => r.TargetDateUtc)
+                                   .ThenBy(r => r.LeadHours)
+                                   .ThenBy(r => r.StartHourUtc));
 
     private static ModelArtifact.Manifest? LoadManifest(string modelsRoot, string target)
     {

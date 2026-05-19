@@ -389,38 +389,25 @@ public sealed class TempPredictCommand
         // Layout: data/predictions/temperature/{station}/model_version=<v>/date=<yyyy-MM-dd>/predictions.parquet.
         // Station-keyed since 2026-05-14 to mirror precip's per-station tree.
         // Date is the anchor date so re-runs across the same UTC day land in the same file.
-        // Dedupe on (PredictionMadeAtUtc, LeadHours): the latest write for a given key wins —
-        // matches ObservationsAsync's append-and-dedupe semantics.
         var dateStr = anchor.ToString("yyyy-MM-dd");
-        var outDir = Path.Combine(_cfg.Storage.PredictionsPath,
+        var outPath = Path.Combine(_cfg.Storage.PredictionsPath,
             "temperature",
             stationKey,
             $"model_version={modelVersion}",
-            $"date={dateStr}");
-        Directory.CreateDirectory(outDir);
-        var outPath = Path.Combine(outDir, "predictions.parquet");
+            $"date={dateStr}",
+            "predictions.parquet");
 
-        List<TempPredictionRow> existing = File.Exists(outPath)
-            ? (await ParquetSerializer.DeserializeAsync<TempPredictionRow>(outPath, cancellationToken: ct)).ToList()
-            : new List<TempPredictionRow>();
-
-        // Dedupe on (PredictionMadeAtUtc, LeadHours) — newest row for the key wins.
-        // MaxBy(PredictionMadeAtUtc) is explicit about "latest"; don't rely on concat
-        // order so a retry that pulls existing-file rows in any order still converges.
-        // Merge key includes ValidTimeUtc so the 24 hourly predictions per
-        // lead bucket each get their own row. Pre-hourly (one prediction per
-        // lead bucket) the key was just (PredictionMadeAtUtc, LeadHours)
-        // which silently collapsed the new hourly outputs to 1-row-per-lead.
-        var merged = existing.Concat(predictions)
-            .GroupBy(r => (r.PredictionMadeAtUtc, r.LeadHours, r.ValidTimeUtc))
-            .Select(g => g.MaxBy(r => r.PredictionMadeAtUtc)!)
-            .OrderBy(r => r.ValidTimeUtc)
-            .ThenBy(r => r.LeadHours)
-            .ToList();
-
-        await ParquetSerializer.SerializeAsync(merged, outPath, cancellationToken: ct);
+        // Dedupe key includes ValidTimeUtc so the 24 hourly predictions per
+        // lead bucket each keep their own row — keying on (PredictionMadeAtUtc,
+        // LeadHours) alone would silently collapse them to 1-row-per-lead.
+        var total = await PredictionParquetWriter.WriteAsync(
+            outPath, predictions,
+            dedupKey:  r => (r.PredictionMadeAtUtc, r.LeadHours, r.ValidTimeUtc),
+            freshness: r => r.PredictionMadeAtUtc,
+            orderBy:   rows => rows.OrderBy(r => r.ValidTimeUtc).ThenBy(r => r.LeadHours),
+            ct);
         _log.LogInformation("  Wrote {New} new predictions (file now holds {Total}) → {Path}",
-            predictions.Count, merged.Count, outPath);
+            predictions.Count, total, outPath);
     }
 
     // Per-valid-time pivot: temp + wind dir mean + every secondary as a per-model array

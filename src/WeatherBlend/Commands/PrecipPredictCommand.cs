@@ -674,23 +674,16 @@ public sealed class PrecipPredictCommand
         CancellationToken ct)
     {
         var dateStr = anchor.ToString("yyyy-MM-dd");
-        var outDir = Path.Combine(_cfg.Storage.PredictionsPath,
+        var outPath = Path.Combine(_cfg.Storage.PredictionsPath,
             "precipitation",
             station,
             $"model_version={modelVersion}",
-            $"date={dateStr}");
-        Directory.CreateDirectory(outDir);
-        var outPath = Path.Combine(outDir, "predictions.parquet");
+            $"date={dateStr}",
+            "predictions.parquet");
 
-        List<PrecipPredictionRow> existing = File.Exists(outPath)
-            ? (await ParquetSerializer.DeserializeAsync<PrecipPredictionRow>(outPath, cancellationToken: ct)).ToList()
-            : new List<PrecipPredictionRow>();
-
-        var merged = MergeRows(existing, predictions);
-
-        await ParquetSerializer.SerializeAsync(merged, outPath, cancellationToken: ct);
+        var total = await PredictionParquetWriter.WriteAsync(outPath, predictions, MergeRows, ct);
         _log.LogInformation("Wrote {New} new {Station} predictions (file now holds {Total}) → {Path}",
-            predictions.Count, station, merged.Count, outPath);
+            predictions.Count, station, total, outPath);
     }
 
     /// <summary>
@@ -701,18 +694,17 @@ public sealed class PrecipPredictCommand
     /// and the function behaves identically to the prior 2-tuple key. The
     /// 3-tuple is load-bearing the moment the predict pipeline starts emitting
     /// multiple ValidTimes per (PMT, lead) (the upcoming hourly extension);
-    /// keying on (PMT, lead) alone would silently collapse those siblings —
-    /// the same shape of bug the feels-like writer had this morning.
+    /// keying on (PMT, lead) alone would silently collapse those siblings.
+    /// Shared merge algorithm lives in <see cref="PredictionParquetWriter.Merge"/>;
+    /// this method just pins the precip-specific key + order.
     /// </summary>
     internal static List<PrecipPredictionRow> MergeRows(
         IEnumerable<PrecipPredictionRow> existing,
         IEnumerable<PrecipPredictionRow> incoming)
-        => existing.Concat(incoming)
-            .GroupBy(r => (r.PredictionMadeAtUtc, r.LeadHours, r.ValidTimeUtc))
-            .Select(g => g.MaxBy(r => r.PredictionMadeAtUtc)!)
-            .OrderBy(r => r.ValidTimeUtc)
-            .ThenBy(r => r.LeadHours)
-            .ToList();
+        => PredictionParquetWriter.Merge(existing, incoming,
+            dedupKey:  r => (r.PredictionMadeAtUtc, r.LeadHours, r.ValidTimeUtc),
+            freshness: r => r.PredictionMadeAtUtc,
+            orderBy:   rows => rows.OrderBy(r => r.ValidTimeUtc).ThenBy(r => r.LeadHours));
 
     // Per-valid-time pivot mirrors TempPredictCommand.PivotedRow but carries the wider
     // precip feature set required by the occurrence blender. Per-model arrays

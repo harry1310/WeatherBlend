@@ -23,7 +23,7 @@ namespace WeatherBlend.Commands;
 ///
 /// Per-element pipelines do their own SQL pivot + row composition (each
 /// element pulls a different forecast column set) and share parquet writing
-/// via <see cref="ElementPredictWriter"/>. Output goes to
+/// via <see cref="WeatherBlend.Predict.PredictionParquetWriter"/>. Output goes to
 /// <c>data/predictions/{element}/model_version=&lt;v&gt;/date=&lt;yyyy-MM-dd&gt;/predictions.parquet</c>.
 /// </summary>
 public sealed class ElementPredictCommand
@@ -137,9 +137,19 @@ public sealed class ElementPredictCommand
                 continue;
             }
 
-            await ElementPredictWriter.WriteAsync(
-                _log, _cfg.Storage.PredictionsPath, target.ModelDirName,
-                metadata.Version, anchor, predictions, ct);
+            var dateStr = anchor.ToString("yyyy-MM-dd");
+            var outPath = Path.Combine(
+                _cfg.Storage.PredictionsPath, target.ModelDirName,
+                $"model_version={metadata.Version}", $"date={dateStr}",
+                "predictions.parquet");
+            var total = await PredictionParquetWriter.WriteAsync(
+                outPath, predictions,
+                dedupKey:  r => (r.PredictionMadeAtUtc, r.LeadHours, r.ValidTimeUtc),
+                freshness: r => r.PredictionMadeAtUtc,
+                orderBy:   rows => rows.OrderBy(r => r.ValidTimeUtc).ThenBy(r => r.LeadHours),
+                ct);
+            _log.LogInformation("  Wrote {New} new predictions (file now holds {Total}) → {Path}",
+                predictions.Count, total, outPath);
             anyOutput = true;
         }
 

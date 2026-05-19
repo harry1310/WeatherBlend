@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Logging;
-using Parquet.Serialization;
 using WeatherBlend.Config;
 using WeatherBlend.Models;
+using WeatherBlend.Predict;
 using WeatherBlend.Storage;
 using WeatherBlend.Train;
 
@@ -187,24 +187,19 @@ public sealed class Phase4bPredictCommand
                 $"no 4a row at any (ValidTime, Lead) found a matching 3e prediction across {rows3eByKey.Count} historical 3e cells " +
                 "(4a today has rows but 3e tree has no shared keys — should not happen unless 3e tree is single-anchor)");
 
-        // Same merge-on-write as PrecipPredictCommand.MergeRows.
+        // Same (PMT, Lead, ValidTime) merge-on-write the precip writer uses.
         var dateStr = anchor.ToString("yyyy-MM-dd");
-        var outDir = Path.Combine(predRoot, "precipitation", station,
-            $"model_version={version4b}", $"date={dateStr}");
-        Directory.CreateDirectory(outDir);
-        var outPath = Path.Combine(outDir, "predictions.parquet");
-        List<PrecipPredictionRow> existing = File.Exists(outPath)
-            ? (await ParquetSerializer.DeserializeAsync<PrecipPredictionRow>(outPath, cancellationToken: ct)).ToList()
-            : new List<PrecipPredictionRow>();
-        var merged = existing.Concat(joined)
-            .GroupBy(r => (r.PredictionMadeAtUtc, r.LeadHours, r.ValidTimeUtc))
-            .Select(g => g.MaxBy(r => r.PredictionMadeAtUtc)!)
-            .OrderBy(r => r.ValidTimeUtc).ThenBy(r => r.LeadHours)
-            .ToList();
-        await ParquetSerializer.SerializeAsync(merged, outPath, cancellationToken: ct);
+        var outPath = Path.Combine(predRoot, "precipitation", station,
+            $"model_version={version4b}", $"date={dateStr}", "predictions.parquet");
+        var total = await PredictionParquetWriter.WriteAsync(
+            outPath, joined,
+            dedupKey:  r => (r.PredictionMadeAtUtc, r.LeadHours, r.ValidTimeUtc),
+            freshness: r => r.PredictionMadeAtUtc,
+            orderBy:   rows => rows.OrderBy(r => r.ValidTimeUtc).ThenBy(r => r.LeadHours),
+            ct);
         return (true,
             $"wrote {joined.Count} new rows (matched {matchedCount}/{rows4a.Count} 4a cells to 3e across {rows3eByKey.Count} historical 3e cells); " +
-            $"file now holds {merged.Count}; model_version={version4b}");
+            $"file now holds {total}; model_version={version4b}");
     }
 
     /// <summary>
