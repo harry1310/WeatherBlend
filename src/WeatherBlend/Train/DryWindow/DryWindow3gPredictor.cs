@@ -539,26 +539,27 @@ public static class DryWindow3gPredictor
     }
 
     /// <summary>
-    /// Phase 3a-uncertainty support: read the WeatherProbabilistic Bayesian
-    /// CI80 width for one (station, lead, target_date) cell and return it
-    /// (max across whatever Bayesian valid_times survive within that day —
-    /// typically 1 row at lead 24, more at 48/72; see docs/DATA_SOURCES.md
-    /// for why). Returns 0 if no Bayesian CI is available — the caller's
-    /// downstream <see cref="SampleStatsWithEpistemic"/> short-circuits on
-    /// σ=0 and produces results identical to <see cref="SampleStats"/>, so
-    /// 3g rows for stations not covered by the Bayesian model degrade
-    /// cleanly.
+    /// Phase 3a-uncertainty support: read the WeatherProbabilistic Phase 5a
+    /// Bayesian CI80 width for a (station, target_date) and return the widest
+    /// value across that UTC day's hourly 5a rows. Drives the epistemic σ —
+    /// see <see cref="SigmaFromCi80Width"/>.
     ///
-    /// Station mapping: discovered by listing the
-    /// <c>station=*</c> directories under the bayesian-CI tree and
-    /// case-insensitively matching against the slug after dropping the
-    /// "ea_" prefix and replacing underscores with spaces. No hardcoded
-    /// slug-to-full-name map per the no-hardcoded-station-list rule —
-    /// adding a new EA gauge to the Bayesian model adds a directory and
-    /// this picker finds it.
+    /// NOT lead-filtered, deliberately. Phase 5a stores an hourly P(wet) curve
+    /// whose per-row LeadHours is measured from the NWP cycle; the dry-window
+    /// lead bucket (24/48/72) is a different quantity — a day-offset — and the
+    /// two do not align. An exact <c>LeadHours = bucket</c> match silently
+    /// misses: it only lands when a fresh-enough cycle puts "tomorrow" exactly
+    /// at lead 24h, which the early-cycle (03:xx) predict runs never do, so
+    /// the band would vanish for whole predict cycles. Taking the day-wide
+    /// max instead — the widest CI any 5a row reports for the target day —
+    /// is robust and matches the "over-estimate rather than under-" intent.
+    /// Returns 0 when no 5a parquet covers the day; the caller's
+    /// <see cref="SampleStatsWithEpistemic"/> short-circuits on σ=0 and
+    /// produces results identical to <see cref="SampleStats"/>, so cells with
+    /// no Bayesian coverage degrade cleanly.
     /// </summary>
     public static double TryLoadBayesianCi80Width(
-        string predictionsRoot, string stationSlug, int leadHours, DateTime targetDateUtc)
+        string predictionsRoot, string stationSlug, DateTime targetDateUtc)
     {
         // Phase 5a CI lives in the standard predictions tree under
         // model_version=*phase5a* (renamed 2026-05-09 from the legacy
@@ -575,14 +576,13 @@ public static class DryWindow3gPredictor
         var dayEnd = dayStart.AddDays(1);
 
         // max() so the wider end of the day's CI dominates — better to over-
-        // estimate epistemic uncertainty than under-. If no rows match (rare
-        // but possible at lead 24 for stations whose cycle availability
-        // sometimes leaves the day empty), return 0 → no perturbation.
+        // estimate epistemic uncertainty than under-. No lead filter (see the
+        // method summary): every hourly 5a row valid in the target day is
+        // scanned. Returns 0 → no perturbation when nothing matches.
         var sql = $@"
 SELECT max(Ci80Width) AS w
 FROM read_parquet('{glob}')
-WHERE LeadHours = {leadHours}
-  AND ValidTimeUtc >= TIMESTAMP '{dayStart:yyyy-MM-dd HH:mm:ss}'
+WHERE ValidTimeUtc >= TIMESTAMP '{dayStart:yyyy-MM-dd HH:mm:ss}'
   AND ValidTimeUtc <  TIMESTAMP '{dayEnd:yyyy-MM-dd HH:mm:ss}'";
 
         try

@@ -439,7 +439,7 @@ public sealed class DryWindowPredictCommand
             // value (no MC noise drift); the new Epistemic* fields carry
             // the Q10/Q90 envelope on top.
             var ci80Width = DryWindow3gPredictor.TryLoadBayesianCi80Width(
-                _cfg.Storage.PredictionsPath, stationSlug, lead, targetDate);
+                _cfg.Storage.PredictionsPath, stationSlug, targetDate);
             var sigma = DryWindow3gPredictor.SigmaFromCi80Width(ci80Width);
             var epi = DryWindow3gPredictor.SampleStatsWithEpistemic(
                 qDaytime, windowHours, sigma, rng, mcSamples);
@@ -576,7 +576,7 @@ public sealed class DryWindowPredictCommand
             }
 
             var ci80Width = DryWindow3gPredictor.TryLoadBayesianCi80Width(
-                _cfg.Storage.PredictionsPath, stationSlug, lead, targetDate);
+                _cfg.Storage.PredictionsPath, stationSlug, targetDate);
             var sigma = DryWindow3gPredictor.SigmaFromCi80Width(ci80Width);
             var epi = DryWindow3gPredictor.SampleStatsWithEpistemic(
                 qDaytime, windowHours, sigma, rng, mcSamples);
