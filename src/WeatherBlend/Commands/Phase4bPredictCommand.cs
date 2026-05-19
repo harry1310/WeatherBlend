@@ -1,4 +1,3 @@
-using DuckDB.NET.Data;
 using Microsoft.Extensions.Logging;
 using Parquet.Serialization;
 using WeatherBlend.Config;
@@ -126,7 +125,7 @@ public sealed class Phase4bPredictCommand
         // per-NWP precip). 3e is .NET-written with the full PrecipPredictionRow
         // schema, so we carry every covariate column from 3e and just plug in
         // 4a's ProbWet for the mean.
-        var (rows4a, rows3eByKey) = await ReadBothPhasesAsync(parquet4a, parquet3eGlob, ct);
+        var (rows4a, rows3eByKey) = ReadBothPhases(parquet4a, parquet3eGlob, ct);
         if (rows4a.Count == 0) return (false, $"4a parquet at {parquet4a} read as empty");
         if (rows3eByKey.Count == 0) return (false, "3e parquet glob produced 0 rows across all anchors");
 
@@ -209,7 +208,7 @@ public sealed class Phase4bPredictCommand
     }
 
     /// <summary>
-    /// Read both phases via DuckDB. Returns:
+    /// Read both phases via <see cref="ParquetReader"/>. Returns:
     ///   - rows4a: dict (ValidTime, Lead) → ProbWet, from TODAY's 4a
     ///     parquet only. Today's 4a is the canonical "what physical
     ///     times are we synthesising for now" driver — older 4a
@@ -225,29 +224,25 @@ public sealed class Phase4bPredictCommand
     /// is Python-written and only carries ValidTimeUtc, LeadHours, ProbWet,
     /// PredictionMadeAtUtc, plus quantile bands we don't use here.
     /// Caller drives from rows4a and looks up the 3e row by (V, L).
+    ///
+    /// Each SELECT keeps its per-query ROW_NUMBER CTE inline — that is
+    /// exactly what <see cref="ParquetReader"/> is designed to allow; it
+    /// just lifts the open / read / dispose / "No files found" boilerplate.
     /// </summary>
-    private static async Task<(Dictionary<(DateTime ValidTime, int Lead), double> rows4a,
-                               Dictionary<(DateTime ValidTime, int Lead), PrecipPredictionRow> rows3eByKey)>
-        ReadBothPhasesAsync(string parquet4a, string parquet3eGlob, CancellationToken ct)
+    private (Dictionary<(DateTime ValidTime, int Lead), double> rows4a,
+             Dictionary<(DateTime ValidTime, int Lead), PrecipPredictionRow> rows3eByKey)
+        ReadBothPhases(string parquet4a, string parquet3eGlob, CancellationToken ct)
     {
-        await Task.Yield();   // keep async signature for symmetry; DuckDB is sync
-        using var conn = new DuckDBConnection("DataSource=:memory:");
-        conn.Open();
-
-        var p4aPath = parquet4a.Replace("\\", "/");
-        var p3eGlobDuck = parquet3eGlob.Replace("\\", "/");
-
         // 3e: glob across all anchor parquets for this station's
         // *_phase3e versions. ROW_NUMBER picks the freshest
         // PredictionMadeAtUtc per (ValidTime, Lead) — so an older
         // anchor only contributes a cell that today's anchor doesn't
         // (because the freshest wins per-cell). union_by_name = true
         // tolerates incidental schema drift across parquet versions.
-        var rows3e = new Dictionary<(DateTime, int), PrecipPredictionRow>();
         var sql3e = $@"
 WITH ranked AS (
   SELECT *, ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, LeadHours ORDER BY PredictionMadeAtUtc DESC) AS rn
-  FROM read_parquet('{p3eGlobDuck}', union_by_name = true)
+  FROM read_parquet('{ParquetReader.Glob(parquet3eGlob)}', union_by_name = true)
 )
 SELECT LocationName, TruthStation, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
        ProbWet, ClimatologyPWet,
@@ -255,64 +250,55 @@ SELECT LocationName, TruthStation, ModelVersion, PredictionMadeAtUtc, ValidTimeU
        PrecipMean, PrecipStd, PrecipMax, PrecipAgreementWet01,
        FeatureVectorHash
 FROM ranked WHERE rn = 1";
-        using (var cmd3e = conn.CreateCommand())
-        {
-            cmd3e.CommandText = sql3e;
-            using var r = cmd3e.ExecuteReader();
-            while (r.Read())
+        var rows3eList = ParquetReader.Query(
+            sql3e,
+            r => new PrecipPredictionRow
             {
-                var vt = r.GetDateTime(4);
-                var lead = (int)r.GetInt64(5);
-                rows3e[(vt, lead)] = new PrecipPredictionRow
-                {
-                    LocationName        = r.GetString(0),
-                    TruthStation        = r.GetString(1),
-                    ModelVersion        = r.GetString(2),
-                    PredictionMadeAtUtc = r.GetDateTime(3),
-                    ValidTimeUtc        = vt,
-                    LeadHours           = lead,
-                    ProbWet             = r.GetDouble(6),
-                    ClimatologyPWet     = r.IsDBNull(7)  ? 0.0  : r.GetDouble(7),
-                    PrecipGfs           = r.IsDBNull(8)  ? null : (double?)r.GetDouble(8),
-                    PrecipEcmwf         = r.IsDBNull(9)  ? null : (double?)r.GetDouble(9),
-                    PrecipIcon          = r.IsDBNull(10) ? null : (double?)r.GetDouble(10),
-                    PrecipMf            = r.IsDBNull(11) ? null : (double?)r.GetDouble(11),
-                    PrecipUkmo          = r.IsDBNull(12) ? null : (double?)r.GetDouble(12),
-                    PrecipGem           = r.IsDBNull(13) ? null : (double?)r.GetDouble(13),
-                    PrecipAifs          = r.IsDBNull(14) ? null : (double?)r.GetDouble(14),
-                    PrecipJma           = r.IsDBNull(15) ? null : (double?)r.GetDouble(15),
-                    PrecipMean          = r.IsDBNull(16) ? null : (double?)r.GetDouble(16),
-                    PrecipStd           = r.IsDBNull(17) ? null : (double?)r.GetDouble(17),
-                    PrecipMax           = r.IsDBNull(18) ? null : (double?)r.GetDouble(18),
-                    PrecipAgreementWet01 = r.IsDBNull(19) ? null : (double?)r.GetDouble(19),
-                    FeatureVectorHash   = r.IsDBNull(20) ? "" : r.GetString(20),
-                };
-            }
-        }
+                LocationName        = r.GetString(0),
+                TruthStation        = r.GetString(1),
+                ModelVersion        = r.GetString(2),
+                PredictionMadeAtUtc = r.GetDateTime(3),
+                ValidTimeUtc        = r.GetDateTime(4),
+                LeadHours           = (int)r.GetInt64(5),
+                ProbWet             = r.GetDouble(6),
+                ClimatologyPWet     = r.IsDBNull(7)  ? 0.0  : r.GetDouble(7),
+                PrecipGfs           = r.IsDBNull(8)  ? null : (double?)r.GetDouble(8),
+                PrecipEcmwf         = r.IsDBNull(9)  ? null : (double?)r.GetDouble(9),
+                PrecipIcon          = r.IsDBNull(10) ? null : (double?)r.GetDouble(10),
+                PrecipMf            = r.IsDBNull(11) ? null : (double?)r.GetDouble(11),
+                PrecipUkmo          = r.IsDBNull(12) ? null : (double?)r.GetDouble(12),
+                PrecipGem           = r.IsDBNull(13) ? null : (double?)r.GetDouble(13),
+                PrecipAifs          = r.IsDBNull(14) ? null : (double?)r.GetDouble(14),
+                PrecipJma           = r.IsDBNull(15) ? null : (double?)r.GetDouble(15),
+                PrecipMean          = r.IsDBNull(16) ? null : (double?)r.GetDouble(16),
+                PrecipStd           = r.IsDBNull(17) ? null : (double?)r.GetDouble(17),
+                PrecipMax           = r.IsDBNull(18) ? null : (double?)r.GetDouble(18),
+                PrecipAgreementWet01 = r.IsDBNull(19) ? null : (double?)r.GetDouble(19),
+                FeatureVectorHash   = r.IsDBNull(20) ? "" : r.GetString(20),
+            },
+            _log,
+            $"3e prediction tree empty for glob {parquet3eGlob} — nothing to synthesise from",
+            ct);
+        var rows3e = rows3eList.ToDictionary(r => (r.ValidTimeUtc, r.LeadHours), r => r);
 
         // 4a: today's parquet only. Dedupe by freshest PMT per (V, L)
         // in case the file holds multiple intra-day cycles.
-        var rows4a = new Dictionary<(DateTime, int), double>();
         var sql4a = $@"
 WITH ranked AS (
   SELECT ValidTimeUtc, LeadHours, ProbWet, PredictionMadeAtUtc,
          ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, LeadHours ORDER BY PredictionMadeAtUtc DESC) AS rn
-  FROM read_parquet('{p4aPath}', union_by_name = true)
+  FROM read_parquet('{ParquetReader.Glob(parquet4a)}', union_by_name = true)
 )
 SELECT ValidTimeUtc, LeadHours, ProbWet
 FROM ranked WHERE rn = 1";
-        using (var cmd4a = conn.CreateCommand())
-        {
-            cmd4a.CommandText = sql4a;
-            using var r = cmd4a.ExecuteReader();
-            while (r.Read())
-            {
-                var vt = r.GetDateTime(0);
-                var lead = (int)r.GetInt64(1);
-                var p = r.GetDouble(2);
-                rows4a[(vt, lead)] = p;
-            }
-        }
+        var rows4aList = ParquetReader.Query(
+            sql4a,
+            r => (ValidTime: r.GetDateTime(0), Lead: (int)r.GetInt64(1), ProbWet: r.GetDouble(2)),
+            _log,
+            $"4a parquet {parquet4a} read as empty",
+            ct);
+        var rows4a = rows4aList.ToDictionary(t => (t.ValidTime, t.Lead), t => t.ProbWet);
+
         return (rows4a, rows3e);
     }
 
