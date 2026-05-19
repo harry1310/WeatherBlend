@@ -74,15 +74,38 @@ runs:
         # covers it too. Training (which needs multi-year history) runs from
         # a different workflow and pulls without filters.
         #
+        # data/truth/rainfall is the same shape of problem: ~10.5k tiny
+        # parquets (one day of 15-min totals each, location=/station=/date=
+        # hive layout) — only ~27 MiB but ~2.2 min, because the cost is
+        # per-object round-trips, not bytes. It's read in this workflow by
+        # exactly two consumers, both of which only need recent data:
+        #   - RenderSiteCommand via LoadRainfallTruth(now-windowDays, now);
+        #     every TruthRepository rainfall query is SQL-filtered on
+        #     ObservedTimeUtc, so only the last windowDays of partitions
+        #     are touched.
+        #   - PrecipPredictCommand's rich/3e/3d persistence features
+        #     (PrecipRichFeatureBuilder.LoadHourlyRain) — Prev24hMm /
+        #     Prev72hMm etc., a ≤72h lookback before the live run anchor.
+        # verify (deep history) runs from a different workflow and pulls
+        # unfiltered. The date= partition key is ObservedTimeUtc.Date, so
+        # the same 40-day date-window include used for forecasts applies
+        # verbatim and covers both consumers with wide margin.
+        #
+        # NB the 40-day slice assumes the workflow's window_days input is
+        # not pushed far past ~34 — the same pre-existing assumption the
+        # forecasts slice already bakes in. A retroactive for_date older
+        # than ~40 days is likewise unsupported by this workflow's sync
+        # (the forecast NWP inputs wouldn't be present either).
+        #
         # data/models is the other heavy tree (~585 MiB) — but ~474 MiB of
         # that is Phase 4a's per-cell BART artefacts (state_lead_*.rds +
         # arrays_lead_*.npz), excluded below since nothing here reads them.
-        # The remaining trees (predictions / era5 / metar / rainfall /
-        # reports) are tens of MiB each and stay full-copy.
-        FORECAST_INCLUDES=""
+        # The remaining trees (predictions / era5 / metar / reports) are
+        # tens of MiB each and stay full-copy.
+        DATE_WINDOW_INCLUDES=""
         for i in $(seq 0 40); do
           d=$(date -u -d "$i days ago" +%Y-%m-%d)
-          FORECAST_INCLUDES="$FORECAST_INCLUDES --include **/date=$d/**"
+          DATE_WINDOW_INCLUDES="$DATE_WINDOW_INCLUDES --include **/date=$d/**"
         done
 
         for tree in \
@@ -96,10 +119,10 @@ runs:
             data/forecasts; do
           mkdir -p "${tree}"
           echo "::group::sync ${tree}"
-          # Per-tree extra rclone flags (word-split, same as FORECAST_INCLUDES).
+          # Per-tree extra rclone flags (word-split, same as DATE_WINDOW_INCLUDES).
           EXTRA=""
-          if [ "$tree" = "data/forecasts" ]; then
-            EXTRA="$FORECAST_INCLUDES"
+          if [ "$tree" = "data/forecasts" ] || [ "$tree" = "data/truth/rainfall" ]; then
+            EXTRA="$DATE_WINDOW_INCLUDES"
           elif [ "$tree" = "data/models" ]; then
             # Phase 4a's per-cell BART artefacts — state_lead_*.rds (~452 MiB)
             # + arrays_lead_*.npz (~21 MiB) — are consumed ONLY by
