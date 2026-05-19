@@ -162,6 +162,7 @@ public static class Program
                 services.AddTransient<GefsBackfillCommand>();
                 services.AddTransient<EcmwfBackfillCommand>();
                 services.AddTransient<StatusCommand>();
+                services.AddTransient<PrecipTrainCommand>();
                 services.AddTransient<TempTrainCommand>();
                 services.AddTransient<InspectCommand>();
                 services.AddTransient<CompareCommand>();
