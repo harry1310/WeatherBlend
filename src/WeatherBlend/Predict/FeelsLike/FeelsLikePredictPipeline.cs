@@ -142,17 +142,26 @@ public static class FeelsLikePredictPipeline
     private record Sample(double Value, DateTime PredictionMadeAt);
 
     /// <summary>
-    /// Per-station Active version pick. Every target manifest is
-    /// location-keyed; temperature and the element_* blenders alike resolve
-    /// their Active version through the location/station key. Returns an
-    /// empty string when there's no Active version for this (target,
-    /// station) — the caller treats that as "no input data" (same path as
-    /// "predictions parquet not found") so the pipeline returns an empty
-    /// rows list and the command returns soft-skip code 3. Phase C commit 3
-    /// fix-up (2026-05-20): previously threw an InvalidOperationException
-    /// which the predict-and-render workflow propagated as exit 1, failing
-    /// the whole job whenever a non-primary location had no element
-    /// bundles trained yet (Membury, post-3c rollout).
+    /// Per-station champion version pick. Resolves the (target, station) cell's
+    /// champion via <see cref="ModelArtifact.ResolveStationChampionVersion"/> —
+    /// i.e. the newest Active version of phases.yaml's declared champion phase
+    /// for that target. Returns an empty string in two soft-skip cases (the
+    /// caller treats both as "no input data" and the command returns exit
+    /// code 3): the station has no Active version at all, or its Active list
+    /// holds no version of the champion phase.
+    ///
+    /// History — Phase C commit 3 fix-up (2026-05-20) wrapped the previous
+    /// `throw` in a soft-skip so a non-primary location with no element
+    /// bundles wouldn't fail the whole job. That hotfix exposed an older
+    /// latent bug: the original implementation returned <c>active[0]</c>
+    /// ("first Active = champion"), which silently broke for Bonehill
+    /// temperature once the 2026-05-17 auto-retrain promoted three new
+    /// bundles into the Active list without displacing the older 2d entry
+    /// sitting at index 0. That stale 2d started producing 0 rows for live
+    /// anchors, the pick-first heuristic kept selecting it, and feels-like
+    /// has been reading its empty / missing date partition ever since —
+    /// home-page UTCI / feels-like data ran out mid-week. The fix routes
+    /// through the same champion resolver every other predict path uses.
     /// </summary>
     private static string PickActiveStationVersion(string modelsRoot, string target, string stationKey, ILogger log)
     {
@@ -163,10 +172,18 @@ public static class FeelsLikePredictPipeline
                 target, stationKey);
             return "";
         }
+        var champion = ModelArtifact.ResolveStationChampionVersion(modelsRoot, target, stationKey);
+        if (string.IsNullOrEmpty(champion))
+        {
+            log.LogWarning(
+                "  {Target}/{Station}: {N} Active version(s) but none of the champion phase — feels-like will soft-skip this input.",
+                target, stationKey, active.Count);
+            return "";
+        }
         if (active.Count > 1)
-            log.LogInformation("  {Target}/{Station}: {N} Active versions, using first ({V}).",
-                target, stationKey, active.Count, active[0]);
-        return active[0];
+            log.LogInformation("  {Target}/{Station}: {N} Active versions, using champion ({V}).",
+                target, stationKey, active.Count, champion);
+        return champion;
     }
 
     private static async Task<InputStream> LoadTemperatureLeanAsync(
