@@ -142,26 +142,33 @@ public static class FeelsLikePredictPipeline
     private record Sample(double Value, DateTime PredictionMadeAt);
 
     /// <summary>
-    /// Per-station champion version pick. Resolves the (target, station) cell's
-    /// champion via <see cref="ModelArtifact.ResolveStationChampionVersion"/> —
-    /// i.e. the newest Active version of phases.yaml's declared champion phase
-    /// for that target. Returns an empty string in two soft-skip cases (the
-    /// caller treats both as "no input data" and the command returns exit
-    /// code 3): the station has no Active version at all, or its Active list
-    /// holds no version of the champion phase.
+    /// Per-station version pick for a feels-like input. Prefers the
+    /// phases.yaml champion (via <see cref="ModelArtifact.ResolveStationChampionVersion"/>),
+    /// falls back to the first Active entry when the champion resolver
+    /// returns empty. Returns "" only when there's no Active version at all
+    /// (treated as "no input data", soft-skip exit 3).
     ///
-    /// History — Phase C commit 3 fix-up (2026-05-20) wrapped the previous
-    /// `throw` in a soft-skip so a non-primary location with no element
-    /// bundles wouldn't fail the whole job. That hotfix exposed an older
-    /// latent bug: the original implementation returned <c>active[0]</c>
-    /// ("first Active = champion"), which silently broke for Bonehill
-    /// temperature once the 2026-05-17 auto-retrain promoted three new
-    /// bundles into the Active list without displacing the older 2d entry
-    /// sitting at index 0. That stale 2d started producing 0 rows for live
-    /// anchors, the pick-first heuristic kept selecting it, and feels-like
-    /// has been reading its empty / missing date partition ever since —
-    /// home-page UTCI / feels-like data ran out mid-week. The fix routes
-    /// through the same champion resolver every other predict path uses.
+    /// History: the original implementation returned <c>active[0]</c>
+    /// outright ("first Active = champion"). That convention silently broke
+    /// for Bonehill temperature once the 2026-05-17 auto-retrain promoted
+    /// three new bundles without displacing the older 2d entry sitting at
+    /// index 0 — feels-like read the stale 2d's empty / missing date
+    /// partition and the home-page UTCI chart stopped advancing. Today's
+    /// straight champion-resolver swap (commit d6c5b12) fixed temperature
+    /// but exposed a SECOND latent mismatch: the element trainers stamp
+    /// <c>training_metadata.Phase</c> with a tag like <c>"lean-humidity"</c>
+    /// while phases.yaml declares each element's champion phase id as plain
+    /// <c>"humidity"</c>/<c>"wind"</c>/<c>"shortwave_radiation"</c>/<c>"cloud_cover"</c>.
+    /// Strict-champion lookup matches on Phase and returns empty for every
+    /// element, soft-skipping them and dropping feels-like to 0 rows.
+    ///
+    /// The fallback restores element behaviour (one Active version per
+    /// element station — <c>active[0]</c> is the right pick) while keeping
+    /// the temperature fix (where multiple Active versions live, champion
+    /// is correctly resolved and the fallback never fires). The proper
+    /// long-term cleanup is a phases.yaml / element-trainer pass to align
+    /// the phase tags; the fallback log makes the mismatch visible until
+    /// then.
     /// </summary>
     private static string PickActiveStationVersion(string modelsRoot, string target, string stationKey, ILogger log)
     {
@@ -172,18 +179,26 @@ public static class FeelsLikePredictPipeline
                 target, stationKey);
             return "";
         }
+
         var champion = ModelArtifact.ResolveStationChampionVersion(modelsRoot, target, stationKey);
-        if (string.IsNullOrEmpty(champion))
+        if (!string.IsNullOrEmpty(champion))
         {
-            log.LogWarning(
-                "  {Target}/{Station}: {N} Active version(s) but none of the champion phase — feels-like will soft-skip this input.",
-                target, stationKey, active.Count);
-            return "";
+            if (active.Count > 1)
+                log.LogInformation("  {Target}/{Station}: {N} Active versions, using champion ({V}).",
+                    target, stationKey, active.Count, champion);
+            return champion;
         }
-        if (active.Count > 1)
-            log.LogInformation("  {Target}/{Station}: {N} Active versions, using champion ({V}).",
-                target, stationKey, active.Count, champion);
-        return champion;
+
+        // Champion resolver returned empty — typically a phases.yaml champion-
+        // phase id vs trainer metadata.Phase mismatch (the element trainers
+        // stamp "lean-{element}" while phases.yaml declares "{element}").
+        // Fall back to the first Active entry; for elements that IS the only
+        // version anyway, so the fallback is behaviour-equivalent to the
+        // pre-d6c5b12 heuristic. Warn so the mismatch is visible.
+        log.LogWarning(
+            "  {Target}/{Station}: champion resolver returned no version — phases.yaml champion-phase / metadata.Phase tag mismatch?. Falling back to first Active ({V}).",
+            target, stationKey, active[0]);
+        return active[0];
     }
 
     private static async Task<InputStream> LoadTemperatureLeanAsync(
