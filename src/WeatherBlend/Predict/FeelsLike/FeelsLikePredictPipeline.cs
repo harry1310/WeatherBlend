@@ -144,16 +144,25 @@ public static class FeelsLikePredictPipeline
     /// <summary>
     /// Per-station Active version pick. Every target manifest is
     /// location-keyed; temperature and the element_* blenders alike resolve
-    /// their Active version through the location/station key. FeelsLike
-    /// operates on the primary location only today; revisit when a
-    /// Membury FeelsLike page is wired up.
+    /// their Active version through the location/station key. Returns an
+    /// empty string when there's no Active version for this (target,
+    /// station) — the caller treats that as "no input data" (same path as
+    /// "predictions parquet not found") so the pipeline returns an empty
+    /// rows list and the command returns soft-skip code 3. Phase C commit 3
+    /// fix-up (2026-05-20): previously threw an InvalidOperationException
+    /// which the predict-and-render workflow propagated as exit 1, failing
+    /// the whole job whenever a non-primary location had no element
+    /// bundles trained yet (Membury, post-3c rollout).
     /// </summary>
     private static string PickActiveStationVersion(string modelsRoot, string target, string stationKey, ILogger log)
     {
         var active = ModelArtifact.ResolveStationActive(modelsRoot, target, stationKey);
         if (active.Count == 0)
-            throw new InvalidOperationException(
-                $"No Active version for {target}/{stationKey}; train it first.");
+        {
+            log.LogWarning("  {Target}/{Station}: no Active version in manifest — feels-like will soft-skip this input.",
+                target, stationKey);
+            return "";
+        }
         if (active.Count > 1)
             log.LogInformation("  {Target}/{Station}: {N} Active versions, using first ({V}).",
                 target, stationKey, active.Count, active[0]);
@@ -165,6 +174,8 @@ public static class FeelsLikePredictPipeline
         string stationKey, CancellationToken ct)
     {
         var version = PickActiveStationVersion(modelsRoot, "temperature", stationKey, log);
+        if (string.IsNullOrEmpty(version))
+            return new InputStream(version, new Dictionary<(int, DateTime), Sample>());
         var path = Path.Combine(predictionsRoot, "temperature", stationKey,
             $"model_version={version}", $"date={anchor:yyyy-MM-dd}", "predictions.parquet");
         if (!File.Exists(path))
@@ -187,6 +198,8 @@ public static class FeelsLikePredictPipeline
         DateTime anchor, string locationName, CancellationToken ct)
     {
         var version = PickActiveStationVersion(modelsRoot, target.ModelDirName, locationName, log);
+        if (string.IsNullOrEmpty(version))
+            return new InputStream(version, new Dictionary<(int, DateTime), Sample>());
         var path = Path.Combine(predictionsRoot, target.ModelDirName,
             $"model_version={version}", $"date={anchor:yyyy-MM-dd}", "predictions.parquet");
         if (!File.Exists(path))
