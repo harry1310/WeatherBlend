@@ -72,14 +72,19 @@ public sealed class RenderSiteCommand
             windowStart, predictionEnd, rollingWindowDays, outputDir);
 
         // Site rendering is primary-location-only until Phase D wires
-        // per-loc URL prefixes. Pass [primary] explicitly so the repo's
-        // location filter stays an opt-in concern, not a hidden default —
-        // when Phase D iterates locations this becomes `[active.Name]` per
-        // loop body and `active` is the current iteration value.
-        var activeLocFilter = new[] { active.Name };
-        var predictions = _predictions.GetTemperaturePredictions(activeLocFilter, windowStart, predictionEnd, ct);
-        _log.LogInformation("Loaded {N} temperature prediction rows (location={Loc}).",
-            predictions.Count, active.Name);
+        // per-loc URL prefixes. The home / skill / forecast pages use the
+        // `predictions` list scoped to the active location below. The
+        // Models page additionally needs to discover OTHER locations'
+        // trained versions so Bonehill + Membury surface as separate H3
+        // sections (Phase C commit 4); fetch unfiltered once and slice
+        // for the active-loc consumers to keep it to a single DuckDB scan.
+        var predictionsAllLocs = _predictions.GetTemperaturePredictions(
+            locations: null, windowStart, predictionEnd, ct);
+        var predictions = predictionsAllLocs
+            .Where(p => string.Equals(p.LocationName, active.Name, StringComparison.Ordinal))
+            .ToList();
+        _log.LogInformation("Loaded {N} temperature prediction rows (location={Loc}; {AllN} across all locs).",
+            predictions.Count, active.Name, predictionsAllLocs.Count);
 
         // Precip + dry-window come back as the canonical domain rows from the
         // repo; the renderer projects to its lighter SitePages records below.
@@ -248,7 +253,9 @@ public sealed class RenderSiteCommand
             DisplayName: string.IsNullOrWhiteSpace(loc.DisplayName) ? loc.Name : loc.DisplayName,
             RainStationSlugs: loc.Rainfall.Stations.Select(s => StationSlug.WithEaPrefix(s.Name)).ToList(),
             IsPrimary: idx == 0)).ToList();
-        var modelSummaries = LoadModelSummaries(predictions, precip, dryWindow, activeStationSlugs);
+        // predictionsAllLocs (not predictions) so Membury temp versions surface
+        // on the Models page alongside Bonehill's — see the fetch block above.
+        var modelSummaries = LoadModelSummaries(predictionsAllLocs, precip, dryWindow, activeStationSlugs);
         _log.LogInformation("Loaded {N} model summaries for Models page.", modelSummaries.Count);
         var featureSpecRows = LoadFeatureSpecRows(predictions, precip, dryWindow, activeStationSlugs, modelSummaries);
         _log.LogInformation("Loaded {N} feature spec rows for Spec page.", featureSpecRows.Count);
@@ -540,12 +547,13 @@ public sealed class RenderSiteCommand
             if (!byKey.TryGetValue((composite, version), out var summary)) return;
             var dir = composite switch
             {
-                // Temperature: per-station (per-location) layout post-2026-05-14.
-                // Composite collapses to "temperature" for the renderer but on
-                // disk the version lives under {modelsRoot}/temperature/{station}/{version}/.
-                // Locate the directory by scanning each station entry; this is a
-                // bounded handful of stations so the linear search is fine.
-                "temperature" => FindTemperatureVersionDir(modelsRoot, version),
+                // Phase C commit 4 (2026-05-20): temperature composite is now
+                // "temperature/{station}" (where station = location slug) so
+                // Bonehill + Membury surface as separate Models-page sections.
+                // Directory layout is unchanged: {modelsRoot}/temperature/{station}/{version}/.
+                _ when composite.StartsWith("temperature/", StringComparison.Ordinal) =>
+                    Path.Combine(modelsRoot, "temperature",
+                        composite["temperature/".Length..], version),
                 _ when composite.StartsWith("precipitation/", StringComparison.Ordinal) =>
                     Path.Combine(modelsRoot, "precipitation",
                         composite["precipitation/".Length..], version),
@@ -627,17 +635,6 @@ public sealed class RenderSiteCommand
     /// matching dir exists (the version was deleted or predates the
     /// per-station migration).
     /// </summary>
-    private static string? FindTemperatureVersionDir(string modelsRoot, string version)
-    {
-        var tempRoot = Path.Combine(modelsRoot, "temperature");
-        if (!Directory.Exists(tempRoot)) return null;
-        foreach (var stationDir in Directory.EnumerateDirectories(tempRoot))
-        {
-            var candidate = Path.Combine(stationDir, version);
-            if (Directory.Exists(candidate)) return candidate;
-        }
-        return null;
-    }
 
     private SitePages.ModelSummary? TryLoadSummary(string versionDir, string composite, string version, string metricLabel)
     {
