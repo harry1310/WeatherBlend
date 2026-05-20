@@ -210,25 +210,22 @@ public static partial class SitePages
 
     /// <summary>
     /// Map raw NWP id (Open-Meteo or S3 form) to the short label used in the
-    /// existing tables (GFS, ECMWF, AIFS, ICON, MF, UKMO Global, UKV, GEM, JMA).
+    /// existing tables. The 8 blender-input ids delegate to
+    /// <see cref="Nwp.DisplayLabel"/>; the raw-archive variants
+    /// (<c>*_oper</c>, <c>gfs_ncep</c>, <c>met_office_global</c>,
+    /// <c>met_office_ukv</c>) collapse to the same short label as their
+    /// blender-input twin so a row sourced from raw S3 reads consistently
+    /// with the Open-Meteo blender row.
     /// Unknown ids fall back to themselves so a newly-added model doesn't
     /// silently disappear.
     /// </summary>
     private static string NwpShort(string nwpId) => nwpId switch
     {
-        "gfs_seamless"               => "GFS",
-        "gfs_ncep"                   => "GFS",
-        "ecmwf_ifs025"               => "ECMWF",
-        "ecmwf_ifs_oper"             => "ECMWF",
-        "ecmwf_aifs025_single"       => "AIFS",
-        "ecmwf_aifs_oper"            => "AIFS",
-        "icon_seamless"              => "ICON",
-        "meteofrance_seamless"       => "MF",
-        "ukmo_seamless"              => "UKMO",
-        "met_office_global"          => "UKMO Global",
-        "met_office_ukv"             => "UKV",
-        "gem_seamless"               => "GEM",
-        "jma_seamless"               => "JMA",
-        _                            => nwpId,
+        "gfs_ncep"           => "GFS",
+        "ecmwf_ifs_oper"     => "ECMWF",
+        "ecmwf_aifs_oper"    => "AIFS",
+        "met_office_global"  => "UKMO Global",
+        "met_office_ukv"     => "UKV",
+        _                    => Nwp.DisplayLabel(nwpId),
     };
 }

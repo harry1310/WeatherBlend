@@ -19,41 +19,25 @@ public static class TempFeatureBuilder
     public const string Target = "temperature";
     public const string FeatureSet = "lean";
 
-    /// <summary>Canonical model ordering (matches the project's config.yaml models list).
-    /// AIFS sits at the end so adding it doesn't shift existing per-model feature indexes.
-    /// JMA / KNMI HARMONIE / DMI HARMONIE / raw Met Office UKV+Global partitions are in
-    /// the models registry (collected daily) but deliberately NOT in this list — the
-    /// bake-offs 2026-04-28 found their net effect on the blender ranges from zero
-    /// (raw MO, HARMONIE) to mixed (JMA: precip-only win pending Phase 3 rollout).
-    /// Adding to this list is only valid once a model is wired into a blender spec
-    /// AND has a per-model output field on the relevant TempPredictionRow type.
-    /// See memory/project_met_office_raw_negative_result.md +
-    /// project_jma_harmonie_bakeoff_2026-04-28.md.</summary>
-    public static readonly IReadOnlyList<string> CanonicalModelOrder = new[]
-    {
-        "gfs_seamless",
-        "ecmwf_ifs025",
-        "icon_seamless",
-        "meteofrance_seamless",
-        "ukmo_seamless",
-        "gem_seamless",
-        "ecmwf_aifs025_single",
-        "jma_seamless",
-    };
+    /// <summary>
+    /// Canonical model ordering for the blenders. Delegates to
+    /// <see cref="Nwp.BlenderModelIds"/> — single source of truth for the
+    /// blender-input set. AIFS sits at the end so adding it didn't shift
+    /// existing per-model feature indexes; JMA was appended for the same
+    /// reason. Adding to that list is only valid once a model is wired into
+    /// a blender spec AND has a per-model output field on the relevant
+    /// TempPredictionRow type. Raw MO / HARMONIE partitions are deliberately
+    /// excluded — see memory/project_met_office_raw_negative_result.md +
+    /// project_jma_harmonie_bakeoff_2026-04-28.md.
+    /// </summary>
+    public static IReadOnlyList<string> CanonicalModelOrder => Nwp.BlenderModelIds;
 
-    /// <summary>Stable short suffix used in feature column names (temp_gfs, temp_ecmwf, ...).</summary>
-    public static string ShortName(string modelId) => modelId switch
-    {
-        "gfs_seamless" => "gfs",
-        "ecmwf_ifs025" => "ecmwf",
-        "icon_seamless" => "icon",
-        "meteofrance_seamless" => "mf",
-        "ukmo_seamless" => "ukmo",
-        "gem_seamless" => "gem",
-        "ecmwf_aifs025_single" => "aifs",
-        "jma_seamless" => "jma",
-        _ => throw new ArgumentException($"Unknown modelId '{modelId}'", nameof(modelId)),
-    };
+    /// <summary>
+    /// Stable short suffix used in feature column names
+    /// (<c>temp_gfs</c>, <c>temp_ecmwf</c>, ...). Delegates to
+    /// <see cref="Nwp.ColumnSuffix"/>.
+    /// </summary>
+    public static string ShortName(string modelId) => Nwp.ColumnSuffix(modelId);
 
     // -----------------------------------------------------------------------
     // New canonical API (post unify-model-membership refactor)

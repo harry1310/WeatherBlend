@@ -67,4 +67,24 @@ public static class Nwp
     /// </summary>
     public static string SqlInList()
         => "(" + string.Join(",", BlenderModelIds.Select(id => $"'{id}'")) + ")";
+
+    /// <summary>
+    /// Lowercase short suffix used in feature column names
+    /// (<c>temp_gfs</c>, <c>rh_ecmwf</c>, <c>cc_aifs</c>, ...). Distinct from
+    /// <see cref="DisplayLabel"/> which returns the uppercase chart-legend
+    /// form. Throws on unknown ids so a typo in a feature builder fails the
+    /// build instead of silently producing a malformed column name.
+    /// </summary>
+    public static string ColumnSuffix(string modelId) => modelId switch
+    {
+        "gfs_seamless"          => "gfs",
+        "ecmwf_ifs025"          => "ecmwf",
+        "icon_seamless"         => "icon",
+        "meteofrance_seamless"  => "mf",
+        "ukmo_seamless"         => "ukmo",
+        "gem_seamless"          => "gem",
+        "ecmwf_aifs025_single"  => "aifs",
+        "jma_seamless"          => "jma",
+        _ => throw new ArgumentException($"Unknown modelId '{modelId}'", nameof(modelId)),
+    };
 }
