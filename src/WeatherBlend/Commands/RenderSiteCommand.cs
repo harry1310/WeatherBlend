@@ -1216,8 +1216,7 @@ FROM ranked WHERE rn = 1 ORDER BY station_slug, valid_time, lead";
         ct.ThrowIfCancellationRequested();
         var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.ForecastsPath, "**", "*.parquet"));
 
-        var nwpFilter = "('gfs_seamless','ecmwf_ifs025','icon_seamless','meteofrance_seamless'," +
-                        "'ukmo_seamless','gem_seamless','ecmwf_aifs025_single','jma_seamless')";
+        var nwpFilter = WeatherBlend.Train.Common.Nwp.SqlInList();
 
         var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
 
@@ -1255,8 +1254,7 @@ FROM ranked WHERE rn = 1 ORDER BY LocationName, Model, ValidTimeUtc";
         ct.ThrowIfCancellationRequested();
         var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.ForecastsPath, "**", "*.parquet"));
 
-        var nwpFilter = "('gfs_seamless','ecmwf_ifs025','icon_seamless','meteofrance_seamless'," +
-                        "'ukmo_seamless','gem_seamless','ecmwf_aifs025_single','jma_seamless')";
+        var nwpFilter = WeatherBlend.Train.Common.Nwp.SqlInList();
 
         var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
 
@@ -1293,8 +1291,7 @@ FROM ranked WHERE rn = 1 ORDER BY LocationName, Model, ValidTimeUtc";
         ct.ThrowIfCancellationRequested();
         var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.ForecastsPath, "**", "*.parquet"));
 
-        var nwpFilter = "('gfs_seamless','ecmwf_ifs025','icon_seamless','meteofrance_seamless'," +
-                        "'ukmo_seamless','gem_seamless','ecmwf_aifs025_single','jma_seamless')";
+        var nwpFilter = WeatherBlend.Train.Common.Nwp.SqlInList();
 
         var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
 

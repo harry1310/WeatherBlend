@@ -804,24 +804,8 @@ public static partial class SitePages
         return content.ToString();
     }
 
-    /// <summary>Map an Open-Meteo model id to the short label used in
-    /// <see cref="NwpsForPrecipitation"/> ("gfs_seamless" → "GFS", etc.).
-    /// Falls back to the raw model id when unrecognised. Only ~4 NWPs
-    /// publish <c>precipitation_probability</c> via Open-Meteo (GFS / ECMWF
-    /// / ICON / GEM); the others have no PoP rows in the forecasts tree
-    /// and silently drop out of any legend that filters by "has PoP rows".</summary>
-    private static string LookupNwpLabel(string modelId) => modelId switch
-    {
-        "gfs_seamless"          => "GFS",
-        "ecmwf_ifs025"          => "ECMWF",
-        "icon_seamless"         => "ICON",
-        "meteofrance_seamless"  => "MF",
-        "ukmo_seamless"         => "UKMO",
-        "gem_seamless"          => "GEM",
-        "ecmwf_aifs025_single"  => "AIFS",
-        "jma_seamless"          => "JMA",
-        _ => modelId,
-    };
+    // LookupNwpLabel moved to WeatherBlend.Train.Common.Nwp.DisplayLabel
+    // 2026-05-20 — same constant, three previous duplicates collapsed.
 
     // -------------------------------------------------------------------------------
     // Dry-window vs observed. One table per station × window length showing each

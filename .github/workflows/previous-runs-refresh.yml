@@ -101,19 +101,31 @@ jobs:
           acl = private
           EOF
 
-      - name: Sync phases.yaml to R2
-        # Single source of truth for the active-phase registry lives at
-        # src/WeatherBlend/config/phases.yaml. Pushing it to R2 on every
-        # run keeps the WeatherProbabilistic side (retrain-python.yml) in
+      - name: Sync phases.yaml + config.yaml to R2
+        # Single source of truth for the active-phase registry +
+        # location / station / NWP catalogue lives in
+        # src/WeatherBlend/{Config/phases.yaml, config.yaml}. Pushing both
+        # to R2 on every refresh keeps WeatherProbabilistic
+        # (retrain-python / predict-4a / predict-5a / 5a-runner-smoke) in
         # sync with WB's main without a cross-repo checkout step. rclone
-        # copy is a no-op when the file is unchanged. --s3-no-check-bucket
-        # skips the CreateBucket probe rclone otherwise does on first
-        # write to a new prefix (the IAM token doesn't grant CreateBucket
-        # and 403s the whole copy).
+        # copy is a no-op when the file is unchanged.
+        #
+        # config.yaml added 2026-05-20: WeatherProbabilistic's src/data.py
+        # used to hand-curate STATIONS_BY_LOCATION + STATION_NAME_BY_SLUG
+        # in parallel with this file; one Princetown removal + Membury
+        # addition later, those copies had drifted. WP now loads
+        # config.yaml at import time and derives station + location
+        # metadata from it.
+        #
+        # --s3-no-check-bucket skips the CreateBucket probe rclone
+        # otherwise does on first write to a new prefix (the IAM token
+        # doesn't grant CreateBucket and 403s the whole copy).
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
           rclone copy ./src/WeatherBlend/Config/phases.yaml "r2:${R2_BUCKET}/config/" \
+            --fast-list --checkers 4 --s3-no-check-bucket
+          rclone copy ./src/WeatherBlend/config.yaml "r2:${R2_BUCKET}/config/" \
             --fast-list --checkers 4 --s3-no-check-bucket
 
       - name: Compute refresh window

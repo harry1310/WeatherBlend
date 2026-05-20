@@ -203,7 +203,7 @@ public static partial class SitePages
             .GroupBy(t => t.Model)
             .OrderBy(g => g.Key, StringComparer.Ordinal))
         {
-            var label = LookupNwpLabel(grp.Key);
+            var label = Nwp.DisplayLabel(grp.Key);
             if (!tempPalette.TryGetValue(label, out var colour)) colour = "#999";
             var pts = grp
                 .OrderBy(t => t.ValidTimeUtc)
@@ -582,7 +582,7 @@ public static partial class SitePages
                 .GroupBy(p => p.Model)
                 .OrderBy(g => g.Key, StringComparer.Ordinal))
             {
-                var label = LookupNwpLabel(grp.Key);
+                var label = Nwp.DisplayLabel(grp.Key);
                 if (!popPalette.TryGetValue(label, out var colour)) colour = "#999";
                 var pts = grp
                     .OrderBy(p => p.ValidTimeUtc)
@@ -634,7 +634,7 @@ public static partial class SitePages
                 .GroupBy(t => t.Model)
                 .OrderBy(g => g.Key, StringComparer.Ordinal))
             {
-                var label = LookupNwpLabel(grp.Key);
+                var label = Nwp.DisplayLabel(grp.Key);
                 if (!ratePalette.TryGetValue(label, out var colour)) colour = "#999";
                 var pts = grp
                     .OrderBy(t => t.ValidTimeUtc)
