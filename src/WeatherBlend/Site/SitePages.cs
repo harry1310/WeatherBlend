@@ -162,6 +162,34 @@ public static partial class SitePages
         IReadOnlyList<string> RainStationSlugs,
         bool IsPrimary);
 
+    /// <summary>
+    /// First-pick location for legacy "single-location render" sites. Returns
+    /// the <see cref="LocationDescriptor.IsPrimary"/> entry if one exists,
+    /// otherwise the first entry, or <c>null</c> for an empty list. Phase D
+    /// will drop this concept (every location is rendered the same way under
+    /// its own URL prefix); until then, the 11 sites that need "the primary"
+    /// route through here so the lookup is consistent.
+    /// </summary>
+    internal static LocationDescriptor? PrimaryLocation(IReadOnlyList<LocationDescriptor> locations)
+        => locations.Count == 0
+            ? null
+            : locations.FirstOrDefault(l => l.IsPrimary) ?? locations[0];
+
+    /// <summary>
+    /// Resolve a named location for per-loc pages. <paramref name="locationName"/>
+    /// null/empty falls through to <see cref="PrimaryLocation"/>; a non-empty
+    /// name does a case-insensitive lookup and returns null if no match. Used
+    /// by the Rain forecast + Rain skill pages where the location is the URL
+    /// segment.
+    /// </summary>
+    internal static LocationDescriptor? ResolveActiveLocation(
+        IReadOnlyList<LocationDescriptor> locations, string? locationName)
+    {
+        if (string.IsNullOrEmpty(locationName)) return PrimaryLocation(locations);
+        return locations.FirstOrDefault(l =>
+            l.Name.Equals(locationName, StringComparison.OrdinalIgnoreCase));
+    }
+
     public sealed record SiteInputs
     {
         /// <summary>Config slug (e.g. <c>bonehill_rocks</c>) of the location

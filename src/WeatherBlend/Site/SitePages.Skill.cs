@@ -186,7 +186,7 @@ public static partial class SitePages
     /// </summary>
     public static string RenderRainSkill(SiteInputs input, string? stationSlug, string? locationName)
     {
-        var active = ResolveSkillLocation(input.Locations, locationName);
+        var active = ResolveActiveLocation(input.Locations, locationName);
         var activeName = active?.Name ?? "";
         var stations = GetRainSkillStations(input, active);
         var currentStation = ResolveStationFromSlug(stations, stationSlug);
@@ -226,16 +226,6 @@ public static partial class SitePages
             ? "Skill — rain"
             : $"Skill — rain — {active.DisplayName}";
         return WrapPage(input, pageTitle, "skill", content.ToString());
-    }
-
-    private static LocationDescriptor? ResolveSkillLocation(
-        IReadOnlyList<LocationDescriptor> locations, string? locationName)
-    {
-        if (locations.Count == 0) return null;
-        if (string.IsNullOrEmpty(locationName))
-            return locations.FirstOrDefault(l => l.IsPrimary) ?? locations[0];
-        return locations.FirstOrDefault(l =>
-            l.Name.Equals(locationName, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
@@ -473,7 +463,7 @@ public static partial class SitePages
         // forecaster's view, not a truth source.
         // MO Spot temp filtered to the +24h lead bucket [24, 47] — matches the
         // rain skill chart's convention and our blender's lead-band training.
-        var primaryLocName = input.Locations.FirstOrDefault(l => l.IsPrimary)?.Name ?? "";
+        var primaryLocName = PrimaryLocation(input.Locations)?.Name ?? "";
         var moSpotPts = input.MetOfficeSpotForecasts
             .Where(m => m.ValidTimeUtc >= input.WindowStartUtc
                         && m.Temperature2m.HasValue

@@ -375,7 +375,7 @@ public sealed class RenderSiteCommand
         // include Membury stations (because activeStationSlugs is the
         // union); pass the primary descriptor so the legacy URL surfaces
         // only Bonehill stations.
-        var primaryLoc = input.Locations.FirstOrDefault(l => l.IsPrimary);
+        var primaryLoc = SitePages.PrimaryLocation(input.Locations);
         var rainStations = SitePages.GetRainSkillStations(input, primaryLoc);
         await File.WriteAllTextAsync(Path.Combine(outputDir, "skill-rainfall.html"),
             SitePages.RenderRainSkill(input, null, locationName: null), ct);

@@ -47,7 +47,7 @@ public static partial class SitePages
         // verify-history filters so legacy sidecars (which had Station=null
         // because they predate the per-loc composite key) still surface on
         // the primary card. Membury / future-loc cards do strict equality.
-        var primaryLocSlug = input.Locations.FirstOrDefault(l => l.IsPrimary)?.Name
+        var primaryLocSlug = PrimaryLocation(input.Locations)?.Name
             ?? input.ActiveLocationName
             ?? "";
 

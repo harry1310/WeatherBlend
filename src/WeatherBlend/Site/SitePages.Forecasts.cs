@@ -66,8 +66,8 @@ public static partial class SitePages
     /// </summary>
     public static string RenderForecastsRain(SiteInputs input, int lead, string? locationName)
     {
-        var primary = input.Locations.FirstOrDefault(l => l.IsPrimary);
-        var active = ResolveActiveLocation(input.Locations, locationName) ?? primary;
+        var active = ResolveActiveLocation(input.Locations, locationName)
+                     ?? PrimaryLocation(input.Locations);
         var activeName = active?.Name ?? "";
 
         var body = new StringBuilder();
@@ -96,16 +96,6 @@ public static partial class SitePages
             ? $"Rain forecast +{lead}h"
             : $"Rain forecast — {active.DisplayName} +{lead}h";
         return WrapPage(input, pageTitle, "forecasts", body.ToString());
-    }
-
-    private static LocationDescriptor? ResolveActiveLocation(
-        IReadOnlyList<LocationDescriptor> locations, string? locationName)
-    {
-        if (locations.Count == 0) return null;
-        if (string.IsNullOrEmpty(locationName))
-            return locations.FirstOrDefault(l => l.IsPrimary) ?? locations[0];
-        return locations.FirstOrDefault(l =>
-            l.Name.Equals(locationName, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
@@ -196,7 +186,7 @@ public static partial class SitePages
         // Temperature pages are primary-location-only (no per-location URLs yet),
         // so filter raw NWP rows to the primary location to avoid contaminating
         // the chart with other configured locations' grid-cell temperatures.
-        var primaryLocName = input.Locations.FirstOrDefault(l => l.IsPrimary)?.Name ?? "";
+        var primaryLocName = PrimaryLocation(input.Locations)?.Name ?? "";
         foreach (var grp in input.NwpTemperatures
             .Where(t => string.IsNullOrEmpty(primaryLocName)
                         || string.Equals(t.LocationName, primaryLocName, StringComparison.OrdinalIgnoreCase))
@@ -566,7 +556,7 @@ public static partial class SitePages
         // drop out of the legend silently.
         var activeLocName = activeLocation?.Name ?? "";
         var activeLocDisplay = activeLocation?.DisplayName
-            ?? input.Locations.FirstOrDefault(l => l.IsPrimary)?.DisplayName
+            ?? PrimaryLocation(input.Locations)?.DisplayName
             ?? "primary";
         bool MatchesActiveLoc(string locName)
             => string.IsNullOrEmpty(activeLocName)
