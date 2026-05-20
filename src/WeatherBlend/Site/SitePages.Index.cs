@@ -28,10 +28,11 @@ public static partial class SitePages
             throw new ArgumentOutOfRangeException(nameof(dayOffset),
                 $"Home dayOffset must be in [0, {MaxHomeDayOffset}].");
 
+        var (firstHour, lastHourExcl) = OverviewWindow(input);
         var todayUtc = input.GeneratedAtUtc.Date;
         var dayUtc = todayUtc.AddDays(dayOffset);
-        var dayWindowStart = dayUtc.AddHours(HomeFirstVisibleHourUtc);
-        var dayWindowEnd   = dayUtc.AddHours(HomeLastVisibleHourUtcExclusive);
+        var dayWindowStart = dayUtc.AddHours(firstHour);
+        var dayWindowEnd   = dayUtc.AddHours(lastHourExcl);
 
         // Champion-only filter, per lead. ChampionByLead pins specific
         // (lead → version) overrides (e.g. 2d champions lead 12h while 2b
@@ -168,22 +169,34 @@ public static partial class SitePages
         // for the top-nav highlight, so it must always be "index" — using
         // "index-N" silently broke the Home highlight on every forward-day
         // tab because NavActive("index-1", "index") returns false.
-        return WrapPage(input, "Home", "index", body.ToString());
+        return WrapPage(input, "Overview", "overview", body.ToString());
     }
 
-    /// <summary>UTC hour at which the home tile grid starts. Tiles before
-    /// this time are filtered out per user feedback (overnight hours aren't
-    /// useful for planning a climbing trip). Tightened from 04 → 05 on
-    /// 2026-05-07 (user request) — a 14h window 05–19Z is enough headroom
-    /// for "out before sunrise" through "back before dusk" on Dartmoor in
-    /// summer; the dropped 04Z + 20Z tiles were rarely-used edge hours.</summary>
+    /// <summary>Legacy default UTC hour at which the home tile grid starts.
+    /// Phase D made this per-location — see
+    /// <c>LocationConfig.Overview.FirstVisibleHourUtc</c>. Retained here for
+    /// test fixtures / callers that don't set <c>SiteInputs.RenderingFor</c>.
+    /// Bonehill's config.yaml carries 5 (matches the pre-Phase-D constant);
+    /// Membury wants the full 24h day so its config carries 0.</summary>
     public const int HomeFirstVisibleHourUtc = 5;
 
-    /// <summary>UTC hour at which the home tile grid ends, exclusive. Tiles
-    /// at or after this time are filtered out. Tightened from 21 → 20 on
-    /// 2026-05-07 alongside the start-hour change so the visible window is
-    /// 05:00Z..19:00Z inclusive.</summary>
+    /// <summary>Legacy default UTC hour at which the home tile grid ends
+    /// (exclusive). Phase D made this per-location — see
+    /// <c>LocationConfig.Overview.LastVisibleHourUtcExclusive</c>. Bonehill 20,
+    /// Membury 24.</summary>
     public const int HomeLastVisibleHourUtcExclusive = 20;
+
+    /// <summary>
+    /// Phase D — resolve the Overview tile-grid hour window from the per-loc
+    /// descriptor when <see cref="SiteInputs.RenderingFor"/> is set; fall back
+    /// to the legacy constants for test fixtures + pre-Phase-D callers.
+    /// </summary>
+    private static (int FirstHour, int LastHourExcl) OverviewWindow(SiteInputs input)
+    {
+        if (input.RenderingFor is { } loc)
+            return (loc.OverviewFirstVisibleHourUtc, loc.OverviewLastVisibleHourUtcExclusive);
+        return (HomeFirstVisibleHourUtc, HomeLastVisibleHourUtcExclusive);
+    }
 
     /// <summary>
     /// Day sub-nav for the home page — pill links labelled "Mon 4/5"
@@ -225,10 +238,11 @@ public static partial class SitePages
     /// </summary>
     private static int CountHomeDayTiles(SiteInputs input, int dayOffset)
     {
+        var (firstHour, lastHourExcl) = OverviewWindow(input);
         var todayUtc = input.GeneratedAtUtc.Date;
         var dayUtc = todayUtc.AddDays(dayOffset);
-        var dayWindowStart = dayUtc.AddHours(HomeFirstVisibleHourUtc);
-        var dayWindowEnd = dayUtc.AddHours(HomeLastVisibleHourUtcExclusive);
+        var dayWindowStart = dayUtc.AddHours(firstHour);
+        var dayWindowEnd = dayUtc.AddHours(lastHourExcl);
 
         string ChampionForLead(int lead)
         {

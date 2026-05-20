@@ -17,6 +17,20 @@ locations:
     longitude: -3.7931
     elevationMeters: 393
 
+    # Phase D nav tabs (2026-05-20). Bonehill is the full-stack location —
+    # temperature, rain, dry-window forecasts, plus skill + models. Listed
+    # order matches the site-nav left-to-right.
+    tabs: [overview, temperature, rain, dry_window, skill, models]
+
+    # Outdoor walking / climbing window — sleep hours dropped from the
+    # Overview tile grid. Pre-Phase-D this was the hardcoded constant
+    # HomeFirstVisibleHourUtc=5 / HomeLastVisibleHourUtcExclusive=20 in
+    # SitePages.Index (tightened from 04→05 / 21→20 on 2026-05-07 per
+    # user feedback). Phase D moves the same numbers into per-loc config.
+    overview:
+      firstVisibleHourUtc: 5
+      lastVisibleHourUtcExclusive: 20
+
     # METAR truth sources. Exeter is nearest but lowland (~30km SE, ~30m elev).
     # Yeovilton is further but more frequent reports.
     metar:
@@ -57,6 +71,19 @@ locations:
     latitude: 50.8254
     longitude: -3.0000
     elevationMeters: 120
+
+    # Phase D nav tabs (2026-05-20). Membury has temperature + rain bundles
+    # only — no dry-window modelling, no element blenders, no feels-like
+    # (Bonehill-only for now). Skill + Models pages auto-filter their
+    # internal sub-navs to {temperature, rain}.
+    tabs: [overview, temperature, rain, skill, models]
+
+    # User cares about rainfall around the clock at Membury — Overview
+    # tile grid shows the full 24h day rather than dropping sleep hours.
+    overview:
+      firstVisibleHourUtc: 0
+      lastVisibleHourUtcExclusive: 24
+
     # METAR truth sources. EGTE (Exeter Airport) is ~25 km SW of Membury;
     # EGDY (Yeovilton) is ~35 km E. Same airports Bonehill uses — METAR
     # text is per-ICAO, not per-location, so TruthRepository.GetMetarTemperature

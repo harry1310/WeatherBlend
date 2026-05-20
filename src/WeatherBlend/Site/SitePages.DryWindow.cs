@@ -51,10 +51,9 @@ public static partial class SitePages
     {
         var content = new StringBuilder();
         content.Append("<section>");
-        // Forecasts variable sub-nav at the very top so its Y position is
-        // fixed across all three forecasts pages (Temperature / Rain / Dry
-        // window). Header copy below.
-        content.Append(RenderForecastsSubNav("dry-window"));
+        // Phase D: the cross-variable Forecasts sub-nav is gone — each
+        // variable (Temperature / Rain / Dry window) is its own top-level
+        // per-loc nav button now.
         content.Append("""
               <hgroup>
                 <h2>Dry-window forecast</h2>
@@ -66,7 +65,7 @@ public static partial class SitePages
         {
             content.Append("<p><em>No dry-window predictions in window. Run <code>predict --target dry-window --truth-station all --window all</code>.</em></p>");
             content.Append("</section>");
-            return WrapPage(input, "Dry-window forecast", "forecasts", content.ToString());
+            return WrapPage(input, "Dry-window forecast", "dry-window", content.ToString());
         }
 
         // Filter station list to currently-active stations (from config) so a
@@ -92,7 +91,7 @@ public static partial class SitePages
         {
             content.Append("<p><em>No dry-window predictions for the selected station.</em></p>");
             content.Append("</section>");
-            return WrapPage(input, "Dry-window forecast", "forecasts", content.ToString());
+            return WrapPage(input, "Dry-window forecast", "dry-window", content.ToString());
         }
 
         content.Append(Ci, $"<h3>{Escape(PrettyStation(currentStation))}</h3>");
@@ -360,11 +359,8 @@ public static partial class SitePages
             <p class="skill-line">Dry hour = all four 15-min readings ≤ 0.1 mm. Search bounded to 09:00–18:00 local.</p>
             </section>
             """);
-        // pageId="forecasts" so the top-nav "Forecasts" stays highlighted
-        // when viewing dry-window — it's a sub-page reached via the
-        // Forecasts variable sub-nav. (The empty-state branches above
-        // already pass "forecasts" for the same reason.)
-        return WrapPage(input, "Dry window", "forecasts", content.ToString());
+        // Phase D: "dry-window" is a top-level per-loc tab.
+        return WrapPage(input, "Dry window", "dry-window", content.ToString());
     }
 
     /// <summary>One distinct line colour per forecast horizon on the

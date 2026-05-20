@@ -105,6 +105,40 @@ public sealed class LocationConfig
     public double ElevationMeters { get; set; }
     public MetarConfig Metar { get; set; } = new();
     public RainfallConfig Rainfall { get; set; } = new();
+
+    /// <summary>
+    /// Per-location nav tabs surfaced on the site (Phase D, 2026-05-20). Each
+    /// entry maps to one button in the location's site-nav and one set of
+    /// per-target pages under <c>/{Name}/...</c>. Recognised values:
+    /// <c>overview</c>, <c>temperature</c>, <c>rain</c>, <c>dry_window</c>,
+    /// <c>skill</c>, <c>models</c>. Skill + Models pages auto-filter their
+    /// internal target sub-navs to the intersection with this list (so a
+    /// location with <c>skill</c> but no <c>dry_window</c> renders a skill
+    /// page with no dry-window sub-tab). Empty list = render nothing for the
+    /// location; useful only for a config that's mid-onboarding.
+    /// </summary>
+    public List<string> Tabs { get; set; } = new();
+
+    /// <summary>
+    /// Overview-page render knobs (Phase D, 2026-05-20). Today: just the
+    /// visible-hour window for the home tile grid. Bonehill uses 4–22 to
+    /// drop sleep hours; Membury uses 0–24 because the user cares about
+    /// rainfall around the clock.
+    /// </summary>
+    public OverviewConfig Overview { get; set; } = new();
+
+    /// <summary>True iff <paramref name="tab"/> appears in <see cref="Tabs"/> (case-insensitive).</summary>
+    public bool HasTab(string tab) =>
+        Tabs.Any(t => string.Equals(t, tab, StringComparison.OrdinalIgnoreCase));
+}
+
+public sealed class OverviewConfig
+{
+    /// <summary>Lowest UTC hour-of-day rendered on the Overview tile grid (inclusive). Default 0 (full day).</summary>
+    public int FirstVisibleHourUtc { get; set; } = 0;
+
+    /// <summary>Exclusive upper bound — <c>24</c> renders through hour 23. Default 24 (full day).</summary>
+    public int LastVisibleHourUtcExclusive { get; set; } = 24;
 }
 
 public sealed class MetarConfig

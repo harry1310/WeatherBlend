@@ -38,7 +38,10 @@ public static partial class SitePages
         // Sub-navs first so their Y positions are fixed across all sub-tabs
         // and lead choices — flicking between them doesn't jolt the page as
         // chart heights vary.
-        body.Append(RenderForecastsSubNav("temp"));
+        // Phase D: each forecast variable (Temperature / Rain / Dry window) is
+        // its own top-level tab in the per-loc site-nav, so the per-page
+        // forecasts sub-nav that used to live here was redundant and got
+        // removed. Lead-axis sub-nav remains — it's intra-page.
         body.Append(RenderLeadSubNav("forecasts-temp", lead));
 
         body.Append(Ci, $"""
@@ -51,40 +54,26 @@ public static partial class SitePages
         body.Append(RenderTempSection(input, lead));
 
         body.Append("</section>");
-        return WrapPage(input, $"Temperature forecast +{lead}h", "forecasts", body.ToString());
+        return WrapPage(input, $"Temperature forecast +{lead}h", "temperature", body.ToString());
     }
 
-    public static string RenderForecastsRain(SiteInputs input, int lead)
-        => RenderForecastsRain(input, lead, locationName: null);
-
     /// <summary>
-    /// Rain forecast page for the given lead. <paramref name="locationName"/>
-    /// picks which configured location's stations to render — null/empty
-    /// means primary (legacy single-location behaviour preserved). The
-    /// location sub-nav (Bonehill / Membury / …) only renders when more
-    /// than one location has rainfall stations configured.
+    /// Rain forecast page for the given lead. Phase D — the page lives at
+    /// <c>/{slug}/forecasts-rain-{lead}h.html</c> per location, so no
+    /// locationName parameter or per-page loc-switcher (the global chrome
+    /// handles location switching). The active location is whichever loc
+    /// the caller built <paramref name="input"/> for.
     /// </summary>
-    public static string RenderForecastsRain(SiteInputs input, int lead, string? locationName)
+    public static string RenderForecastsRain(SiteInputs input, int lead)
     {
-        var active = ResolveActiveLocation(input.Locations, locationName)
-                     ?? PrimaryLocation(input.Locations);
-        var activeName = active?.Name ?? "";
-
+        var active = input.RenderingFor;
         var body = new StringBuilder();
         body.Append("<section>");
-        body.Append(RenderForecastsSubNav("rain"));
-        body.Append(RenderRainLocationSubNav("forecasts-rain", input.Locations, activeName, lead));
-        var leadNavBase = active is null || active.IsPrimary
-            ? "forecasts-rain"
-            : $"forecasts-rain-{active.Name}";
-        body.Append(RenderLeadSubNav(leadNavBase, lead));
+        body.Append(RenderLeadSubNav("forecasts-rain", lead));
 
-        var heading = active is null || active.IsPrimary
-            ? "Rain"
-            : $"Rain — {active.DisplayName}";
         body.Append(Ci, $"""
               <hgroup>
-                <h2>{Escape(heading)} +{lead}h</h2>
+                <h2>Rain +{lead}h</h2>
                 <p>Per-station P(wet ≥ 0.1 mm/h) — 3a solid, 3c lighter — plus per-NWP precip rate (one chart, point forecast).</p>
               </hgroup>
             """);
@@ -92,37 +81,12 @@ public static partial class SitePages
         body.Append(RenderPrecipSection(input, lead, active));
 
         body.Append("</section>");
-        var pageTitle = active is null || active.IsPrimary
-            ? $"Rain forecast +{lead}h"
-            : $"Rain forecast — {active.DisplayName} +{lead}h";
-        return WrapPage(input, pageTitle, "forecasts", body.ToString());
+        return WrapPage(input, $"Rain forecast +{lead}h", "rain", body.ToString());
     }
 
-    /// <summary>
-    /// Variable sub-nav across the Forecasts pages — three pill links (Temperature
-    /// / Rain / Dry window). Same shape as <see cref="RenderModelsSubNav"/> and
-    /// <see cref="RenderSkillSubNav"/>. Temperature + Rain link to their +24h
-    /// landing page; Dry window has no lead axis so links to the day-aggregate
-    /// page directly.
-    /// </summary>
-    internal static string RenderForecastsSubNav(string activeSlug)
-    {
-        var entries = new (string Slug, string File, string Label)[]
-        {
-            ("temp",       "forecasts-temp-24h.html",  "Temperature"),
-            ("rain",       "forecasts-rain-24h.html",  "Rain"),
-            ("dry-window", "forecasts-dry-window.html", "Dry window"),
-        };
-        var s = new StringBuilder();
-        s.Append("<nav class=\"lead-nav\"><ul>");
-        foreach (var (slug, file, label) in entries)
-        {
-            var cls = slug == activeSlug ? " class=\"active\"" : "";
-            s.Append(Ci, $"<li><a href=\"{file}\"{cls}>{Escape(label)}</a></li>");
-        }
-        s.Append("</ul></nav>");
-        return s.ToString();
-    }
+    // RenderForecastsSubNav removed in Phase D — each forecast variable is
+    // its own top-level tab in the per-loc site-nav now, so the per-page
+    // pill row was redundant.
 
     private static string RenderLeadSubNav(string pageBase, int current)
     {

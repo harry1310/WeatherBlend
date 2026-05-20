@@ -54,44 +54,28 @@ public sealed class RenderSiteCommand
         // so include the full forecast horizon (leads go to 120h) plus a day of headroom.
         var predictionEnd = now.AddDays(6);
 
-        // Phase C commit 3a: every former `_cfg.Location.X` read in this
-        // method routes through `active`. Primary = Locations[0] by
-        // convention. This is the ONLY site that picks "which location is
-        // this render about?" — Phase D will wrap the render body in
-        // `foreach (var loc in _cfg.Locations) { ... }` to produce per-loc
-        // URL prefixes, with `active = loc` per iteration. The singleton
-        // SiteInputs fields (LocationDisplay, Latitude, etc.) keep their
-        // shape and are populated from `active` so consumer renderer code
-        // doesn't churn in this commit.
         if (_cfg.Locations.Count == 0)
             throw new InvalidOperationException("No locations configured — site cannot render.");
-        var active = _cfg.Locations[0];
 
         _log.LogInformation(
-            "Render site: predictions [{Start:yyyy-MM-dd}..{End:yyyy-MM-dd}], rolling {Rolling}d, output → {Dir}",
-            windowStart, predictionEnd, rollingWindowDays, outputDir);
+            "Render site: predictions [{Start:yyyy-MM-dd}..{End:yyyy-MM-dd}], rolling {Rolling}d, output → {Dir}, locations={N}",
+            windowStart, predictionEnd, rollingWindowDays, outputDir, _cfg.Locations.Count);
 
-        // Site rendering is primary-location-only until Phase D wires
-        // per-loc URL prefixes. The home / skill / forecast pages use the
-        // `predictions` list scoped to the active location below. The
-        // Models page additionally needs to discover OTHER locations'
-        // trained versions so Bonehill + Membury surface as separate H3
-        // sections (Phase C commit 4); fetch unfiltered once and slice
-        // for the active-loc consumers to keep it to a single DuckDB scan.
+        // Phase D (2026-05-20): output is now /<slug>/... per location plus
+        // a tiny set of top-level pages (picker, specs, about, styles, chart).
+        // DuckDB scans fetch unfiltered once below; the per-loc loop slices
+        // each list to the loop iteration's LocationName.
         var predictionsAllLocs = _predictions.GetTemperaturePredictions(
             locations: null, windowStart, predictionEnd, ct);
-        var predictions = predictionsAllLocs
-            .Where(p => string.Equals(p.LocationName, active.Name, StringComparison.Ordinal))
-            .ToList();
-        _log.LogInformation("Loaded {N} temperature prediction rows (location={Loc}; {AllN} across all locs).",
-            predictions.Count, active.Name, predictionsAllLocs.Count);
+        _log.LogInformation("Loaded {N} temperature prediction rows (all locations).",
+            predictionsAllLocs.Count);
 
         // Precip + dry-window come back as the canonical domain rows from the
         // repo; the renderer projects to its lighter SitePages records below.
         // Pass null for the station/cell filter — render scans the whole subtree
         // unlike verify, which limits to its requested stations.
         var precipRows = _predictions.GetPrecipitationPredictions(stations: null, windowStart, predictionEnd, ct);
-        var precip = precipRows.Select(r => new SitePages.PrecipForecastPoint(
+        var precipAllLocs = precipRows.Select(r => new SitePages.PrecipForecastPoint(
             Station:         r.TruthStation,
             Version:         r.ModelVersion,
             LocationName:    r.LocationName,
@@ -114,13 +98,13 @@ public sealed class RenderSiteCommand
             ProbWetQ95:      r.ProbWetQ95,
             Ci80Width:       r.Ci80Width,
             Ci90Width:       r.Ci90Width)).ToList();
-        _log.LogInformation("Loaded {N} precipitation prediction rows.", precip.Count);
+        _log.LogInformation("Loaded {N} precipitation prediction rows (all locations).", precipAllLocs.Count);
 
-        var feelsLike = QueryFeelsLikePredictions(windowStart, predictionEnd, ct);
-        _log.LogInformation("Loaded {N} feels-like prediction rows.", feelsLike.Count);
+        var feelsLikeAllLocs = QueryFeelsLikePredictions(windowStart, predictionEnd, ct);
+        _log.LogInformation("Loaded {N} feels-like prediction rows (all locations).", feelsLikeAllLocs.Count);
 
         var dryWindowRows = _predictions.GetDryWindowPredictions(cells: null, windowStart, predictionEnd, ct);
-        var dryWindow = dryWindowRows.Select(r => new SitePages.DryWindowForecastPoint(
+        var dryWindowAllLocs = dryWindowRows.Select(r => new SitePages.DryWindowForecastPoint(
             Station:                     r.TruthStation,
             WindowHours:                 r.WindowHours,
             Version:                     r.ModelVersion,
@@ -139,24 +123,24 @@ public sealed class RenderSiteCommand
             EpistemicProbDryWindowQ90:   r.EpistemicProbDryWindowQ90,
             EpistemicSigmaUsed:          r.EpistemicSigmaUsed,
             ConformalSetTag:             r.ConformalSetTag)).ToList();
-        _log.LogInformation("Loaded {N} dry-window prediction rows.", dryWindow.Count);
+        _log.LogInformation("Loaded {N} dry-window prediction rows (all locations).", dryWindowAllLocs.Count);
 
-        var startHour = QueryStartHourPredictions(windowStart, predictionEnd, ct);
-        _log.LogInformation("Loaded {N} start-hour curve rows.", startHour.Count);
+        var startHourAllLocs = QueryStartHourPredictions(windowStart, predictionEnd, ct);
+        _log.LogInformation("Loaded {N} start-hour curve rows (all locations).", startHourAllLocs.Count);
 
-        var metOfficeSpot = QueryMetOfficeSpotForecasts(windowStart, predictionEnd, ct);
-        _log.LogInformation("Loaded {N} Met Office Spot forecast rows.", metOfficeSpot.Count);
+        var metOfficeSpotAllLocs = QueryMetOfficeSpotForecasts(windowStart, predictionEnd, ct);
+        _log.LogInformation("Loaded {N} Met Office Spot forecast rows (all locations).", metOfficeSpotAllLocs.Count);
 
-        var nwpPop = QueryNwpPrecipProbabilities(windowStart, predictionEnd, ct);
-        var nwpPrecipRates = QueryNwpPrecipRates(windowStart, predictionEnd, ct);
-        var nwpTemperatures = QueryNwpTemperatures(windowStart, predictionEnd, ct);
-        var bayesianCi = QueryBayesianCi(windowStart, predictionEnd, ct);
+        var nwpPopAllLocs = QueryNwpPrecipProbabilities(windowStart, predictionEnd, ct);
+        var nwpPrecipRatesAllLocs = QueryNwpPrecipRates(windowStart, predictionEnd, ct);
+        var nwpTemperaturesAllLocs = QueryNwpTemperatures(windowStart, predictionEnd, ct);
+        var bayesianCiAllLocs = QueryBayesianCi(windowStart, predictionEnd, ct);
         _log.LogInformation("Loaded {N} Phase 5a CI rows ({S} stations).",
-            bayesianCi.Count, bayesianCi.Select(p => p.StationSlug).Distinct().Count());
-        var lowCloudByValid = QueryLowCloudSignals(windowStart, predictionEnd, ct);
-        _log.LogInformation("Loaded low-cloud / mist signal for {N} valid hours.", lowCloudByValid.Count);
+            bayesianCiAllLocs.Count, bayesianCiAllLocs.Select(p => p.StationSlug).Distinct().Count());
+        var lowCloudByValidAllLocs = QueryLowCloudSignals(windowStart, predictionEnd, ct);
+        _log.LogInformation("Loaded low-cloud / mist signal for {N} location-keyed inner dicts.", lowCloudByValidAllLocs.Count);
         _log.LogInformation("Loaded {N} per-NWP precipitation-probability rows ({M} models).",
-            nwpPop.Count, nwpPop.Select(p => p.Model).Distinct().Count());
+            nwpPopAllLocs.Count, nwpPopAllLocs.Select(p => p.Model).Distinct().Count());
 
         var verifyHistory = LoadVerifyHistory(_cfg.Storage.ReportsPath);
         _log.LogInformation("Loaded {N} verify-history JSON sidecars.", verifyHistory.Count);
@@ -169,32 +153,13 @@ public sealed class RenderSiteCommand
         _log.LogInformation("Loaded {N} precip conformal τ values across (station, version, lead).",
             precipConformalTau.Count);
 
-        // ERA5 is gapless-for-past, but only past — query up to the clock time.
-        // Persistence-lookback headroom (up to 72h before the earliest prediction)
-        // keeps rolling-MAE truth pairs matchable at the start of the window.
-        var truth = _truth.GetEra5Hourly(active.Name, windowStart.AddDays(-3), now, ct);
-        _log.LogInformation("Loaded {N} ERA5 truth points.", truth.Count);
-
-        var metar = _truth.GetMetarTemperature(active.Metar.Primary, windowStart, now, ct);
-        _log.LogInformation("Loaded {N} METAR observations ({Station}).",
-            metar.Count, string.IsNullOrWhiteSpace(active.Metar.Primary) ? "none" : active.Metar.Primary);
-
-        var moObs = _truth.GetMetOfficeObsTemperature(active.Name, windowStart, now, ct);
-        _log.LogInformation("Loaded {N} Met Office obs (geohash {GH}).",
-            moObs.Count, _cfg.MetOffice.ObsGeohash);
-
-        // PhaseByVersion has to be computed before the rolling functions so
-        // they can group by phase rather than version (a retrain would
-        // otherwise fragment the chart into stubs).
-        // Temperature is per-station (per-location) on disk since 2026-05-14;
-        // the (station, version) tuples drive ModelMetadataRepository to the
-        // right per-location subtree. For temperature the station key IS the
-        // LocationName (each location is its own blender).
+        // PhaseByVersion is computed across ALL locations (a single dict
+        // keyed by version string); rolling-MAE/Brier compute per-loc inside
+        // the foreach below.
         var phaseByVersion = _metadata.GetPhaseByVersion(
-            predictions.Select(p => (Station: p.LocationName, Version: p.ModelVersion)),
-            precip.Select(p => (p.Station, p.Version)),
-            dryWindow.Select(d => (d.Station, d.WindowHours, d.Version)));
-        var rolling = ComputeRollingMae(predictions, truth, phaseByVersion, rollingWindowDays);
+            predictionsAllLocs.Select(p => (Station: p.LocationName, Version: p.ModelVersion)),
+            precipAllLocs.Select(p => (p.Station, p.Version)),
+            dryWindowAllLocs.Select(d => (d.Station, d.WindowHours, d.Version)));
         // Precip uses a longer 30-day rolling window than temp's because wet
         // hours are sparser — the verify command's defaults pin this rule
         // (PrecipVerifyCommand: 30d window vs TempVerifyCommand: 14d).
@@ -203,261 +168,309 @@ public sealed class RenderSiteCommand
         _log.LogInformation("Phase map: {Entries}",
             string.Join(", ", phaseByVersion.Select(kv => $"{kv.Key}→{kv.Value}")));
 
-        var rainfall = LoadRainfallTruth(windowStart, now, precip, ct);
-        _log.LogInformation("Rainfall truth: {N} stations loaded.", rainfall.Count);
-
-        // Temperature manifest migrated to per-station layout 2026-05-14.
-        // Site renders the ACTIVE location's temperature only (multi-loc
-        // temp site rendering wraps this body in a foreach in Phase D); pick
-        // the champion + per-lead pins for the active station entry.
-        var primaryTempStation = active.Name;
+        // Champion + per-(station, lead) overrides are global (keyed by station
+        // = location-name for temp / EA slug for precip).
         var tempChampions = _metadata.GetChampionsByStation("temperature");
-        var currentVersion = tempChampions.TryGetValue(primaryTempStation, out var tcv) ? tcv : "";
         var tempChampionByStationLead = _metadata.GetChampionByStationLead("temperature");
-        var championByLead = (IReadOnlyDictionary<int, string>)tempChampionByStationLead
-            .Where(kv => string.Equals(kv.Key.Station, primaryTempStation, StringComparison.Ordinal))
-            .ToDictionary(kv => kv.Key.LeadHours, kv => kv.Value);
-        _log.LogInformation("Champion (temperature, station={Station}): {Version}",
-            primaryTempStation, string.IsNullOrEmpty(currentVersion) ? "(none)" : currentVersion);
-        if (championByLead.Count > 0)
-            _log.LogInformation("Per-lead champion overrides: {Entries}",
-                string.Join(", ", championByLead.OrderBy(kv => kv.Key).Select(kv => $"+{kv.Key}h→{kv.Value}")));
-
         var precipCurrentByStation = _metadata.GetChampionsByStation("precipitation");
         var precipChampionByStationLead = _metadata.GetChampionByStationLead("precipitation");
+        _log.LogInformation("Champion (temperature) by station: {Entries}",
+            tempChampions.Count == 0 ? "(none)" : string.Join(", ", tempChampions.Select(kv => $"{kv.Key}→{kv.Value}")));
         _log.LogInformation("Champion (precipitation): {Entries}",
             precipCurrentByStation.Count == 0
                 ? "(none)"
                 : string.Join(", ", precipCurrentByStation.Select(kv => $"{kv.Key}→{kv.Value}")));
-        if (precipChampionByStationLead.Count > 0)
-            _log.LogInformation("Per-(station, lead) precipitation champion overrides: {Entries}",
-                string.Join(", ", precipChampionByStationLead
-                    .OrderBy(kv => kv.Key.Station, StringComparer.Ordinal)
-                    .ThenBy(kv => kv.Key.LeadHours)
-                    .Select(kv => $"{kv.Key.Station}@+{kv.Key.LeadHours}h→{kv.Value}")));
 
-        // ActiveStationSlugs is the union across ALL configured locations —
-        // a Membury station has to be in this set or RenderPrecipSection's
-        // outer filter (line 267 of SitePages.Forecasts.cs) silently drops
-        // its predictions. The per-tab filter (LocationDescriptor.RainStation
-        // Slugs) then narrows back down to one location's stations.
-        var activeStationSlugs = new HashSet<string>(
+        // All-locations EA station slug union — needed by the cross-location
+        // Specs page's feature spec rows. Per-loc loops below scope this down
+        // to one location's stations.
+        var allStationSlugs = new HashSet<string>(
             _cfg.Locations.SelectMany(loc => loc.Rainfall.Stations.Select(s => StationSlug.WithEaPrefix(s.Name))),
             StringComparer.Ordinal);
-        // Per-location descriptors for the Rain forecast / Rain skill tabs.
-        // Primary first; URL-slug = config Name (e.g. `bonehill_rocks`,
-        // `membury_devon`). Skipped silently for locations that have no
-        // rainfall config (e.g. a future temp-only secondary).
+
         var locationDescriptors = _cfg.Locations.Select((loc, idx) => new SitePages.LocationDescriptor(
             Name: loc.Name,
             DisplayName: string.IsNullOrWhiteSpace(loc.DisplayName) ? loc.Name : loc.DisplayName,
             RainStationSlugs: loc.Rainfall.Stations.Select(s => StationSlug.WithEaPrefix(s.Name)).ToList(),
-            IsPrimary: idx == 0)).ToList();
-        // predictionsAllLocs (not predictions) so Membury temp versions surface
-        // on the Models page alongside Bonehill's — see the fetch block above.
-        var modelSummaries = LoadModelSummaries(predictionsAllLocs, precip, dryWindow, activeStationSlugs);
-        _log.LogInformation("Loaded {N} model summaries for Models page.", modelSummaries.Count);
-        var featureSpecRows = LoadFeatureSpecRows(predictions, precip, dryWindow, activeStationSlugs, modelSummaries);
-        _log.LogInformation("Loaded {N} feature spec rows for Spec page.", featureSpecRows.Count);
+            IsPrimary: idx == 0,
+            Tabs: loc.Tabs.ToList(),
+            OverviewFirstVisibleHourUtc: loc.Overview.FirstVisibleHourUtc,
+            OverviewLastVisibleHourUtcExclusive: loc.Overview.LastVisibleHourUtcExclusive)).ToList();
 
-        var input = new SitePages.SiteInputs
-        {
-            ActiveLocationName = active.Name,
-            LocationDisplay = string.IsNullOrWhiteSpace(active.DisplayName) ? active.Name : active.DisplayName,
-            Latitude = active.Latitude,
-            Longitude = active.Longitude,
-            ElevationMeters = active.ElevationMeters,
-            MetarStation = active.Metar.Primary,
-            GeneratedAtUtc = now,
-            WindowStartUtc = windowStart,
-            Predictions = predictions,
-            TruthByTime = truth,
-            MetarByTime = metar,
-            MetOfficeObsByTime = moObs,
-            LowCloudByValid = lowCloudByValid,
-            RollingMae = rolling,
-            RollingBrier = ComputeRollingBrier(precip, rainfall, phaseByVersion, precipRollingWindowDays),
-            PrecipPredictions = precip,
-            DryWindowPredictions = dryWindow,
-            DryWindowConformalTau = dryWindowConformalTau,
-            PrecipConformalTau = precipConformalTau,
-            DryWindowDaytime = _cfg.DryWindow.BuildDaytimeWindow(),
-            PhaseByVersion = phaseByVersion,
-            RainfallTruth = rainfall,
-            CurrentVersion = currentVersion,
-            ChampionByLead = championByLead,
-            PrecipCurrentByStation = precipCurrentByStation,
-            PrecipChampionByStationLead = precipChampionByStationLead,
-            ActiveStationSlugs = activeStationSlugs,
-            Locations = locationDescriptors,
-            ModelSummaries = modelSummaries,
-            FeatureSpecRows = featureSpecRows,
-            FeelsLikePredictions = feelsLike,
-            StartHourPredictions = startHour,
-            MetOfficeSpotForecasts = metOfficeSpot,
-            NwpPrecipProbabilities = nwpPop,
-            NwpPrecipRates = nwpPrecipRates,
-            NwpTemperatures = nwpTemperatures,
-            BayesianCi = bayesianCi,
-            VerifyHistory = verifyHistory,
-        };
+        // Top-level model summaries / feature spec rows surface ALL locations'
+        // active versions on /specs.html. Per-loc Models page recomputes with
+        // a tighter station filter so a demoted station can't appear.
+        var modelSummariesAll = LoadModelSummaries(predictionsAllLocs, precipAllLocs, dryWindowAllLocs, allStationSlugs);
+        var featureSpecRowsAll = LoadFeatureSpecRows(predictionsAllLocs, precipAllLocs, dryWindowAllLocs, allStationSlugs, modelSummariesAll);
+        _log.LogInformation("Loaded {N} model summaries / {M} feature-spec rows (all locations).",
+            modelSummariesAll.Count, featureSpecRowsAll.Count);
 
+        // === Output directory hygiene ===
         Directory.CreateDirectory(outputDir);
-        // Clean every .html in outputDir before writing the fresh set. Stale
-        // per-station files (left over from a station swap) would otherwise
-        // stick around forever — Cloudflare
-        // pages deploy is additive on what's in the source dir, not a wipe.
-        // Non-HTML files (chart.js, styles.css) are overwritten in place by
-        // the writers below; only the per-page HTML can become orphaned.
+        // Clean top-level HTML files only — per-loc subdirs get cleaned at
+        // the start of their own iteration. Non-HTML (styles.css, chart.js)
+        // overwrites in place, no stale-file risk.
         foreach (var stale in Directory.EnumerateFiles(outputDir, "*.html"))
             File.Delete(stale);
-        // Home page is now per-day — six files (today + five forward) so
-        // each day is a real sub-tab not just a section. index.html stays
-        // canonical for offset=0; forward days are index-{n}.html.
-        for (int n = 0; n <= SitePages.MaxHomeDayOffset; n++)
+
+        // Top-level inputs for the picker / specs / about pages. No
+        // RenderingFor (top-level chrome) and empty AssetPrefix (relative
+        // hrefs from outputDir).
+        var topLevelInputs = BuildTopLevelInputs(
+            now, windowStart, locationDescriptors, modelSummariesAll, featureSpecRowsAll,
+            phaseByVersion, verifyHistory);
+
+        var totalFiles = 0;
+
+        // === Per-location render ===
+        foreach (var loc in _cfg.Locations)
         {
-            var file = n == 0 ? "index.html" : $"index-{n}.html";
-            await File.WriteAllTextAsync(Path.Combine(outputDir, file),
-                SitePages.RenderIndex(input, n), ct);
+            var descriptor = locationDescriptors.First(l => l.Name == loc.Name);
+            var locDir = Path.Combine(outputDir, loc.Name);
+            Directory.CreateDirectory(locDir);
+            foreach (var stale in Directory.EnumerateFiles(locDir, "*.html"))
+                File.Delete(stale);
+
+            _log.LogInformation("Render {Loc} (tabs: {Tabs})", loc.Name, string.Join(",", loc.Tabs));
+
+            // Filter all-locs lists to this loc's rows.
+            var predictions = predictionsAllLocs
+                .Where(p => string.Equals(p.LocationName, loc.Name, StringComparison.Ordinal))
+                .ToList();
+            var locStationSlugs = new HashSet<string>(
+                loc.Rainfall.Stations.Select(s => StationSlug.WithEaPrefix(s.Name)),
+                StringComparer.Ordinal);
+            var precip = precipAllLocs
+                .Where(p => locStationSlugs.Count == 0 || locStationSlugs.Contains(p.Station))
+                .ToList();
+            var dryWindow = dryWindowAllLocs
+                .Where(d => locStationSlugs.Count == 0 || locStationSlugs.Contains(d.Station))
+                .ToList();
+            // Per-loc fetches (truth varies by location — different gauge / cell).
+            var truth = _truth.GetEra5Hourly(loc.Name, windowStart.AddDays(-3), now, ct);
+            var metar = _truth.GetMetarTemperature(loc.Metar.Primary, windowStart, now, ct);
+            var moObs = _truth.GetMetOfficeObsTemperature(loc.Name, windowStart, now, ct);
+            var rainfall = LoadRainfallTruth(windowStart, now, precip, ct);
+
+            // Per-loc champions.
+            var currentVersion = tempChampions.TryGetValue(loc.Name, out var tcv) ? tcv : "";
+            var championByLead = (IReadOnlyDictionary<int, string>)tempChampionByStationLead
+                .Where(kv => string.Equals(kv.Key.Station, loc.Name, StringComparison.Ordinal))
+                .ToDictionary(kv => kv.Key.LeadHours, kv => kv.Value);
+
+            // Per-loc rolling metrics.
+            var rolling = ComputeRollingMae(predictions, truth, phaseByVersion, rollingWindowDays);
+            var rollingBrier = ComputeRollingBrier(precip, rainfall, phaseByVersion, precipRollingWindowDays);
+
+            // Per-loc model summaries (scoped to loc's stations).
+            var locModelSummaries = LoadModelSummaries(predictions, precip, dryWindow, locStationSlugs);
+            var locFeatureSpecRows = LoadFeatureSpecRows(predictions, precip, dryWindow, locStationSlugs, locModelSummaries);
+
+            var locInputs = new SitePages.SiteInputs
+            {
+                ActiveLocationName = loc.Name,
+                RenderingFor = descriptor,
+                AssetPrefix = "../",
+                LocationDisplay = string.IsNullOrWhiteSpace(loc.DisplayName) ? loc.Name : loc.DisplayName,
+                Latitude = loc.Latitude,
+                Longitude = loc.Longitude,
+                ElevationMeters = loc.ElevationMeters,
+                MetarStation = loc.Metar.Primary,
+                GeneratedAtUtc = now,
+                WindowStartUtc = windowStart,
+                Predictions = predictions,
+                TruthByTime = truth,
+                MetarByTime = metar,
+                MetOfficeObsByTime = moObs,
+                LowCloudByValid = lowCloudByValidAllLocs,
+                RollingMae = rolling,
+                RollingBrier = rollingBrier,
+                PrecipPredictions = precip,
+                DryWindowPredictions = dryWindow,
+                DryWindowConformalTau = dryWindowConformalTau,
+                PrecipConformalTau = precipConformalTau,
+                DryWindowDaytime = _cfg.DryWindow.BuildDaytimeWindow(),
+                PhaseByVersion = phaseByVersion,
+                RainfallTruth = rainfall,
+                CurrentVersion = currentVersion,
+                ChampionByLead = championByLead,
+                PrecipCurrentByStation = precipCurrentByStation,
+                PrecipChampionByStationLead = precipChampionByStationLead,
+                ActiveStationSlugs = locStationSlugs,
+                Locations = locationDescriptors,
+                ModelSummaries = locModelSummaries,
+                FeatureSpecRows = locFeatureSpecRows,
+                FeelsLikePredictions = feelsLikeAllLocs,
+                StartHourPredictions = startHourAllLocs,
+                MetOfficeSpotForecasts = metOfficeSpotAllLocs,
+                NwpPrecipProbabilities = nwpPopAllLocs,
+                NwpPrecipRates = nwpPrecipRatesAllLocs,
+                NwpTemperatures = nwpTemperaturesAllLocs,
+                BayesianCi = bayesianCiAllLocs,
+                VerifyHistory = verifyHistory,
+            };
+
+            totalFiles += await RenderLocationPagesAsync(locDir, locInputs, descriptor, ct);
         }
-        // Forecasts split per variable per lead on 2026-05-04. Temperature +
-        // rain are per-lead — uses Leads.ForecastsTempRain (= Leads.Full plus
-        // +12h for 2d / 3d exact-runtime). Dry-window is per-day so emits
-        // once + one per non-first station.
-        foreach (var lead in Leads.ForecastsTempRain)
+
+        // === Top-level pages ===
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "index.html"),
+            SitePages.RenderHomePicker(topLevelInputs), ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "specs.html"),
+            SitePages.RenderModelsSpec(topLevelInputs), ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "about.html"),
+            SitePages.RenderAbout(topLevelInputs), ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "styles.css"),
+            SitePages.Stylesheet(), ct);
+        await File.WriteAllTextAsync(Path.Combine(outputDir, "chart.js"),
+            SitePages.ChartScript(), ct);
+        totalFiles += 5;
+
+        _log.LogInformation("Site rendered → {Dir} ({Files} files across {Locs} locations + top-level)",
+            outputDir, totalFiles, _cfg.Locations.Count);
+        return 0;
+    }
+
+    /// <summary>
+    /// Render one location's per-tab pages into <paramref name="locDir"/>.
+    /// Tab-gated: each block runs only when its tab id is in
+    /// <paramref name="loc"/>.<see cref="SitePages.LocationDescriptor.Tabs"/>.
+    /// Returns the number of files written.
+    /// </summary>
+    private async Task<int> RenderLocationPagesAsync(
+        string locDir, SitePages.SiteInputs locInputs, SitePages.LocationDescriptor loc, CancellationToken ct)
+    {
+        int count = 0;
+
+        async Task Write(string fileName, string html)
         {
-            await File.WriteAllTextAsync(Path.Combine(outputDir, $"forecasts-temp-{lead}h.html"),
-                SitePages.RenderForecastsTemp(input, lead), ct);
-            await File.WriteAllTextAsync(Path.Combine(outputDir, $"forecasts-rain-{lead}h.html"),
-                SitePages.RenderForecastsRain(input, lead), ct);
+            await File.WriteAllTextAsync(Path.Combine(locDir, fileName), html, ct);
+            count++;
         }
-        // Per-location Rain forecast pages (Phase C of the Membury ship plan).
-        // Primary location uses the legacy URL above (no slug). Each non-primary
-        // location with rainfall stations gets its own per-lead set:
-        //   forecasts-rain-{location}-{lead}h.html
-        // The location sub-nav (Bonehill | Membury | …) wires itself up via
-        // RenderRainLocationSubNav inside RenderForecastsRain.
-        foreach (var loc in input.Locations.Where(l => !l.IsPrimary && l.RainStationSlugs.Count > 0))
+
+        if (loc.HasTab("overview"))
+        {
+            for (int n = 0; n <= SitePages.MaxHomeDayOffset; n++)
+            {
+                var file = n == 0 ? "index.html" : $"index-{n}.html";
+                await Write(file, SitePages.RenderIndex(locInputs, n));
+            }
+        }
+
+        if (loc.HasTab("temperature"))
         {
             foreach (var lead in Leads.ForecastsTempRain)
-            {
-                await File.WriteAllTextAsync(
-                    Path.Combine(outputDir, $"forecasts-rain-{loc.Name}-{lead}h.html"),
-                    SitePages.RenderForecastsRain(input, lead, loc.Name), ct);
-            }
+                await Write($"forecasts-temp-{lead}h.html", SitePages.RenderForecastsTemp(locInputs, lead));
         }
-        // Models page split into 3 (per target) on 2026-05-04 — see
-        // SitePages.RenderModels for the per-target intro copy. The legacy
-        // models.html route was retired in the same change; the nav points
-        // at models-temp.html as the canonical landing for "Models".
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "models-temp.html"),       SitePages.RenderModels(input, "temperature"),   ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "models-rain.html"),       SitePages.RenderModels(input, "precipitation"), ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "models-dry-window.html"), SitePages.RenderModels(input, "dry_window"),    ct);
-        // Auto-generated feature spec — single source of truth for "what NWPs
-        // feed each blender at each lead", read directly from each Active
-        // version's feature_schema.json. Sits as the 4th tab on the Models
-        // sub-nav; replaces hand-edited docs/MODEL_SPEC.md as the canonical
-        // reference (the doc remains as design intent / commentary).
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "models-spec.html"),       SitePages.RenderModelsSpec(input),              ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "about.html"),         SitePages.RenderAbout(input),          ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "styles.css"),         SitePages.Stylesheet(),                ct);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "chart.js"),           SitePages.ChartScript(),               ct);
 
-        // Temp skill is single-file — temperature has no station axis.
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "skill-temperature.html"),
-            SitePages.RenderTempSkill(input), ct);
-
-        // Rain skill is per-station — one canonical file plus one per non-first station.
-        // Stations set is the union of precip + dry-window stations, so even if a station
-        // has only one of the two, it gets its own tab.
-        // Skill — rain pages, primary location: legacy URL preserved.
-        // GetRainSkillStations(input) WITHOUT location filter would now
-        // include Membury stations (because activeStationSlugs is the
-        // union); pass the primary descriptor so the legacy URL surfaces
-        // only Bonehill stations.
-        var primaryLoc = SitePages.PrimaryLocation(input.Locations);
-        var rainStations = SitePages.GetRainSkillStations(input, primaryLoc);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "skill-rainfall.html"),
-            SitePages.RenderRainSkill(input, null, locationName: null), ct);
-        for (int i = 1; i < rainStations.Count; i++)
+        if (loc.HasTab("rain"))
         {
-            var slug = SitePages.StationSlug(rainStations[i]);
-            await File.WriteAllTextAsync(
-                Path.Combine(outputDir, $"skill-rainfall-{slug}.html"),
-                SitePages.RenderRainSkill(input, slug, locationName: null), ct);
+            foreach (var lead in Leads.ForecastsTempRain)
+                await Write($"forecasts-rain-{lead}h.html", SitePages.RenderForecastsRain(locInputs, lead));
         }
-        // Per-location Skill — rain pages (Phase C). Each non-primary
-        // location with rainfall stations gets:
-        //   skill-rainfall-{location}.html               (default station)
-        //   skill-rainfall-{location}-{station}.html     (per-station)
-        // Non-primary pages render Rolling Brier only — eyeball P(wet) vs
-        // observed block omitted per the user's MVP scope (2026-05-11).
-        foreach (var loc in input.Locations.Where(l => !l.IsPrimary && l.RainStationSlugs.Count > 0))
+
+        if (loc.HasTab("dry_window"))
         {
-            var locStations = SitePages.GetRainSkillStations(input, loc);
-            await File.WriteAllTextAsync(
-                Path.Combine(outputDir, $"skill-rainfall-{loc.Name}.html"),
-                SitePages.RenderRainSkill(input, null, loc.Name), ct);
-            for (int i = 1; i < locStations.Count; i++)
+            var activeSet = locInputs.ActiveStationSlugs;
+            var dryStations = locInputs.DryWindowPredictions
+                .Select(d => d.Station)
+                .Where(s => activeSet.Count == 0 || activeSet.Contains(s))
+                .Distinct().OrderBy(s => s, StringComparer.Ordinal).ToList();
+            await Write("forecasts-dry-window.html", SitePages.RenderDryWindow(locInputs, null));
+            for (int i = 1; i < dryStations.Count; i++)
             {
-                var slug = SitePages.StationSlug(locStations[i]);
-                await File.WriteAllTextAsync(
-                    Path.Combine(outputDir, $"skill-rainfall-{loc.Name}-{slug}.html"),
-                    SitePages.RenderRainSkill(input, slug, loc.Name), ct);
+                var slug = SitePages.StationSlug(dryStations[i]);
+                await Write($"forecasts-dry-window-{slug}.html",
+                    SitePages.RenderDryWindow(locInputs, slug));
             }
         }
 
-        // Dry-window skill — split out from rain-skill on 2026-05-04 so each
-        // variable's skill content has its own page. Per-station BUT keyed
-        // off dry-window-only stations (was rainStations — that included
-        // Membury, which has precip predictions but no dry-window data, so
-        // it surfaced a tab that rendered an empty table).
-        var dryWindowSkillStations = SitePages.GetDryWindowSkillStations(input);
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "skill-dry-window.html"),
-            SitePages.RenderDryWindowSkill(input, null), ct);
-        for (int i = 1; i < dryWindowSkillStations.Count; i++)
+        if (loc.HasTab("skill"))
         {
-            var slug = SitePages.StationSlug(dryWindowSkillStations[i]);
-            await File.WriteAllTextAsync(
-                Path.Combine(outputDir, $"skill-dry-window-{slug}.html"),
-                SitePages.RenderDryWindowSkill(input, slug), ct);
+            if (loc.HasTab("temperature"))
+                await Write("skill-temperature.html", SitePages.RenderTempSkill(locInputs));
+
+            if (loc.HasTab("rain"))
+            {
+                var rainStations = SitePages.GetRainSkillStations(locInputs, loc);
+                await Write("skill-rainfall.html", SitePages.RenderRainSkill(locInputs, null, locationName: null));
+                for (int i = 1; i < rainStations.Count; i++)
+                {
+                    var slug = SitePages.StationSlug(rainStations[i]);
+                    await Write($"skill-rainfall-{slug}.html",
+                        SitePages.RenderRainSkill(locInputs, slug, locationName: null));
+                }
+            }
+
+            if (loc.HasTab("dry_window"))
+            {
+                var dwStations = SitePages.GetDryWindowSkillStations(locInputs);
+                await Write("skill-dry-window.html", SitePages.RenderDryWindowSkill(locInputs, null));
+                for (int i = 1; i < dwStations.Count; i++)
+                {
+                    var slug = SitePages.StationSlug(dwStations[i]);
+                    await Write($"skill-dry-window-{slug}.html",
+                        SitePages.RenderDryWindowSkill(locInputs, slug));
+                }
+            }
         }
 
-        // Dry-window page is per-station too. Same active-station filter as
-        // rain-skill — a station demoted from config shouldn't render just
-        // because its historical dry-window predictions are still on disk.
-        var activeSet = input.ActiveStationSlugs;
-        var dryStations = input.DryWindowPredictions
-            .Select(d => d.Station)
-            .Where(s => activeSet.Count == 0 || activeSet.Contains(s))
-            .Distinct()
-            .OrderBy(s => s, StringComparer.Ordinal)
-            .ToList();
-        // Dry-window forecasts page is now part of the Forecasts family
-        // (filename forecasts-dry-window.html, sub-nav links to it from
-        // every Forecasts page). Per-station variants use the same
-        // station-loop shape as skill-rainfall.
-        await File.WriteAllTextAsync(Path.Combine(outputDir, "forecasts-dry-window.html"),
-            SitePages.RenderDryWindow(input, null), ct);
-        for (int i = 1; i < dryStations.Count; i++)
+        if (loc.HasTab("models"))
         {
-            var slug = SitePages.StationSlug(dryStations[i]);
-            await File.WriteAllTextAsync(
-                Path.Combine(outputDir, $"forecasts-dry-window-{slug}.html"),
-                SitePages.RenderDryWindow(input, slug), ct);
+            // Three per-target files with a sub-nav between them — same shape
+            // as Skill. The top-nav "Models" button points at models-temp.html
+            // for locations with temperature; falls through to rain when temp
+            // isn't a tab.
+            if (loc.HasTab("temperature"))
+                await Write("models-temp.html", SitePages.RenderModels(locInputs, "temperature"));
+            if (loc.HasTab("rain"))
+                await Write("models-rain.html", SitePages.RenderModels(locInputs, "precipitation"));
+            if (loc.HasTab("dry_window"))
+                await Write("models-dry-window.html", SitePages.RenderModels(locInputs, "dry_window"));
         }
 
-        // index × (1 + MaxHomeDayOffset) + (forecasts-temp × leads) +
-        // (forecasts-rain × leads) + models × 3 + about + styles + chart.js +
-        // skill-temperature + skill-rainfall × stations +
-        // skill-dry-window × stations + forecasts-dry-window × stations.
-        var totalFiles = 7 + (SitePages.MaxHomeDayOffset + 1)
-            + (Leads.ForecastsTempRain.Length * 2)
-            + Math.Max(1, rainStations.Count)        // skill-rainfall variants
-            + Math.Max(1, rainStations.Count)        // skill-dry-window variants
-            + Math.Max(1, dryStations.Count);        // forecasts-dry-window variants
-        _log.LogInformation("Site rendered → {Dir} ({Files} files)", outputDir, totalFiles);
-        return 0;
+        return count;
+    }
+
+    /// <summary>
+    /// SiteInputs shell for top-level pages (picker / specs / about). Carries
+    /// the full cross-location model summaries + feature-spec rows so Specs
+    /// can render every location's deployment. No <c>RenderingFor</c>, empty
+    /// <c>AssetPrefix</c>.
+    /// </summary>
+    private static SitePages.SiteInputs BuildTopLevelInputs(
+        DateTime now, DateTime windowStart,
+        IReadOnlyList<SitePages.LocationDescriptor> locations,
+        IReadOnlyList<SitePages.ModelSummary> modelSummaries,
+        IReadOnlyList<SitePages.FeatureSpecRow> featureSpecRows,
+        IReadOnlyDictionary<string, string> phaseByVersion,
+        IReadOnlyList<Models.VerifyHistoryFile> verifyHistory)
+    {
+        return new SitePages.SiteInputs
+        {
+            ActiveLocationName = "",
+            RenderingFor = null,
+            AssetPrefix = "",
+            LocationDisplay = "",
+            Latitude = 0,
+            Longitude = 0,
+            ElevationMeters = 0,
+            MetarStation = "",
+            GeneratedAtUtc = now,
+            WindowStartUtc = windowStart,
+            Predictions = Array.Empty<TempPredictionRow>(),
+            TruthByTime = new Dictionary<DateTime, double>(),
+            MetarByTime = Array.Empty<(DateTime, double)>(),
+            MetOfficeObsByTime = Array.Empty<(DateTime, double)>(),
+            RollingMae = Array.Empty<SitePages.RollingMaePoint>(),
+            PrecipPredictions = Array.Empty<SitePages.PrecipForecastPoint>(),
+            DryWindowPredictions = Array.Empty<SitePages.DryWindowForecastPoint>(),
+            PhaseByVersion = phaseByVersion,
+            Locations = locations,
+            ModelSummaries = modelSummaries,
+            FeatureSpecRows = featureSpecRows,
+            VerifyHistory = verifyHistory,
+        };
     }
 
     private IReadOnlyList<SitePages.ModelSummary> LoadModelSummaries(

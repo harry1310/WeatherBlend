@@ -24,7 +24,9 @@ public static partial class SitePages
     {
         var content = new StringBuilder();
         content.Append("<section>");
-        content.Append(RenderModelsSubNav("spec"));
+        // Phase D: Spec is a top-level cross-cutting page at /specs.html. No
+        // per-target sub-nav — the table itself surfaces every (composite,
+        // lead) row across all locations.
         content.Append("""
               <hgroup>
                 <h2>Feature spec</h2>
@@ -40,7 +42,7 @@ public static partial class SitePages
         {
             content.Append("<p><em>No feature schemas on disk. Train at least one model per target, then rclone <code>data/models</code> from R2.</em></p>");
             content.Append("</section>");
-            return WrapPage(input, "Feature spec", "models", content.ToString());
+            return WrapPage(input, "Feature spec", "specs", content.ToString());
         }
 
         // Filter to phases currently shipping. A version's predictions can
@@ -59,7 +61,7 @@ public static partial class SitePages
         {
             content.Append("<p><em>No active phase schemas to render.</em></p>");
             content.Append("</section>");
-            return WrapPage(input, "Feature spec", "models", content.ToString());
+            return WrapPage(input, "Feature spec", "specs", content.ToString());
         }
 
         // Group by target prefix so each target gets its own table — three
@@ -85,7 +87,7 @@ public static partial class SitePages
         }
 
         content.Append("</section>");
-        return WrapPage(input, "Feature spec", "models", content.ToString());
+        return WrapPage(input, "Feature spec", "specs", content.ToString());
     }
 
     /// <summary>

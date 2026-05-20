@@ -56,7 +56,7 @@ public static partial class SitePages
         // Sub-nav goes first so its vertical position is fixed across the
         // three Models pages — flicking between Temp / Rain / Dry-window
         // doesn't make the tab bar jump around as content height varies.
-        content.Append(RenderModelsSubNav(subNavSlug));
+        content.Append(RenderModelsSubNav(subNavSlug, input.RenderingFor));
         content.Append(Ci, $"""
               <hgroup>
                 <h2>{Escape(prettyTitle)}</h2>
@@ -162,24 +162,28 @@ public static partial class SitePages
     }
 
     /// <summary>
-    /// Per-target sub-nav for the Models page. Same shape as the per-station
-    /// sub-nav on Dry-window / Skill-rainfall: three pill links sitting under
-    /// the page heading. The active variant is plain (not a link) so the
-    /// reader's eye lands on it.
+    /// Per-target sub-nav for the Models page. Phase D — filters entries
+    /// by <see cref="LocationDescriptor.Tabs"/> so a location without
+    /// <c>dry_window</c> in its tabs gets a 2-button sub-nav.
+    /// The "Spec" entry was lifted to the top-level <c>/specs.html</c>
+    /// (cross-cutting feature spec) so it's reachable from the global
+    /// nav, not buried under a per-loc Models sub-tab.
+    /// When <paramref name="loc"/> is null all entries render (legacy
+    /// fixture / pre-Phase-D callers).
     /// </summary>
-    private static string RenderModelsSubNav(string activeSlug)
+    private static string RenderModelsSubNav(string activeSlug, LocationDescriptor? loc = null)
     {
-        var entries = new (string Slug, string File, string Label)[]
+        var entries = new (string Slug, string File, string Label, string TabId)[]
         {
-            ("temp",       "models-temp.html",       "Temperature"),
-            ("rain",       "models-rain.html",       "Rain"),
-            ("dry-window", "models-dry-window.html", "Dry window"),
-            ("spec",       "models-spec.html",       "Spec"),
+            ("temp",       "models-temp.html",       "Temperature", "temperature"),
+            ("rain",       "models-rain.html",       "Rain",        "rain"),
+            ("dry-window", "models-dry-window.html", "Dry window",  "dry_window"),
         };
         var s = new StringBuilder();
         s.Append("<nav class=\"lead-nav\"><ul>");
-        foreach (var (slug, file, label) in entries)
+        foreach (var (slug, file, label, tabId) in entries)
         {
+            if (loc is not null && !loc.HasTab(tabId)) continue;
             var cls = slug == activeSlug ? " class=\"active\"" : "";
             s.Append(Ci, $"<li><a href=\"{file}\"{cls}>{Escape(label)}</a></li>");
         }

@@ -20,7 +20,7 @@ public static partial class SitePages
         // Sub-nav first so the tab bar's Y position is fixed across the
         // three Skill pages — flicking between sub-tabs doesn't jolt the
         // page as content height varies.
-        content.Append(RenderSkillSubNav("temp"));
+        content.Append(RenderSkillSubNav("temp", input.RenderingFor));
         content.Append("""
               <hgroup>
                 <h2>Skill — temperature</h2>
@@ -103,18 +103,27 @@ public static partial class SitePages
     /// page heading. The active variant is plain (not a link) so the eye lands
     /// on it.
     /// </summary>
-    private static string RenderSkillSubNav(string activeSlug)
+    /// <summary>
+    /// Per-target sub-nav for the Skill pages. Phase D — filters entries
+    /// by <see cref="LocationDescriptor.Tabs"/>: a location without
+    /// <c>dry_window</c> in its tabs gets a 2-button sub-nav (Temperature /
+    /// Rain), and similarly for any other missing target. When
+    /// <paramref name="loc"/> is null (test fixtures / pre-Phase-D
+    /// callers) all three entries render to preserve legacy behaviour.
+    /// </summary>
+    private static string RenderSkillSubNav(string activeSlug, LocationDescriptor? loc = null)
     {
-        var entries = new (string Slug, string File, string Label)[]
+        var entries = new (string Slug, string File, string Label, string TabId)[]
         {
-            ("temp",       "skill-temperature.html", "Temperature"),
-            ("rain",       "skill-rainfall.html",    "Rain"),
-            ("dry-window", "skill-dry-window.html",  "Dry window"),
+            ("temp",       "skill-temperature.html", "Temperature", "temperature"),
+            ("rain",       "skill-rainfall.html",    "Rain",        "rain"),
+            ("dry-window", "skill-dry-window.html",  "Dry window",  "dry_window"),
         };
         var s = new StringBuilder();
         s.Append("<nav class=\"lead-nav\"><ul>");
-        foreach (var (slug, file, label) in entries)
+        foreach (var (slug, file, label, tabId) in entries)
         {
+            if (loc is not null && !loc.HasTab(tabId)) continue;
             var cls = slug == activeSlug ? " class=\"active\"" : "";
             s.Append(Ci, $"<li><a href=\"{file}\"{cls}>{Escape(label)}</a></li>");
         }
@@ -140,7 +149,7 @@ public static partial class SitePages
 
         var content = new StringBuilder();
         content.Append("<section>");
-        content.Append(RenderSkillSubNav("dry-window"));
+        content.Append(RenderSkillSubNav("dry-window", input.RenderingFor));
         content.Append("""
               <hgroup>
                 <h2>Skill — dry window</h2>
@@ -168,53 +177,43 @@ public static partial class SitePages
     /// <c>skill-rainfall.html</c>; the others ship as
     /// <c>skill-rainfall-{slug}.html</c>.
     /// </summary>
+    /// <summary>
+    /// Rain skill page. Phase D — the page lives at
+    /// <c>/{slug}/skill-rainfall.html</c> per location; no locationName
+    /// parameter, no per-page loc-switcher (global chrome handles location
+    /// switching). <paramref name="stationSlug"/> picks which station to
+    /// render (null = first).
+    /// </summary>
     public static string RenderRainSkill(SiteInputs input, string? stationSlug = null)
         => RenderRainSkill(input, stationSlug, locationName: null);
 
     /// <summary>
-    /// Rain skill page. <paramref name="locationName"/> picks which configured
-    /// location's stations to show — null/empty means primary (legacy
-    /// behaviour). The location sub-nav (Bonehill / Membury / …) renders
-    /// only when more than one location has rainfall stations.
-    ///
-    /// For non-primary locations the page renders **only the rolling Brier
-    /// block** — the eyeball P(wet) vs observed block is omitted because
-    /// the user's MVP scope (2026-05-11) is "rolling brier only" for the
-    /// Membury tab. The eyeball block is computationally fine for Membury
-    /// once predictions land but adds page weight without skill insight
-    /// the rolling Brier doesn't already give.
+    /// Two-arity overload retained briefly so the auto-retrain workflows /
+    /// in-flight callers don't break on the parameter change. Phase D
+    /// renders ignore <paramref name="locationName"/> — pick the location
+    /// by building <paramref name="input"/> with the right RenderingFor.
     /// </summary>
     public static string RenderRainSkill(SiteInputs input, string? stationSlug, string? locationName)
     {
-        var active = ResolveActiveLocation(input.Locations, locationName);
-        var activeName = active?.Name ?? "";
+        _ = locationName; // intentionally unused in Phase D
+        var active = input.RenderingFor;
         var stations = GetRainSkillStations(input, active);
         var currentStation = ResolveStationFromSlug(stations, stationSlug);
 
         var content = new StringBuilder();
         content.Append("<section>");
-        content.Append(RenderSkillSubNav("rain"));
-        content.Append(RenderRainLocationSubNav("skill-rainfall", input.Locations, activeName, lead: null));
+        content.Append(RenderSkillSubNav("rain", active));
 
-        var heading = active is null || active.IsPrimary ? "rain" : $"rain — {active.DisplayName}";
         var intro = "P(wet) vs observed wet hours, then rolling Brier per phase.";
         content.Append(Ci, $"""
               <hgroup>
-                <h2>Skill — {Escape(heading)}</h2>
+                <h2>Skill — rain</h2>
                 <p>{Escape(intro)}</p>
               </hgroup>
             """);
 
-        // Per-station sub-nav lives BELOW the location sub-nav. Page slug
-        // base shifts when on a non-primary location so the per-station
-        // links don't punt the reader back to the primary location.
         if (currentStation is not null)
-        {
-            var stationNavBase = active is null || active.IsPrimary
-                ? "skill-rainfall"
-                : $"skill-rainfall-{active.Name}";
-            content.Append(RenderStationSubNav(stationNavBase, stations, currentStation));
-        }
+            content.Append(RenderStationSubNav("skill-rainfall", stations, currentStation));
 
         content.Append("<h3>P(wet) vs observed wet-hour</h3>");
         content.Append(RenderPrecipVsTruthBlock(input, currentStation));
@@ -222,10 +221,7 @@ public static partial class SitePages
         content.Append(RenderRollingBrierBlock(input, currentStation));
 
         content.Append("</section>");
-        var pageTitle = active is null || active.IsPrimary
-            ? "Skill — rain"
-            : $"Skill — rain — {active.DisplayName}";
-        return WrapPage(input, pageTitle, "skill", content.ToString());
+        return WrapPage(input, "Skill — rain", "skill", content.ToString());
     }
 
     /// <summary>

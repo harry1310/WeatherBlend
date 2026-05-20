@@ -155,12 +155,23 @@ public static partial class SitePages
     /// <param name="Name">Config slug (e.g. <c>bonehill_rocks</c>) — also the URL slug for non-primary location pages.</param>
     /// <param name="DisplayName">Human-facing label for the tab pill (e.g. <c>Bonehill Rocks, Dartmoor</c>).</param>
     /// <param name="RainStationSlugs">EA-prefixed station slugs from this location's rainfall config (e.g. <c>ea_bellever_dartmoor</c>).</param>
-    /// <param name="IsPrimary">First location in config — its pages keep the legacy URLs (<c>forecasts-rain-{lead}h.html</c>) so existing links continue to work.</param>
+    /// <param name="IsPrimary">First location in config. Phase D made the URL scheme symmetric per-slug, so this is now only used by the location-switcher on the per-loc home (to pre-select an entry on the picker).</param>
+    /// <param name="Tabs">Site-nav buttons from <see cref="LocationConfig.Tabs"/>. Order matches config.yaml; values are <c>overview</c>, <c>temperature</c>, <c>rain</c>, <c>dry_window</c>, <c>skill</c>, <c>models</c>.</param>
+    /// <param name="OverviewFirstVisibleHourUtc">Per-loc Overview tile-grid lower bound (inclusive UTC hour). Bonehill 4, Membury 0.</param>
+    /// <param name="OverviewLastVisibleHourUtcExclusive">Per-loc Overview tile-grid upper bound (exclusive UTC hour). Bonehill 22, Membury 24.</param>
     public sealed record LocationDescriptor(
         string Name,
         string DisplayName,
         IReadOnlyList<string> RainStationSlugs,
-        bool IsPrimary);
+        bool IsPrimary,
+        IReadOnlyList<string> Tabs,
+        int OverviewFirstVisibleHourUtc,
+        int OverviewLastVisibleHourUtcExclusive)
+    {
+        /// <summary>True iff <paramref name="tab"/> is in <see cref="Tabs"/> (case-insensitive).</summary>
+        public bool HasTab(string tab) =>
+            Tabs.Any(t => string.Equals(t, tab, StringComparison.OrdinalIgnoreCase));
+    }
 
     /// <summary>
     /// First-pick location for legacy "single-location render" sites. Returns
@@ -199,6 +210,24 @@ public static partial class SitePages
         /// empty so existing test fixtures don't have to set it — production
         /// always populates from <c>active.Name</c>.</summary>
         public string ActiveLocationName { get; init; } = "";
+
+        /// <summary>
+        /// Phase D (2026-05-20): the <see cref="LocationDescriptor"/> the
+        /// current page is being rendered FOR, or <c>null</c> for top-level
+        /// pages (picker / specs / about). Used by <c>WrapPage</c> to pick
+        /// per-loc vs top-level chrome and by per-page nav builders to scope
+        /// the active-tab highlight. When non-null, <see cref="AssetPrefix"/>
+        /// is typically <c>"../"</c> (page lives one subdir deep).
+        /// </summary>
+        public LocationDescriptor? RenderingFor { get; init; } = null;
+
+        /// <summary>
+        /// Path prefix prepended to top-level asset hrefs (<c>styles.css</c>,
+        /// <c>chart.js</c>, <c>index.html</c>, <c>specs.html</c>,
+        /// <c>about.html</c>). Empty for top-level pages; <c>"../"</c> for
+        /// per-loc pages under <c>/{slug}/</c>.
+        /// </summary>
+        public string AssetPrefix { get; init; } = "";
 
         public required string LocationDisplay { get; init; }
         public required double Latitude { get; init; }
@@ -817,14 +846,29 @@ public static partial class SitePages
     public static string Stylesheet() => """
         :root { --brand: #7c4dff; --pwet: #0288d1; }
         body > main { padding-top: 1rem; padding-bottom: 3rem; }
+        header > hgroup h1 a { color: inherit; text-decoration: none; }
         nav.site-nav { padding: 0.5rem 0 0.5rem; border-bottom: 1px solid var(--pico-muted-border-color); margin-bottom: 0.5rem; }
         /* Pico's default <section> has a top margin that combined with the
            site-nav bottom margin to leave a big empty band between the main
            and sub navs. Suppress it on the first section in main. */
         main > section:first-of-type { margin-top: 0; padding-top: 0; }
-        nav.site-nav ul { display: flex; gap: 1rem; list-style: none; padding: 0; margin: 0; }
+        nav.site-nav ul { display: flex; gap: 1rem; list-style: none; padding: 0; margin: 0; flex-wrap: wrap; }
         nav.site-nav a { text-decoration: none; }
         nav.site-nav a.active { font-weight: 600; color: var(--brand); }
+
+        /* Phase D (2026-05-20) — cross-cutting top-nav (Locations / Specs / About) */
+        nav.top-nav { padding: 0.25rem 0; margin-bottom: 0.25rem; font-size: 0.9em; }
+        nav.top-nav ul { display: flex; gap: 0.75rem; list-style: none; padding: 0; margin: 0; }
+        nav.top-nav a { text-decoration: none; color: var(--pico-muted-color); }
+        nav.top-nav a:hover { color: var(--brand); }
+        nav.top-nav a.active { font-weight: 600; color: var(--brand); }
+
+        /* Phase D — location picker on the top-level home page (/index.html) */
+        .loc-picker { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin: 1.5rem 0; }
+        .loc-card { display: block; padding: 1.25rem; border-radius: 8px; background: var(--pico-card-background-color); border: 1px solid var(--pico-muted-border-color); text-decoration: none; color: inherit; transition: transform 0.1s; }
+        .loc-card:hover { transform: translateY(-2px); border-color: var(--brand); }
+        .loc-card h3 { margin: 0 0 0.5rem; color: var(--brand); }
+        .loc-card .loc-tabs { margin: 0; font-size: 0.85em; color: var(--pico-muted-color); }
 
         /* auto-fill (not auto-fit) so empty tracks stay reserved at min
            width — a single tile renders at ~180px instead of expanding to
@@ -1200,6 +1244,15 @@ public static partial class SitePages
 
     private static string WrapPage(SiteInputs input, string pageTitle, string pageId, string bodyHtml)
     {
+        var prefix = input.AssetPrefix;
+        var topNav = RenderTopLevelNav(input, pageId);
+        var siteNav = input.RenderingFor is null
+            ? ""  // top-level pages (picker, specs, about) carry only the cross-cutting nav
+            : RenderLocationNav(input.RenderingFor, pageId);
+        var subtitle = input.RenderingFor is null
+            ? "Multi-model forecast blending"
+            : $"Multi-model forecast blending for {Escape(input.RenderingFor.DisplayName)}";
+
         return $$"""
             <!DOCTYPE html>
             <html lang="en">
@@ -1208,29 +1261,22 @@ public static partial class SitePages
               <meta name="viewport" content="width=device-width, initial-scale=1">
               <title>{{Escape(pageTitle)}} — WeatherBlend</title>
               <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-              <link rel="stylesheet" href="styles.css">
+              <link rel="stylesheet" href="{{prefix}}styles.css">
               <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
               <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.1.0/dist/chartjs-plugin-annotation.min.js"></script>
               <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
               <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0/dist/chartjs-plugin-zoom.min.js"></script>
-              <script src="chart.js" defer></script>
+              <script src="{{prefix}}chart.js" defer></script>
             </head>
             <body>
               <main class="container">
                 <header>
                   <hgroup>
-                    <h1>WeatherBlend</h1>
-                    <p>Multi-model forecast blending for {{Escape(input.LocationDisplay)}}</p>
+                    <h1><a href="{{prefix}}index.html">WeatherBlend</a></h1>
+                    <p>{{subtitle}}</p>
                   </hgroup>
-                  <nav class="site-nav">
-                    <ul>
-                      <li><a href="index.html"{{NavActive(pageId, "index")}}>Home</a></li>
-                      <li><a href="forecasts-temp-24h.html"{{NavActive(pageId, "forecasts")}}>Forecasts</a></li>
-                      <li><a href="skill-temperature.html"{{NavActive(pageId, "skill")}}>Skill</a></li>
-                      <li><a href="models-temp.html"{{NavActive(pageId, "models")}}>Models</a></li>
-                      <li><a href="about.html"{{NavActive(pageId, "about")}}>About</a></li>
-                    </ul>
-                  </nav>
+                  {{topNav}}
+                  {{siteNav}}
                 </header>
 
                 {{bodyHtml}}
@@ -1238,12 +1284,104 @@ public static partial class SitePages
                 <footer class="site-footer">
                   Rendered {{input.GeneratedAtUtc.ToString("yyyy-MM-dd HH:mm", Ci)}}Z ·
                   Training truth: ERA5 · Verification: ERA5 + METAR ·
-                  <a href="about.html">About this site</a>
+                  <a href="{{prefix}}about.html">About this site</a>
                 </footer>
               </main>
             </body>
             </html>
             """;
+    }
+
+    /// <summary>
+    /// Cross-cutting nav: Locations picker · Specs · About. Renders on every
+    /// page (top-level + per-loc); the active-tab highlight is on the link
+    /// matching <paramref name="pageId"/> (one of "home", "specs", "about",
+    /// or — for per-loc pages — any of the per-loc tab ids, in which case
+    /// none of these links highlight).
+    /// </summary>
+    private static string RenderTopLevelNav(SiteInputs input, string pageId)
+    {
+        var prefix = input.AssetPrefix;
+        return $$"""
+              <nav class="top-nav">
+                <ul>
+                  <li><a href="{{prefix}}index.html"{{NavActive(pageId, "home")}}>Locations</a></li>
+                  <li><a href="{{prefix}}specs.html"{{NavActive(pageId, "specs")}}>Specs</a></li>
+                  <li><a href="{{prefix}}about.html"{{NavActive(pageId, "about")}}>About</a></li>
+                </ul>
+              </nav>
+            """;
+    }
+
+    /// <summary>
+    /// Per-location nav driven by <see cref="LocationDescriptor.Tabs"/>. Each
+    /// recognised tab id maps to a single href + label. Unknown ids in the
+    /// config are silently skipped (so adding a tab requires both a config
+    /// edit + a code edit here, which is the right friction — new tabs
+    /// always need new page builders).
+    /// </summary>
+    private static string RenderLocationNav(LocationDescriptor loc, string pageId)
+    {
+        // Tab id → (href relative to /{slug}/, label, pageId-for-active-highlight).
+        // For the multi-target "skill" / "models" tabs, href points at the
+        // temperature variant by default; locations without a temperature
+        // tab fall back to the rain variant (handled below).
+        var hasTemp = loc.HasTab("temperature");
+        var skillHref = hasTemp ? "skill-temperature.html" : "skill-rainfall.html";
+        var modelsHref = hasTemp ? "models-temp.html" : "models-rain.html";
+        (string Href, string Label, string PageId)? Map(string tab) => tab.ToLowerInvariant() switch
+        {
+            "overview"     => ("index.html",                "Overview",     "overview"),
+            "temperature"  => ("forecasts-temp-24h.html",   "Temperature",  "temperature"),
+            "rain"         => ("forecasts-rain-24h.html",   "Rain",         "rain"),
+            "dry_window"   => ("forecasts-dry-window.html", "Dry window",   "dry-window"),
+            "skill"        => (skillHref,                   "Skill",        "skill"),
+            "models"       => (modelsHref,                  "Models",       "models"),
+            _ => null,
+        };
+
+        var items = new StringBuilder();
+        foreach (var tab in loc.Tabs)
+        {
+            var mapped = Map(tab);
+            if (mapped is null) continue;
+            var (href, label, mappedPageId) = mapped.Value;
+            items.Append(Ci, $"""<li><a href="{href}"{NavActive(pageId, mappedPageId)}>{Escape(label)}</a></li>""");
+        }
+
+        // Location switcher — render only when more than one location is
+        // configured. Sits below the tab nav so it doesn't dominate.
+        var switcher = new StringBuilder();
+        if (loc.Tabs.Count > 0)
+        {
+            // No-op when there's nothing to switch TO (single-location config).
+        }
+
+        return $"""
+              <nav class="site-nav">
+                <ul>{items}</ul>
+              </nav>
+            """;
+    }
+
+    /// <summary>
+    /// Location switcher chip-row. Used by the top-level picker (<c>RenderHomePicker</c>)
+    /// and rendered as a secondary nav on per-loc pages so a reader can
+    /// jump from Bonehill to Membury without going via the home picker.
+    /// Returns empty string when fewer than two locations exist.
+    /// </summary>
+    internal static string RenderLocationSwitcher(
+        IReadOnlyList<LocationDescriptor> locations, string? activeLocName, string assetPrefix)
+    {
+        if (locations.Count < 2) return "";
+        var items = new StringBuilder();
+        foreach (var loc in locations)
+        {
+            var cls = string.Equals(loc.Name, activeLocName, StringComparison.OrdinalIgnoreCase)
+                ? " class=\"active\"" : "";
+            items.Append(Ci, $"""<li><a href="{assetPrefix}{loc.Name}/index.html"{cls}>{Escape(loc.DisplayName)}</a></li>""");
+        }
+        return $"""<nav class="loc-switcher"><ul>{items}</ul></nav>""";
     }
 
     private static string NavActive(string current, string target)
@@ -1301,43 +1439,10 @@ public static partial class SitePages
         return $"""<nav class="lead-nav"><ul>{items}</ul></nav>""";
     }
 
-    /// <summary>
-    /// Per-location pill nav (Bonehill | Membury) for the Rain forecast +
-    /// Rain skill pages. Hidden when only one location is configured —
-    /// matches <see cref="RenderStationSubNav"/>'s "one item adds nothing"
-    /// rule. The primary location renders at the legacy URL
-    /// (<c>{pageBase}-{lead}h.html</c> or <c>{pageBase}.html</c>); non-primary
-    /// locations get a slug-prefixed URL (<c>{pageBase}-{location}-{lead}h.html</c>
-    /// or <c>{pageBase}-{location}.html</c>) so existing inbound links stay
-    /// pointed at Bonehill.
-    /// </summary>
-    internal static string RenderRainLocationSubNav(
-        string pageBase,
-        IReadOnlyList<LocationDescriptor> locations,
-        string activeLocationName,
-        int? lead)
-    {
-        // Render only when at least one non-primary location actually has
-        // rainfall stations — else the tab adds nothing (and might confuse
-        // a tester running with a single-location config).
-        var renderable = locations.Where(l => l.RainStationSlugs.Count > 0).ToList();
-        if (renderable.Count <= 1) return "";
-
-        var items = new StringBuilder();
-        foreach (var loc in renderable)
-        {
-            string href;
-            if (loc.IsPrimary)
-                href = lead.HasValue ? $"{pageBase}-{lead.Value}h.html" : $"{pageBase}.html";
-            else
-                href = lead.HasValue
-                    ? $"{pageBase}-{loc.Name}-{lead.Value}h.html"
-                    : $"{pageBase}-{loc.Name}.html";
-            var cls = loc.Name == activeLocationName ? " class=\"active\"" : "";
-            items.Append(Ci, $"""<li><a href="{href}"{cls}>{Escape(loc.DisplayName)}</a></li>""");
-        }
-        return $"""<nav class="lead-nav"><ul>{items}</ul></nav>""";
-    }
+    // RenderRainLocationSubNav removed in Phase D — location switching now
+    // lives in the global chrome (top-nav "Locations" link + per-page
+    // location-switcher), and Rain forecast / Skill pages live under their
+    // location's URL prefix so the per-page pill row was redundant.
 
     /// <summary>
     /// Pretty-print a <see cref="WeatherBlend.Predict.Utci.UtciStress"/> enum name for
