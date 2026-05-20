@@ -43,6 +43,14 @@ public static partial class SitePages
             _ => throw new ArgumentException($"Unknown target '{target}'.", nameof(target)),
         };
 
+        // Phase C commit 4: primary location slug threads down to the
+        // verify-history filters so legacy sidecars (which had Station=null
+        // because they predate the per-loc composite key) still surface on
+        // the primary card. Membury / future-loc cards do strict equality.
+        var primaryLocSlug = input.Locations.FirstOrDefault(l => l.IsPrimary)?.Name
+            ?? input.ActiveLocationName
+            ?? "";
+
         var content = new StringBuilder();
         content.Append("<section>");
         // Sub-nav goes first so its vertical position is fixed across the
@@ -146,7 +154,7 @@ public static partial class SitePages
                 .ToList();
             foreach (var t in ordered)
                 content.Append(RenderBlenderCard(group.Key, t.LatestForDisplay,
-                    t.LatestCycle, t.Previous, input.VerifyHistory));
+                    t.LatestCycle, t.Previous, input.VerifyHistory, primaryLocSlug));
         }
 
         content.Append("</section>");
@@ -189,6 +197,27 @@ public static partial class SitePages
     /// verify-history file uses, so the per-card history filter can pick out
     /// rows matching this exact card.
     /// </summary>
+    /// <summary>
+    /// Matches a <see cref="WeatherBlend.Models.VerifyHistoryRow.Station"/>
+    /// against a card's expected station key (from
+    /// <see cref="ParseCompositeForHistory"/>), with back-compat for
+    /// pre-Phase-C-commit-4 sidecars where temp + element rows had
+    /// <c>Station=null</c> (all such rows were primary-location at write
+    /// time, so they match the primary card only). Non-primary cards do
+    /// strict equality — a Membury card never picks up a legacy null-station
+    /// row.
+    /// </summary>
+    private static bool StationMatchesCard(string? rowStation, string? cardStation, string primaryLocSlug)
+    {
+        if (rowStation == cardStation) return true;
+        if (string.IsNullOrEmpty(rowStation)
+            && !string.IsNullOrEmpty(cardStation)
+            && !string.IsNullOrEmpty(primaryLocSlug)
+            && string.Equals(cardStation, primaryLocSlug, StringComparison.Ordinal))
+            return true;
+        return false;
+    }
+
     private static (string Target, string? Station, int? WindowHours) ParseCompositeForHistory(string composite)
     {
         var parts = composite.Split('/');
@@ -203,7 +232,8 @@ public static partial class SitePages
     private static string RenderBlenderCard(string composite, ModelSummary m,
         ModelSummary latestCycle,
         ModelSummary? previous,
-        IReadOnlyList<WeatherBlend.Models.VerifyHistoryFile> verifyHistory)
+        IReadOnlyList<WeatherBlend.Models.VerifyHistoryFile> verifyHistory,
+        string primaryLocSlug)
     {
         var description = PhaseDescription(composite, m.Phase);
         var phaseLabel = string.IsNullOrEmpty(m.Phase) ? "—" : m.Phase;
@@ -251,7 +281,7 @@ public static partial class SitePages
                 """);
         }
 
-        var historyHtml = RenderVerifyHistorySection(composite, m.Phase, verifyHistory, m);
+        var historyHtml = RenderVerifyHistorySection(composite, m.Phase, verifyHistory, m, primaryLocSlug);
 
         return $"""
             <article class="blender-card">
@@ -365,7 +395,8 @@ public static partial class SitePages
     /// </summary>
     private static string RenderVerifyHistorySection(string composite, string phase,
         IReadOnlyList<WeatherBlend.Models.VerifyHistoryFile> verifyHistory,
-        ModelSummary trainedSummary)
+        ModelSummary trainedSummary,
+        string primaryLocSlug)
     {
         if (verifyHistory.Count == 0 || string.IsNullOrEmpty(phase)) return "";
         var (target, station, windowHours) = ParseCompositeForHistory(composite);
@@ -386,7 +417,7 @@ public static partial class SitePages
                 var rows = f.Rows.Where(r =>
                         IsTrainedView(r)
                         && string.Equals(r.Phase, phase, StringComparison.Ordinal)
-                        && r.Station == station
+                        && StationMatchesCard(r.Station, station, primaryLocSlug)
                         && r.WindowHours == windowHours)
                     .ToList();
                 return (File: f, Rows: rows);
@@ -525,7 +556,7 @@ public static partial class SitePages
         foreach (var lead in allLeads)
             leadHeaders.Append(Ci, $"""<th class="num">+{lead}h</th>""");
 
-        var bucketTable = RenderActualLeadBucketTable(target, station, windowHours, phase, verifyHistory);
+        var bucketTable = RenderActualLeadBucketTable(target, station, windowHours, phase, verifyHistory, primaryLocSlug);
 
         return $"""
             <div class="verify-history">
@@ -559,7 +590,8 @@ public static partial class SitePages
     /// </summary>
     private static string RenderActualLeadBucketTable(
         string target, string? station, int? windowHours, string phase,
-        IReadOnlyList<WeatherBlend.Models.VerifyHistoryFile> verifyHistory)
+        IReadOnlyList<WeatherBlend.Models.VerifyHistoryFile> verifyHistory,
+        string primaryLocSlug)
     {
         var matching = verifyHistory
             .Where(f => f.Target == target)
@@ -568,7 +600,7 @@ public static partial class SitePages
                 var rows = f.Rows.Where(r =>
                         r.ViewKind == "actual_6h"
                         && string.Equals(r.Phase, phase, StringComparison.Ordinal)
-                        && r.Station == station
+                        && StationMatchesCard(r.Station, station, primaryLocSlug)
                         && r.WindowHours == windowHours)
                     .ToList();
                 return (File: f, Rows: rows);

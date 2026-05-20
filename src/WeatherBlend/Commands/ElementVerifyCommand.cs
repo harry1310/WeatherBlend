@@ -130,7 +130,7 @@ public sealed class ElementVerifyCommand
             MetricLabel = $"MAE ({target.Units})",
             Rows = rows.Select(r => new WeatherBlend.Models.VerifyHistoryRow
             {
-                Station = null,
+                Station = locationName,
                 ModelVersion = r.ModelVersion,
                 Phase = metadata.TryGetValue(r.ModelVersion, out var meta) ? meta.Phase : null,
                 LeadHours = r.LeadHours,
@@ -145,18 +145,11 @@ public sealed class ElementVerifyCommand
                 DriftFlag = r.DriftFlag,
             }).ToList(),
         };
-        // Models-page history sidecar: skip for non-primary locations until
-        // the multi-location site rework lands (mirrors TempVerifyCommand).
-        if (isPrimary)
-        {
-            await WeatherBlend.Evaluate.VerifyHistoryWriter.WriteAsync(_cfg.Storage.ReportsPath, history, ct);
-        }
-        else
-        {
-            _log.LogInformation(
-                "Skipping verify-history JSON for non-primary location '{Loc}' — Models-page integration deferred.",
-                locationName);
-        }
+        // Phase C commit 4 (2026-05-20): per-loc Models-page cards distinguished
+        // via VerifyHistoryRow.Station = locationName. Non-primary filename
+        // gets a {location} segment so it doesn't overwrite primary's sidecar.
+        await WeatherBlend.Evaluate.VerifyHistoryWriter.WriteAsync(
+            _cfg.Storage.ReportsPath, history, locationName: isPrimary ? null : locationName, ct);
 
         foreach (var r in rows)
         {

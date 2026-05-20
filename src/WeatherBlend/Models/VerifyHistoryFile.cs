@@ -64,8 +64,18 @@ public sealed class VerifyHistoryRow
         ModelVersion = "";
     }
 
-    /// <summary>EA station slug for precipitation / dry-window targets;
-    /// null for temp + element which are single-location.</summary>
+    /// <summary>Per-target scope key. Polymorphic by <see cref="VerifyHistoryFile.Target"/>:
+    ///   * precipitation / dry-window → EA rainfall gauge slug
+    ///     (<c>ea_bellever_dartmoor</c>) — loc-unique by config convention.
+    ///   * temperature / element_* → location slug (<c>bonehill_rocks</c>,
+    ///     <c>membury_devon</c>) — mirrors the per-station temperature
+    ///     manifest (2026-05-14 layout) where the manifest's "station" key
+    ///     IS the location slug. Distinguishes Bonehill vs Membury cards
+    ///     on the Models page (Phase C commit 4, 2026-05-20). Old sidecars
+    ///     written before commit 4 have <c>null</c> for temp/element — the
+    ///     Models-page filter treats null as a primary-location fallback so
+    ///     the Bonehill card's history doesn't disappear at the rollout.
+    /// </summary>
     public string? Station { get; init; }
 
     public required string ModelVersion { get; init; }

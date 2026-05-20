@@ -476,10 +476,14 @@ public sealed class RenderSiteCommand
             .Distinct())
         {
             var dir = Path.Combine(modelsRoot, "temperature", station, version);
-            // Composite stays "temperature" for the renderer — the Models page
-            // is single-location (primary) today; per-location multi-station
-            // temperature display lands as part of the future Phase D rework.
-            var summary = TryLoadSummary(dir, composite: "temperature", version, metricLabel: "Test MAE (°C)");
+            // Phase C commit 4 (2026-05-20): composite now includes the
+            // station/location segment so Bonehill + Membury surface as
+            // separate Models-page sections (was a collision-on-"temperature"
+            // bug while only the primary's bundles were loaded; now both
+            // would write to the same key). Mirrors how precipitation already
+            // encodes the per-station axis (precipitation/ea_bellever_dartmoor).
+            var composite = $"temperature/{station}";
+            var summary = TryLoadSummary(dir, composite, version, metricLabel: "Test MAE (°C)");
             if (summary is not null) summaries.Add(summary);
         }
 

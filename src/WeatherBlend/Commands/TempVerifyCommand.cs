@@ -154,7 +154,7 @@ public sealed class TempVerifyCommand
             MetricLabel = "MAE (°C)",
             Rows = rows.Select(r => new WeatherBlend.Models.VerifyHistoryRow
             {
-                Station = null,
+                Station = locationName,
                 ModelVersion = r.ModelVersion,
                 Phase = metadata.TryGetValue(r.ModelVersion, out var meta) ? meta.Phase : null,
                 LeadHours = r.LeadHours,
@@ -175,7 +175,7 @@ public sealed class TempVerifyCommand
             // intentionally null/false.
             .Concat(bucketRows.Select(r => new WeatherBlend.Models.VerifyHistoryRow
             {
-                Station = null,
+                Station = locationName,
                 ModelVersion = r.ModelVersion,
                 Phase = metadata.TryGetValue(r.ModelVersion, out var meta2) ? meta2.Phase : null,
                 LeadHours = r.LeadHours, // = bucket low for these rows
@@ -193,22 +193,14 @@ public sealed class TempVerifyCommand
             }))
             .ToList(),
         };
-        // Models-page history sidecar: skip for non-primary locations until
-        // the multi-location site rework lands. Writing a second JSON with
-        // the same Target="temperature" would surface Membury rows as new
-        // model cards on the Bonehill Models page — confusing today, will
-        // be wired properly when the per-location page split ships.
-        // Markdown report is unaffected (location prefix on the filename).
-        if (isPrimary)
-        {
-            await Evaluate.VerifyHistoryWriter.WriteAsync(_cfg.Storage.ReportsPath, history, ct);
-        }
-        else
-        {
-            _log.LogInformation(
-                "Skipping verify-history JSON for non-primary location '{Loc}' — Models-page integration deferred.",
-                locationName);
-        }
+        // Phase C commit 4 (2026-05-20): per-loc Models-page cards are now
+        // distinguishable via VerifyHistoryRow.Station = locationName
+        // (mirrors the per-station temp manifest's stationKey convention).
+        // History JSON filename gets a {location} segment for non-primary so
+        // it doesn't overwrite primary's sidecar — same shape as the .md
+        // sibling, see VerifyHistoryWriter.FileNameFor.
+        await Evaluate.VerifyHistoryWriter.WriteAsync(
+            _cfg.Storage.ReportsPath, history, locationName: isPrimary ? null : locationName, ct);
 
         // One-line summary to stdout — easy to scrape from CI logs.
         foreach (var r in rows)
