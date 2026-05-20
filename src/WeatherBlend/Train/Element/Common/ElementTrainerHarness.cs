@@ -193,10 +193,10 @@ public static class ElementTrainerHarness
         }
         // Promote: replaces any prior entry with the same Phase in this
         // location's station entry of Active. Element targets currently have a
-        // single phase each (lean-wind / lean-humidity / lean-shortwave-
-        // radiation / lean-cloud-cover) so this is functionally equivalent to
-        // a single-version write today, but the promote helper future-proofs
-        // against a challenger ever being added.
+        // single phase each (wind / humidity / shortwave_radiation /
+        // cloud_cover) so this is functionally equivalent to a single-version
+        // write today, but the promote helper future-proofs against a
+        // challenger ever being added.
         ModelArtifact.PromoteStationVersion(
             modelsRoot, inputs.Target.ModelDirName, inputs.LocationName,
             versionName, newPhase: inputs.Target.PhaseTag);

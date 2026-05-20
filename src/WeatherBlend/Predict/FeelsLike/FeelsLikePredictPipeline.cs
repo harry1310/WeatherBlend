@@ -153,22 +153,19 @@ public static class FeelsLikePredictPipeline
     /// for Bonehill temperature once the 2026-05-17 auto-retrain promoted
     /// three new bundles without displacing the older 2d entry sitting at
     /// index 0 — feels-like read the stale 2d's empty / missing date
-    /// partition and the home-page UTCI chart stopped advancing. Today's
+    /// partition and the home-page UTCI chart stopped advancing. The
     /// straight champion-resolver swap (commit d6c5b12) fixed temperature
-    /// but exposed a SECOND latent mismatch: the element trainers stamp
-    /// <c>training_metadata.Phase</c> with a tag like <c>"lean-humidity"</c>
-    /// while phases.yaml declares each element's champion phase id as plain
-    /// <c>"humidity"</c>/<c>"wind"</c>/<c>"shortwave_radiation"</c>/<c>"cloud_cover"</c>.
-    /// Strict-champion lookup matches on Phase and returns empty for every
-    /// element, soft-skipping them and dropping feels-like to 0 rows.
+    /// but exposed a SECOND latent mismatch: the element trainers stamped
+    /// <c>training_metadata.Phase</c> with <c>"lean-{element}"</c> while
+    /// phases.yaml declared plain <c>"wind"</c>/<c>"humidity"</c>/etc, so
+    /// strict-champion lookup returned empty for every element.
     ///
-    /// The fallback restores element behaviour (one Active version per
-    /// element station — <c>active[0]</c> is the right pick) while keeping
-    /// the temperature fix (where multiple Active versions live, champion
-    /// is correctly resolved and the fallback never fires). The proper
-    /// long-term cleanup is a phases.yaml / element-trainer pass to align
-    /// the phase tags; the fallback log makes the mismatch visible until
-    /// then.
+    /// The trainer side is now fixed (ElementTargets PhaseTag values match
+    /// phases.yaml). The fallback stays for one Sunday auto-retrain cycle
+    /// so existing R2 bundles still resolve while their metadata.Phase
+    /// carries the legacy <c>"lean-*"</c> tag. Delete the fallback (and
+    /// this docstring's history paragraphs) once the first Sunday retrain
+    /// after 2026-05-20 has rewritten every element bundle.
     /// </summary>
     private static string PickActiveStationVersion(string modelsRoot, string target, string stationKey, ILogger log)
     {
@@ -189,14 +186,13 @@ public static class FeelsLikePredictPipeline
             return champion;
         }
 
-        // Champion resolver returned empty — typically a phases.yaml champion-
-        // phase id vs trainer metadata.Phase mismatch (the element trainers
-        // stamp "lean-{element}" while phases.yaml declares "{element}").
-        // Fall back to the first Active entry; for elements that IS the only
-        // version anyway, so the fallback is behaviour-equivalent to the
-        // pre-d6c5b12 heuristic. Warn so the mismatch is visible.
+        // Champion resolver returned empty — typically a legacy element
+        // bundle on R2 still tagged "lean-{element}" from before 2026-05-20.
+        // Fall back to first Active; warn so any non-legacy occurrence is
+        // visible. Delete this branch once the first post-2026-05-20 Sunday
+        // retrain has rewritten every element bundle.
         log.LogWarning(
-            "  {Target}/{Station}: champion resolver returned no version — phases.yaml champion-phase / metadata.Phase tag mismatch?. Falling back to first Active ({V}).",
+            "  {Target}/{Station}: champion resolver returned no version — likely legacy element bundle. Falling back to first Active ({V}).",
             target, stationKey, active[0]);
         return active[0];
     }

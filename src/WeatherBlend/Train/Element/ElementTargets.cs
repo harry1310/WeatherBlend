@@ -5,9 +5,9 @@ namespace WeatherBlend.Train.Element;
 /// one-line addition here plus a new sibling folder under <c>Train/Element/</c>
 /// implementing <see cref="IElementBlender"/>.
 ///
-/// PhaseTag is what training_metadata.json carries and what predict-side dispatch
-/// keys on. Per-target tags (`lean-wind`, `lean-humidity`, ...) keep the predict
-/// dispatcher unambiguous; rich variants would land as `rich-wind` etc. when added.
+/// PhaseTag is what training_metadata.json carries and what
+/// <see cref="ModelArtifact.ResolveStationChampionVersion"/> matches against
+/// phases.yaml's champion id. The two must agree per-target.
 /// </summary>
 public static class ElementTargets
 {
@@ -16,28 +16,28 @@ public static class ElementTargets
         ModelDirName: "wind",
         Display: "10 m wind speed",
         Units: "m/s",
-        PhaseTag: "lean-wind");
+        PhaseTag: "wind");
 
     public static readonly ElementTarget Humidity = new(
         CliName: "humidity",
         ModelDirName: "humidity",
         Display: "2 m relative humidity",
         Units: "%",
-        PhaseTag: "lean-humidity");
+        PhaseTag: "humidity");
 
     public static readonly ElementTarget ShortwaveRadiation = new(
         CliName: "shortwave-radiation",
         ModelDirName: "shortwave_radiation",
         Display: "shortwave radiation",
         Units: "W/m²",
-        PhaseTag: "lean-shortwave-radiation");
+        PhaseTag: "shortwave_radiation");
 
     public static readonly ElementTarget CloudCover = new(
         CliName: "cloud-cover",
         ModelDirName: "cloud_cover",
         Display: "total cloud cover",
         Units: "%",
-        PhaseTag: "lean-cloud-cover");
+        PhaseTag: "cloud_cover");
 
     public static readonly IReadOnlyList<ElementTarget> All =
         new[] { Wind, Humidity, ShortwaveRadiation, CloudCover };
@@ -49,7 +49,4 @@ public static class ElementTargets
         => TryFromCli(cliName)
            ?? throw new ArgumentException(
                $"Unknown element target '{cliName}'. Known: {string.Join(", ", All.Select(t => t.CliName))}");
-
-    public static ElementTarget? TryFromPhaseTag(string phaseTag)
-        => All.FirstOrDefault(t => string.Equals(t.PhaseTag, phaseTag, StringComparison.OrdinalIgnoreCase));
 }
