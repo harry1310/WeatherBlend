@@ -91,6 +91,17 @@ runs:
         # the same 40-day date-window include used for forecasts applies
         # verbatim and covers both consumers with wide margin.
         #
+        # data/truth/era5 + data/truth/metar (2026-05-20): same trick. Both
+        # are hive-partitioned by `date=<yyyy-MM-dd>` (era5 = ValidTimeUtc
+        # day, metar = ObservedTimeUtc day) and read in this workflow only
+        # by RenderSiteCommand — Era5 via GetEra5Hourly(windowStart-3d, now)
+        # for the temp truth chart, METAR via GetMetarTemperature(windowStart,
+        # now) for the temp skill comparison line. Both DuckDB queries are
+        # SQL-filtered on the timestamp so partitions outside the window are
+        # never touched. verify (deep history) runs from verify.yml's own R2
+        # pull, unfiltered. era5/metar were 43s + 31s pre-filter (2,240 +
+        # 2,234 files); ~40 days × ≤2 locations cuts to ~80 files each.
+        #
         # NB the 40-day slice assumes the workflow's window_days input is
         # not pushed far past ~34 — the same pre-existing assumption the
         # forecasts slice already bakes in. A retroactive for_date older
@@ -100,8 +111,12 @@ runs:
         # data/models is the other heavy tree (~585 MiB) — but ~474 MiB of
         # that is Phase 4a's per-cell BART artefacts (state_lead_*.rds +
         # arrays_lead_*.npz), excluded below since nothing here reads them.
-        # The remaining trees (predictions / era5 / metar / reports) are
-        # tens of MiB each and stay full-copy.
+        # Remaining ~111 MiB across 5,851 small files is round-trip-bound
+        # (~53 files/s at --transfers 16). Bumped to --transfers 32
+        # --checkers 64 on the data/models pull only (other trees stay at
+        # 16/32 to spare the runner's IO when the bottleneck is bytes not
+        # files). The remaining trees (predictions / reports) are tens of
+        # MiB each and stay full-copy.
         DATE_WINDOW_INCLUDES=""
         for i in $(seq 0 40); do
           d=$(date -u -d "$i days ago" +%Y-%m-%d)
@@ -121,18 +136,30 @@ runs:
           echo "::group::sync ${tree}"
           # Per-tree extra rclone flags (word-split, same as DATE_WINDOW_INCLUDES).
           EXTRA=""
-          if [ "$tree" = "data/forecasts" ] || [ "$tree" = "data/truth/rainfall" ]; then
-            EXTRA="$DATE_WINDOW_INCLUDES"
-          elif [ "$tree" = "data/models" ]; then
-            # Phase 4a's per-cell BART artefacts — state_lead_*.rds (~452 MiB)
-            # + arrays_lead_*.npz (~21 MiB) — are consumed ONLY by
-            # WeatherProbabilistic's predict-4a workflow (its own bundle pull).
-            # Neither the .NET predict step nor RenderSiteCommand here opens an
-            # R .rds or numpy .npz, so excluding them drops ~474 MiB — most of
-            # data/models, and most of this sync's runtime.
-            EXTRA="--exclude **/*.rds --exclude **/*.npz"
-          fi
+          TRANSFERS=16
+          CHECKERS=32
+          case "$tree" in
+            data/forecasts|data/truth/rainfall|data/truth/era5|data/truth/metar)
+              # Date-window-filtered trees — see the comment above the
+              # DATE_WINDOW_INCLUDES builder for the per-tree rationale.
+              EXTRA="$DATE_WINDOW_INCLUDES" ;;
+            data/models)
+              # Phase 4a's per-cell BART artefacts — state_lead_*.rds (~452 MiB)
+              # + arrays_lead_*.npz (~21 MiB) — are consumed ONLY by
+              # WeatherProbabilistic's predict-4a workflow (its own bundle pull).
+              # Neither the .NET predict step nor RenderSiteCommand here opens an
+              # R .rds or numpy .npz, so excluding them drops ~474 MiB — most of
+              # data/models, and most of this sync's runtime.
+              EXTRA="--exclude **/*.rds --exclude **/*.npz"
+              # 5,851 small files at 53 files/s with 16 transfers = HTTP round-
+              # trips, not bandwidth. Doubling concurrency to halve the wall-
+              # clock. R2 doesn't rate-limit at this scale (verified by other
+              # workflows using --transfers 32 on bigger trees, e.g.
+              # archive-backfill).
+              TRANSFERS=32
+              CHECKERS=64 ;;
+          esac
           rclone copy "r2:${R2_BUCKET}/${tree}" "./${tree}" \
-            --fast-list --transfers 16 --checkers 32 --progress $EXTRA
+            --fast-list --transfers "$TRANSFERS" --checkers "$CHECKERS" --progress $EXTRA
           echo "::endgroup::"
         done
