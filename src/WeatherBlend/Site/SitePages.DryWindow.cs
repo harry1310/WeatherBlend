@@ -104,17 +104,11 @@ public static partial class SitePages
         // Each phase reads only its own curve via DryWindowPhase.StartHourCurveVersion.
         // Empty dictionary when no curves on disk — renderer falls back
         // gracefully to the pre-curve table layout.
-        // Phase C commit 3a: StartHourPredictions is now multi-loc; filter
-        // to the active location's rows before keying so a Membury page
-        // doesn't accidentally read a Bonehill cell that shares a station
-        // slug (and vice versa). Station slugs are config-unique today, but
-        // we filter on LocationName defensively for when overlapping slugs
-        // appear.
+        // input.StartHourPredictions is already scoped to this page's location
+        // by RenderSiteCommand (single-location SiteInputs invariant) — key by
+        // the cell tuple directly.
         var curvesByCell = input.StartHourPredictions
-            .Where(s => s.Station == currentStation
-                     && (string.IsNullOrEmpty(input.ActiveLocationName)
-                         || string.Equals(s.LocationName, input.ActiveLocationName, StringComparison.Ordinal)
-                         || string.IsNullOrEmpty(s.LocationName)))  // legacy/test rows fall through
+            .Where(s => s.Station == currentStation)
             .GroupBy(s => (s.Station, s.WindowHours, s.LeadHours, s.TargetDateUtc, s.Version))
             .ToDictionary(g => g.Key, g => (IReadOnlyList<StartHourForecastPoint>)g.ToList());
         var hasCurves = curvesByCell.Count > 0;

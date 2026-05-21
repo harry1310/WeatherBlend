@@ -147,18 +147,10 @@ public static partial class SitePages
         var series = new List<LineSeries>();
         var tempPalette = NwpsForTemperature()
             .ToDictionary(np => np.Label, np => np.Color, StringComparer.Ordinal);
-        // Filter the raw NWP rows to THIS page's location. input.NwpTemperatures
-        // carries every configured location's grid-cell temperatures; the blend
-        // lines below come from input.Predictions which RenderSiteCommand already
-        // scoped to the rendered location. Pre-Phase-D this filtered to the
-        // primary location because temperature pages were primary-only — that
-        // pinned the Membury temp chart's NWP overlay to Bonehill's 393 m
-        // grid cell while the blend lines were Membury's 120 m cell, leaving
-        // the blend ~4-5°C above every NWP line (the lapse-rate gap).
-        var activeLocName = input.ActiveLocationName;
+        // input.NwpTemperatures is already scoped to this page's location by
+        // RenderSiteCommand (single-location SiteInputs invariant) — iterate
+        // it directly.
         foreach (var grp in input.NwpTemperatures
-            .Where(t => string.IsNullOrEmpty(activeLocName)
-                        || string.Equals(t.LocationName, activeLocName, StringComparison.OrdinalIgnoreCase))
             .GroupBy(t => t.Model)
             .OrderBy(g => g.Key, StringComparer.Ordinal))
         {
@@ -523,13 +515,12 @@ public static partial class SitePages
         // the mm/h chart so the eye reads "is rain likely?" then "how
         // hard?" top-to-bottom. Only ~4 of 8 NWPs publish PoP — others
         // drop out of the legend silently.
-        var activeLocName = activeLocation?.Name ?? "";
+        // input.NwpPrecipProbabilities / NwpPrecipRates are already scoped to
+        // this page's location by RenderSiteCommand (single-location SiteInputs
+        // invariant) — iterate directly.
         var activeLocDisplay = activeLocation?.DisplayName
             ?? PrimaryLocation(input.Locations)?.DisplayName
             ?? "primary";
-        bool MatchesActiveLoc(string locName)
-            => string.IsNullOrEmpty(activeLocName)
-               || string.Equals(locName, activeLocName, StringComparison.OrdinalIgnoreCase);
 
         if (input.NwpPrecipProbabilities.Count > 0)
         {
@@ -537,7 +528,6 @@ public static partial class SitePages
             var popPalette = nwpSpecs
                 .ToDictionary(np => np.Label, np => np.Color, StringComparer.Ordinal);
             foreach (var grp in input.NwpPrecipProbabilities
-                .Where(p => MatchesActiveLoc(p.LocationName))
                 .GroupBy(p => p.Model)
                 .OrderBy(g => g.Key, StringComparer.Ordinal))
             {
@@ -589,7 +579,6 @@ public static partial class SitePages
             var ratePalette = nwpSpecs
                 .ToDictionary(np => np.Label, np => np.Color, StringComparer.Ordinal);
             foreach (var grp in input.NwpPrecipRates
-                .Where(t => MatchesActiveLoc(t.LocationName))
                 .GroupBy(t => t.Model)
                 .OrderBy(g => g.Key, StringComparer.Ordinal))
             {

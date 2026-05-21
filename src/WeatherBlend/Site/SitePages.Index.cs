@@ -90,13 +90,10 @@ public static partial class SitePages
                           .ThenByDescending(r => r.PredictedAtUtc)
                           .First());
 
-        // Phase C commit 3a: FeelsLikePredictions is now multi-loc; filter
-        // to the active location's rows before grouping so a Membury card
-        // doesn't pick up a Bonehill chip (or vice versa).
+        // input.FeelsLikePredictions + LowCloudByValid are already scoped to
+        // this page's location by RenderSiteCommand (single-location SiteInputs
+        // invariant) — use directly.
         var feelsLikeByValid = input.FeelsLikePredictions
-            .Where(u => string.IsNullOrEmpty(input.ActiveLocationName)
-                     || string.Equals(u.LocationName, input.ActiveLocationName, StringComparison.Ordinal)
-                     || string.IsNullOrEmpty(u.LocationName))  // legacy/test rows without LocationName fall through to active
             .GroupBy(u => u.ValidTimeUtc)
             .ToDictionary(
                 g => g.Key,
@@ -104,11 +101,7 @@ public static partial class SitePages
                       .ThenByDescending(u => u.PredictedAtUtc)
                       .First());
 
-        // Phase C commit 3a: LowCloudByValid is keyed by location slug now;
-        // pick the active loc's inner dict (empty if missing).
-        var lowCloudByValid = input.LowCloudByValid.TryGetValue(input.ActiveLocationName, out var lcInner)
-            ? lcInner
-            : (IReadOnlyDictionary<DateTime, LowCloudSignal>)new Dictionary<DateTime, LowCloudSignal>();
+        var lowCloudByValid = input.LowCloudByValid;
 
         // Day summary line above the tile grid: temp range + mean P(wet) +
         // driest hour. Falls back to a temp-only line when no P(wet) is

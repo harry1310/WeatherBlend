@@ -166,23 +166,27 @@ public class PhaseDSiteTests
     }
 
     [Fact]
-    public void RenderForecastsTemp_NWP_overlay_scopes_to_rendered_location_not_primary()
+    public void RenderForecastsTemp_renders_every_NWP_row_it_is_given_no_hidden_location_filter()
     {
-        // Regression: pre-fix, the temperature forecast page filtered the raw
-        // NWP overlay rows to PrimaryLocation (Bonehill), so the Membury temp
-        // chart drew Bonehill's 393 m grid-cell NWP lines under Membury's
-        // 120 m blend — leaving the blend ~4-5°C above every NWP line.
+        // Single-location SiteInputs invariant (2026-05-21 refactor):
+        // RenderSiteCommand scopes input.NwpTemperatures to the rendered
+        // location before this page ever sees it, so the page must NOT do
+        // its own location filtering — it renders every row faithfully.
+        // The original bug (Membury temp chart drawing Bonehill's 393 m
+        // grid-cell NWP lines under Membury's 120 m blend, ~4-5°C gap) was a
+        // page-level PrimaryLocation filter; the fix moved scoping upstream.
+        // This test guards against a hidden page-level filter creeping back:
+        // every NWP row handed in must reach the chart.
         var generatedAt = new DateTime(2026, 5, 21, 0, 0, 0, DateTimeKind.Utc);
         var validTime = generatedAt.AddHours(24);
         var membury = MakeDescriptor("membury_devon", "Membury",
             tabs: new[] { "overview", "temperature", "rain" }, isPrimary: false);
-        var bonehill = MakeDescriptor("bonehill_rocks", "Bonehill Rocks");
 
-        // Distinctive temps: Bonehill cold (333), Membury warm (444).
+        // Two distinctive Membury NWP points — both must render.
         var nwp = new[]
         {
-            new SitePages.NwpTemperatureForecastPoint("gfs_seamless", validTime, 333.0, "bonehill_rocks"),
-            new SitePages.NwpTemperatureForecastPoint("gfs_seamless", validTime, 444.0, "membury_devon"),
+            new SitePages.NwpTemperatureForecastPoint("gfs_seamless",  validTime, 441.0, "membury_devon"),
+            new SitePages.NwpTemperatureForecastPoint("ecmwf_ifs025", validTime, 442.0, "membury_devon"),
         };
         var pred = new TempPredictionRow
         {
@@ -192,7 +196,7 @@ public class PhaseDSiteTests
             BlendTemperature = 440.0, FeatureVectorHash = "",
         };
 
-        var input = MakeInput(renderingFor: membury, locations: new[] { bonehill, membury })
+        var input = MakeInput(renderingFor: membury, locations: new[] { membury })
             with
             {
                 GeneratedAtUtc = generatedAt,
@@ -203,9 +207,8 @@ public class PhaseDSiteTests
 
         var html = SitePages.RenderForecastsTemp(input, 24);
 
-        // Membury's NWP point (444) is on the chart; Bonehill's (333) is not.
-        html.Should().Contain("444");
-        html.Should().NotContain("333");
+        html.Should().Contain("441");
+        html.Should().Contain("442");
     }
 
     [Fact]

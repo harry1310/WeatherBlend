@@ -201,14 +201,34 @@ public static partial class SitePages
             l.Name.Equals(locationName, StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>
+    /// Render input for one page.
+    ///
+    /// <para><b>Single-location invariant (2026-05-21):</b> every prediction /
+    /// forecast / truth / NWP-overlay collection on this record is scoped to
+    /// exactly one location — the one named by <see cref="ActiveLocationName"/>
+    /// / <see cref="RenderingFor"/>. <c>RenderSiteCommand</c> does ALL the
+    /// per-location filtering once, in its per-location loop, before
+    /// constructing this object. Page builders therefore MUST NOT filter by
+    /// location — they iterate their data directly. A page that forgets to
+    /// filter can't leak another location's data because there is nothing
+    /// else in the object to leak.</para>
+    ///
+    /// <para>The one deliberate exception is <see cref="VerifyHistory"/> — it
+    /// carries every location's rows because the Models page matches them to
+    /// per-station cards (<c>StationMatchesCard</c>), a finer granularity than
+    /// location. See that field's remarks.</para>
+    ///
+    /// <para>The top-level pages (picker / specs / about) pass a degenerate
+    /// instance with empty collections + <c>RenderingFor == null</c>.</para>
+    /// </summary>
     public sealed record SiteInputs
     {
         /// <summary>Config slug (e.g. <c>bonehill_rocks</c>) of the location
-        /// this SiteInputs is being rendered for. Phase C commit 3a added it
-        /// so renderer code can filter multi-loc lists/dicts (FeelsLike,
-        /// StartHour, LowCloudByValid) to just this location. Defaulted to
-        /// empty so existing test fixtures don't have to set it — production
-        /// always populates from <c>active.Name</c>.</summary>
+        /// this SiteInputs is rendered for. Empty only for the top-level
+        /// picker / specs / about pages. Every collection on this record is
+        /// already scoped to this location (see the type-level invariant) —
+        /// it's an identity tag, not a filter key.</summary>
         public string ActiveLocationName { get; init; } = "";
 
         /// <summary>
@@ -299,17 +319,17 @@ public static partial class SitePages
 
         /// <summary>
         /// Per-hour low-cloud / mist signal aggregated across NWP forecasts,
-        /// keyed by location slug then valid time. Phase C commit 3a switched
-        /// the outer key from a single-loc dict to per-loc — each rendered
-        /// home page picks its location's inner dict. Two independent inner
+        /// keyed by valid time. Scoped to <see cref="ActiveLocationName"/> by
+        /// RenderSiteCommand (the 2026-05-21 single-location-SiteInputs
+        /// refactor — was a location-keyed outer dict). Two independent inner
         /// counts: how many of the visibility-publishing NWPs are forecasting
         /// sub-1km vis (mist or fog), and how many of all NWPs are forecasting
         /// saturated air (T-Td &lt; 1.5°C, an Espy proxy for cloud base below
         /// the 393m tor). Either threshold met → home tile renders a warning
         /// badge with hover-tooltip naming the firing signal(s).
         /// </summary>
-        public IReadOnlyDictionary<string, IReadOnlyDictionary<DateTime, LowCloudSignal>> LowCloudByValid { get; init; }
-            = new Dictionary<string, IReadOnlyDictionary<DateTime, LowCloudSignal>>(StringComparer.Ordinal);
+        public IReadOnlyDictionary<DateTime, LowCloudSignal> LowCloudByValid { get; init; }
+            = new Dictionary<DateTime, LowCloudSignal>();
 
         /// <summary>Met Office DataHub Land Observations temperature
         /// (time-sorted) for the configured geohash. Closer to Bonehill
@@ -506,6 +526,17 @@ public static partial class SitePages
         /// station, version, windowHours) to populate a "Verify history"
         /// table beneath each model card. Empty until the first weekly
         /// verify run lands JSON sidecars on R2.
+        ///
+        /// <para><b>The single-location-invariant exception:</b> this list
+        /// carries every location's rows, not just <see cref="ActiveLocationName"/>'s.
+        /// That's deliberate — the Models page matches rows to per-station
+        /// cards via <c>StationMatchesCard</c> (a finer granularity than
+        /// location: each location has multiple precip-gauge cards). Because
+        /// the page's cards are themselves location-scoped (built from this
+        /// SiteInputs' location-scoped <c>ModelSummaries</c>) and the match
+        /// is exact station-key equality, a card never picks up another
+        /// location's rows. Pre-filtering this list per-location would not
+        /// remove the per-card matching logic, so it stays whole.</para>
         /// </summary>
         public IReadOnlyList<VerifyHistoryFile> VerifyHistory { get; init; }
             = Array.Empty<VerifyHistoryFile>();

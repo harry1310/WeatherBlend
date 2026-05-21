@@ -459,16 +459,12 @@ public static partial class SitePages
         // forecaster's view, not a truth source.
         // MO Spot temp filtered to the +24h lead bucket [24, 47] — matches the
         // rain skill chart's convention and our blender's lead-band training.
-        // Scope to THIS page's location, not the primary — input.MetOfficeSpot-
-        // Forecasts carries every location's Spot rows (same Phase D fix as the
-        // NWP overlay on the temperature forecast page).
-        var activeLocName = input.ActiveLocationName;
+        // input.MetOfficeSpotForecasts is already scoped to this page's
+        // location by RenderSiteCommand (single-location SiteInputs invariant).
         var moSpotPts = input.MetOfficeSpotForecasts
             .Where(m => m.ValidTimeUtc >= input.WindowStartUtc
                         && m.Temperature2m.HasValue
-                        && m.LeadHours >= 24 && m.LeadHours < 48
-                        && (string.IsNullOrEmpty(activeLocName)
-                            || string.Equals(m.LocationName, activeLocName, StringComparison.OrdinalIgnoreCase)))
+                        && m.LeadHours >= 24 && m.LeadHours < 48)
             .GroupBy(m => m.ValidTimeUtc)
             .Select(g => g.OrderBy(m => m.LeadHours).First())
             .OrderBy(m => m.ValidTimeUtc)
@@ -724,16 +720,13 @@ public static partial class SitePages
             // measurable precip", a looser bound than our 0.1 mm/h training
             // label — the skill-line block above the chart calls this out.
             //
-            // Filter to the home location of the station being charted so the
-            // Membury rain skill page draws Membury's Spot PoP, not Bonehill's.
-            var stationHomeLoc = input.Locations
-                .FirstOrDefault(l => l.RainStationSlugs.Any(s => string.Equals(s, station, StringComparison.OrdinalIgnoreCase)))?.Name ?? "";
+            // input.MetOfficeSpotForecasts is already scoped to this page's
+            // location by RenderSiteCommand (single-location SiteInputs
+            // invariant) — every row is this location's Spot forecast.
             var moSpotPts = input.MetOfficeSpotForecasts
                 .Where(m => m.ValidTimeUtc >= input.WindowStartUtc
                             && m.PrecipitationProbabilityPercent.HasValue
-                            && m.LeadHours >= 24 && m.LeadHours < 48
-                            && (string.IsNullOrEmpty(stationHomeLoc)
-                                || string.Equals(m.LocationName, stationHomeLoc, StringComparison.OrdinalIgnoreCase)))
+                            && m.LeadHours >= 24 && m.LeadHours < 48)
                 .GroupBy(m => m.ValidTimeUtc)
                 .Select(g => g.OrderBy(m => m.LeadHours).First())
                 .OrderBy(m => m.ValidTimeUtc)

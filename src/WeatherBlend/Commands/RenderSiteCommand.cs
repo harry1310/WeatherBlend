@@ -233,19 +233,45 @@ public sealed class RenderSiteCommand
 
             _log.LogInformation("Render {Loc} (tabs: {Tabs})", loc.Name, string.Join(",", loc.Tabs));
 
-            // Filter all-locs lists to this loc's rows.
-            var predictions = predictionsAllLocs
-                .Where(p => string.Equals(p.LocationName, loc.Name, StringComparison.Ordinal))
-                .ToList();
+            // === Scope EVERY all-locations collection to this location ===
+            // The invariant: the SiteInputs built below is single-location by
+            // construction — every list/dict it carries holds only this loc's
+            // rows. No page does its own location filtering (Phase D, the
+            // 2026-05-21 single-location-SiteInputs refactor). A page that
+            // forgets to filter can't leak another location's data because
+            // there's nothing else in the object to leak.
             var locStationSlugs = new HashSet<string>(
                 loc.Rainfall.Stations.Select(s => StationSlug.WithEaPrefix(s.Name)),
                 StringComparer.Ordinal);
+
+            bool IsThisLoc(string locationName) =>
+                string.Equals(locationName, loc.Name, StringComparison.Ordinal);
+
+            var predictions = predictionsAllLocs.Where(p => IsThisLoc(p.LocationName)).ToList();
+            // Precip + dry-window rows are keyed by EA station, not LocationName
+            // — scope by this loc's configured station slugs.
             var precip = precipAllLocs
                 .Where(p => locStationSlugs.Count == 0 || locStationSlugs.Contains(p.Station))
                 .ToList();
             var dryWindow = dryWindowAllLocs
                 .Where(d => locStationSlugs.Count == 0 || locStationSlugs.Contains(d.Station))
                 .ToList();
+            var feelsLike = feelsLikeAllLocs.Where(f => IsThisLoc(f.LocationName)).ToList();
+            var startHour = startHourAllLocs.Where(s => IsThisLoc(s.LocationName)).ToList();
+            var metOfficeSpot = metOfficeSpotAllLocs.Where(m => IsThisLoc(m.LocationName)).ToList();
+            var nwpPop = nwpPopAllLocs.Where(p => IsThisLoc(p.LocationName)).ToList();
+            var nwpPrecipRates = nwpPrecipRatesAllLocs.Where(r => IsThisLoc(r.LocationName)).ToList();
+            var nwpTemperatures = nwpTemperaturesAllLocs.Where(t => IsThisLoc(t.LocationName)).ToList();
+            // BayesianCi carries StationSlug, not LocationName — scope by the
+            // loc's EA station set (EA slugs are globally unique per location).
+            var bayesianCi = bayesianCiAllLocs
+                .Where(b => locStationSlugs.Count == 0 || locStationSlugs.Contains(b.StationSlug))
+                .ToList();
+            var lowCloud = lowCloudByValidAllLocs.TryGetValue(loc.Name, out var lcInner)
+                ? lcInner
+                : (IReadOnlyDictionary<DateTime, SitePages.LowCloudSignal>)
+                    new Dictionary<DateTime, SitePages.LowCloudSignal>();
+
             // Per-loc fetches (truth varies by location — different gauge / cell).
             var truth = _truth.GetEra5Hourly(loc.Name, windowStart.AddDays(-3), now, ct);
             var metar = _truth.GetMetarTemperature(loc.Metar.Primary, windowStart, now, ct);
@@ -282,7 +308,7 @@ public sealed class RenderSiteCommand
                 TruthByTime = truth,
                 MetarByTime = metar,
                 MetOfficeObsByTime = moObs,
-                LowCloudByValid = lowCloudByValidAllLocs,
+                LowCloudByValid = lowCloud,
                 RollingMae = rolling,
                 RollingBrier = rollingBrier,
                 PrecipPredictions = precip,
@@ -300,13 +326,13 @@ public sealed class RenderSiteCommand
                 Locations = locationDescriptors,
                 ModelSummaries = locModelSummaries,
                 FeatureSpecRows = locFeatureSpecRows,
-                FeelsLikePredictions = feelsLikeAllLocs,
-                StartHourPredictions = startHourAllLocs,
-                MetOfficeSpotForecasts = metOfficeSpotAllLocs,
-                NwpPrecipProbabilities = nwpPopAllLocs,
-                NwpPrecipRates = nwpPrecipRatesAllLocs,
-                NwpTemperatures = nwpTemperaturesAllLocs,
-                BayesianCi = bayesianCiAllLocs,
+                FeelsLikePredictions = feelsLike,
+                StartHourPredictions = startHour,
+                MetOfficeSpotForecasts = metOfficeSpot,
+                NwpPrecipProbabilities = nwpPop,
+                NwpPrecipRates = nwpPrecipRates,
+                NwpTemperatures = nwpTemperatures,
+                BayesianCi = bayesianCi,
                 VerifyHistory = verifyHistory,
             };
 
