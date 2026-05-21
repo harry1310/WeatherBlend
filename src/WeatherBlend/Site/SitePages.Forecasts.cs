@@ -147,13 +147,18 @@ public static partial class SitePages
         var series = new List<LineSeries>();
         var tempPalette = NwpsForTemperature()
             .ToDictionary(np => np.Label, np => np.Color, StringComparer.Ordinal);
-        // Temperature pages are primary-location-only (no per-location URLs yet),
-        // so filter raw NWP rows to the primary location to avoid contaminating
-        // the chart with other configured locations' grid-cell temperatures.
-        var primaryLocName = PrimaryLocation(input.Locations)?.Name ?? "";
+        // Filter the raw NWP rows to THIS page's location. input.NwpTemperatures
+        // carries every configured location's grid-cell temperatures; the blend
+        // lines below come from input.Predictions which RenderSiteCommand already
+        // scoped to the rendered location. Pre-Phase-D this filtered to the
+        // primary location because temperature pages were primary-only — that
+        // pinned the Membury temp chart's NWP overlay to Bonehill's 393 m
+        // grid cell while the blend lines were Membury's 120 m cell, leaving
+        // the blend ~4-5°C above every NWP line (the lapse-rate gap).
+        var activeLocName = input.ActiveLocationName;
         foreach (var grp in input.NwpTemperatures
-            .Where(t => string.IsNullOrEmpty(primaryLocName)
-                        || string.Equals(t.LocationName, primaryLocName, StringComparison.OrdinalIgnoreCase))
+            .Where(t => string.IsNullOrEmpty(activeLocName)
+                        || string.Equals(t.LocationName, activeLocName, StringComparison.OrdinalIgnoreCase))
             .GroupBy(t => t.Model)
             .OrderBy(g => g.Key, StringComparer.Ordinal))
         {

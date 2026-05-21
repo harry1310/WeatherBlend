@@ -459,13 +459,16 @@ public static partial class SitePages
         // forecaster's view, not a truth source.
         // MO Spot temp filtered to the +24h lead bucket [24, 47] — matches the
         // rain skill chart's convention and our blender's lead-band training.
-        var primaryLocName = PrimaryLocation(input.Locations)?.Name ?? "";
+        // Scope to THIS page's location, not the primary — input.MetOfficeSpot-
+        // Forecasts carries every location's Spot rows (same Phase D fix as the
+        // NWP overlay on the temperature forecast page).
+        var activeLocName = input.ActiveLocationName;
         var moSpotPts = input.MetOfficeSpotForecasts
             .Where(m => m.ValidTimeUtc >= input.WindowStartUtc
                         && m.Temperature2m.HasValue
                         && m.LeadHours >= 24 && m.LeadHours < 48
-                        && (string.IsNullOrEmpty(primaryLocName)
-                            || string.Equals(m.LocationName, primaryLocName, StringComparison.OrdinalIgnoreCase)))
+                        && (string.IsNullOrEmpty(activeLocName)
+                            || string.Equals(m.LocationName, activeLocName, StringComparison.OrdinalIgnoreCase)))
             .GroupBy(m => m.ValidTimeUtc)
             .Select(g => g.OrderBy(m => m.LeadHours).First())
             .OrderBy(m => m.ValidTimeUtc)

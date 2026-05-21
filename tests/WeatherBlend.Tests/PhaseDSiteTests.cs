@@ -166,6 +166,49 @@ public class PhaseDSiteTests
     }
 
     [Fact]
+    public void RenderForecastsTemp_NWP_overlay_scopes_to_rendered_location_not_primary()
+    {
+        // Regression: pre-fix, the temperature forecast page filtered the raw
+        // NWP overlay rows to PrimaryLocation (Bonehill), so the Membury temp
+        // chart drew Bonehill's 393 m grid-cell NWP lines under Membury's
+        // 120 m blend — leaving the blend ~4-5°C above every NWP line.
+        var generatedAt = new DateTime(2026, 5, 21, 0, 0, 0, DateTimeKind.Utc);
+        var validTime = generatedAt.AddHours(24);
+        var membury = MakeDescriptor("membury_devon", "Membury",
+            tabs: new[] { "overview", "temperature", "rain" }, isPrimary: false);
+        var bonehill = MakeDescriptor("bonehill_rocks", "Bonehill Rocks");
+
+        // Distinctive temps: Bonehill cold (333), Membury warm (444).
+        var nwp = new[]
+        {
+            new SitePages.NwpTemperatureForecastPoint("gfs_seamless", validTime, 333.0, "bonehill_rocks"),
+            new SitePages.NwpTemperatureForecastPoint("gfs_seamless", validTime, 444.0, "membury_devon"),
+        };
+        var pred = new TempPredictionRow
+        {
+            LocationName = "membury_devon", ModelVersion = "v2c",
+            PredictionMadeAtUtc = generatedAt,
+            ValidTimeUtc = validTime, LeadHours = 24,
+            BlendTemperature = 440.0, FeatureVectorHash = "",
+        };
+
+        var input = MakeInput(renderingFor: membury, locations: new[] { bonehill, membury })
+            with
+            {
+                GeneratedAtUtc = generatedAt,
+                Predictions = new[] { pred },
+                NwpTemperatures = nwp,
+                PhaseByVersion = new Dictionary<string, string> { ["v2c"] = "2b" },
+            };
+
+        var html = SitePages.RenderForecastsTemp(input, 24);
+
+        // Membury's NWP point (444) is on the chart; Bonehill's (333) is not.
+        html.Should().Contain("444");
+        html.Should().NotContain("333");
+    }
+
+    [Fact]
     public void Top_nav_Models_link_points_at_rain_when_temperature_absent()
     {
         // Rain-only loc — Models button should go to models-rain.html (the
