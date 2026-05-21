@@ -152,46 +152,65 @@ public sealed class EcmwfClient
         LocationConfig loc, DateOnly date, int cycleHour, string stream, string modelId,
         int lead, DateTime runTime, string scratchDir, string apiBaseUrl, CancellationToken ct)
     {
-        // ECMWF Open Data publishes IFS HRES at all 4 daily cycles, but split
-        // across two streams:
-        //   * 00Z + 12Z → `oper` stream, full long-range (~240h)
-        //   * 06Z + 18Z → `scda` stream, short cut-off data assimilation
-        //                 (~120h+ horizon, verified 2026-05-06).
         // Path is `{date}/{HH}z/{streamSubpath}/0p25/{streamFolder}/{date}{HH}0000-{lead}h-{streamFolder}-fc.{grib2|index}`
-        // where streamSubpath ∈ {ifs, aifs-single} (or aifs legacy) and
-        // streamFolder ∈ {oper, scda}. The filename suffix mirrors the folder.
-        // AIFS publishes all four cycles in `oper` (no scda variant), so the
-        // sub-cycle switch is IFS-only. AIFS subdir was renamed
-        // `aifs/` → `aifs-single/` between 2025-02-01 and 2025-03-01 — try
-        // modern first, fall back on 404.
-        var streamFolder = stream == Streams.IfsOper && (cycleHour == 6 || cycleHour == 18)
-            ? "scda"
-            : "oper";
+        // where streamSubpath ∈ {ifs, aifs-single} (or aifs legacy) and the
+        // filename suffix mirrors the streamFolder.
+        //
+        // streamFolder, for IFS 06z/18z (the "short cut-off" cycles), differs
+        // by endpoint:
+        //   * data.ecmwf.int — every cycle is under `oper/` (…-oper-fc).
+        //   * the AWS archive — 06z/18z were under a separate `scda/` folder
+        //     (…-scda-fc).
+        // So for 06z/18z IFS we try `oper` first (the live endpoint), then
+        // fall back to `scda` (the AWS layout) — one code path, both
+        // endpoints. 00z/12z IFS and all AIFS cycles are always `oper`.
+        // (Pre-2026-05-21 this hard-coded `scda` for 06z/18z, which 404'd
+        // every 06z/18z cycle after the live endpoint moved to data.ecmwf.int
+        // — IFS exact lost half its cycles and 3d, which requires IFS, went
+        // dark at those valid hours.)
+        //
+        // AIFS publishes all four cycles in `oper`. The AIFS subdir was
+        // renamed `aifs/` → `aifs-single/` between 2025-02-01 and 2025-03-01
+        // — try modern first, fall back on 404.
         var dateStr = date.ToString("yyyyMMdd");
-        var stem = $"{dateStr}{cycleHour:00}0000-{lead}h-{streamFolder}-fc";
 
         var subpathCandidates = stream == Streams.AifsOper
             ? new[] { "aifs-single", "aifs" }
             : new[] { stream };
+        var streamFolderCandidates =
+            stream == Streams.IfsOper && (cycleHour == 6 || cycleHour == 18)
+                ? new[] { "oper", "scda" }
+                : new[] { "oper" };
 
         List<IndexEntry>? indexEntries = null;
         string? baseUrl = null;
+        string stem = "";
+        HttpRequestException? lastNotFound = null;
         foreach (var subpath in subpathCandidates)
         {
-            baseUrl = $"{apiBaseUrl}/{dateStr}/{cycleHour:00}z/{subpath}/0p25/{streamFolder}/{stem}";
-            try
+            foreach (var streamFolder in streamFolderCandidates)
             {
-                indexEntries = await FetchIndexAsync(baseUrl + ".index", ct);
-                break;  // got it
+                stem = $"{dateStr}{cycleHour:00}0000-{lead}h-{streamFolder}-fc";
+                baseUrl = $"{apiBaseUrl}/{dateStr}/{cycleHour:00}z/{subpath}/0p25/{streamFolder}/{stem}";
+                try
+                {
+                    indexEntries = await FetchIndexAsync(baseUrl + ".index", ct);
+                    break;  // got it
+                }
+                catch (HttpRequestException e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    lastNotFound = e;  // try the next (subpath, streamFolder) candidate
+                }
             }
-            catch (HttpRequestException e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
-            {
-                // Try next candidate (only relevant for AIFS straddling the
-                // 2025-02→03 rename); rethrow to caller after all exhausted.
-                if (subpath == subpathCandidates[^1]) throw;
-            }
+            if (indexEntries is not null) break;
         }
-        if (indexEntries is null || indexEntries.Count == 0) return null;
+        if (indexEntries is null)
+        {
+            // Every candidate 404'd — rethrow so FetchCycleAsync logs "Missing".
+            if (lastNotFound is not null) throw lastNotFound;
+            return null;
+        }
+        if (indexEntries.Count == 0) return null;
 
         // 2) For each variable we want, find the FIRST matching index entry
         //    by exact param match. ECMWF param codes ARE unique per (param,
