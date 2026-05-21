@@ -635,8 +635,17 @@ public sealed class RenderSiteCommand
             }
         }
 
-        foreach (var v in predictions.Select(p => p.ModelVersion).Distinct())
-            Add("temperature", v);
+        // Temperature is per-station/per-location on disk; the composite must
+        // carry the station segment (Phase C commit 4, 2026-05-20) so it
+        // matches the key LoadModelSummaries writes into `byKey` and the
+        // directory switch in Add(). Calling Add("temperature", ..) with the
+        // bare composite missed both — the byKey lookup and the switch's
+        // StartsWith("temperature/") case — so no temperature rows reached
+        // the Spec page at all. Mirror the precip block immediately below.
+        foreach (var (station, version) in predictions
+            .Select(p => (p.LocationName, p.ModelVersion))
+            .Distinct())
+            Add($"temperature/{station}", version);
 
         foreach (var (station, version) in precip.Select(p => (p.Station, p.Version)).Distinct())
         {
