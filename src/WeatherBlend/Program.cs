@@ -350,7 +350,9 @@ public static class Program
                 .Select(s => int.Parse(s, System.Globalization.CultureInfo.InvariantCulture))
                 .ToArray();
             var cmd = host.Services.GetRequiredService<EcmwfBackfillCommand>();
-            await cmd.RunAsync(stream, start, end, cycles, CancellationToken.None);
+            // Historical backfill → AWS deep archive (the live ECMWF server
+            // only keeps a rolling ~4-day window).
+            await cmd.RunAsync(stream, start, end, cycles, EcmwfClient.ArchiveBaseUrl, CancellationToken.None);
         }, ecmStreamOpt, gfsStartOpt, gfsEndOpt, gfsCyclesOpt);
         root.AddCommand(ecmwfBackfill);
 

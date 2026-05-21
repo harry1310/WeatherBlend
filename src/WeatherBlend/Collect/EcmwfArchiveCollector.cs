@@ -4,10 +4,13 @@ using WeatherBlend.Commands;
 namespace WeatherBlend.Collect;
 
 /// <summary>
-/// Collect-time refresh of the ECMWF exact-runtime archive from AWS Open
-/// Data (<c>ecmwf-forecasts</c> bucket). Wraps
+/// Collect-time refresh of the ECMWF exact-runtime archive. Wraps
 /// <see cref="EcmwfBackfillCommand"/> for both streams (IFS oper + AIFS
-/// oper) with a 3-day rolling lookback.
+/// oper) with a 3-day rolling lookback. Sources from
+/// <see cref="EcmwfClient.LiveBaseUrl"/> (ECMWF's own server) — the AWS
+/// mirror's persistent S3 SlowDown throttling made it unusable for live
+/// collection 2026-05-20; the 3-day lookback fits inside the live
+/// endpoint's rolling window.
 ///
 /// One <see cref="CollectAsync"/> per stream so the live <c>s3-collect</c>
 /// command can report each one's success/failure independently — useful
@@ -45,6 +48,7 @@ public sealed class EcmwfArchiveCollector
         _log.LogInformation(
             "ECMWF {Stream} exact-runtime archive — refreshing {Start:yyyy-MM-dd}..{End:yyyy-MM-dd}",
             stream, start, today);
-        return await _backfill.RunAsync(stream, start, today, cycles: null, ct);
+        return await _backfill.RunAsync(
+            stream, start, today, cycles: null, EcmwfClient.LiveBaseUrl, ct);
     }
 }

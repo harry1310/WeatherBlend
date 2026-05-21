@@ -6,10 +6,13 @@ using WeatherBlend.Storage;
 namespace WeatherBlend.Commands;
 
 /// <summary>
-/// Historical backfill from the ECMWF Open Data AWS bucket
-/// (<c>s3://ecmwf-forecasts/</c>). Same shape as
+/// Date-range fetch of ECMWF IFS/AIFS oper cycles. Same shape as
 /// <see cref="GfsBackfillCommand"/> but with ECMWF's per-(cycle, lead)
 /// GRIB2 files + JSON-Lines index sidecar via <see cref="EcmwfClient"/>.
+/// Shared by the live s3-collect refresh (via <see cref="EcmwfArchiveCollector"/>,
+/// recent window, <see cref="EcmwfClient.LiveBaseUrl"/>) and the historical
+/// <c>ecmwf-backfill</c> CLI (deep archive, <see cref="EcmwfClient.ArchiveBaseUrl"/>) —
+/// the caller passes the endpoint to <see cref="RunAsync"/>.
 ///
 /// Two streams supported, sharing all the parsing infrastructure:
 ///   * <c>ifs</c>  — IFS oper deterministic forecast (~2y 4m archive,
@@ -36,11 +39,18 @@ public sealed class EcmwfBackfillCommand
         _log = log;
     }
 
+    /// <param name="apiBaseUrl">
+    /// ECMWF endpoint — <see cref="EcmwfClient.LiveBaseUrl"/> for the
+    /// recent-window s3-collect refresh, <see cref="EcmwfClient.ArchiveBaseUrl"/>
+    /// for historical backfill. See <see cref="EcmwfClient"/> for why the two
+    /// endpoints exist.
+    /// </param>
     public async Task<int> RunAsync(
         string stream,
         DateOnly start,
         DateOnly end,
         IReadOnlyList<int>? cycles,
+        string apiBaseUrl,
         CancellationToken ct)
     {
         if (stream != EcmwfClient.Streams.IfsOper && stream != EcmwfClient.Streams.AifsOper)
@@ -62,8 +72,8 @@ public sealed class EcmwfBackfillCommand
         scratchDir = Path.GetFullPath(scratchDir);
 
         _log.LogInformation(
-            "ECMWF {Stream} backfill {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} cycles=[{Cycles}] leads=[{Leads}] scratch={Scratch}",
-            stream, start, end, string.Join(',', cycles), string.Join(',', leadHours), scratchDir);
+            "ECMWF {Stream} backfill {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} cycles=[{Cycles}] leads=[{Leads}] endpoint={Endpoint} scratch={Scratch}",
+            stream, start, end, string.Join(',', cycles), string.Join(',', leadHours), apiBaseUrl, scratchDir);
 
         var totalRows = 0;
         var errors = 0;
@@ -76,7 +86,7 @@ public sealed class EcmwfBackfillCommand
                 try
                 {
                     var rows = await _ecmwf.FetchCycleAsync(
-                        _cfg.Location, date, cc, stream, leadHours, scratchDir, ct);
+                        _cfg.Location, date, cc, stream, leadHours, scratchDir, apiBaseUrl, ct);
                     if (rows.Count > 0)
                     {
                         await ParquetWriter.WriteForecastsAsync(_cfg.Storage.ForecastsPath, rows, ct);

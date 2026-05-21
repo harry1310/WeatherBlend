@@ -8,14 +8,28 @@ using WeatherBlend.Models;
 namespace WeatherBlend.Collect;
 
 /// <summary>
-/// Fetches ECMWF deterministic forecasts from the public AWS bucket
-/// <c>s3://ecmwf-forecasts/</c>. Both the IFS oper stream and the AIFS AI
-/// model live in the same bucket under <c>{date}/{HH}z/{ifs|aifs}/0p25/oper/</c>.
+/// Fetches ECMWF deterministic forecasts. Both the IFS oper stream and the
+/// AIFS AI model are published under <c>{date}/{HH}z/{ifs|aifs}/0p25/oper/</c>.
 /// One GRIB2 file per (cycle, lead) — different from GFS which packs every
 /// lead into one big per-cycle file. Each GRIB2 carries a JSON-Lines
 /// <c>.index</c> sidecar with byte offsets per ECMWF param code, so the
 /// fetch pattern is "GET .index → range-GET each variable's bytes →
 /// concatenate → wgrib2 extract point".
+///
+/// Two endpoints serve the SAME dissemination stream (verified 2026-05-21 —
+/// the <c>.index</c> files are byte-identical, md5-matched, between them):
+///   * <see cref="LiveBaseUrl"/> — ECMWF's own server, rolling ~4-day
+///     window. Used by the s3-collect refresh (3-day lookback). Chosen as
+///     the live endpoint after the AWS mirror began returning persistent
+///     S3 <c>503 SlowDown</c> on object GETs ~2026-05-20 (a per-prefix
+///     request-rate cap on ECMWF's heavily-used bucket, affecting all
+///     clients — confirmed with single cold requests from an unrelated IP).
+///   * <see cref="ArchiveBaseUrl"/> — AWS Open Data mirror, deep archive
+///     back to 2023-01. Used by the historical <c>ecmwf-backfill</c> CLI;
+///     the live window is too short on the ECMWF server for multi-year
+///     backfills.
+/// Caller picks the endpoint per purpose and passes it to
+/// <see cref="FetchCycleAsync"/>.
 ///
 /// Archive scope (probed 2026-05-04):
 ///   * IFS oper: 2023-01-18 onwards (~2y 4m as of probe)
@@ -43,7 +57,16 @@ namespace WeatherBlend.Collect;
 /// </summary>
 public sealed class EcmwfClient
 {
-    public const string BaseUrl = "https://ecmwf-forecasts.s3.amazonaws.com";
+    /// <summary>ECMWF's own dissemination server — rolling ~4-day window,
+    /// not subject to the AWS mirror's S3 SlowDown throttling. The live
+    /// endpoint for s3-collect's recent-window refresh.</summary>
+    public const string LiveBaseUrl = "https://data.ecmwf.int/forecasts";
+
+    /// <summary>AWS Open Data mirror — deep archive (2023-01 onwards). The
+    /// endpoint for historical backfill; can return S3 503 SlowDown under
+    /// load, which is why live collection uses <see cref="LiveBaseUrl"/>.</summary>
+    public const string ArchiveBaseUrl = "https://ecmwf-forecasts.s3.amazonaws.com";
+
     public static readonly int[] CycleHours = { 0, 6, 12, 18 };
 
     public static class Streams
@@ -80,10 +103,13 @@ public sealed class EcmwfClient
     /// <summary>
     /// Fetch one cycle's forecasts for a given set of lead hours. Each lead
     /// is its own .grib2 + .index file under the cycle directory.
+    /// <paramref name="apiBaseUrl"/> selects the endpoint — pass
+    /// <see cref="LiveBaseUrl"/> for recent-window collection or
+    /// <see cref="ArchiveBaseUrl"/> for historical backfill.
     /// </summary>
     public async Task<List<ForecastRow>> FetchCycleAsync(
         LocationConfig location, DateOnly cycleDate, int cycleHour, string stream,
-        IEnumerable<int> leadHours, string scratchDir, CancellationToken ct)
+        IEnumerable<int> leadHours, string scratchDir, string apiBaseUrl, CancellationToken ct)
     {
         Directory.CreateDirectory(scratchDir);
         var runTime = new DateTime(cycleDate.Year, cycleDate.Month, cycleDate.Day,
@@ -101,7 +127,7 @@ public sealed class EcmwfClient
             ct.ThrowIfCancellationRequested();
             try
             {
-                var row = await FetchLeadAsync(location, cycleDate, cycleHour, stream, modelId, lead, runTime, scratchDir, ct);
+                var row = await FetchLeadAsync(location, cycleDate, cycleHour, stream, modelId, lead, runTime, scratchDir, apiBaseUrl, ct);
                 if (row is not null) rows.Add(row);
             }
             catch (HttpRequestException e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
@@ -115,7 +141,7 @@ public sealed class EcmwfClient
 
     private async Task<ForecastRow?> FetchLeadAsync(
         LocationConfig loc, DateOnly date, int cycleHour, string stream, string modelId,
-        int lead, DateTime runTime, string scratchDir, CancellationToken ct)
+        int lead, DateTime runTime, string scratchDir, string apiBaseUrl, CancellationToken ct)
     {
         // ECMWF Open Data publishes IFS HRES at all 4 daily cycles, but split
         // across two streams:
@@ -143,7 +169,7 @@ public sealed class EcmwfClient
         string? baseUrl = null;
         foreach (var subpath in subpathCandidates)
         {
-            baseUrl = $"{BaseUrl}/{dateStr}/{cycleHour:00}z/{subpath}/0p25/{streamFolder}/{stem}";
+            baseUrl = $"{apiBaseUrl}/{dateStr}/{cycleHour:00}z/{subpath}/0p25/{streamFolder}/{stem}";
             try
             {
                 indexEntries = await FetchIndexAsync(baseUrl + ".index", ct);
