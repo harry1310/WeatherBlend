@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
@@ -13,8 +14,16 @@ namespace WeatherBlend.Collect;
 /// One GRIB2 file per (cycle, lead) — different from GFS which packs every
 /// lead into one big per-cycle file. Each GRIB2 carries a JSON-Lines
 /// <c>.index</c> sidecar with byte offsets per ECMWF param code, so the
-/// fetch pattern is "GET .index → range-GET each variable's bytes →
-/// concatenate → wgrib2 extract point".
+/// fetch pattern is "GET .index → ONE multi-range GET for every wanted
+/// message → concatenate → wgrib2 extract point".
+///
+/// The multi-range GET (2026-05-21) replaced one Range request per variable
+/// (~10 per file). A typical IFS file is ~72 MB / 184 messages and the ~10
+/// surface params we want are scattered through it (a single coalesced span
+/// would be ~89% waste), so one HTTP request carrying all ~10 disjoint
+/// ranges — answered as <c>multipart/byteranges</c> — is both the fewest
+/// requests and the fewest bytes. It cut s3-collect's ECMWF phase from
+/// ~30 min to a few against the data.ecmwf.int live endpoint.
 ///
 /// Two endpoints serve the SAME dissemination stream (verified 2026-05-21 —
 /// the <c>.index</c> files are byte-identical, md5-matched, between them):
@@ -208,21 +217,32 @@ public sealed class EcmwfClient
             return null;
         }
 
-        // 3) Range-download each message and concat to a temp GRIB.
+        // Sort picks by byte offset. Step 3 requests the ranges in this
+        // order and writes the multipart parts back in arrival order, so the
+        // temp GRIB ends up holding the picked messages in strict offset
+        // order — which is the order wgrib2 reads them out in step 4. Step 5
+        // then maps vals[i] → picks[i] positionally, so picks MUST be
+        // offset-sorted here for that mapping to hold. (Also makes the
+        // mapping robust to a server coalescing two adjacent ranges into one
+        // multipart part: coalesced or not, every message stays offset-ordered.)
+        picks.Sort((a, b) => a.Offset.CompareTo(b.Offset));
+
+        // 3) ONE multi-range GET pulls every wanted message. data.ecmwf.int
+        //    answers with a multipart/byteranges body; each part is a
+        //    complete GRIB2 message. Concatenate the part payloads into one
+        //    temp GRIB (see WriteRangeResponseAsync).
         var tmpGrib = Path.Combine(scratchDir, $"{Guid.NewGuid():N}.grib2");
         try
         {
-            await using (var outFs = File.Create(tmpGrib))
+            using (var req = new HttpRequestMessage(HttpMethod.Get, baseUrl + ".grib2"))
             {
+                req.Headers.Range = new RangeHeaderValue();
                 foreach (var (_, off, len) in picks)
-                {
-                    using var req = new HttpRequestMessage(HttpMethod.Get, baseUrl + ".grib2");
-                    req.Headers.Range = new RangeHeaderValue(off, off + len - 1);
-                    using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
-                    resp.EnsureSuccessStatusCode();
-                    await using var inS = await resp.Content.ReadAsStreamAsync(ct);
-                    await inS.CopyToAsync(outFs, ct);
-                }
+                    req.Headers.Range.Ranges.Add(new RangeItemHeaderValue(off, off + len - 1));
+
+                using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+                resp.EnsureSuccessStatusCode();
+                await WriteRangeResponseAsync(resp, picks.Count, tmpGrib, stem, ct);
             }
 
             // 4) Extract point values via wgrib2 (same as GFS path).
@@ -298,6 +318,90 @@ public sealed class EcmwfClient
                 Length:  root.GetProperty("_length").GetInt64()));
         }
         return entries;
+    }
+
+    /// <summary>
+    /// Persist a Range response to <paramref name="destPath"/> as a GRIB file.
+    /// A multi-range request (<paramref name="rangeCount"/> &gt; 1) is answered
+    /// as <c>multipart/byteranges</c> — each part is a GRIB2 message; the part
+    /// payloads are concatenated in arrival order (= the requested offset
+    /// order, see the picks sort in <see cref="FetchLeadAsync"/>). A single
+    /// requested range comes back as a plain 206 whose whole body is the lone
+    /// message. Any other shape (e.g. a 200 full-file because the server
+    /// ignored Range) throws — fail loud rather than silently mis-parse.
+    /// </summary>
+    private static async Task WriteRangeResponseAsync(
+        HttpResponseMessage resp, int rangeCount, string destPath, string stem, CancellationToken ct)
+    {
+        var mediaType = resp.Content.Headers.ContentType?.MediaType;
+        if (string.Equals(mediaType, "multipart/byteranges", StringComparison.OrdinalIgnoreCase))
+        {
+            var boundary = resp.Content.Headers.ContentType!.Parameters
+                .FirstOrDefault(p => string.Equals(p.Name, "boundary", StringComparison.OrdinalIgnoreCase))
+                ?.Value?.Trim('"');
+            if (string.IsNullOrEmpty(boundary))
+                throw new HttpRequestException($"multipart/byteranges response for {stem} has no boundary");
+
+            var bodyBytes = await resp.Content.ReadAsByteArrayAsync(ct);
+            await using var outFs = File.Create(destPath);
+            var parts = 0;
+            foreach (var payload in EnumerateMultipartParts(bodyBytes, boundary))
+            {
+                await outFs.WriteAsync(payload, ct);
+                parts++;
+            }
+            if (parts == 0)
+                throw new HttpRequestException($"multipart/byteranges response for {stem} yielded no parts");
+        }
+        else if (rangeCount == 1)
+        {
+            // One requested range → plain single-range 206; body IS the message.
+            await using var outFs = File.Create(destPath);
+            await resp.Content.CopyToAsync(outFs, ct);
+        }
+        else
+        {
+            throw new HttpRequestException(
+                $"expected multipart/byteranges for {rangeCount}-range request ({stem}), got '{mediaType}'");
+        }
+    }
+
+    /// <summary>
+    /// Yield each part's raw payload from a <c>multipart/byteranges</c> body.
+    /// Byte-level — the payloads are binary GRIB2, so the body must never be
+    /// treated as text. Each part is delimited by <c>--{boundary}</c>; its
+    /// payload runs from the part's <c>\r\n\r\n</c> header terminator to the
+    /// <c>\r\n</c> immediately before the next delimiter. The closing
+    /// <c>--{boundary}--</c> ends iteration.
+    /// </summary>
+    private static IEnumerable<ReadOnlyMemory<byte>> EnumerateMultipartParts(byte[] body, string boundary)
+    {
+        // byte[] (not ReadOnlySpan) — locals can't cross the yield boundary
+        // in this iterator.
+        var delim = Encoding.ASCII.GetBytes("--" + boundary);
+        var headerEnd = "\r\n\r\n"u8.ToArray();
+        int pos = 0;
+        while (true)
+        {
+            int rel = body.AsSpan(pos).IndexOf(delim);
+            if (rel < 0) yield break;
+            int afterDelim = pos + rel + delim.Length;
+            // Closing delimiter is "--{boundary}--".
+            if (afterDelim + 1 < body.Length && body[afterDelim] == (byte)'-' && body[afterDelim + 1] == (byte)'-')
+                yield break;
+            int hRel = body.AsSpan(afterDelim).IndexOf(headerEnd);
+            if (hRel < 0) yield break;
+            int payloadStart = afterDelim + hRel + headerEnd.Length;
+            int nRel = body.AsSpan(payloadStart).IndexOf(delim);
+            if (nRel < 0) yield break;
+            int payloadEnd = payloadStart + nRel;
+            // Trim the CRLF that separates the payload from the next delimiter.
+            if (payloadEnd - payloadStart >= 2 &&
+                body[payloadEnd - 2] == (byte)'\r' && body[payloadEnd - 1] == (byte)'\n')
+                payloadEnd -= 2;
+            yield return body.AsMemory(payloadStart, payloadEnd - payloadStart);
+            pos = payloadEnd;
+        }
     }
 
     /// <summary>

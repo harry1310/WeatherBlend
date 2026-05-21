@@ -6,11 +6,17 @@ namespace WeatherBlend.Collect;
 /// <summary>
 /// Collect-time refresh of the ECMWF exact-runtime archive. Wraps
 /// <see cref="EcmwfBackfillCommand"/> for both streams (IFS oper + AIFS
-/// oper) with a 3-day rolling lookback. Sources from
+/// oper) with a 1-day rolling lookback (today + yesterday). Sources from
 /// <see cref="EcmwfClient.LiveBaseUrl"/> (ECMWF's own server) — the AWS
 /// mirror's persistent S3 SlowDown throttling made it unusable for live
-/// collection 2026-05-20; the 3-day lookback fits inside the live
-/// endpoint's rolling window.
+/// collection 2026-05-20.
+///
+/// Lookback was 3 days; cut to 1 on 2026-05-21. s3-collect runs every 6h,
+/// so each (date, cycle) gets ~8 collection attempts while it sits inside
+/// a today+yesterday window — ample redundancy for ECMWF's ~7-8h publish
+/// lag without re-fetching 4 days of cycles every run. The shorter window
+/// halves the request count; the per-file multi-range GET (see
+/// <see cref="EcmwfClient"/>) is the other half of the 2026-05-21 speed-up.
 ///
 /// One <see cref="CollectAsync"/> per stream so the live <c>s3-collect</c>
 /// command can report each one's success/failure independently — useful
@@ -25,7 +31,9 @@ namespace WeatherBlend.Collect;
 /// </summary>
 public sealed class EcmwfArchiveCollector
 {
-    private const int DefaultLookbackDays = 3;
+    // today + yesterday. See the class remarks for why 1 is enough at the
+    // 6-hourly s3-collect cadence.
+    private const int DefaultLookbackDays = 1;
 
     private readonly EcmwfBackfillCommand _backfill;
     private readonly ILogger<EcmwfArchiveCollector> _log;
