@@ -156,18 +156,28 @@ public sealed class EcmwfClient
         // where streamSubpath ∈ {ifs, aifs-single} (or aifs legacy) and the
         // filename suffix mirrors the streamFolder.
         //
-        // streamFolder, for IFS 06z/18z (the "short cut-off" cycles), differs
-        // by endpoint:
-        //   * data.ecmwf.int — every cycle is under `oper/` (…-oper-fc).
-        //   * the AWS archive — 06z/18z were under a separate `scda/` folder
-        //     (…-scda-fc).
-        // So for 06z/18z IFS we try `oper` first (the live endpoint), then
-        // fall back to `scda` (the AWS layout) — one code path, both
-        // endpoints. 00z/12z IFS and all AIFS cycles are always `oper`.
-        // (Pre-2026-05-21 this hard-coded `scda` for 06z/18z, which 404'd
-        // every 06z/18z cycle after the live endpoint moved to data.ecmwf.int
-        // — IFS exact lost half its cycles and 3d, which requires IFS, went
-        // dark at those valid hours.)
+        // streamFolder for IFS 06z/18z (the "short cut-off" cycles) is
+        // DATE-dependent, NOT endpoint-dependent. ECMWF renamed the 06z/18z
+        // IFS folder `scda/` -> `oper/` at source ~2026-05-12 (the wave
+        // stream `scwv/` -> `wave/` at the same time). The AWS bucket mirrors
+        // data.ecmwf.int 1:1, so both endpoints agree for any given date —
+        // verified 2026-05-21 by listing `{date}/06z/ifs/0p25/` on both:
+        //   * dates >= ~2026-05-12 — 06z/18z IFS under `oper/` (…-oper-fc).
+        //   * dates <  ~2026-05-12 — 06z/18z IFS under `scda/` (…-scda-fc),
+        //     reachable only on the AWS archive (data.ecmwf.int keeps a
+        //     rolling ~4-day window, all post-rename).
+        // 06z/18z `scda` and the 00z/12z `oper` runs are the same IFS HRES
+        // product (verified: identical surface-param index) — the rename is
+        // cosmetic, no train/serve discontinuity.
+        // So try `oper` first (correct for all live collection + any recent
+        // backfill) and fall back to `scda` (old archive dates only) — one
+        // code path, both layouts. 00z/12z IFS and all AIFS cycles have
+        // always been `oper`.
+        // (Before the rename this hard-coded `scda` for 06z/18z and worked.
+        // The rename then 404'd every live 06z/18z IFS fetch — IFS exact
+        // lost those cycles and 3d, which requires IFS, went dark at the
+        // 06/12/18z valid hours — until this `oper`-first fallback landed
+        // 2026-05-21.)
         //
         // AIFS publishes all four cycles in `oper`. The AIFS subdir was
         // renamed `aifs/` → `aifs-single/` between 2025-02-01 and 2025-03-01

@@ -144,11 +144,16 @@ interpolation across cycle hours.
 - Publisher:
   - `oper` stream: cycles **00Z** and **12Z**, 3h step to T+144, 6h step
     to T+240.
-  - `scda` stream: cycles **06Z** and **18Z**, same lead structure as
-    `oper`, published as a separate AWS path. **AWS scda coverage
-    empirically starts 2024-02-28** — backfill chunks covering
-    2023-01-18 → 2024-02-27 return 404s on every probe. Backfill in
-    flight 2026-05-07 to populate the scda gap from 2024-02-28 onwards.
+  - `scda` stream → renamed `oper`: cycles **06Z** and **18Z** (the
+    "short cut-off" runs), same lead structure as the 00/12Z cycles and
+    the same IFS HRES product. ECMWF renamed the 06/18Z folder
+    `scda/` → `oper/` at source ~2026-05-12 — both data.ecmwf.int and
+    the AWS mirror, so it's a date-based split, not an endpoint one.
+    Dates before the rename stay under `scda/` on the AWS archive;
+    `EcmwfClient` tries `oper` then `scda` to cover both. **AWS coverage
+    of the 06/18Z cycles empirically starts 2024-02-28** — chunks
+    covering 2023-01-18 → 2024-02-27 return 404s on every probe. The
+    2026-05-07 flight populated the gap from 2024-02-28 onwards.
 - We collect: cycles `{0, 6, 12, 18}` × leads
   `{6, 12, 24, 36, 48, 72, 96, 120}` (`EcmwfBackfillCommand`). Same 120h
   cap as GFS. Lands under `model=ecmwf_ifs_oper` for both streams (one
