@@ -14,8 +14,8 @@ namespace WeatherBlend.Collect;
 /// One GRIB2 file per (cycle, lead) — different from GFS which packs every
 /// lead into one big per-cycle file. Each GRIB2 carries a JSON-Lines
 /// <c>.index</c> sidecar with byte offsets per ECMWF param code, so the
-/// fetch pattern is "GET .index → ONE multi-range GET for every wanted
-/// message → concatenate → wgrib2 extract point".
+/// fetch pattern is "GET .index → range-GET every wanted message →
+/// concatenate → wgrib2 extract point".
 ///
 /// The multi-range GET (2026-05-21) replaced one Range request per variable
 /// (~10 per file). A typical IFS file is ~72 MB / 184 messages and the ~10
@@ -24,6 +24,15 @@ namespace WeatherBlend.Collect;
 /// ranges — answered as <c>multipart/byteranges</c> — is both the fewest
 /// requests and the fewest bytes. It cut s3-collect's ECMWF phase from
 /// ~30 min to a few against the data.ecmwf.int live endpoint.
+///
+/// Multi-range is data.ecmwf.int-ONLY. AWS S3 doesn't honour a multi-range
+/// Range header — it ignores it and returns the whole object — so the
+/// <c>ecmwf-backfill</c> CLI (which uses the AWS archive endpoint) falls
+/// back to one single-range GET per message. See <see cref="SupportsMultiRange"/>
+/// / <see cref="FetchRangesIndividuallyAsync"/>. (Commit 417d5c2 shipped the
+/// multi-range GET in the shared <c>FetchLeadAsync</c> and wrongly claimed
+/// the backfill was unaffected — it broke every ECMWF backfill until this
+/// per-endpoint split landed.)
 ///
 /// Two endpoints serve the SAME dissemination stream (verified 2026-05-21 —
 /// the <c>.index</c> files are byte-identical, md5-matched, between them):
@@ -256,15 +265,21 @@ public sealed class EcmwfClient
         // multipart part: coalesced or not, every message stays offset-ordered.)
         picks.Sort((a, b) => a.Offset.CompareTo(b.Offset));
 
-        // 3) ONE multi-range GET pulls every wanted message. data.ecmwf.int
-        //    answers with a multipart/byteranges body; each part is a
-        //    complete GRIB2 message. Concatenate the part payloads into one
-        //    temp GRIB (see WriteRangeResponseAsync).
+        // 3) Pull every wanted message into one temp GRIB. Two fetch shapes,
+        //    picked by endpoint (see SupportsMultiRange):
+        //    * data.ecmwf.int — ONE multi-range GET; the server answers with
+        //      a multipart/byteranges body, one part per GRIB2 message.
+        //    * AWS S3 — S3 ignores a multi-range Range header and returns the
+        //      whole object (200 application/octet-stream), so each message
+        //      gets its own single-range GET, concatenated in offset order.
+        //    Either way the temp GRIB ends up offset-ordered (picks were
+        //    offset-sorted above) — what steps 4/5 rely on.
         var tmpGrib = Path.Combine(scratchDir, $"{Guid.NewGuid():N}.grib2");
         try
         {
-            using (var req = new HttpRequestMessage(HttpMethod.Get, baseUrl + ".grib2"))
+            if (SupportsMultiRange(apiBaseUrl))
             {
+                using var req = new HttpRequestMessage(HttpMethod.Get, baseUrl + ".grib2");
                 req.Headers.Range = new RangeHeaderValue();
                 foreach (var (_, off, len) in picks)
                     req.Headers.Range.Ranges.Add(new RangeItemHeaderValue(off, off + len - 1));
@@ -272,6 +287,10 @@ public sealed class EcmwfClient
                 using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
                 resp.EnsureSuccessStatusCode();
                 await WriteRangeResponseAsync(resp, picks.Count, tmpGrib, stem, ct);
+            }
+            else
+            {
+                await FetchRangesIndividuallyAsync(baseUrl + ".grib2", picks, tmpGrib, ct);
             }
 
             // 4) Extract point values via wgrib2 (same as GFS path).
@@ -347,6 +366,43 @@ public sealed class EcmwfClient
                 Length:  root.GetProperty("_length").GetInt64()));
         }
         return entries;
+    }
+
+    /// <summary>
+    /// True when <paramref name="apiBaseUrl"/> is an endpoint known to honour
+    /// a multi-range Range header with a <c>multipart/byteranges</c> reply.
+    /// Only <see cref="LiveBaseUrl"/> (data.ecmwf.int) qualifies — AWS S3
+    /// (<see cref="ArchiveBaseUrl"/>) silently ignores a multi-range header
+    /// and returns the whole object, so it must use one Range GET per
+    /// message. Unknown endpoints default to the safe single-range path.
+    /// </summary>
+    private static bool SupportsMultiRange(string apiBaseUrl)
+        => apiBaseUrl.StartsWith(LiveBaseUrl, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Fetch each picked GRIB2 message with its own single-range GET and
+    /// concatenate them, in iteration order, into one temp GRIB. The fetch
+    /// path for endpoints that don't support multi-range requests (AWS S3).
+    /// <paramref name="picks"/> is offset-sorted by the caller, so appending
+    /// in order leaves the temp GRIB offset-ordered — the same invariant the
+    /// multi-range path guarantees, which step 5's positional
+    /// <c>vals[i] → picks[i]</c> mapping depends on.
+    /// </summary>
+    private async Task FetchRangesIndividuallyAsync(
+        string gribUrl,
+        IReadOnlyList<(string Param, long Offset, long Length)> picks,
+        string destPath,
+        CancellationToken ct)
+    {
+        await using var outFs = File.Create(destPath);
+        foreach (var (_, off, len) in picks)
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, gribUrl);
+            req.Headers.Range = new RangeHeaderValue(off, off + len - 1);
+            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            resp.EnsureSuccessStatusCode();
+            await resp.Content.CopyToAsync(outFs, ct);
+        }
     }
 
     /// <summary>
