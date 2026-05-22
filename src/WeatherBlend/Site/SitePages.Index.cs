@@ -65,7 +65,8 @@ public static partial class SitePages
             .ToList();
 
         // P(wet) lookup keyed by valid_time across all leads, smallest-lead-wins
-        // mirroring the temperature pick. Bellever as the headline gauge.
+        // mirroring the temperature pick. Headline gauge resolves per rendered
+        // location — see OverviewPwetStation.
         //
         // The home tiles show the precipitation CHAMPION — phases.yaml's
         // champion phase (3a), resolved per station to its newest Active
@@ -77,12 +78,12 @@ public static partial class SitePages
         // predict only at exact leads {24,48,72,96,120} (a 6-hourly valid
         // grid) and would leave the hourly tiles with P(wet) gaps. The
         // challengers lead the per-lead forecast + Models pages instead.
-        const string PwetStation = "ea_bellever_dartmoor";
-        input.PrecipCurrentByStation.TryGetValue(PwetStation, out var pwetChampion);
+        var pwetStation = OverviewPwetStation(input);
+        input.PrecipCurrentByStation.TryGetValue(pwetStation, out var pwetChampion);
         var pwetByValid = string.IsNullOrEmpty(pwetChampion)
             ? new Dictionary<DateTime, PrecipForecastPoint>()
             : input.PrecipPredictions
-                .Where(r => r.Station == PwetStation && r.Version == pwetChampion)
+                .Where(r => r.Station == pwetStation && r.Version == pwetChampion)
                 .GroupBy(r => r.ValidTimeUtc)
                 .ToDictionary(
                     g => g.Key,
@@ -105,7 +106,7 @@ public static partial class SitePages
 
         // Day summary line above the tile grid: temp range + mean P(wet) +
         // driest hour. Falls back to a temp-only line when no P(wet) is
-        // available for Bellever this day.
+        // available for the headline gauge this day.
         string daySummary, tilesHtml;
         if (dayPreds.Count == 0)
         {
@@ -135,7 +136,7 @@ public static partial class SitePages
             }
             else
             {
-                daySummary = string.Create(Ci, $"""<p class="skill-line"><strong>{minT:0.0}°C → {maxT:0.0}°C</strong> · no P(wet) for Bellever this day</p>""");
+                daySummary = string.Create(Ci, $"""<p class="skill-line"><strong>{minT:0.0}°C → {maxT:0.0}°C</strong> · no P(wet) for this day</p>""");
             }
             var tiles = new StringBuilder();
             int popoverId = 0;
@@ -189,6 +190,27 @@ public static partial class SitePages
         if (input.RenderingFor is { } loc)
             return (loc.OverviewFirstVisibleHourUtc, loc.OverviewLastVisibleHourUtcExclusive);
         return (HomeFirstVisibleHourUtc, HomeLastVisibleHourUtcExclusive);
+    }
+
+    /// <summary>
+    /// Headline P(wet) gauge for the Overview tiles — the rendered location's
+    /// primary rainfall station: the first entry in its
+    /// <see cref="LocationDescriptor.RainStationSlugs"/> (config order — Bonehill
+    /// lists Bellever first, Membury lists Chards Snowdon Hill first). Prefer the
+    /// first slug that actually has a champion version in
+    /// <c>PrecipCurrentByStation</c> so a not-yet-trained gauge can't blank the
+    /// tile grid; fall back to the first slug, then to Bellever for pre-Phase-D /
+    /// test callers with no <see cref="SiteInputs.RenderingFor"/>. Hardcoding a
+    /// single gauge here was the cause of the Membury Overview showing no
+    /// P(wet) — see memory note feedback_avoid_hardcoded_phase_station_lists.
+    /// </summary>
+    private static string OverviewPwetStation(SiteInputs input)
+    {
+        var slugs = input.RenderingFor?.RainStationSlugs;
+        if (slugs is null || slugs.Count == 0)
+            return "ea_bellever_dartmoor";
+        return slugs.FirstOrDefault(s => input.PrecipCurrentByStation.ContainsKey(s))
+               ?? slugs[0];
     }
 
     /// <summary>

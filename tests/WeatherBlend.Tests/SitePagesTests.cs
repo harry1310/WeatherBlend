@@ -340,6 +340,69 @@ public class SitePagesTests
     }
 
     [Fact]
+    public void RenderIndex_resolves_pwet_gauge_per_rendered_location()
+    {
+        // Regression: the Overview P(wet) headline gauge used to be hardcoded
+        // to ea_bellever_dartmoor (a Bonehill gauge), so the Membury Overview
+        // page — whose precip predictions live under ea_chards_snowdon_hill /
+        // ea_goren / ea_raymonds_hill — showed no P(wet) at all. The gauge now
+        // resolves to the rendered location's primary rainfall station via
+        // OverviewPwetStation. Build a Membury-shaped SiteInputs with precip
+        // under a Membury gauge ONLY and assert the day summary surfaces it.
+        var generatedAt = new DateTime(2026, 5, 5, 0, 0, 0, DateTimeKind.Utc);
+        var validTime = generatedAt.Date.AddDays(1).AddHours(12);  // tomorrow noon
+
+        var membury = new SitePages.LocationDescriptor(
+            Name: "membury_devon",
+            DisplayName: "Membury",
+            RainStationSlugs: new[] { "ea_chards_snowdon_hill", "ea_goren", "ea_raymonds_hill" },
+            IsPrimary: false,
+            Tabs: new[] { "overview" },
+            OverviewFirstVisibleHourUtc: 0,
+            OverviewLastVisibleHourUtcExclusive: 24);
+
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            RenderingFor = membury,
+            CurrentVersion = "v",
+            Predictions = new[]
+            {
+                new TempPredictionRow
+                {
+                    LocationName = "Membury", ModelVersion = "v",
+                    PredictionMadeAtUtc = generatedAt,
+                    ValidTimeUtc = validTime, LeadHours = 36,
+                    BlendTemperature = 14.0, FeatureVectorHash = "",
+                },
+            },
+            // Precip ONLY under a Membury gauge — never ea_bellever_dartmoor.
+            PrecipPredictions = new[]
+            {
+                new SitePages.PrecipForecastPoint(
+                    Station: "ea_chards_snowdon_hill", Version: "v3a",
+                    PredictedAtUtc: generatedAt, ValidTimeUtc: validTime,
+                    LeadHours: 36, ProbWet: 0.55, ClimatologyPWet: 0.4,
+                    PrecipGfs: null, PrecipEcmwf: null, PrecipIcon: null,
+                    PrecipMf: null, PrecipUkmo: null, PrecipGem: null,
+                    PrecipAifs: null, PrecipJma: null),
+            },
+            PrecipCurrentByStation = new Dictionary<string, string>
+            {
+                ["ea_chards_snowdon_hill"] = "v3a",
+            },
+        };
+
+        var html = SitePages.RenderIndex(input, dayOffset: 1);
+
+        // P(wet) reached the day summary — pre-fix this fell to the
+        // "no P(wet) for this day" branch because the hardcoded Bellever
+        // lookup found nothing in a Membury SiteInputs.
+        html.Should().Contain("mean P(wet)");
+        html.Should().NotContain("no P(wet) for this day");
+    }
+
+    [Fact]
     public void RenderForecastsTemp_emits_lead_subnav_linking_to_every_lead()
     {
         // Sub-nav is how readers hop between leads within a variable. Rendering
