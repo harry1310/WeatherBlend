@@ -923,7 +923,11 @@ ORDER BY ValidTimeUtc, Model;";
         }
 
         var maxLead = specs.Keys.DefaultIfEmpty(0).Max();
-        var windowStart = anchor;
+        // Window starts a day BEFORE anchor's date so the forecast pivot
+        // also covers recently-elapsed valid slots whose cycle has only
+        // just been collected — see the leadTargets reach-back below.
+        var windowStart = new DateTime(anchor.Year, anchor.Month, anchor.Day, 0, 0, 0, DateTimeKind.Utc)
+            .AddDays(-1);
         var windowEnd = anchor.AddHours(maxLead + 24);
 
         var pivotByLeadValid = QueryExactForecastRows(
@@ -937,16 +941,23 @@ ORDER BY ValidTimeUtc, Model;";
 
         foreach (var (lead, spec) in specs.OrderBy(kv => kv.Key))
         {
-            // Generate target valid times for TODAY's date + (lead/24) days
-            // AND the day after, so a late-evening predict still produces
-            // future-of-now lead-12 slots from tomorrow once today's are
-            // all in the past. Without the +1-day extension, lead-12 at
-            // 21:15 had zero future targets (all of today's {0,6,12,18}
-            // were past-of-anchor → filtered out → no predictions
-            // written), which surfaced as "zero 12h data on the site"
-            // for the entire evening.
-            var dayStart = new DateTime(anchor.Year, anchor.Month, anchor.Day, 0, 0, 0, DateTimeKind.Utc).AddDays(lead / 24);
-            var leadTargets = Enumerable.Range(0, 48)
+            // Target valid times span a 72h window: the day BEFORE
+            // anchor.date + lead/24, through two days after. The −1-day
+            // reach-back is load-bearing. Without it the 18:00Z slot of a
+            // valid date is permanently orphaned: that slot's cycle (for
+            // lead 24, the prior day's 18Z run) only publishes + gets
+            // collected in the small hours of the NEXT day — after every
+            // predict run still anchored on the prior day — and the runs
+            // that finally hold the cycle had, pre-fix, moved their window
+            // forward and stopped targeting that date. The +day-after
+            // extension still covers a late-evening run's future lead-12
+            // slots. Re-predicting an already-done exact-runtime slot is
+            // idempotent, so the wider window is free; pivot-miss /
+            // required-model checks drop slots that genuinely can't be made.
+            var dayStart = new DateTime(anchor.Year, anchor.Month, anchor.Day, 0, 0, 0, DateTimeKind.Utc)
+                .AddDays(lead / 24)
+                .AddDays(-1);
+            var leadTargets = Enumerable.Range(0, 72)
                 .Select(h => dayStart.AddHours(h))
                 .Where(v => Phase3dValidHoursUtc.Contains(v.Hour))
                 .ToList();

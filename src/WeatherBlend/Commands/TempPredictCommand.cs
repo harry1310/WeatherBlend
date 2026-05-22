@@ -599,10 +599,14 @@ ORDER BY ValidTimeUtc, Model;";
         var ml = new MLContext(seed: 42);
         var predictions = new List<TempPredictionRow>();
 
-        // Forward window: anchor up to anchor + max(specLead) + 24h. Loose
-        // upper bound — we filter to the spec's lead inside the loop anyway.
+        // Window: a day BEFORE anchor's date, up to anchor + max(specLead)
+        // + 24h. The −1-day start lets the forecast pivot cover recently-
+        // elapsed valid slots whose cycle has only just been collected —
+        // see the leadTargets reach-back below. Loose upper bound — we
+        // filter to the spec's lead inside the loop anyway.
         var maxLead = specs.Keys.DefaultIfEmpty(0).Max();
-        var windowStart = anchor;
+        var windowStart = new DateTime(anchor.Year, anchor.Month, anchor.Day, 0, 0, 0, DateTimeKind.Utc)
+            .AddDays(-1);
         var windowEnd = anchor.AddHours(maxLead + 24);
 
         // One DuckDB query covers every (ValidTime, model, lead, cycle) row in
@@ -619,19 +623,21 @@ ORDER BY ValidTimeUtc, Model;";
 
         foreach (var (lead, spec) in specs.OrderBy(kv => kv.Key))
         {
-            // 24 hourly targets per lead bucket — match the offset_day predict
-            // contract so downstream parquets are uniformly shaped. Out of these
-            // Generate today's target valid hours AND tomorrow's so a
-            // late-evening predict still has future-of-now lead-12 slots
-            // (without the +1-day extension, lead-12 at 21:15 had zero
-            // future targets — all of today's {0,6,12,18} were past-of-
-            // anchor → filtered out → no predictions written for the
-            // entire evening). Only the four ValidTime hours {0,6,12,18}
-            // get scored; the rest land outside the exact-runtime grid
-            // and skip silently. Pivot lookup misses (cycle not in R2)
-            // also skip silently.
-            var dayStart = new DateTime(anchor.Year, anchor.Month, anchor.Day, 0, 0, 0, DateTimeKind.Utc).AddDays(lead / 24);
-            var leadTargets = Enumerable.Range(0, 48)
+            // Target valid times span a 72h window: the day BEFORE
+            // anchor.date + lead/24, through two days after. The −1-day
+            // reach-back is load-bearing. Without it the 18:00Z slot of a
+            // valid date is permanently orphaned: its cycle only publishes
+            // + gets collected in the small hours of the next day, after
+            // every predict run still anchored on the prior day, and the
+            // runs that finally hold the cycle had (pre-fix) already moved
+            // their window forward. The +day-after extension still covers
+            // a late-evening run's future lead-12 slots. Only the four
+            // ValidTime hours {0,6,12,18} get scored; pivot-miss /
+            // required-model checks drop the rest silently.
+            var dayStart = new DateTime(anchor.Year, anchor.Month, anchor.Day, 0, 0, 0, DateTimeKind.Utc)
+                .AddDays(lead / 24)
+                .AddDays(-1);
+            var leadTargets = Enumerable.Range(0, 72)
                 .Select(h => dayStart.AddHours(h))
                 .Where(v => Phase2dValidHoursUtc.Contains(v.Hour))
                 .ToList();
