@@ -44,8 +44,9 @@ jobs:
           dotnet-quality: preview
 
       # Python setup + deps removed 2026-04-29 with the Met Office AWS-archive
-      # collectors. The remaining collect path is pure C# (Open-Meteo, ERA5,
-      # METAR, EA rainfall, MO DataHub Spot + Land Obs).
+      # collectors. The remaining collect path is pure C# (Open-Meteo, METAR,
+      # EA rainfall, MO DataHub Spot + Land Obs). ERA5 is NOT collected here —
+      # it's a separate daily job (era5-refresh.yml).
 
       - name: Install rclone
         run: |
@@ -73,7 +74,7 @@ jobs:
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
-          # Forecasts/ERA5 writers are append-only at the file level (unique
+          # The forecast writer is append-only at the file level (unique
           # run=HH.parquet / date=... paths per cycle), so we don't need the
           # existing tree locally. The read-modify-write writers are
           # WriteObservationsAsync (METAR), WriteRainfallAsync (EA), and

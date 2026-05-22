@@ -19,7 +19,7 @@ compatibility_date = "2025-04-01"
 # been documented as 15+ min late with occasionally missed runs. Reliability
 # is the whole reason this Worker exists.
 #
-#   "45 2,8,14,20 * * *"  → collect.yml      Open-Meteo + ERA5 + METAR + EA + MO DataHub
+#   "45 2,8,14,20 * * *"  → collect.yml      Open-Meteo + METAR + EA rainfall + MO DataHub
 #   "5 3,9,15,21 * * *"   → s3-collect.yml   Raw S3 exact-runtime cycles (GFS / IFS / AIFS /
 #                                            MO Global / UKV / GEFS) for the 2d/3d blenders
 #   "0 12 * * *"          → era5-refresh.yml + previous-runs-refresh.yml  (daily 12:00 UTC;
