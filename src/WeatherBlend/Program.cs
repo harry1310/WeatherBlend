@@ -207,6 +207,7 @@ public static class Program
                 // exploratory only.
                 services.AddTransient<Exact12hBakeoffCommand>();
                 services.AddTransient<PrecipExactBakeoffCommand>();
+                services.AddTransient<PrecipIfsCycleBakeoffCommand>();
                 // Live S3 collect — refreshes the five exact-runtime sources
                 // the 2d temperature blender consumes (GFS / IFS / AIFS /
                 // Met Office Global / Met Office UKV). Each is a thin
@@ -516,6 +517,32 @@ public static class Program
             await cmd.RunAsync(lead, includeUkv, station, CancellationToken.None);
         }, precipLeadOpt, precipUkvOpt, precipStationOpt);
         root.AddCommand(precipBakeoff);
+
+        // precip-ifs-cycle-bakeoff — 4-way IFS-cycle comparison for 3d
+        // (Both / Oper / Scda / None) on a constant row/eval set. Trains
+        // in memory, persists nothing; writes data/reports/ifs_cycle_bakeoff_3d.md.
+        var ifsCycleLeadOpt = new Option<int>(
+            name: "--lead",
+            description: "Single target lead in hours. 0 (default) = run all of 12/24/48/72.",
+            getDefaultValue: () => 0);
+        var ifsCycleStationOpt = new Option<string?>(
+            name: "--station",
+            description: "EA rainfall station name. Defaults to every configured station.",
+            getDefaultValue: () => null);
+        var ifsCycleAsOfOpt = new Option<string>(
+            name: "--as-of",
+            description: "Cap training/eval data at ValidTime ≤ this date (yyyy-MM-dd).",
+            getDefaultValue: () => "2026-05-12");
+        var ifsCycleBakeoff = new Command(
+            "precip-ifs-cycle-bakeoff",
+            "4-way IFS-cycle bake-off for 3d: IFS from both/oper/scda/no cycles, constant eval set")
+            { ifsCycleLeadOpt, ifsCycleStationOpt, ifsCycleAsOfOpt };
+        ifsCycleBakeoff.SetHandler(async (lead, station, asOf) =>
+        {
+            var cmd = host.Services.GetRequiredService<PrecipIfsCycleBakeoffCommand>();
+            await cmd.RunAsync(lead, station, asOf, CancellationToken.None);
+        }, ifsCycleLeadOpt, ifsCycleStationOpt, ifsCycleAsOfOpt);
+        root.AddCommand(ifsCycleBakeoff);
 
         // s3-collect — live refresh of the five exact-runtime forecast sources
         // the 2d temperature blender consumes. Defaults to all sources; pass
