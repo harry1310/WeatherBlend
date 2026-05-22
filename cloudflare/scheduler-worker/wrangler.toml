@@ -10,101 +10,54 @@ name = "weatherblend-scheduler"
 main = "src/index.ts"
 compatibility_date = "2025-04-01"
 
-# Cron triggers — one entry per workflow we want fired on a schedule.
-# Cloudflare cron is in UTC, same as GitHub Actions. Each cron string MUST
-# match a key in WORKFLOW_FOR_CRON in src/index.ts exactly; the worker uses
-# event.cron to look up which workflow to dispatch.
+# Cron triggers. Cloudflare cron is in UTC, same as GitHub Actions. Each cron
+# string MUST match a key in WORKFLOW_FOR_CRON in src/index.ts exactly — the
+# worker uses event.cron to look up which workflow(s) to dispatch.
 #
-# Per the 2026-05-05 audit: ALL scheduling for this project lives here.
-# Never put a `schedule:` block in a GitHub Actions workflow — GitHub-side
-# cron has been documented as 15+ min late and occasionally missed runs
-# (rationale: collect.yml header). Reliability is the whole reason this
-# Worker exists.
+# Per the 2026-05-05 audit: ALL scheduling for this project lives here. Never
+# put a `schedule:` block in a GitHub Actions workflow — GitHub-side cron has
+# been documented as 15+ min late with occasionally missed runs. Reliability
+# is the whole reason this Worker exists.
 #
-#   "45 2,8,14,20 * * *"  → collect.yml             Open-Meteo + ERA5 + METAR + EA + MO DataHub (WeatherBlend)
-#   "0 3,9,15,21 * * *"   → s3-collect.yml          Raw S3 cycles (GFS / IFS / AIFS / MO Global) for 2d (WeatherBlend)
-#                         + predict-5a.yml          Phase 5a Bayesian-logreg live predict (WeatherProbabilistic repo)
-#                         + predict-4a.yml          Phase 4a dbarts BART state-load + predict (WeatherProbabilistic)
-#                                                   All three on the same tick — different repos / disjoint R2
-#                                                   prefixes, no shared lock. Folded onto a single cron because
-#                                                   Cloudflare's free tier caps total cron triggers at 5.
-#                                                   (predict-5a renamed 2026-05-09 from predict-bayesian.yml when
-#                                                    Phase 5 → 5a moved from CI-only output to first-class
-#                                                    predictions tree. predict-4a moved here from "0 12 * * *"
-#                                                    on the same day once train and predict were split; 4a now
-#                                                    retrains via retrain-python.yml. predict-4a just rehydrates
-#                                                    a saved BART state, ~2 min, not the previous ~24 min combo.)
-#   "15 3,9,15,21 * * *"  → predict-and-render.yml  every 6h, 15 min after s3-collect (WeatherBlend)
-#   "0 12 * * *"          → era5-refresh.yml        daily at 12:00 UTC (WeatherBlend)
-#                         + previous-runs-refresh.yml  rolling 14-day OM previous_runs pull, keeps the
-#                                                   offset_day archive 4a training depends on current.
-#                                                   Both share weatherblend-data lock; serialised writes.
-#                                                   (predict-4a removed from this tick 2026-05-09 — train+
-#                                                    predict were split, predict-4a moved to the 6-hourly
-#                                                    tick as a state-loader; previous-runs-refresh added
-#                                                    same day so on-demand retrains see fresh data.)
-#   "30 9 * * MON,THU"    → verify.yml              twice-weekly Mon + Thu 09:30 UTC (WeatherBlend)
-#                                                   (Cloudflare cron uses 1=Sunday,
-#                                                   not POSIX 0=Sunday — day names
-#                                                   avoid the off-by-one trap)
+#   "45 2,8,14,20 * * *"  → collect.yml      Open-Meteo + ERA5 + METAR + EA + MO DataHub
+#   "5 3,9,15,21 * * *"   → s3-collect.yml   Raw S3 exact-runtime cycles (GFS / IFS / AIFS /
+#                                            MO Global / UKV / GEFS) for the 2d/3d blenders
+#   "0 12 * * *"          → era5-refresh.yml + previous-runs-refresh.yml  (daily 12:00 UTC;
+#                                            share the weatherblend-data lock, serialised writes)
+#   "30 9 * * MON,THU"    → verify.yml       twice-weekly Mon + Thu 09:30 UTC
+#                                            (Cloudflare cron uses 1=Sunday, not POSIX
+#                                            0=Sunday — day names avoid the off-by-one trap)
 #
-# Sequencing per 6h slot (HH ∈ {2, 8, 14, 20}):
+# Only 4 crons — predict-4a, predict-5a and predict-and-render are NOT cron'd.
+# They are chained off workflow_run completions in src/index.ts
+# (handleWorkflowRun, Hops C and D):
 #
-#   HH:45        collect             Open-Meteo offset_day + ERA5 + METAR + rainfall + MO DataHub.
-#                                    Typical ~3-5 min, max 15 min timeout. Shifted from HH:30
-#                                    on 2026-05-07 to give GEM (Open-Meteo's slowest publisher)
-#                                    a further 15 min to land — was missing GEM at the 02:30 +
-#                                    14:30 slots before the move.
-#   (HH+1):00    s3-collect          Raw S3 cycle pulls (GFS / IFS / AIFS / MO Global). Slowest source
-#                                    is ECMWF IFS (T+7-8h post-cycle); HH+1:00 = 9h past the previous
-#                                    cycle (e.g. 03:00 catches the 18Z cycle's fully-published data).
-#                                    Typical ~3-5 min after the 2026-05-07 parallelisation, max 60 min timeout.
-#   (HH+1):15    predict-and-render  Predictions read from R2 (post collect + s3-collect pushes),
-#                                    site renders. 15 min after s3-collect dispatch — well past the
-#                                    typical 5 min post-parallelisation runtime so the lock is free.
+#   HH:45    collect       (cron)
+#      └─ on success ─► predict-4a + predict-5a   (WeatherProbabilistic; consume
+#                                                  collect's Open-Meteo forecasts)
+#   HH+1:05  s3-collect    (cron)
+#      └─ on completion ─► predict-and-render     (consumes the exact-runtime
+#                                                  cycles s3-collect just landed)
 #
-# All three workflows share `weatherblend-data` concurrency group with
-# `cancel-in-progress: false` so the queue serialises them in dispatch order.
-# Spacing is wide enough that the queue never deepens past 2 simultaneously
-# (GH Actions' concurrency cancels older-pending when a 3rd arrives, so
-# we explicitly avoid 3-deep).
+# Why chained, not cron'd: predict-and-render genuinely depends on s3-collect,
+# and predict-4a/5a depend on collect. Chaining runs each the moment its input
+# is ready rather than guessing a fixed offset, and it frees a cron (Cloudflare
+# free tier caps at 5). collect, s3-collect and predict-and-render also share
+# the GitHub Actions `weatherblend-data` concurrency group
+# (cancel-in-progress: false), so even under the old cron timing the render
+# could never start mid-collect — the chain just makes that ordering explicit.
 #
-# era5-refresh moved from 06:00 → 12:00 because ECMWF ERA5T publishes around
-# 09–10 UTC and Open-Meteo's archive ingests within a few hours; 12:00 UTC
-# is past both, so the daily refresh always lands on Open-Meteo's freshest
-# data instead of catching ECMWF mid-publish and writing null partitions.
+# s3-collect is at :05 (not :00) to give the collect→predict-4a/5a chain
+# run-room: collect finishes ~HH:50, 4a/5a chain off it, and predict-and-render
+# only fires once s3-collect (HH+1:05) completes — comfortably after 4a/5a.
 #
-# predict-and-render moved from `45 */2 * * *` (every 2h, 12×/day) to
-# `45 2,8,14,20 * * *` (every 6h, 4×/day, paired with collect) on
-# 2026-05-04 — see data/reports/schedule_proposal_2026-05-04.md. The
-# earlier "every 2h" cadence was based on a wrong assumption that the
-# on-disk forecast tree updates between collects. It doesn't: collect is
-# the only thing that pulls from Open-Meteo, and we collect on a 6h
-# cycle, so 8 of every 12 daily predicts were reading IDENTICAL inputs
-# to the previous run and producing IDENTICAL outputs (the LightGBM
-# blenders are deterministic). Running once per collect cycle gets the
-# same site freshness for ~67% less compute. The 30-min offset past the
-# collect (which runs at `:15`) gives R2 enough time to settle before
-# predict reads.
-#
-# predict-and-render moved from `0 3,9,15,21` → `15 3,9,15,21` on
-# 2026-05-05 to make room for s3-collect at `45` of the prior hour
-# (s3-collect typical runtime is 5-15 min so its lock is reliably released
-# by 03:00; the additional 15 min margin to 03:15 covers the 60-min worst-
-# case timeout cleanly).
-#
-# 2026-05-07: collect + s3-collect each shifted 15 min later (HH:30→HH:45,
-# HH:45→HH+1:00) to give GEM a longer landing window — Open-Meteo's GEM
-# ingest had been arriving after our 02:30 + 14:30 ticks, so 2 of every 4
-# daily forecasts went out without a fresh GEM cycle. predict-and-render
-# stays at HH+1:15; the s3-collect→predict gap shrinks from 30 min to 15
-# min, safe because the same-day s3-collect parallelisation cut typical
-# runtime from 20+ min to 5-8 min.
+# The Sunday weekly retrain is also chained (Hops A/B): the noon
+# previous-runs-refresh, on a Sunday success, chains retrain-python →
+# retrain-blenders. See src/index.ts handleWorkflowRun for all four hops.
 [triggers]
 crons = [
   "45 2,8,14,20 * * *",
-  "0 3,9,15,21 * * *",
-  "15 3,9,15,21 * * *",
+  "5 3,9,15,21 * * *",
   "0 12 * * *",
   "30 9 * * MON,THU",
 ]
@@ -120,7 +73,8 @@ GH_REF = "main"
 
 # Secrets are NOT defined here — they're injected via `wrangler secret put`
 # (or the dashboard) and live encrypted in Cloudflare's secret store. See
-# README for the three required secrets:
+# README for the required secrets:
 #   GH_APP_ID                 (App ID, plain integer string)
 #   GH_APP_INSTALLATION_ID    (Installation ID, plain integer string)
 #   GH_APP_PRIVATE_KEY        (PEM contents — PKCS#1 or PKCS#8, both handled)
+#   GH_WEBHOOK_SECRET         (HMAC secret shared with the workflow_run webhooks)

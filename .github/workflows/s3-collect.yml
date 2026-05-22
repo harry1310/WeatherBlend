@@ -29,13 +29,10 @@ env:
 # more often than needed is harmless (just a few extra GETs).
 #
 # Schedule lives in cloudflare/scheduler-worker/wrangler.toml; the worker
-# fires this workflow at 03:00, 09:00, 15:00, 21:00 UTC (15 min after
-# collect, 15 min before predict-and-render). HH+1:00 is 9h past the
-# previous cycle, comfortably past the slowest publisher (ECMWF IFS,
-# T+7-8h). Shifted from HH:45 → HH+1:00 on 2026-05-07 alongside collect's
-# HH:30 → HH:45 move (GEM landing-time fix; see wrangler.toml). The
-# predict-and-render gap shrunk from 30→15 min, safe because s3-collect's
-# 2026-05-07 parallelisation cut typical runtime from 20+ min to 5-8 min.
+# fires this workflow at 03:05, 09:05, 15:05, 21:05 UTC. HH+1:05 is ~9h
+# past the previous synoptic cycle, comfortably past the slowest publisher
+# (ECMWF IFS, T+7-8h). On completion the worker chains predict-and-render
+# (handleWorkflowRun Hop D), so the render always runs after this lands.
 # GitHub-side `schedule:` removed 2026-05-05 — see collect.yml +
 # wrangler.toml for why we don't put cron in GH workflows.
 #
@@ -45,7 +42,7 @@ env:
 # from raw S3. Both data sources land in the same forecast tree under
 # different `model=` partition keys, and both must complete before
 # predict-and-render runs (enforced by the `weatherblend-data` concurrency
-# lock + dispatch ordering).
+# lock and the Hop D completion chain — see wrangler.toml).
 
 on:
   workflow_dispatch:

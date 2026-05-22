@@ -47,39 +47,27 @@ type Dispatch = { workflow: string; repo?: string; inputs?: Record<string, strin
  * as the workflows don't write the same R2 prefixes.
  */
 const WORKFLOW_FOR_CRON: Record<string, Dispatch[]> = {
+  // collect.yml — Open-Meteo + ERA5 + METAR + EA + MO DataHub. Its
+  // completion chains predict-4a + predict-5a (handleWorkflowRun Hop C).
   "45 2,8,14,20 * * *": [{ workflow: "collect.yml" }],
-  // s3-collect (WeatherBlend) + predict-5a + predict-4a (both
-  // WeatherProbabilistic) share this tick. All three fire at HH+1:00;
-  // s3-collect uses the weatherblend-data lock; predict-5a and
-  // predict-4a read forecasts pushed by collect.yml at HH:45 and write
-  // to disjoint precipitation prediction prefixes (*phase5a* /
-  // *phase4a*). No shared lock; all three finish well before
-  // predict-and-render at HH+1:15. (predict-5a renamed 2026-05-09 from
-  // predict-bayesian.yml; predict-4a moved here from the noon tick on
-  // the same day once train and predict were split; 4a now retrains via
-  // retrain-python.yml.)
-  "0 3,9,15,21 * * *": [
-    { workflow: "s3-collect.yml" },
-    { workflow: "predict-5a.yml", repo: "harry1310/WeatherProbabilistic" },
-    { workflow: "predict-4a.yml", repo: "harry1310/WeatherProbabilistic" },
-  ],
-  "15 3,9,15,21 * * *": [{ workflow: "predict-and-render.yml" }],
-  // Noon UTC: ERA5 refresh + Open-Meteo previous_runs refresh. Both
-  // pull rolling 14-day windows from Open-Meteo (different endpoints,
-  // different data trees: truth/era5/ vs forecasts/) past Open-Meteo's
-  // publish window so neither lands on null partitions. They share the
-  // weatherblend-data lock so writes serialise; either ordering is
-  // safe. previous-runs-refresh keeps the offset_day archive that 4a
-  // training (retrain-python.yml) feeds on current — without it,
-  // on-demand BART retrains would regress to whatever date the last
-  // manual backfill covered.
+  // s3-collect.yml — raw S3 exact-runtime cycles for the 2d/3d blenders.
+  // Its completion chains predict-and-render (handleWorkflowRun Hop D).
   //
-  // Used to also fire predict-4a (daily train+predict combo, ~24 min
-  // wall) but that's gone — 4a training moved to retrain-python.yml and
-  // predict-4a runs on the 6-hourly tick above as a state-loading-
-  // only step (~2 min wall). The split was unblocked once we verified
-  // dbarts state round-trips bit-exactly via storeState() + setState();
-  // see scripts/smoke_dbarts_roundtrip.py.
+  // predict-4a, predict-5a and predict-and-render are no longer cron'd —
+  // they hang off the two completions above. That frees a cron
+  // (Cloudflare free tier caps at 5) and makes the dependency order
+  // explicit instead of leaning on fixed-offset timing:
+  //   collect ─(success)─► predict-4a + predict-5a
+  //   s3-collect ─────────► predict-and-render
+  // s3-collect sits at :05 (not :00) so the collect→4a/5a chain — which
+  // starts when collect finishes ~HH:50 — gets a clear ~15 min run-room
+  // before predict-and-render is chained off s3-collect.
+  "5 3,9,15,21 * * *": [{ workflow: "s3-collect.yml" }],
+  // Noon UTC: ERA5 refresh + Open-Meteo previous_runs refresh. Both pull
+  // rolling 14-day windows past Open-Meteo's publish window so neither
+  // lands on null partitions; they share the weatherblend-data lock so
+  // writes serialise. On a Sunday, previous-runs-refresh's success
+  // chains the weekly retrain (handleWorkflowRun Hop A).
   "0 12 * * *":         [
     { workflow: "era5-refresh.yml" },
     { workflow: "previous-runs-refresh.yml" },
@@ -283,16 +271,19 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
   const branch = wfRun.head_branch ?? "(unknown)";
   const sha = (wfRun.head_sha ?? "").slice(0, 7);
 
-  // ---- Sunday retrain chain (worker-orchestrated) ---------------------
-  // The worker owns the whole chain. The noon cron dispatches
-  // previous-runs-refresh; the two hops below advance it on workflow_run
-  // completions, so the three run strictly serially:
-  //   previous-runs-refresh ──(success, Sunday)──► retrain-python
-  //   retrain-python        ──(any completion)───► retrain-blenders
-  // Serial so retrain-blenders' 4b mint reads this cycle's fresh 4a
-  // rather than racing it. Both hops dispatch via workflow_dispatch
-  // (force=true) — the same path the cron uses, so no GitHub App
-  // permission beyond the actions:write the worker already relies on.
+  // ---- Completion-driven workflow chains ------------------------------
+  // The worker chains workflows off each other's workflow_run completion
+  // so a dependent job runs as soon as — and only after — its input is
+  // ready, instead of racing a fixed-offset cron. Four hops:
+  //   A  previous-runs-refresh ─(success, Sunday)─► retrain-python
+  //   B  retrain-python        ─(any completion)──► retrain-blenders
+  //   C  collect               ─(success)─────────► predict-4a, predict-5a
+  //   D  s3-collect            ─(any completion)──► predict-and-render
+  // A+B are the weekly retrain — serial so retrain-blenders' 4b mint
+  // reads this cycle's fresh 4a rather than racing it. C+D are the
+  // 6-hourly predict path. Every hop dispatches via workflow_dispatch —
+  // the same path the cron uses, so no GitHub App permission beyond the
+  // actions:write the worker already relies on.
 
   // Hop A — refresh → python. Gated on a successful refresh (no retrain
   // on stale data) AND on it being a Sunday: previous-runs-refresh runs
@@ -323,7 +314,43 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
       console.error(`retrain chain: failed to dispatch retrain-blenders: ${e}`);
     }
   }
-  // Both hops fall through — the ci-failure issue logic below still runs
+
+  // Hop C — collect → 4a/5a predict. predict-4a and predict-5a (both in
+  // WeatherProbabilistic) consume the Open-Meteo forecasts collect.yml
+  // just pushed to R2; chaining off collect's completion runs them on
+  // fresh data the moment it lands instead of racing a fixed cron.
+  // Gated on success — a failed collect leaves stale data, so skip and
+  // wait for the next cycle. Path check uses the leading slash so
+  // `s3-collect.yml` (Hop D) doesn't also match here.
+  if ((wfRun.path ?? "").endsWith("/collect.yml") && conclusion === "success") {
+    for (const wf of ["predict-4a.yml", "predict-5a.yml"]) {
+      try {
+        await dispatchWorkflow(env, wf, "harry1310/WeatherProbabilistic");
+        console.log(`predict chain: collect success → dispatched ${wf}`);
+      } catch (e) {
+        console.error(`predict chain: failed to dispatch ${wf}: ${e}`);
+      }
+    }
+  }
+
+  // Hop D — s3-collect → predict-and-render. The raw S3 exact-runtime
+  // cycles s3-collect lands feed the 2d/3d predictors that run inside
+  // predict-and-render. Chaining guarantees the render starts only after
+  // s3-collect finishes — the weatherblend-data concurrency lock already
+  // enforced that, but the chain makes the dependency explicit and frees
+  // a cron. Fires on ANY completion: a failed s3-collect should still
+  // re-render the site off the most recent exact-runtime data rather
+  // than leave it stale.
+  if ((wfRun.path ?? "").endsWith("/s3-collect.yml")) {
+    try {
+      await dispatchWorkflow(env, "predict-and-render.yml", "harry1310/WeatherBlend");
+      console.log(`predict chain: s3-collect ${conclusion} → dispatched predict-and-render`);
+    } catch (e) {
+      console.error(`predict chain: failed to dispatch predict-and-render: ${e}`);
+    }
+  }
+
+  // Every hop falls through — the ci-failure issue logic below still runs
   // for the workflow_run that triggered this handler.
 
   const issueTitle = `[ci-fail] ${wfName}`;

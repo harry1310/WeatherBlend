@@ -19,30 +19,25 @@ env:
 #   - predictions pushed to R2 once between predict and render so the deployed
 #     site reads its own freshly-written outputs
 #
-# Schedule: 03:15, 09:15, 15:15, 21:15 UTC (4 runs/day, every 6h). Lives
-# in cloudflare/scheduler-worker/wrangler.toml — see that file for the
-# full sequencing rationale per slot:
-#   HH:45    collect       (Open-Meteo + ERA5 + METAR + EA + MO DataHub)
-#   HH+1:00  s3-collect    (raw S3 cycles for 2d — GFS / IFS / AIFS / MO Global / UKV)
-#   HH+1:15  predict-and-render
+# Dispatch: chained off s3-collect's completion by the weatherblend-scheduler
+# Cloudflare Worker (handleWorkflowRun, Hop D) — NOT cron'd. The raw S3
+# exact-runtime cycles s3-collect lands feed the 2d/3d predictors below, so
+# the render runs the moment s3-collect finishes (~03:1x, 09:1x, 15:1x,
+# 21:1x UTC in practice). See cloudflare/scheduler-worker/ for the full
+# schedule + chain rationale.
 #
-# Both collects MUST finish before this fires. Enforced two ways:
-# (1) dispatch ordering — predict-and-render fires 15 min after s3-collect
-#     and 30 min after collect, past their typical runtimes (collect 3-5 min,
-#     s3-collect 5-8 min post-2026-05-07 parallelisation);
+# Both collects finish before this runs, enforced two ways:
+# (1) the chain — the Worker dispatches this only on s3-collect's completion
+#     webhook, and s3-collect itself runs after collect;
 # (2) shared `weatherblend-data` concurrency group with cancel-in-progress=false
-#     so if either collect overruns, predict queues until the lock frees.
-# cancel-in-progress=false because we never want to interrupt a job that's
-# mid-write to predictions.
+#     — a hard backstop: if anything overruns, predict queues until the lock
+#     frees. cancel-in-progress=false so a job mid-write to predictions is
+#     never interrupted.
 on:
   # Schedule moved to Cloudflare 2026-05-01 (cloudflare/scheduler-worker/);
-  # GitHub's `schedule:` trigger removed at the same time. Cron updated
-  # 2026-05-04 from `45 */2 * * *` (every 2h, 12×/day) → `45 2,8,14,20 * * *`
-  # (every 6h, 4×/day, paired with collect) once temp predict moved to
-  # hourly-per-lead output. Cron updated again 2026-05-05 from
-  # `45 2,8,14,20` → `15 3,9,15,21` to make room for s3-collect.yml at
-  # `45 2,8,14,20`. See cloudflare/scheduler-worker/wrangler.toml for the
-  # full sequencing rationale.
+  # GitHub's `schedule:` trigger removed then. This workflow is no longer
+  # cron'd at all — the Worker chains it off s3-collect's workflow_run
+  # completion (see that directory's README / wrangler.toml).
   #
   # `workflow_dispatch:` retained so manual dashboard runs and the
   # Cloudflare scheduler's API-driven dispatches still work.

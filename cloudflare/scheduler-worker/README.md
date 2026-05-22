@@ -9,20 +9,23 @@ silently slips. Cloudflare Workers cron triggers fire on time.
 ## What it does
 
 ```
-Cloudflare crons                              Workflow dispatched
-─────────────────────────                     ──────────────────────
-45 2,8,14,20 * * *   (every 6h, :45)            →   collect.yml
-0 3,9,15,21 * * *    (every 6h, 15 after collect) →   s3-collect.yml
-15 3,9,15,21 * * *   (every 6h, 15 after s3-collect) →   predict-and-render.yml
-0 12 * * *           (daily 12:00 UTC)          →   era5-refresh.yml
-30 9 * * MON,THU     (Mon + Thu 09:30 UTC)      →   verify.yml
+Cloudflare crons (4)                          Workflow dispatched
+─────────────────────────                    ──────────────────────
+45 2,8,14,20 * * *   (every 6h, :45)           →  collect.yml
+5 3,9,15,21 * * *    (every 6h, :05)           →  s3-collect.yml
+0 12 * * *           (daily 12:00 UTC)         →  era5-refresh + previous-runs-refresh
+30 9 * * MON,THU     (Mon + Thu 09:30 UTC)     →  verify.yml
+
+Chained off workflow_run completions (not cron'd — see handleWorkflowRun):
+  collect    ─(success)────►  predict-4a + predict-5a   (WeatherProbabilistic)
+  s3-collect ─(completion)─►  predict-and-render
+  previous-runs-refresh ─(Sunday success)─►  retrain-python ─►  retrain-blenders
         │
         ▼
 weatherblend-scheduler (this Worker)
-        │  1. Pick workflow from event.cron via WORKFLOW_FOR_CRON
-        │  2. Mint 10-min JWT signed with the GitHub App's private key
-        │  3. Exchange JWT for a 1h installation access token
-        │  4. POST /repos/.../actions/workflows/<file>/dispatches
+        │  cron path:    pick workflow(s) from event.cron via WORKFLOW_FOR_CRON
+        │  webhook path: workflow_run completions drive the chains above
+        │  both:         mint App JWT → installation token → POST .../dispatches
         ▼
 GitHub Actions runs the workflow as if a human had clicked "Run workflow"
 ```
@@ -34,26 +37,35 @@ scheduled workflow, the cron lives here, not in the YAML.
 
 ## Schedule rationale
 
-The four-job 6-hour slot (HH ∈ {2, 8, 14, 20}) sequences as:
+Four crons. The 6-hour collect/predict slot (HH ∈ {2, 8, 14, 20}) runs:
 
 | Cron | Workflow | Why this time |
 |------|----------|---------------|
-| `45 2,8,14,20 * * *` | `collect.yml` | Every 6h, offset `:45` past the hour. Was `:15` until 2026-05-04, then `:30` until 2026-05-07; the most recent +15 was to give Open-Meteo's GEM ingest more time to land — GEM 18Z and 06Z cycles were arriving after our 02:30 + 14:30 ticks, so two of every four daily forecasts were going out on a stale GEM cycle. Recent runs complete in 2.5–3.5 min so the 30-min gap to predict still has plenty of slack. |
-| `0 3,9,15,21 * * *` | `s3-collect.yml` | Raw S3 cycle pulls (GFS / IFS / AIFS / MO Global / MO UKV) for the 2d temperature blender + the precip-exact bake-off. Fires 15 min after collect; on the same `weatherblend-data` concurrency lock so it queues if collect overruns. The 9h gap past the previous synoptic cycle is past every publisher: NOAA GFS lands ~T+3h, MO ~T+3-6h, ECMWF AIFS ~T+5-7h, ECMWF IFS oper ~T+7-8h (slowest). Wired in 2026-05-05 when 2d landed; shifted from `:45` → `+1:00` on 2026-05-07 alongside collect's GEM-driven move. Typical runtime 5–8 min after the 2026-05-07 source-parallelisation (was 5–15 min), max 60 min timeout. |
-| `15 3,9,15,21 * * *` | `predict-and-render.yml` | Every 6h, 15 min after s3-collect's `+1:00` and 30 min after collect's `:45`. Lag gives both R2 pushes time to settle before predict reads. Cron string itself is unchanged since 2026-05-05; the gap to s3-collect tightened from 30 → 15 min on 2026-05-07 when collect + s3-collect moved 15 min later (s3-collect's parallelisation made the tighter gap safe). Before 2026-05-05 it was `45 2,8,14,20`; before 2026-05-04, `45 */2 * * *` (every 2h) — but the on-disk forecast tree only changes when collect runs (which is every 6h), so 8 of every 12 daily predicts were reading IDENTICAL inputs to the previous run and producing IDENTICAL outputs. Per-cycle output is rich enough to justify the 6h cadence: temp + precip emit 24 hourly forecasts per lead bucket, dry-window emits per-day. See `data/reports/schedule_proposal_2026-05-04.md` for the full reasoning. |
-| `0 12 * * *` | `era5-refresh.yml` | ECMWF publishes ERA5T daily around 09–10 UTC; Open-Meteo ingests within a few hours. 12:00 UTC is past both, so the daily refresh always lands on Open-Meteo's freshest data instead of catching ECMWF mid-publish (which writes null partitions). The refresh itself pulls a 14-day rolling window, so any null partitions left by older runs get backfilled as ECMWF catches up. |
-| `30 9 * * MON,THU` | `verify.yml` | Twice-weekly Mon + Thu 09:30 UTC. Doubled from weekly-Mon on 2026-05-04: a freshly retrained champion was waiting up to 7 days for its first verify rows (cron) plus 5 days (ERA5 latency) before showing on the Models page; cutting cron lag in half cuts that to 3-4 days. **Use day-name aliases (`MON`, `THU`) not numbers — Cloudflare cron uses 1=Sunday (not POSIX 0=Sunday), so `* * 1,4` was firing Sun+Wed instead of Mon+Thu when first deployed 2026-05-04 (caught + fixed same day, see commit history for the bug).** |
+| `45 2,8,14,20 * * *` | `collect.yml` | Every 6h, `:45` past the hour — the offset gives Open-Meteo's GEM ingest time to land (earlier ticks went out on a stale GEM cycle). Runs in ~2.5–3.5 min. |
+| `5 3,9,15,21 * * *` | `s3-collect.yml` | Raw S3 exact-runtime cycle pulls (GFS / IFS / AIFS / MO Global / UKV / GEFS) for the 2d/3d blenders. The ~9h gap past the previous synoptic cycle clears every publisher (slowest is ECMWF IFS, ~T+7-8h). At `:05` not `:00` so the `collect → predict-4a/5a` chain (which starts when collect finishes ~HH:50) has run-room before `predict-and-render` is chained off s3-collect. Typical runtime 5–8 min, 60-min timeout. |
+| `0 12 * * *` | `era5-refresh.yml` + `previous-runs-refresh.yml` | ECMWF publishes ERA5T ~09–10 UTC and Open-Meteo ingests within hours; 12:00 is past both, so the refresh lands on fresh data. Both pull a 14-day rolling window. On a **Sunday**, `previous-runs-refresh`'s success chains the weekly retrain. |
+| `30 9 * * MON,THU` | `verify.yml` | Twice-weekly Mon + Thu 09:30 UTC. **Use day-name aliases (`MON`, `THU`) not numbers — Cloudflare cron uses 1=Sunday (not POSIX 0=Sunday), so `* * 1,4` fires Sun+Wed.** |
+
+`predict-4a`, `predict-5a` and `predict-and-render` are **not cron'd** — each
+is dispatched when its upstream workflow completes (`handleWorkflowRun`,
+Hops C and D in `src/index.ts`):
+
+- `collect` success → `predict-4a` + `predict-5a` (they consume collect's Open-Meteo forecasts).
+- `s3-collect` completion → `predict-and-render` (it consumes s3-collect's exact-runtime cycles).
+
+Chaining runs each the moment its input is ready instead of guessing a fixed
+offset, and keeps the worker to 4 crons — Cloudflare's free tier caps at 5,
+leaving one spare.
 
 ## Concurrency invariant
 
 `collect`, `s3-collect`, and `predict-and-render` all share the GitHub
 Actions concurrency group `weatherblend-data` with `cancel-in-progress:
-false`. With the spacing above (15 min between dispatches, both collects
-typically finish in well under 15 min), the queue depth never exceeds 2
-simultaneously. That matters because GitHub Actions cancels the *older*
-pending entry when a 3rd job arrives on the same group — three-deep
-queueing would silently drop one of the collects. Spacing each pair by
-15+ min keeps the lock free between them.
+false`, so they can never run concurrently — a later one queues behind a
+running one. That is the hard guarantee that `predict-and-render` never
+starts mid-collect; the Hop D completion chain is the same ordering made
+explicit at dispatch time (the render is dispatched only once `s3-collect`
+has already finished), so the queue should now rarely even engage.
 
 ## Adding a new schedule
 
@@ -207,6 +219,6 @@ and writes the GitHub error body to the log.
 
 ## Cost
 
-Cloudflare Workers free plan: 100k requests/day, 3 cron schedules included.
-This Worker uses 1 cron, ~4 requests/day. Zero cost for the foreseeable
-future.
+Cloudflare Workers free plan: 100k requests/day. This Worker uses 4 of the
+5 cron triggers the free tier allows, plus the webhook-driven dispatches —
+well under 100 requests/day. Zero cost for the foreseeable future.
