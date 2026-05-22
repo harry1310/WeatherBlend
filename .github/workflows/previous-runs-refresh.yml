@@ -58,9 +58,11 @@ on:
         default: ""
 
 concurrency:
-  # Share the data-write lock with collect/backfill/era5-refresh so no
-  # two jobs try to push to R2 at the same time. cancel-in-progress=false
-  # so manual dispatches don't kill an in-flight scheduled run.
+  # Share the data-write lock with collect / s3-collect / predict-and-render
+  # so no two jobs write the data/forecasts tree at once. cancel-in-progress
+  # =false so manual dispatches don't kill an in-flight scheduled run.
+  # (era5-refresh left this group 2026-05-22 — it writes only
+  # data/truth/era5, a disjoint subtree, so it never needed the lock.)
   group: weatherblend-data
   cancel-in-progress: false
 

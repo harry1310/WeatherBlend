@@ -40,9 +40,14 @@ on:
         default: ""
 
 concurrency:
-  # Share the data-write lock with collect/backfill/predict so no two jobs
-  # try to push to R2 at the same time.
-  group: weatherblend-data
+  # era5-refresh writes only data/truth/era5/ — its own subtree, as whole
+  # idempotent per-date parquet files (no read-modify-write, unlike the
+  # METAR/rainfall writers). So it doesn't need the shared weatherblend-data
+  # write-lock; its own group just serialises era5-refresh against itself
+  # (e.g. a manual dispatch vs the noon scheduled run). Moved off
+  # weatherblend-data 2026-05-22 — it was queueing ~8 min behind
+  # previous-runs-refresh on the shared noon tick for no reason.
+  group: weatherblend-era5
   cancel-in-progress: false
 
 jobs:
