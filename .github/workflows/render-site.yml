@@ -12,15 +12,14 @@ env:
 
 # Renders the static site from R2-backed parquet and deploys it to Cloudflare Pages.
 #
-# Auto-trigger: fires after `verify` (weekly) so the latest MAE/Brier/drift
-# numbers surface on the site as soon as they're computed. The predict→render
-# auto-trigger was removed when scheduled prediction moved into the combined
-# `predict-and-render.yml` workflow (which renders inline every 2 hours).
-# Manual dispatch supported for one-off re-renders.
+# Dispatched by the weatherblend-scheduler Cloudflare Worker after each
+# `verify` run (handleWorkflowRun Hop E) so the latest MAE/Brier/drift
+# numbers surface on the site as soon as they're computed — the worker
+# gates that on verify succeeding. Was a GitHub-native `on: workflow_run`
+# trigger; moved to the worker 2026-05-22 so every workflow-to-workflow
+# hop lives in one place. predict-and-render.yml handles the routine
+# 6-hourly render. Manual dispatch supported for one-off re-renders.
 on:
-  workflow_run:
-    workflows: ["verify"]
-    types: [completed]
   workflow_dispatch:
     inputs:
       window_days:
@@ -43,10 +42,9 @@ concurrency:
 
 jobs:
   render-and-deploy:
-    # Skip the auto-run if the triggering workflow failed — a failed predict means
-    # today's predictions aren't on R2 yet, so re-rendering just redeploys yesterday's
-    # site with a newer timestamp, which is misleading.
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    # Sole trigger is workflow_dispatch now (Cloudflare worker Hop E, or
+    # manual). The worker gates the verify-driven render on verify
+    # succeeding, so no conclusion check is needed here.
     runs-on: ubuntu-latest
     timeout-minutes: 15
 

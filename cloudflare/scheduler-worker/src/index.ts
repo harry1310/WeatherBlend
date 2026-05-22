@@ -274,15 +274,17 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
   // ---- Completion-driven workflow chains ------------------------------
   // The worker chains workflows off each other's workflow_run completion
   // so a dependent job runs as soon as — and only after — its input is
-  // ready, instead of racing a fixed-offset cron. Four hops:
+  // ready, instead of racing a fixed-offset cron. Five hops:
   //   A  previous-runs-refresh ─(success, Sunday)─► retrain-python
   //   B  retrain-python        ─(any completion)──► retrain-blenders
   //   C  collect               ─(success)─────────► predict-4a, predict-5a
   //   D  s3-collect            ─(any completion)──► predict-and-render
+  //   E  verify                ─(success)─────────► render-site
   // A+B are the weekly retrain — serial so retrain-blenders' 4b mint
   // reads this cycle's fresh 4a rather than racing it. C+D are the
-  // 6-hourly predict path. Every hop dispatches via workflow_dispatch —
-  // the same path the cron uses, so no GitHub App permission beyond the
+  // 6-hourly predict path. E redraws the site after the twice-weekly
+  // verify run. Every hop dispatches via workflow_dispatch — the same
+  // path the cron uses, so no GitHub App permission beyond the
   // actions:write the worker already relies on.
 
   // Hop A — refresh → python. Gated on a successful refresh (no retrain
@@ -347,6 +349,22 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
       console.log(`predict chain: s3-collect ${conclusion} → dispatched predict-and-render`);
     } catch (e) {
       console.error(`predict chain: failed to dispatch predict-and-render: ${e}`);
+    }
+  }
+
+  // Hop E — verify → render-site. verify computes the rolling MAE / Brier
+  // / drift metrics; render-site redraws the site so they surface as soon
+  // as they're computed. Gated on success — a failed verify means the
+  // metrics aren't fresh, so re-rendering would just redeploy the prior
+  // site. (Was a GitHub-native `on: workflow_run` trigger on
+  // render-site.yml; moved here 2026-05-22 so every workflow-to-workflow
+  // hop lives in one place.)
+  if ((wfRun.path ?? "").endsWith("/verify.yml") && conclusion === "success") {
+    try {
+      await dispatchWorkflow(env, "render-site.yml", "harry1310/WeatherBlend");
+      console.log("render chain: verify success → dispatched render-site");
+    } catch (e) {
+      console.error(`render chain: failed to dispatch render-site: ${e}`);
     }
   }
 

@@ -19,6 +19,7 @@ Cloudflare crons (4)                          Workflow dispatched
 Chained off workflow_run completions (not cron'd — see handleWorkflowRun):
   collect    ─(success)────►  predict-4a + predict-5a   (WeatherProbabilistic)
   s3-collect ─(completion)─►  predict-and-render
+  verify     ─(success)────►  render-site
   previous-runs-refresh ─(Sunday success)─►  retrain-python ─►  retrain-blenders
         │
         ▼

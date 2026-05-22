@@ -51,9 +51,11 @@ compatibility_date = "2025-04-01"
 # run-room: collect finishes ~HH:50, 4a/5a chain off it, and predict-and-render
 # only fires once s3-collect (HH+1:05) completes — comfortably after 4a/5a.
 #
-# The Sunday weekly retrain is also chained (Hops A/B): the noon
-# previous-runs-refresh, on a Sunday success, chains retrain-python →
-# retrain-blenders. See src/index.ts handleWorkflowRun for all four hops.
+# Two more chains: the Sunday weekly retrain (Hops A/B -- the noon
+# previous-runs-refresh, on a Sunday success, chains retrain-python ->
+# retrain-blenders), and verify -> render-site (Hop E -- the site
+# redraws after each Mon/Thu verify). See src/index.ts handleWorkflowRun
+# for all five hops.
 [triggers]
 crons = [
   "45 2,8,14,20 * * *",
