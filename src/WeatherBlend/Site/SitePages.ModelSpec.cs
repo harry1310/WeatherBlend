@@ -212,18 +212,23 @@ public static partial class SitePages
 
     /// <summary>
     /// Map raw NWP id (Open-Meteo or S3 form) to the short label used in the
-    /// existing tables. The 8 blender-input ids delegate to
-    /// <see cref="Nwp.DisplayLabel"/>; the raw-archive variants
-    /// (<c>*_oper</c>, <c>gfs_ncep</c>, <c>met_office_global</c>,
-    /// <c>met_office_ukv</c>) collapse to the same short label as their
-    /// blender-input twin so a row sourced from raw S3 reads consistently
-    /// with the Open-Meteo blender row.
+    /// existing tables. The 8 Open-Meteo blender-input ids delegate to
+    /// <see cref="Nwp.DisplayLabel"/>; the raw-archive / exact-runtime
+    /// variants (<c>*_oper</c>, <c>gfs_ncep</c>, <c>gefs_ncep_mean</c>,
+    /// <c>met_office_global</c>, <c>met_office_ukv</c>) are mapped here —
+    /// most collapse to the same short label as their Open-Meteo
+    /// blender-input twin so a row sourced from raw S3 reads consistently.
+    /// <c>gefs_ncep_mean</c> is exact-runtime-only (no Open-Meteo twin and
+    /// so absent from <see cref="Nwp.DisplayLabel"/>) — without an entry
+    /// here it rendered raw as "gefs_ncep_mean" on the spec page; it gets
+    /// its own "GEFS" label.
     /// Unknown ids fall back to themselves so a newly-added model doesn't
     /// silently disappear.
     /// </summary>
     private static string NwpShort(string nwpId) => nwpId switch
     {
         "gfs_ncep"           => "GFS",
+        "gefs_ncep_mean"     => "GEFS",
         "ecmwf_ifs_oper"     => "ECMWF",
         "ecmwf_aifs_oper"    => "AIFS",
         "met_office_global"  => "UKMO Global",
