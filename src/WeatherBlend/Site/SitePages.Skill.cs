@@ -301,6 +301,15 @@ public static partial class SitePages
         (72, "#4527a0"),
     };
 
+    // The lead set actually plotted on the eyeball vs-truth charts, derived
+    // from EyeballLeadSpecs. Those charts cap their X axis at the furthest
+    // valid_time among THESE leads — predictions also exist at 96/120h
+    // (drawn on the rolling-MAE/Brier panels, not the eyeball charts), and
+    // letting those drive the axis stretched it ~2-3 days past where any
+    // drawn line reached, leaving blank space on the right.
+    private static readonly HashSet<int> EyeballLeads =
+        EyeballLeadSpecs.Select(s => s.Lead).ToHashSet();
+
     // -------------------------------------------------------------------------------
     // Eyeball: temperature vs truth, grouped by phase so champion/challenger lines at
     // different leads don't pile up in one unreadable chart.
@@ -364,32 +373,41 @@ public static partial class SitePages
     }
 
     /// <summary>
-    /// 14-day rolling window ending at the latest prediction valid_time across
-    /// the section. Anchoring on the data's right edge instead of the input
-    /// rolling-window-start keeps the chart visually consistent across renders
-    /// (a sparse-data day doesn't widen the window) and tracks the forward
-    /// forecast horizon — when predictions extend +120h the window slides
-    /// with them. Falls back to truth extent when no predictions exist; both
-    /// nulls → caller passes through to Chart.js auto-scaling.
-    /// Tightened from 30 → 14 days 2026-05-04 (user feedback: a month was too
-    /// much to scan visually; weeks read better).
+    /// 14-day rolling window ending at the latest <em>plotted</em> valid_time
+    /// on the eyeball charts. Anchoring on the data's right edge instead of
+    /// the input rolling-window-start keeps the chart visually consistent
+    /// across renders (a sparse-data day doesn't widen the window). The right
+    /// edge is the furthest of the things actually drawn: a blend line at a
+    /// plotted lead (<see cref="EyeballLeads"/>, ≤72h) or the Met Office Spot
+    /// reference line. 96/120h predictions are excluded — they aren't drawn
+    /// here (only on the rolling panels), and letting them set the edge
+    /// stretched the axis ~2-3 days past every drawn line. Falls back to
+    /// truth extent when nothing plotted exists; both nulls → caller passes
+    /// through to Chart.js auto-scaling.
+    /// Tightened 30 → 14 days 2026-05-04; lead-capped 2026-05-22.
     /// </summary>
     private static (double? Min, double? Max) TempSectionRange(SiteInputs input)
     {
         double? max = null;
-        foreach (var p in input.Predictions)
+        void Bump(DateTime t)
         {
-            var x = p.ValidTimeUtc.ToOADate();
+            var x = t.ToOADate();
             if (max is null || x > max) max = x;
         }
+
+        // Blend lines — only the leads actually drawn on the eyeball charts.
+        foreach (var p in input.Predictions)
+            if (EyeballLeads.Contains(p.LeadHours)) Bump(p.ValidTimeUtc);
+
+        // The MO Spot reference line is drawn too (its +24h lead bucket) —
+        // count it so a predict-lag day can't clip it off the right edge.
+        foreach (var m in input.MetOfficeSpotForecasts)
+            if (m.LeadHours >= 24 && m.LeadHours < 48 && m.Temperature2m.HasValue)
+                Bump(m.ValidTimeUtc);
+
         if (max is null)
-        {
-            foreach (var kv in input.TruthByTime)
-            {
-                var x = kv.Key.ToOADate();
-                if (max is null || x > max) max = x;
-            }
-        }
+            foreach (var kv in input.TruthByTime) Bump(kv.Key);
+
         if (max is null) return (null, null);
         return (max - 14.0, max);
     }
@@ -671,13 +689,23 @@ public static partial class SitePages
             ? ComputeWetBands(truth, input.WindowStartUtc)
             : new List<(double, double)>();
 
-        // 14-day rolling window ending at the latest prediction valid_time for
-        // this station. Per-phase charts plus the champion-vs-challenger
-        // overlay all share the same time axis and stack as one panel.
-        // Tightened from 30 → 14 days 2026-05-04 (user feedback: a month was
-        // too much to scan visually; weeks read better).
-        double? xMax = stationPredictions.Count > 0
-            ? stationPredictions.Max(p => p.ValidTimeUtc).ToOADate()
+        // 14-day rolling window. Per-phase charts plus the champion-vs-
+        // challenger overlay all share this time axis and stack as one panel.
+        // Right edge = furthest thing actually drawn: a P(wet) line at a
+        // plotted lead (EyeballLeads, ≤72h) or the MO Spot PoP reference
+        // line. 96/120h predictions exist but aren't drawn here, so they're
+        // excluded — letting them set xMax stretched the axis ~2-3 days past
+        // every line. Tightened 30 → 14 days 2026-05-04; lead-capped 2026-05-22.
+        var plottedValidTimes = stationPredictions
+            .Where(p => EyeballLeads.Contains(p.LeadHours))
+            .Select(p => p.ValidTimeUtc)
+            .Concat(input.MetOfficeSpotForecasts
+                .Where(m => m.LeadHours >= 24 && m.LeadHours < 48
+                            && m.PrecipitationProbabilityPercent.HasValue)
+                .Select(m => m.ValidTimeUtc))
+            .ToList();
+        double? xMax = plottedValidTimes.Count > 0
+            ? plottedValidTimes.Max().ToOADate()
             : null;
         double? xMin = xMax is { } m ? m - 14.0 : null;
 
