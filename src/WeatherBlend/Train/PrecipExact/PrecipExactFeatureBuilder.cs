@@ -67,8 +67,13 @@ public static class PrecipExactFeatureBuilder
         string Description);
 
     /// <summary>Two precip tiers, used as champion/challenger:
-    ///   * <b>P1</b> — GFS + IFS + AIFS required, MO Global optional. Original
-    ///     1-tier definition, mirrors temp 2d T2.
+    ///   * <b>P1</b> — GFS + AIFS required; IFS + MO Global + GEFS optional.
+    ///     IFS moved Required → Optional 2026-05-22 so the 06/18Z target
+    ///     valid-times survive when the IFS scda cycles aren't collected.
+    ///     That is what "mirrors temp 2d T2" was always meant to mean — T2
+    ///     requires only the 4-cycle-publishing pair (GFS + AIFS); P1 had
+    ///     wrongly kept IFS required, which pinned 3d to 12-hourly whenever
+    ///     06/18Z IFS was missing.
     ///   * <b>P2</b> — GFS + AIFS required, MO Global optional. Drops IFS
     ///     entirely (and is paired with includeUkv=false for the bake-off
     ///     against P1). Added 2026-05-07 after the IFS scda backfill
@@ -86,10 +91,10 @@ public static class PrecipExactFeatureBuilder
     {
         new TierSpec(
             Name: "P1",
-            Required: new[] { "gfs_ncep", "ecmwf_ifs_oper", "ecmwf_aifs_oper" },
-            Optional: new[] { "met_office_global", "gefs_ncep_mean" },
+            Required: new[] { "gfs_ncep", "ecmwf_aifs_oper" },
+            Optional: new[] { "ecmwf_ifs_oper", "met_office_global", "gefs_ncep_mean" },
             StartDate: new DateOnly(2024, 5, 4),
-            Description: "GFS + IFS + AIFS required, MO Global + GEFS optional. From 2024-05-04 (MO Global archive start). Mirrors temp 2d T2."),
+            Description: "GFS + AIFS required (the 4-cycle-publishing pair); IFS + MO Global + GEFS optional. From 2024-05-04 (MO Global archive start). Mirrors temp 2d T2 — IFS optional (moved from Required 2026-05-22) so 06/18Z valid-times survive when the IFS scda cycles are absent."),
 
         new TierSpec(
             Name: "P2",

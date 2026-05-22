@@ -26,12 +26,14 @@ public class PrecipExactFeatureBuilderTests
         // PrecipExactFeatureBuilder for the bake-off rationale. P1 stays as
         // index 0 to keep the existing default-tier behaviour stable for
         // every other test in this file. GEFS appended as Optional in both
-        // tiers 2026-05-09 (mirrors temp 2d wiring).
+        // tiers 2026-05-09 (mirrors temp 2d wiring). IFS moved from P1's
+        // Required to Optional 2026-05-22 — P1 now requires only the
+        // 4-cycle-publishing pair (GFS + AIFS), matching temp 2d's T2.
         PrecipExactFeatureBuilder.AllTiers.Should().HaveCount(2);
         var p1 = PrecipExactFeatureBuilder.AllTiers[0];
         p1.Name.Should().Be("P1");
-        p1.Required.Should().BeEquivalentTo("gfs_ncep", "ecmwf_ifs_oper", "ecmwf_aifs_oper");
-        p1.Optional.Should().BeEquivalentTo("met_office_global", "gefs_ncep_mean");
+        p1.Required.Should().BeEquivalentTo("gfs_ncep", "ecmwf_aifs_oper");
+        p1.Optional.Should().BeEquivalentTo("ecmwf_ifs_oper", "met_office_global", "gefs_ncep_mean");
         var p2 = PrecipExactFeatureBuilder.AllTiers[1];
         p2.Name.Should().Be("P2");
         p2.Required.Should().BeEquivalentTo("gfs_ncep", "ecmwf_aifs_oper");
