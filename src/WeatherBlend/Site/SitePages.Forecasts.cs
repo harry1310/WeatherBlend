@@ -47,7 +47,7 @@ public static partial class SitePages
         body.Append(Ci, $"""
               <hgroup>
                 <h2>Temperature +{lead}h</h2>
-                <p>Per-NWP lines plus blend (2b solid, 2c lighter).</p>
+                <p>Our blend forecast on top (champion solid, challengers lighter); the raw NWP inputs below.</p>
               </hgroup>
             """);
 
@@ -103,21 +103,22 @@ public static partial class SitePages
 
     private static string RenderTempSection(SiteInputs input, int lead)
     {
-        // Per-NWP overlay chart with champion + challenger blend lines on top.
-        // Champion (2b) draws solid in brand purple; challenger (2c), when
-        // present at this lead, draws dashed in the same colour so the eye
-        // reads them as paired ("same prediction, two methods").
+        // Two stacked charts, mirroring the rain tab: our blend forecast on
+        // top, the raw NWP inputs below. They were one combined overlay until
+        // 2026-05-22 — ~8 NWP lines plus champion + challenger blend on a
+        // single axis read as noise. Splitting lets the eye take the blend
+        // forecast first, then drop to the inputs for "why". Both charts
+        // share one (xMin, xMax) so they line up vertically on a fixed grid.
         //
-        // Two passes through input.Predictions:
-        //   - The per-NWP columns (TempGfs / TempEcmwf / …) are identical
-        //     across blender versions — pool by ValidTime regardless of
-        //     ModelVersion and pick the freshest PMT.
-        //   - For the blend line itself we partition by phase first so each
-        //     phase's BlendTemperature time series is built from rows of
-        //     the right version.
-        // No now-1h floor: phase 2d emits only at {0,6,12,18}Z valid hours
-        // so the lead-12 chart often had 0-1 future-of-now rows per
-        // anchor. Show the historical context — outer windowStart bounds.
+        // Sources, unchanged by the split:
+        //   - Blend: input.Predictions, partitioned by phase so each phase's
+        //     BlendTemperature series is built from its own version's rows.
+        //   - NWP: input.NwpTemperatures (raw hourly forecast tree, deduped
+        //     to freshest cycle per (Model, ValidTime), already scoped to
+        //     this page's location).
+        // No now-1h floor: phase 2d emits only at {0,6,12,18}Z valid hours so
+        // the lead-12 chart often has 0-1 future-of-now rows per anchor —
+        // show history for context; the outer windowStart bounds it.
         var poolFuture = input.Predictions
             .Where(p => p.LeadHours == lead)
             .GroupBy(p => p.ValidTimeUtc)
@@ -126,30 +127,74 @@ public static partial class SitePages
             .ToList();
 
         var s = new StringBuilder();
-        s.Append("<h3>Temperature — blend vs per-model inputs</h3>");
 
         if (poolFuture.Count == 0)
         {
+            s.Append("<h3>Temperature — our blend</h3>");
             s.Append("<p><em>No +").Append(lead).Append("h temperature forecast available.</em></p>");
             return s.ToString();
         }
 
-        // NWPs first so the brand-purple Blend draws last and sits visually on top.
-        // Source: input.NwpTemperatures (hourly raw forecast tree, deduped to
-        // freshest cycle per (Model, ValidTime)). Switched away from the
-        // prediction-row source (poolFuture × NwpsForTemperature) 2026-05-07
-        // so the lead-12 chart populates at hourly density — 2b/2c don't
-        // emit at lead 12 and 2d only emits at {0,6,12,18}Z, so the
-        // prediction-row path was empty/sparse there. At lead 24+ the
-        // raw-forecast source gives near-identical hourly data to what the
-        // 2b prediction rows carried in the per-NWP columns, so unifying
-        // the path doesn't change behaviour at the existing leads.
-        var series = new List<LineSeries>();
+        // Shared X window. XMax = furthest blend valid_time at this lead, so
+        // each lead-tab shows a window matching what the +Xh blend covers —
+        // the raw NWP tree has the same forward horizon on every tab, so
+        // without this clip the tabs looked identical. Floored at
+        // GeneratedAtUtc so a stale prediction tree can't invert the axis.
+        var blendMaxValid = poolFuture[^1].ValidTimeUtc;
+        if (blendMaxValid < input.GeneratedAtUtc) blendMaxValid = input.GeneratedAtUtc;
+        var xMin = ForecastChartXMin(input);
+        var xMax = blendMaxValid.ToOADate();
+
+        // ---- Chart 1 (top): our blend — champion + challengers ----
+        // Champion (priority 0) solid in brand purple; challenger in lighter
+        // purple, or exact-runtime magenta for 2d so it pops out of the
+        // purple hue family. Skip any phase with zero rows in the window.
+        var orderedActivePhases = ActivePhasePolicy.ByTarget["temperature"];
+        var blendByPhase = input.Predictions
+            .Where(p => p.LeadHours == lead)
+            .Where(p => input.PhaseByVersion.TryGetValue(p.ModelVersion, out var ph)
+                        && orderedActivePhases.Contains(ph, StringComparer.Ordinal))
+            .GroupBy(p => input.PhaseByVersion[p.ModelVersion])
+            .ToDictionary(g => g.Key, g => g.GroupBy(r => r.ValidTimeUtc)
+                                            .Select(gv => gv.OrderByDescending(r => r.PredictionMadeAtUtc).First())
+                                            .OrderBy(r => r.ValidTimeUtc)
+                                            .ToList());
+        var blendSeries = new List<LineSeries>();
+        for (int i = 0; i < orderedActivePhases.Count; i++)
+        {
+            var phase = orderedActivePhases[i];
+            if (!blendByPhase.TryGetValue(phase, out var phaseRows) || phaseRows.Count == 0) continue;
+            var color = i == 0
+                ? NwpPalette.Blend
+                : (phase == "2d" || phase == "3d"
+                    ? NwpPalette.BlendExactChallenger
+                    : NwpPalette.BlendChallenger);
+            var label = i == 0 ? $"Blend ({phase} champion)" : $"Blend ({phase} challenger)";
+            var pts = phaseRows
+                .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.BlendTemperature))
+                .ToList();
+            blendSeries.Add(new LineSeries(label, color, pts));
+        }
+
+        s.Append("<h3>Temperature — our blend</h3>");
+        s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
+        {
+            Title = $"Blend temperature — +{lead}h",
+            XLabel = "Valid time (UTC)",
+            YLabel = "Temperature (°C)",
+            Series = blendSeries,
+            Height = 280,
+            FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
+            FormatY = v => v.ToString("0.#", Ci) + "°",
+            TodayLineX = input.GeneratedAtUtc.ToOADate(),
+            XMin = xMin,
+            XMax = xMax,
+        }));
+
+        // ---- Chart 2 (below): raw NWP inputs ----
+        var nwpSeries = new List<LineSeries>();
         var tempPalette = NwpsForTemperature()
             .ToDictionary(np => np.Label, np => np.Color, StringComparer.Ordinal);
-        // input.NwpTemperatures is already scoped to this page's location by
-        // RenderSiteCommand (single-location SiteInputs invariant) — iterate
-        // it directly.
         foreach (var grp in input.NwpTemperatures
             .GroupBy(t => t.Model)
             .OrderBy(g => g.Key, StringComparer.Ordinal))
@@ -161,79 +206,31 @@ public static partial class SitePages
                 .Select(t => (X: t.ValidTimeUtc.ToOADate(), Y: t.Temperature2m))
                 .ToList();
             if (pts.Count > 0)
-                series.Add(new LineSeries(label, colour, pts));
+                nwpSeries.Add(new LineSeries(label, colour, pts));
         }
 
-        // Champion + challenger blend lines, ordered by ActivePhasePolicy
-        // priority so the FIRST entry (champion) draws solid and any
-        // subsequent entry (challenger) draws dashed in the same colour.
-        // Skip any phase that has zero rows in the forward window — common
-        // for fresh challengers whose predictions haven't reached this lead's
-        // valid-time band yet.
-        var orderedActivePhases = ActivePhasePolicy.ByTarget["temperature"];
-        // Same now-1h drop as poolFuture above.
-        var blendByPhase = input.Predictions
-            .Where(p => p.LeadHours == lead)
-            .Where(p => input.PhaseByVersion.TryGetValue(p.ModelVersion, out var ph)
-                        && orderedActivePhases.Contains(ph, StringComparer.Ordinal))
-            .GroupBy(p => input.PhaseByVersion[p.ModelVersion])
-            .ToDictionary(g => g.Key, g => g.GroupBy(r => r.ValidTimeUtc)
-                                            .Select(gv => gv.OrderByDescending(r => r.PredictionMadeAtUtc).First())
-                                            .OrderBy(r => r.ValidTimeUtc)
-                                            .ToList());
-        // Champion solid in deep purple, challenger solid in lighter purple —
-        // same hue family so the eye reads them as paired ("same prediction,
-        // two methods"), but distinguishable by saturation. Dashed-line
-        // challenger was tried 2026-05-04 and reverted on user feedback.
-        for (int i = 0; i < orderedActivePhases.Count; i++)
+        s.Append("<h3>NWP temperature forecasts</h3>");
+        if (nwpSeries.Count == 0)
         {
-            var phase = orderedActivePhases[i];
-            if (!blendByPhase.TryGetValue(phase, out var phaseRows) || phaseRows.Count == 0) continue;
-            // Exact-runtime phases (2d temp, 3d precip) get a distinct
-            // magenta — different blender family from the offset_day-trained
-            // 2c/3c challengers, so visually pop OUT of the purple family.
-            var color = i == 0
-                ? NwpPalette.Blend
-                : (phase == "2d" || phase == "3d"
-                    ? NwpPalette.BlendExactChallenger
-                    : NwpPalette.BlendChallenger);
-            var label = i == 0 ? $"Blend ({phase} champion)" : $"Blend ({phase} challenger)";
-            var pts = phaseRows
-                .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.BlendTemperature))
-                .ToList();
-            series.Add(new LineSeries(label, color, pts));
+            s.Append("<p><em>No NWP temperature forecast in the window.</em></p>");
+        }
+        else
+        {
+            s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
+            {
+                Title = $"NWP temperature — +{lead}h",
+                XLabel = "Valid time (UTC)",
+                YLabel = "Temperature (°C)",
+                Series = nwpSeries,
+                Height = 280,
+                FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
+                FormatY = v => v.ToString("0.#", Ci) + "°",
+                TodayLineX = input.GeneratedAtUtc.ToOADate(),
+                XMin = xMin,
+                XMax = xMax,
+            }));
         }
 
-        // Forward bound = furthest blend valid_time at this lead. Without
-        // an XMax the chart was identical across lead tabs visually,
-        // because input.NwpTemperatures is the raw hourly forecast tree
-        // (no lead filter) so its forward horizon is the same on every
-        // tab; the lead-specific blend lines were a handful of points
-        // visually swamped by ~1000-point per-NWP overlays. Clipping the
-        // X axis to the lead's blend horizon gives each tab a distinct
-        // visible window matching what the +Xh blend forecast covers,
-        // and the eye can compare blend vs NWPs on the relevant slice.
-        // Mirror of the rain-page change shipped 3c7eea0.
-        //
-        // Floor at GeneratedAtUtc so a stale prediction tree (e.g. predict
-        // workflow failed for several days) doesn't produce an inverted
-        // axis (xMax < xMin); the chart degrades to "history only, no
-        // forward" rather than rendering empty.
-        var blendMaxValid = poolFuture[^1].ValidTimeUtc;
-        if (blendMaxValid < input.GeneratedAtUtc) blendMaxValid = input.GeneratedAtUtc;
-        s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
-        {
-            Title = $"Temperature — +{lead}h",
-            XLabel = "Valid time (UTC)",
-            YLabel = "Temperature (°C)",
-            Series = series,
-            Height = 360,
-            FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
-            FormatY = v => v.ToString("0.#", Ci) + "°",
-            TodayLineX = input.GeneratedAtUtc.ToOADate(),
-            XMin = ForecastChartXMin(input),
-            XMax = blendMaxValid.ToOADate(),
-        }));
         return s.ToString();
     }
 
