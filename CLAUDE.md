@@ -90,14 +90,16 @@ loads it at startup and `ActivePhasePolicy` is a thin static façade for
 back-compat. The site, train workflows, and predict/verify all read from
 the same list — adding a new phase (e.g. 5b) is mostly one entry there.
 
-**Cadence.** Sunday 12:00 UTC noon-tick on the Cloudflare worker fires
-`previous-runs-refresh.yml` with `train_after_refresh=true`. On its
-success it mints a GitHub App installation token (App is installed on
-both repos) and `repository_dispatch`es retrain-python in
-WeatherProbabilistic + retrain-blenders self-dispatch in WeatherBlend.
-They run in parallel (different runners, disjoint R2 prefixes). Manual
-override: `gh workflow run retrain-python.yml -f phases=4a` or similar
-on either workflow with `force=true` (default).
+**Cadence.** The Cloudflare scheduler worker's 12:00 UTC noon tick fires
+`previous-runs-refresh.yml` (alongside `era5-refresh.yml`). The worker
+then chains the retrain off `workflow_run` completion webhooks, strictly
+serially: on a **Sunday** `previous-runs-refresh` success it dispatches
+`retrain-python.yml` (WeatherProbabilistic), and on `retrain-python`'s
+completion it dispatches `retrain-blenders.yml` (WeatherBlend) — so the
+three run refresh → python → blenders. Serial so retrain-blenders' 4b
+mint reads this cycle's fresh 4a rather than racing it. Both retrain
+hops dispatch via `workflow_dispatch` with `force=true`. Manual override:
+`gh workflow run retrain-python.yml -f force=true` (or `retrain-blenders.yml`).
 
 **Pre-train sanity gate (RetrainGuard).** Each trainer (TempTrainCommand,
 DryWindowTrainCommand, ElementTrainerHarness on the .NET side; train_4a.py

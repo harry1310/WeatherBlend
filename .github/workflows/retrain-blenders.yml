@@ -11,11 +11,11 @@ env:
   RCLONE_RETRIES: "5"
 
 # Phase 2 of AUTO_RETRAIN_PLAN.md — .NET-side retrain workflow.
-# Mirror of WeatherProbabilistic's retrain-python.yml: same trigger
-# shape (repository_dispatch from Sunday previous-runs-refresh +
-# manual workflow_dispatch), same "phases=all" expansion driven by
-# Config/phases.yaml impl=dotnet entries, same per-phase opt-in via
-# the comma-separated phases input.
+# Sibling of WeatherProbabilistic's retrain-python.yml: same "phases=all"
+# expansion driven by Config/phases.yaml impl=dotnet entries, same
+# per-phase opt-in via the comma-separated phases input.
+# Dispatched by the weatherblend-scheduler Cloudflare Worker on the
+# Sunday retrain chain (retrain-python completion -> this) — or manually.
 #
 # Each phase runs as its own step with continue-on-error: true so
 # a single guard failure on one phase doesn't cascade and skip the
@@ -39,12 +39,11 @@ env:
 # because each phase has its own --feature-set / --target args.)
 
 on:
-  # Sunday auto-trigger from previous-runs-refresh.yml. Same event
-  # type as retrain-python's listener so a single Sunday gate fires
-  # both retrains in parallel (different repos, no shared lock,
-  # disjoint R2 prefixes).
-  repository_dispatch:
-    types: [retrain]
+  # workflow_dispatch is the only trigger — the Cloudflare worker fires
+  # this on the Sunday retrain chain (retrain-python completion, Hop B),
+  # and it's the manual-run path too. (Was also repository_dispatch
+  # type=retrain, from when previous-runs-refresh self-dispatched the
+  # retrains; that orchestration moved wholly into the worker.)
   workflow_dispatch:
     inputs:
       phases:
@@ -53,7 +52,7 @@ on:
         default: "all"
         type: string
       force:
-        description: "Run regardless of trigger source (manual override). Default true."
+        description: "Set false to exit without training (dry run). Default true."
         required: false
         default: true
         type: boolean
@@ -88,15 +87,14 @@ jobs:
       - name: Decide whether to proceed
         id: gate
         run: |
-          EVENT="${{ github.event_name }}"
-          if [ "$EVENT" = "repository_dispatch" ]; then
-            echo "Triggered via repository_dispatch (Sunday auto-trigger from previous-runs-refresh) — proceeding."
-            echo "proceed=true" >> "$GITHUB_OUTPUT"
-          elif [ "$EVENT" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
-            echo "Manual dispatch with force=true — proceeding."
+          # Sole trigger is workflow_dispatch (worker Hop B, or manual).
+          # force=true — the default, and what the worker passes — proceeds;
+          # force=false is a dry-run escape hatch.
+          if [ "${{ inputs.force }}" = "true" ]; then
+            echo "force=true — proceeding."
             echo "proceed=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::workflow_dispatch with force=false — exiting cleanly (no training)."
+            echo "::notice::force=false — exiting cleanly (no training)."
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -142,7 +140,6 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         env:
           PHASES_DISPATCH: ${{ inputs.phases }}
-          PHASES_PAYLOAD: ${{ github.event.client_payload.phases }}
           MATRIX_LOCATION: ${{ matrix.location }}
         run: |
           PHASES_YAML=src/WeatherBlend/Config/phases.yaml
@@ -156,11 +153,7 @@ jobs:
           echo "impl=dotnet phases from phases.yaml: $DOTNET_PHASES"
           echo "Matrix location: $MATRIX_LOCATION"
 
-          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            INPUT="${PHASES_PAYLOAD:-all}"
-          else
-            INPUT="${PHASES_DISPATCH:-all}"
-          fi
+          INPUT="${PHASES_DISPATCH:-all}"
           if [ "$INPUT" = "all" ]; then INPUT="$DOTNET_PHASES"; fi
           echo "Requested phase list: $INPUT"
 
