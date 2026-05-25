@@ -50,6 +50,15 @@ locations:
     # (~5-10km radius). Historical parquets + predictions for the dropped
     # station remain on disk for archival reference; not loaded by config so
     # live train/predict/verify ignore them.
+    #
+    # 2026-05-24: Princetown (14.6km WSW, 414m) re-added for the orographic
+    # pooled-blender study (docs/OROGRAPHIC_BONEHILL_3C_PLAN.md) — it's the
+    # only high-elevation central/west Dartmoor gauge in range and adds a
+    # distinct upwind-geometry anchor to the 6-station pool that the three
+    # existing Bonehill gauges + the three Membury gauges otherwise lack.
+    # Side-effect: next Sunday auto-retrain picks Princetown up across every
+    # per-station phase (3a/3c/3b/3d/3g/3s/3j/3n + Python 4a/5a), producing
+    # a per-station Princetown set alongside the pooled blender.
     rainfall:
       stations:
         - id: "723a8fc4-908b-4430-91c7-9990be86540a_363307"
@@ -58,6 +67,8 @@ locations:
           name: "Bovey Tracey"
         - id: "b69ee00c-aa73-49d0-bc62-ff4673094553"
           name: "Dartmoor nr Hexworthy"
+        - id: "f0676423-f697-4dec-8958-440f335cce9a"
+          name: "Princetown"
 
   # Membury, East Devon — added 2026-05-11. Lowland village (~120m
   # elevation), valley climate (lower wet rate than Dartmoor's moor),

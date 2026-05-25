@@ -69,19 +69,15 @@ public static class PrecipPhases
         ChampionVsChallengerLabel: "Phase 4a (BART)",
         Color: "#ffa726");
 
-    public static readonly PrecipPhase Phase3e = new(
-        Key: "3e",
-        LongTitle: "Phase 3e — TorchSharp MLP (rich features)",
-        ShortTitle: "Phase 3e (MLP)",
-        Description: "TorchSharp MLP on the same 55-feature rich set as 3c. First .NET-native tabular-NN bake-off vs 3a/3c. Per-station, per-lead. Same bundle dir layout as 3a/3c.",
-        ChampionVsChallengerLabel: "Phase 3e (MLP)",
-        Color: "#5c6bc0");
-
+    // Phase 3e display record retired 2026-05-25 in model-cleanup Phase 1.
+    // Phase 4b stays as a scaffolding-only display record — disabled in
+    // phases.yaml during Phase 1 (3e leg gone); cleanup Phase 2 re-wires
+    // it to 4a + 3o (3c-oro) and re-adds the phases.yaml entry.
     public static readonly PrecipPhase Phase4b = new(
         Key: "4b",
-        LongTitle: "Phase 4b — 2-way mean of Phase 4a + Phase 3e",
-        ShortTitle: "Phase 4b (mean)",
-        Description: "Arithmetic mean of Phase 4a (BART) and Phase 3e (MLP). Not a trained model — synthesised at predict time from the freshest 4a and 3e rows per (ValidTime, LeadHours). The 2026-05-12 LightGBM-meta bake-off identified mean(4a, 3e) as the best production stack at current data scale (Brier 0.0830, wins 14/15 cells vs the best single).",
+        LongTitle: "Phase 4b — 2-way mean (scaffolding only)",
+        ShortTitle: "Phase 4b",
+        Description: "Disabled in cleanup Phase 1 (3e leg retired). Cleanup Phase 2 re-wires to 4a + 3o.",
         ChampionVsChallengerLabel: "Phase 4b (mean)",
         Color: "#ec407a");
 
@@ -107,14 +103,11 @@ public static class PrecipPhases
         return "#9e9e9e";
     }
 
-    /// <summary>Canonical render order: 3a → 3c → 3d → 3e → 4a → 4b.
-    /// 3e/4b were missing from the registry until 2026-05-13 even though
-    /// phases.yaml had them as Active; the rolling-Brier chart was
-    /// silently colouring both grey (the unknown-key fallback) and the
-    /// skill-rain + phase-comparison charts dropped them entirely.</summary>
+    /// <summary>Canonical render order: 3a → 3c → 3d → 4a → 4b.
+    /// 3e was retired 2026-05-25 in model-cleanup Phase 1.</summary>
     public static readonly IReadOnlyList<PrecipPhase> All = new[]
     {
-        Phase3a, Phase3c, Phase3d, Phase3e, Phase4a, Phase4b,
+        Phase3a, Phase3c, Phase3d, Phase4a, Phase4b,
     };
 
     /// <summary>Phases that participate in the +24h overlay — currently both.</summary>

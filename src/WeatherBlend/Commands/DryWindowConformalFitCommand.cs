@@ -36,7 +36,6 @@ public sealed class DryWindowConformalFitCommand
     /// auto-refit hook so a calibrator is always present at the same
     /// coverage level as the back-fill command.</summary>
     public const double DefaultAlpha = 0.10;
-    private const int DefaultMcSamples = DryWindow3gPredictor.DefaultMcSamples;
 
     private readonly ILogger<DryWindowConformalFitCommand> _log;
     private readonly AppConfig _cfg;
@@ -138,22 +137,11 @@ public sealed class DryWindowConformalFitCommand
             }
             var ds = DryWindowDataset.Split(rows);
 
-            // Get per-val P(wet) for this version. Branch on phase:
-            //   3b uses the LightGBM model + optional isotonic calibrator
-            //   3g re-runs MC over 3a's hourly q from the bound replay parquet
-            //   3j re-runs copula MC over 3a's q using the bundle's per-lead Σ
-            var (probs, labels) = metadata.Phase switch
-            {
-                var p when p == DryWindow3gPredictor.Phase3g
-                    => Score3gOnVal(metadata, stationSlug, lead, ds, daytime, ct),
-                var p when p == DryWindow3jPredictor.Phase3j
-                    => Score3jOnVal(versionDir, metadata, stationSlug, lead, ds, daytime, ct),
-                var p when p == DryWindow3nPredictor.Phase3n
-                    => Score3nOnVal(versionDir, metadata, stationSlug, lead, ds, daytime, ct),
-                var p when p == DryWindow3sPredictor.Phase3s
-                    => Score3sOnVal(metadata, stationSlug, lead, ds, daytime, ct),
-                _   => Score3bOnVal(versionDir, spec, lead, ds, stationName),
-            };
+            // Get per-val P(wet) for this version. 3g/3j/3n/3s scoring
+            // paths were retired 2026-05-25 in model-cleanup Phase 1; the
+            // only conformal fit path that survives is 3b's LightGBM
+            // + optional isotonic calibrator.
+            var (probs, labels) = Score3bOnVal(versionDir, spec, lead, ds, stationName);
 
             if (probs.Count < 30)
             {
@@ -186,185 +174,6 @@ public sealed class DryWindowConformalFitCommand
         return (shipped.ToList(), ds.Val.Select(r => r.Label).ToList());
     }
 
-    /// 3g path: replay MC over the bound 3a champion's hourly q.
-    private (List<double> Probs, List<bool> Labels) Score3gOnVal(
-        ModelArtifact.TrainingMetadata metadata, string stationSlug, int lead,
-        DryWindowDataset ds, DaytimeWindow daytime, CancellationToken ct)
-    {
-        var probs = new List<double>();
-        var labels = new List<bool>();
-
-        var v3a = metadata.Hyperparameters.HpString("precip_3a_version");
-        if (string.IsNullOrEmpty(v3a))
-        {
-            _log.LogWarning("  3g version missing precip_3a_version metadata; skipping");
-            return (probs, labels);
-        }
-        var hourly = DryWindow3gPredictor.LoadReplayHourly(
-            _cfg.Storage.PredictionsPath, stationSlug, v3a, lead);
-
-        var rng = new Random(42);
-        foreach (var row in ds.Val)
-        {
-            ct.ThrowIfCancellationRequested();
-            var (s, e) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(row.TargetDateUtc));
-            var q = DryWindow3gPredictor.ExtractDaytimeQ(hourly, row.TargetDateUtc, s, e);
-            if (q is null) continue;
-            // Window length is encoded in the 3g version's training metadata
-            // as Hyperparameters["window_hours"]. ds came from the same window,
-            // so the row-vector window naturally matches; pull from metadata
-            // to be explicit.
-            var window = metadata.Hyperparameters.HpInt("window_hours") ?? 3;
-            probs.Add(DryWindow3gPredictor.ProbDryWindow(q, window, rng, DefaultMcSamples));
-            labels.Add(row.Label);
-        }
-        return (probs, labels);
-    }
-
-    /// 3s path: identical to 3g (iid MC), but the replay hourly P(wet) comes
-    /// from the bound Phase 3e champion (precip_3e_version) rather than 3a.
-    private (List<double> Probs, List<bool> Labels) Score3sOnVal(
-        ModelArtifact.TrainingMetadata metadata, string stationSlug, int lead,
-        DryWindowDataset ds, DaytimeWindow daytime, CancellationToken ct)
-    {
-        var probs = new List<double>();
-        var labels = new List<bool>();
-
-        var v3e = metadata.Hyperparameters.HpString(DryWindow3sPredictor.Precip3eVersionKey);
-        if (string.IsNullOrEmpty(v3e))
-        {
-            _log.LogWarning("  3s version missing {Key} metadata; skipping",
-                DryWindow3sPredictor.Precip3eVersionKey);
-            return (probs, labels);
-        }
-        var hourly = DryWindow3gPredictor.LoadReplayHourly(
-            _cfg.Storage.PredictionsPath, stationSlug, v3e, lead);
-
-        var rng = new Random(42);
-        foreach (var row in ds.Val)
-        {
-            ct.ThrowIfCancellationRequested();
-            var (s, e) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(row.TargetDateUtc));
-            var q = DryWindow3gPredictor.ExtractDaytimeQ(hourly, row.TargetDateUtc, s, e);
-            if (q is null) continue;
-            var window = metadata.Hyperparameters.HpInt("window_hours") ?? 3;
-            probs.Add(DryWindow3gPredictor.ProbDryWindow(q, window, rng, DefaultMcSamples));
-            labels.Add(row.Label);
-        }
-        return (probs, labels);
-    }
-
-    /// 3j path: copula MC over 3a's hourly q using the bundle's per-lead Σ.
-    /// Mirrors Score3gOnVal but threads the Cholesky factor for the requested lead.
-    private (List<double> Probs, List<bool> Labels) Score3jOnVal(
-        string versionDir, ModelArtifact.TrainingMetadata metadata, string stationSlug, int lead,
-        DryWindowDataset ds, DaytimeWindow daytime, CancellationToken ct)
-    {
-        var probs = new List<double>();
-        var labels = new List<bool>();
-
-        var v3a = metadata.Hyperparameters.HpString("precip_3a_version");
-        if (string.IsNullOrEmpty(v3a))
-        {
-            _log.LogWarning("  3j version missing precip_3a_version metadata; skipping");
-            return (probs, labels);
-        }
-
-        Dictionary<int, double[,]> choleskyByLead;
-        try
-        {
-            choleskyByLead = DryWindow3jPredictor.LoadCholeskyByLead(versionDir);
-        }
-        catch (Exception ex)
-        {
-            _log.LogWarning("  3j bundle correlation.json load failed ({Msg}); skipping", ex.Message);
-            return (probs, labels);
-        }
-        if (!choleskyByLead.TryGetValue(lead, out var L))
-        {
-            _log.LogWarning("  3j bundle has no Σ for lead {L}h; skipping", lead);
-            return (probs, labels);
-        }
-
-        var hourly = DryWindow3gPredictor.LoadReplayHourly(
-            _cfg.Storage.PredictionsPath, stationSlug, v3a, lead);
-        var rng = new Random(42);
-        foreach (var row in ds.Val)
-        {
-            ct.ThrowIfCancellationRequested();
-            var (s, e) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(row.TargetDateUtc));
-            var q = DryWindow3gPredictor.ExtractDaytimeQ(hourly, row.TargetDateUtc, s, e);
-            if (q is null) continue;
-            var window = metadata.Hyperparameters.HpInt("window_hours") ?? 3;
-            probs.Add(DryWindow3jPredictor.ProbDryWindow(q, L, window, rng, DefaultMcSamples));
-            labels.Add(row.Label);
-        }
-        return (probs, labels);
-    }
-
-    /// 3n path: regime-conditioned copula MC. Computes the day's NWP agreement
-    /// from the offset_day forecast tree (same as train-side classification)
-    /// and routes through Σ_settled or Σ_unsettled accordingly.
-    private (List<double> Probs, List<bool> Labels) Score3nOnVal(
-        string versionDir, ModelArtifact.TrainingMetadata metadata, string stationSlug, int lead,
-        DryWindowDataset ds, DaytimeWindow daytime, CancellationToken ct)
-    {
-        var probs = new List<double>();
-        var labels = new List<bool>();
-
-        var v3a = metadata.Hyperparameters.HpString("precip_3a_version");
-        if (string.IsNullOrEmpty(v3a))
-        {
-            _log.LogWarning("  3n version missing precip_3a_version metadata; skipping");
-            return (probs, labels);
-        }
-
-        Dictionary<int, DryWindow3nPredictor.RegimeBundle> bundles;
-        try
-        {
-            bundles = DryWindow3nPredictor.LoadByLead(versionDir);
-        }
-        catch (Exception ex)
-        {
-            _log.LogWarning("  3n bundle correlation.json load failed ({Msg}); skipping", ex.Message);
-            return (probs, labels);
-        }
-        if (!bundles.TryGetValue(lead, out var bundle))
-        {
-            _log.LogWarning("  3n bundle has no regime entry for lead {L}h; skipping", lead);
-            return (probs, labels);
-        }
-
-        // Recompute per-day agreement on the val slice — same offset_day
-        // source the trainer used, so val-time classification matches
-        // train-time classification.
-        (int Start, int EndExclusive) DaytimeFor(DateOnly d) => daytime.UtcHourRangeFor(d);
-        var canonical = WeatherBlend.Train.TempFeatureBuilder.CanonicalModelOrder;
-        var perDay = DryWindowNwpAgreement.LoadOffsetDayPerNwpDaytime(
-            _cfg.Storage.ForecastsPath, _cfg.Location.Name, lead, canonical, DaytimeFor);
-        var agreementByDate = new Dictionary<DateTime, double>(perDay.Count);
-        foreach (var (date, mat) in perDay)
-        {
-            var a = DryWindowNwpAgreement.ComputePerDay(mat);
-            if (!double.IsNaN(a)) agreementByDate[date] = a;
-        }
-
-        var hourly = DryWindow3gPredictor.LoadReplayHourly(
-            _cfg.Storage.PredictionsPath, stationSlug, v3a, lead);
-        var rng = new Random(42);
-        foreach (var row in ds.Val)
-        {
-            ct.ThrowIfCancellationRequested();
-            var (s, e) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(row.TargetDateUtc));
-            var q = DryWindow3gPredictor.ExtractDaytimeQ(hourly, row.TargetDateUtc, s, e);
-            if (q is null) continue;
-            if (!agreementByDate.TryGetValue(row.TargetDateUtc, out var agr)) continue;
-            var window = metadata.Hyperparameters.HpInt("window_hours") ?? 3;
-            probs.Add(DryWindow3nPredictor.ProbDryWindow(q, bundle, agr, window, rng, DefaultMcSamples));
-            labels.Add(row.Label);
-        }
-        return (probs, labels);
-    }
 
     private string? ResolveStationName(string slug)
     {

@@ -27,8 +27,8 @@ env:
 # Cost ballpark on ubuntu-latest (4 vCPU):
 #   - all phases sequentially: ~30-60 min total
 #   - Per-phase wall: 2b/2c/2d/3a/3c/3d ~3-5 min each;
-#     3b ~5-8 min (per-station per-window); 3g/3j/3n/3s ~1-3 min
-#     each (MC mints, no LightGBM fit); element 4 × ~2 min.
+#     3b ~5-8 min (per-station per-window); element 4 × ~2 min.
+#     3e/3g/3j/3n/3s retired 2026-05-25 in model-cleanup Phase 1.
 #
 # Adding a new .NET phase (e.g. 2e):
 #   1. Add to Config/phases.yaml with role=challenger, impl=dotnet
@@ -300,18 +300,8 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target precipitation --feature-set rich --location ${{ matrix.location }}
 
-      - name: Train 3e (precipitation MLP)
-        # Phase 3e is a TorchSharp MLP on the same 59-feature rich set as
-        # 3c — head-to-head comparable, just a different model family.
-        # Dispatched via `--feature-set mlp` (see TempTrainCommand's
-        # precipitation switch). Bonehill-only for now; Membury 3e waits
-        # for the Phase B fanout.
-        id: train_3e
-        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3e == 'true'
-        continue-on-error: true
-        run: |
-          dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target precipitation --feature-set mlp
+      # Train 3e (precipitation MLP) retired 2026-05-25 in model-cleanup
+      # Phase 1.
 
       - name: Train 3d (precipitation exact-runtime, leads 12/24/48/72)
         # 3d is a SHORT-lead exact-runtime phase. Its averaging UKV picker
@@ -334,90 +324,10 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target dry-window
 
-      # 3g / 3j / 3n / 3s are parameter-free MC over precipitation hourly
-      # P(wet). They TRAIN by reading a replay parquet of the bound 3a / 3e
-      # champion under data/predictions/precipitation_replay/. That tree is
-      # neither pulled from R2 nor a by-product of 3a/3e training, so without
-      # this step LoadReplayHourly throws on the missing file and every MC
-      # phase fails. Regenerate it here — after 3a/3e retrain, before the MC
-      # phases — for the current 3a champion (feeds 3g/3j/3n) and the latest
-      # phase3e in Active (feeds 3s), per dry-window station. Each replay is
-      # made non-fatal so one station's miss only skips that cell.
-      - name: Generate precipitation replay for dry-window MC phases
-        id: precip_replay
-        if: steps.gate.outputs.proceed == 'true' && (steps.phases.outputs.run_3g == 'true' || steps.phases.outputs.run_3j == 'true' || steps.phases.outputs.run_3n == 'true' || steps.phases.outputs.run_3s == 'true')
-        continue-on-error: true
-        run: |
-          MANIFEST=data/models/precipitation/MANIFEST.json
-          for slug in ea_bellever_dartmoor ea_bovey_tracey ea_dartmoor_nr_hexworthy; do
-            # 3a champion replay — feeds 3g / 3j / 3n.
-            dotnet run --project src/WeatherBlend --no-build -c Release -- \
-              precip-replay --truth-station "$slug" --model-version current --leads 24,48,72 \
-              || echo "::warning::3a replay failed for $slug — 3g/3j/3n may skip it."
-            # Latest phase3e in Active — feeds 3s.
-            v3e=$(jq -r --arg s "$slug" \
-              '.Stations[$s].Active | map(select(contains("phase3e"))) | sort | last // ""' \
-              "$MANIFEST")
-            if [ -n "$v3e" ]; then
-              dotnet run --project src/WeatherBlend --no-build -c Release -- \
-                precip-replay --truth-station "$slug" --model-version "$v3e" --leads 24,48,72 \
-                || echo "::warning::3e replay failed for $slug — 3s may skip it."
-            else
-              echo "::warning::No phase3e version in $MANIFEST for $slug — 3s replay skipped."
-            fi
-          done
-
-      # 3g has no LightGBM fit — it's parameter-free MC over 3a's hourly
-      # P(wet) at predict time — but the bundle still BINDS one 3a champion
-      # version (captured from the precipitation manifest at mint time) and
-      # carries the day-of-year climatology. When 3a is retrained the bound
-      # version goes stale, so 3g is re-minted every Sunday after 3a so the
-      # binding tracks the current champion. Cheap (~1 min, no model fit).
-      - name: Train 3g (dry-window MC over 3a)
-        id: train_3g
-        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3g == 'true'
-        continue-on-error: true
-        run: |
-          dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target dry-window --feature-set independence-mc
-
-      - name: Train 3j (dry-window copula MC)
-        id: train_3j
-        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3j == 'true'
-        continue-on-error: true
-        run: |
-          # 3j fits a 9×9 Σ per (station, lead) on observed daytime
-          # binary sequences from the train slice of 3a's replay parquet.
-          # Sigma evolves with each weekly retrain. The bound 3a version
-          # is captured from the precipitation manifest at training time
-          # (same convention as 3g).
-          dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target dry-window --feature-set copula-mc
-
-      - name: Train 3n (dry-window regime-conditioned MC)
-        id: train_3n
-        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3n == 'true'
-        continue-on-error: true
-        run: |
-          # 3n fits TWO 9×9 Σs per (station, lead) — settled vs unsettled
-          # atmospheric regime, split by per-day NWP-ensemble agreement.
-          # Both Σs evolve with each weekly retrain; threshold is the
-          # median of the train-slice agreement scores. Bound 3a version
-          # is captured the same way as 3g / 3j.
-          dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target dry-window --feature-set regime-mc
-
-      - name: Train 3s (dry-window MC over 3e)
-        id: train_3s
-        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3s == 'true'
-        continue-on-error: true
-        run: |
-          # 3s is 3g's parameter-free iid MC bound to Phase 3e's hourly
-          # P(wet) instead of 3a's. Like 3g it has no model fit, but the
-          # bundle binds one 3e champion version — re-minted weekly AFTER
-          # 3e's train step so the binding tracks the fresh 3e champion.
-          dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target dry-window --feature-set independence-mc-3e
+      # Train 3g / 3j / 3n / 3s + the precip-replay generator step were
+      # retired 2026-05-25 in model-cleanup Phase 1. Cleanup Phase 2 will
+      # add a single 3p (Gaussian copula MC over 3o) training step here
+      # in their place.
 
       # ---- Element blenders (wind / humidity / shortwave radiation /
       # cloud cover) ---- Each is a first-class phases.yaml target now, so
@@ -456,25 +366,9 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target cloud-cover
 
-      - name: Mint Phase 4b bundle
-        # 4b is the arithmetic mean of 4a + 3e — no training step, but
-        # the bundle's metadata + test_predictions need refreshing
-        # whenever 4a or 3e are retrained so the Models page Brier
-        # numbers stay current. Reads the latest 4a + 3e bundles
-        # already pulled from R2 at job start; ignores whether the
-        # 4a side actually retrained this run (4a is retrained in the
-        # WP-side workflow on the same Sunday tick — its newer bundle
-        # lands on R2 via that workflow's push step, picked up at the
-        # next predict-and-render's sync). Bundle re-mint is therefore
-        # one-cycle-behind on 4a updates but always fresh on 3e —
-        # acceptable trade for the simple flow.
-        # Fires only if 3e succeeded (the binding constraint — 4a
-        # refresh is a separate Sunday job).
-        id: mint_4b
-        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_4b == 'true' && steps.train_3e.outcome == 'success'
-        continue-on-error: true
-        run: |
-          dotnet run --project src/WeatherBlend --no-build -c Release -- phase4b-mint
+      # Mint Phase 4b bundle disabled in model-cleanup Phase 1 (its 3e
+      # leg is retired). Cleanup Phase 2 re-enables this once 4b is
+      # re-wired to 4a + 3o.
 
       - name: Aggregate train results
         # Reads each step's outcome; if any failed, fails the job so
@@ -490,13 +384,7 @@ jobs:
             [3a]="${{ steps.train_3a.outcome }}"
             [3c]="${{ steps.train_3c.outcome }}"
             [3d]="${{ steps.train_3d_short.outcome }}"
-            [3e]="${{ steps.train_3e.outcome }}"
-            [4b_mint]="${{ steps.mint_4b.outcome }}"
             [3b]="${{ steps.train_3b.outcome }}"
-            [3g]="${{ steps.train_3g.outcome }}"
-            [3j]="${{ steps.train_3j.outcome }}"
-            [3n]="${{ steps.train_3n.outcome }}"
-            [3s]="${{ steps.train_3s.outcome }}"
             [wind]="${{ steps.train_wind.outcome }}"
             [humidity]="${{ steps.train_humidity.outcome }}"
             [radiation]="${{ steps.train_radiation.outcome }}"

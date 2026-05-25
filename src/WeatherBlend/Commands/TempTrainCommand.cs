@@ -99,41 +99,10 @@ public sealed class TempTrainCommand : TrainCommandBase
         }
 
         var fs = (featureSet ?? "lean").ToLowerInvariant();
-        if (fs is not ("lean" or "rich" or "independence-mc" or "independence-mc-3e"
-                       or "copula-mc" or "regime-mc" or "exact" or "mlp"))
+        if (fs is not ("lean" or "rich" or "exact"))
         {
-            _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich | independence-mc | independence-mc-3e | copula-mc | regime-mc | exact | mlp.", featureSet);
-            return 2;
-        }
-        // "independence-mc" = Phase 3g (parameter-free MC over 3a marginals);
-        // dry-window-only.
-        if (fs == "independence-mc" && t != "dry-window")
-        {
-            _log.LogError(
-                "--feature-set {Fs} is only supported for target dry-window.", fs);
-            return 2;
-        }
-        // "independence-mc-3e" = Phase 3s (3g's iid MC, marginals from the
-        // 3e MLP instead of 3a); dry-window-only.
-        if (fs == "independence-mc-3e" && t != "dry-window")
-        {
-            _log.LogError(
-                "--feature-set {Fs} is only supported for target dry-window.", fs);
-            return 2;
-        }
-        // "copula-mc" = Phase 3j (Gaussian copula MC over 3a marginals);
-        // dry-window-only sibling of independence-mc.
-        if (fs == "copula-mc" && t != "dry-window")
-        {
-            _log.LogError(
-                "--feature-set {Fs} is only supported for target dry-window.", fs);
-            return 2;
-        }
-        // "regime-mc" = Phase 3n (copula MC with regime-conditioned Σ).
-        if (fs == "regime-mc" && t != "dry-window")
-        {
-            _log.LogError(
-                "--feature-set {Fs} is only supported for target dry-window.", fs);
+            _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich | exact. " +
+                "(MC / mlp variants retired 2026-05-25 in model-cleanup Phase 1.)", featureSet);
             return 2;
         }
         // "exact" = Phase 2d (temperature) or Phase 3d (precipitation) — same
@@ -142,18 +111,6 @@ public sealed class TempTrainCommand : TrainCommandBase
         {
             _log.LogError(
                 "--feature-set {Fs} is only supported for targets temperature, precipitation.", fs);
-            return 2;
-        }
-        // "mlp" = Phase 3e (precipitation hourly P(wet)) OR Phase 3f
-        // (dry-window day-level), depending on target. Both are TorchSharp
-        // tabular NNs trained against the same input distribution as their
-        // LightGBM counterparts (3c for 3e, 3b for 3f). No temperature mlp
-        // variant today — revisit if 2e is justified by the precipitation/
-        // dry-window results.
-        if (fs == "mlp" && t != "precipitation" && t != "dry-window")
-        {
-            _log.LogError(
-                "--feature-set {Fs} is only supported for targets precipitation, dry-window.", fs);
             return 2;
         }
         if (elementTarget is not null && fs != "lean")
@@ -209,26 +166,12 @@ public sealed class TempTrainCommand : TrainCommandBase
             "precipitation" => await _precip.RunAsync(
                                    leads, station, fs, tier, includeUkv,
                                    exactLeads, cycles, location, ct),
-            // dry-window: lean → Phase 3b (53 features),
-            //             independence-mc → Phase 3g (parameter-free MC over 3a marginals),
-            //             independence-mc-3e → Phase 3s (3g's iid MC over 3e marginals),
-            //             copula-mc → Phase 3j (Gaussian copula MC + per-(station, lead) Σ),
-            //             regime-mc → Phase 3n (3j with regime-conditioned Σ_settled / Σ_unsettled),
-            //             mlp → Phase 3f (local-only MLP, not on the site).
-            // "rich" silently maps to 3b for symmetry with the temperature/precip
-            // dispatch — there's no rich dry-window variant after 3d-shape was
-            // retired 2026-05-04.
+            // dry-window: only Phase 3b ships post-2026-05-25 cleanup;
+            // 3g / 3j / 3n / 3s and the legacy 3f MLP bake-off branches are
+            // gone. "rich" silently maps to 3b for symmetry with the other
+            // dispatchers.
             "dry-window"    => await _dryWindow.RunAsync(
                                    station ?? "all", window ?? "all", leads,
-                                   fs switch
-                                   {
-                                       "independence-mc"    => Train.DryWindow.DryWindow3gPredictor.Phase3g,
-                                       "independence-mc-3e" => Train.DryWindow.DryWindow3sPredictor.Phase3s,
-                                       "copula-mc"          => Train.DryWindow.DryWindow3jPredictor.Phase3j,
-                                       "regime-mc"          => Train.DryWindow.DryWindow3nPredictor.Phase3n,
-                                       "mlp"                => Train.DryWindow.DryWindowFeatureBuilder.Phase3f,
-                                       _                    => Train.DryWindow.DryWindowFeatureBuilder.Phase3b,
-                                   },
                                    location, ct),
             // Per-variable element blenders: one dispatcher routes wind / humidity /
             // shortwave-radiation / cloud-cover to its dedicated IElementBlender.

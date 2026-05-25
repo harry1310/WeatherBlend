@@ -143,16 +143,11 @@ public static partial class SitePages
                 //   3b — LightGBM marginal blender. Carries cross-NWP
                 //        agreement (the BSS-weighted vote of its component
                 //        models) and a conformal calibrator τ on the marginal.
-                //   3g/3s — iid Monte Carlo (over Phase 3a / Phase 3e hourly
-                //        P(wet) respectively). No cross-NWP agreement (single
-                //        MC ensemble); both carry the longest-dry-run quantile
-                //        band and a start-hour curve that PickBestStart
-                //        consumes. Conformal τ is a separate fit per phase.
-                //   3j/3n — copula MC. Carry neither the quantile band nor a
-                //        start-hour curve, so they render the bare table.
+                //   (Former 3g/3j/3n/3s MC challenger paths retired 2026-05-25
+                //   in model-cleanup Phase 1; the MC band + start-hour curve
+                //   columns stay in the helper for cleanup Phase 2's 3p.)
                 bool showAgreement  = phase.Key == DryWindowPhases.Phase3b.Key;
-                bool showMcBand     = phase.Key == DryWindowPhases.Phase3g.Key
-                                   || phase.Key == DryWindowPhases.Phase3s.Key;
+                bool showMcBand     = false;
                 // Keys off the phase's own curve version, so any future iid-MC
                 // phase that declares a StartHourCurveVersion opts in for free.
                 bool showBestStart  = phase.StartHourCurveVersion is not null && hasCurves;

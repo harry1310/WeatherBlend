@@ -95,13 +95,13 @@ public sealed class DryWindowPredictionRow
     // (nullable; populated only on 3g rows where a Bayesian CI parquet
     // for this (station, target_date, lead) cell was found at predict time).
     //
-    // 3g's MC pass treats 3a's per-hour q as exact and reports the spread
+    // 3g's MC pass treated 3a's per-hour q as exact and reported the spread
     // of the *longest dry run* under independent Bernoullis (the McP10/50/90
     // fields above — aleatoric: "given my q is right, how does the day
-    // play out?"). The fields below capture the orthogonal "what if my q
-    // is off?" — see DryWindow3gPredictor.SampleStatsWithEpistemic. σ
-    // comes from the WeatherProbabilistic Bayesian CI80 width via
-    // DryWindow3gPredictor.SigmaFromCi80Width.
+    // play out?"). The fields below captured the orthogonal "what if my q
+    // is off?" — epistemic perturbation by Bayesian CI80 width. The 3g
+    // predictor that emitted them was retired 2026-05-25 in model-cleanup
+    // Phase 1; columns stay so historic R2 parquets still deserialise.
     //
     // EpistemicProbDryWindowMean ≈ ProbHasDryWindow modulo MC noise — same
     // headline. EpistemicProbDryWindowQ10/Q90 give the 80% band; site can

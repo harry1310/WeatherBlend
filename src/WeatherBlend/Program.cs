@@ -185,15 +185,15 @@ public static class Program
                 services.AddTransient<PrecipConformalFitCommand>();
                 services.AddTransient<DryWindowTrainCommand>();
                 services.AddTransient<DryWindowPredictCommand>();
-                services.AddTransient<DryWindowRhoBakeoffCommand>();
                 services.AddTransient<DryWindowVerifyCommand>();
-                services.AddTransient<StartHourVerifyCommand>();
+                // DryWindowRhoBakeoffCommand + StartHourPredictCommand +
+                // StartHourVerifyCommand were retired 2026-05-25 in
+                // model-cleanup Phase 1 alongside the 3g/3s producers.
                 services.AddTransient<ElementTrainCommand>();
                 services.AddTransient<ElementPredictCommand>();
                 services.AddTransient<ElementVerifyCommand>();
                 // ElementBakeoffCommand removed in Phase 5 of unify-model-membership refactor.
                 services.AddTransient<FeelsLikePredictCommand>();
-                services.AddTransient<StartHourPredictCommand>();
                 // Met Office Global / UKV — raw AWS S3 backfill via Python.
                 // Reinstated 2026-05-05 with the parquet writer fixed to emit
                 // tz-NAIVE timestamps (the BST-skewed JOIN bug that drove the
@@ -208,6 +208,14 @@ public static class Program
                 services.AddTransient<Exact12hBakeoffCommand>();
                 services.AddTransient<PrecipExactBakeoffCommand>();
                 services.AddTransient<PrecipIfsCycleBakeoffCommand>();
+                services.AddTransient<Phase3cOroBakeoffCommand>();
+                services.AddTransient<Phase3cDataWindowBakeoffCommand>();
+                services.AddTransient<Phase3fStage1BakeoffCommand>();
+                // Phase3eOroBakeoffCommand + Phase4bComparisonBakeoffCommand
+                // + Phase4bAdd3aCommand retired 2026-05-25 in model-cleanup
+                // Phase 1 (their primary subject phases — 3e + the 4-way
+                // 3c/3c-oro/3e/4a comparison — are gone). Phase 2 of the
+                // cleanup productionises 3o (= 3c-oro) directly.
                 // Live S3 collect — refreshes the five exact-runtime sources
                 // the 2d temperature blender consumes (GFS / IFS / AIFS /
                 // Met Office Global / Met Office UKV). Each is a thin
@@ -544,6 +552,55 @@ public static class Program
         }, ifsCycleLeadOpt, ifsCycleStationOpt, ifsCycleAsOfOpt);
         root.AddCommand(ifsCycleBakeoff);
 
+        // precip-oro-bakeoff — Phase 3c-oro pooled-multi-station bake-off
+        // (docs/OROGRAPHIC_BONEHILL_3C_PLAN.md). No args; trains per-station
+        // baseline + pooled challenger across every configured rainfall station
+        // that has a data/static/orographic/{slug}.json record. Writes the
+        // markdown report to data/reports/phase3c_oro_bakeoff_{date}.md.
+        var oroBakeoff = new Command(
+            "precip-oro-bakeoff",
+            "Phase 3c-oro: pooled rich+terrain vs per-station rich bake-off across configured EA gauges");
+        oroBakeoff.SetHandler(async ctx =>
+        {
+            var cmd = host.Services.GetRequiredService<Phase3cOroBakeoffCommand>();
+            ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
+        });
+        root.AddCommand(oroBakeoff);
+
+        // precip-3e-oro-bakeoff retired 2026-05-25 in model-cleanup Phase 1
+        // alongside Phase 3e itself.
+
+        // precip-data-window-bakeoff — A vs B diagnostic. Trains per-station
+        // 3c on full data vs 2024+ only, scores on identical test rows.
+        // Answers: did the JMA 2022-2023 backfill help or hurt 3c?
+        var dataWindowBakeoff = new Command(
+            "precip-data-window-bakeoff",
+            "A vs B diagnostic: per-station 3c trained on full data vs 2024+ only, same test set");
+        dataWindowBakeoff.SetHandler(async ctx =>
+        {
+            var cmd = host.Services.GetRequiredService<Phase3cDataWindowBakeoffCommand>();
+            ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
+        });
+        root.AddCommand(dataWindowBakeoff);
+
+        // precip-4b-comparison + precip-4b-add-3a retired 2026-05-25 in
+        // model-cleanup Phase 1 (the 4-phase comparison was 3c/3c-oro/3e/4a;
+        // 3e is gone, 3c is dropped in cleanup Phase 2, and 4a's stage-1 is
+        // settled — no rerun planned).
+
+        // precip-3f-stage1-bakeoff — trains per-station 3a / 3c + pooled 3c-oro
+        // for the 3 Membury rainfall stations, dumps test predictions for the
+        // Python NGBoost-LogNormal stage-2 + CRPS scorer.
+        var phase3fStage1 = new Command(
+            "precip-3f-stage1-bakeoff",
+            "Train 3a / 3c / pooled 3c-oro Membury stage-1 candidates for the Phase 3f rainfall_amount bake-off");
+        phase3fStage1.SetHandler(async ctx =>
+        {
+            var cmd = host.Services.GetRequiredService<Phase3fStage1BakeoffCommand>();
+            ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
+        });
+        root.AddCommand(phase3fStage1);
+
         // s3-collect — live refresh of the five exact-runtime forecast sources
         // the 2d temperature blender consumes. Defaults to all sources; pass
         // --sources gfs,ifs to subset for testing.
@@ -665,7 +722,7 @@ public static class Program
 
         var predictTargetOpt = new Option<string>(
             name: "--target",
-            description: "Target variable: temperature | precipitation | dry-window | wind | humidity | shortwave-radiation | cloud-cover | feels-like | start-hour",
+            description: "Target variable: temperature | precipitation | dry-window | wind | humidity | shortwave-radiation | cloud-cover | feels-like",
             getDefaultValue: () => "temperature");
         var predictVersionOpt = new Option<string>(
             name: "--model-version",
@@ -714,11 +771,6 @@ public static class Program
             else if (string.Equals(target, "feels-like", StringComparison.OrdinalIgnoreCase))
             {
                 var cmd = host.Services.GetRequiredService<FeelsLikePredictCommand>();
-                ctx.ExitCode = await cmd.RunAsync(forDate, locationOverride, ctx.GetCancellationToken());
-            }
-            else if (string.Equals(target, "start-hour", StringComparison.OrdinalIgnoreCase))
-            {
-                var cmd = host.Services.GetRequiredService<StartHourPredictCommand>();
                 ctx.ExitCode = await cmd.RunAsync(forDate, locationOverride, ctx.GetCancellationToken());
             }
             else if (elementTarget is not null)
@@ -795,7 +847,7 @@ public static class Program
 
         var verifyTargetOpt = new Option<string>(
             name: "--target",
-            description: "Target variable: temperature | precipitation | dry-window | wind | humidity | shortwave-radiation | cloud-cover | start-hour",
+            description: "Target variable: temperature | precipitation | dry-window | wind | humidity | shortwave-radiation | cloud-cover",
             getDefaultValue: () => "temperature");
         var verifyAsOfOpt = new Option<DateOnly?>(
             name: "--as-of",
@@ -852,12 +904,6 @@ public static class Program
                 var cmd = host.Services.GetRequiredService<DryWindowVerifyCommand>();
                 ctx.ExitCode = await cmd.RunAsync(
                     truthStation, dryWindow, asOf, windowDays ?? 30, latencyDays, drift, ctx.GetCancellationToken());
-            }
-            else if (string.Equals(target, "start-hour", StringComparison.OrdinalIgnoreCase))
-            {
-                var cmd = host.Services.GetRequiredService<StartHourVerifyCommand>();
-                ctx.ExitCode = await cmd.RunAsync(
-                    asOf, windowDays ?? 30, latencyDays, locationOverride, ctx.GetCancellationToken());
             }
             else if (elementTarget is not null)
             {
@@ -946,23 +992,8 @@ public static class Program
         }, conformalAlphaOpt);
         root.AddCommand(dryWindowConformalFit);
 
-        // ---- dry-window-rho-bakeoff (research probe: AR(1) Gaussian copula on 3g) ----
-        var rhoStationOpt = new Option<string>(name: "--truth-station", description: "Station slug or 'all' (default).", getDefaultValue: () => "all");
-        var rhoWindowOpt = new Option<string>(name: "--window", description: "Window length: 3, 4, 6, or 'all' (default).", getDefaultValue: () => "all");
-        var rhoLeadsOpt = new Option<int[]>(name: "--leads", description: "Lead hours (default: short leads).") { AllowMultipleArgumentsPerToken = true };
-        var rhoValuesOpt = new Option<double[]>(name: "--rhos", description: "rho values to sweep (default: 0, 0.3, 0.5, 0.7, 0.9).") { AllowMultipleArgumentsPerToken = true };
-        var dryWindowRhoBakeoff = new Command(
-            "dry-window-rho-bakeoff",
-            "Score 3g test split under multiple AR(1) copula rho values; markdown comparison vs rho=0 (research probe, no artefacts).")
-        {
-            rhoStationOpt, rhoWindowOpt, rhoLeadsOpt, rhoValuesOpt,
-        };
-        dryWindowRhoBakeoff.SetHandler(async (station, window, leads, rhos) =>
-        {
-            var cmd = host.Services.GetRequiredService<DryWindowRhoBakeoffCommand>();
-            Environment.ExitCode = await cmd.RunAsync(station, window, leads, rhos, CancellationToken.None);
-        }, rhoStationOpt, rhoWindowOpt, rhoLeadsOpt, rhoValuesOpt);
-        root.AddCommand(dryWindowRhoBakeoff);
+        // dry-window-rho-bakeoff retired 2026-05-25 in model-cleanup Phase 1
+        // alongside the 3g/3j/3n MC machinery it depended on.
 
         // ---- precip-conformal-fit (sibling of dry-window-conformal-fit) ----
         var precipConformalAlphaOpt = new Option<double>(

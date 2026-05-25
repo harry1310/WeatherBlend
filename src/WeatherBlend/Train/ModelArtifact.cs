@@ -517,10 +517,9 @@ public static class ModelArtifact
     /// The newest Active version of a specific <paramref name="phase"/> for
     /// a (target, station) — lexical max over Active entries whose
     /// <c>training_metadata</c> Phase matches. Empty when none match. Backs
-    /// <see cref="ResolveStationChampionVersion"/> and the dry-window MC
-    /// source binding (<c>DryWindowMcSources</c>), where the source phase is
-    /// fixed structurally (3g/3j/3n → 3a, 3s → 3e) rather than tracking
-    /// whichever phase is champion.
+    /// <see cref="ResolveStationChampionVersion"/>. (The dry-window MC source
+    /// binding via <c>DryWindowMcSources</c> was retired 2026-05-25 in
+    /// model-cleanup Phase 1; helper kept for analogous future bindings.)
     /// </summary>
     public static string ResolveStationPhaseVersion(
         string modelsRoot, string target, string station, string phase)

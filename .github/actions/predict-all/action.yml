@@ -15,7 +15,6 @@ description: |
   Dependency order matters:
     temp / precip / dry-window / elements run independently from forecasts.
     feels-like joins temp + elements (same-anchor read).
-    start-hour joins precip hourly + dry-window daily (same-anchor read).
 
   Soft-skip exit codes per target are documented inline below — typically:
     2 = no model artefact yet (fresh deploy / location-not-trained for this target)
@@ -173,26 +172,5 @@ runs:
           fi
         done
 
-    - name: Predict dry-window start-hour curves (joins precip hourly + dry-window daily, all configured locations)
-      shell: bash
-      # MUST run AFTER precip + dry-window — joins their outputs to derive a
-      # per-start-hour conditional + calibrated curve. Exit 3 = no composites
-      # produced (typically every input incomplete on this anchor); non-fatal.
-      # Looped per location. Membury start-hour depends on Membury dry-window
-      # being trained, so it returns 3 cleanly until those ship.
-      run: |
-        FOR_DATE="${{ inputs.for_date }}"
-        LOCS=$(dotnet run --project src/WeatherBlend --no-build -c Release -- list-locations)
-        for loc in $LOCS; do
-          echo "::group::predict start-hour ($loc)"
-          code=0
-          if [ -n "$FOR_DATE" ]; then
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target start-hour --location "$loc" --for-date "$FOR_DATE" || code=$?
-          else
-            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target start-hour --location "$loc" || code=$?
-          fi
-          echo "::endgroup::"
-          if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then
-            echo "predict start-hour ($loc) failed with exit $code"; exit "$code"
-          fi
-        done
+    # Start-hour predict step retired 2026-05-25 in model-cleanup Phase 1
+    # alongside the 3g/3s curves it depended on.

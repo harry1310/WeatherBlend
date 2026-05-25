@@ -125,8 +125,11 @@ public sealed class RenderSiteCommand
             ConformalSetTag:             r.ConformalSetTag)).ToList();
         _log.LogInformation("Loaded {N} dry-window prediction rows (all locations).", dryWindowAllLocs.Count);
 
-        var startHourAllLocs = QueryStartHourPredictions(windowStart, predictionEnd, ct);
-        _log.LogInformation("Loaded {N} start-hour curve rows (all locations).", startHourAllLocs.Count);
+        // Start-hour predictions retired 2026-05-25 (model-cleanup Phase 1)
+        // alongside their producers (3g + 3s). Site renders the chart as
+        // absent when the list is empty — same behavior as a fresh deploy.
+        IReadOnlyList<SitePages.StartHourForecastPoint> startHourAllLocs =
+            Array.Empty<SitePages.StartHourForecastPoint>();
 
         var metOfficeSpotAllLocs = QueryMetOfficeSpotForecasts(windowStart, predictionEnd, ct);
         _log.LogInformation("Loaded {N} Met Office Spot forecast rows (all locations).", metOfficeSpotAllLocs.Count);
@@ -1409,55 +1412,5 @@ FROM ranked WHERE rn = 1 ORDER BY LocationName, ValidTimeUtc, LeadHours";
             _log, "Met Office Spot tree empty — comparison line will be absent.", ct);
     }
 
-    private IReadOnlyList<SitePages.StartHourForecastPoint> QueryStartHourPredictions(
-        DateTime start, DateTime end, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-
-        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath,
-            WeatherBlend.Commands.StartHourPredictCommand.PredictionsSubdir, "**", "*.parquet"));
-
-        // Probe in case no curves have been written yet (fresh deploy, first
-        // run before the predict-and-render cycle has produced anything).
-        // Without this the read_parquet would throw on a missing tree.
-        using var conn = new DuckDBConnection("DataSource=:memory:");
-        conn.Open();
-        if (!ParquetReader.HasColumn(conn, glob, "ConditionalProb"))
-        {
-            _log.LogWarning("Start-hour curves tree empty — best-start column will be absent until predict runs once.");
-            return Array.Empty<SitePages.StartHourForecastPoint>();
-        }
-
-        // Bounded by TargetDateUtc so we read the same forward window the
-        // dry-window page draws, no further. ProbHasDryWindow / Daily prob is
-        // mirrored on every row so renderer / verify can read it without
-        // re-joining to the dry-window tree. Phase C commit 3: multi-loc
-        // IN-list + LocationName projection (mirrors QueryNwpPrecip*);
-        // SitePages.DryWindow filters by active location at consume time.
-        var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
-        var sql = $@"
-SELECT TruthStation, WindowHours, ModelVersion, PredictionMadeAtUtc, TargetDateUtc, LeadHours,
-       StartHourUtc, RawProduct, ConditionalProb, CalibratedProb, DailyProbAnyBlock, LocationName
-FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName IN ({locFilter})
-  AND TargetDateUtc >= TIMESTAMP '{start.Date:yyyy-MM-dd HH:mm:ss}'
-  AND TargetDateUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
-ORDER BY LocationName, TruthStation, WindowHours, LeadHours, TargetDateUtc, StartHourUtc";
-
-        return ParquetReader.Query(conn, sql, r => new SitePages.StartHourForecastPoint(
-            Station:           r.GetString(0),
-            WindowHours:       r.GetInt32(1),
-            Version:           r.GetString(2),
-            PredictedAtUtc:    r.GetDateTime(3),
-            TargetDateUtc:     r.GetDateTime(4),
-            LeadHours:         r.GetInt32(5),
-            StartHourUtc:      r.GetInt32(6),
-            RawProduct:        r.GetDouble(7),
-            ConditionalProb:   r.GetDouble(8),
-            CalibratedProb:    r.GetDouble(9),
-            DailyProbAnyBlock: r.GetDouble(10),
-            LocationName:      r.GetString(11)),
-            _log, "Start-hour curves tree empty — best-start column will be absent.", ct);
-    }
 
 }

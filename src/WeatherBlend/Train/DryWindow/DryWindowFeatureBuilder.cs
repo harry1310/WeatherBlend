@@ -30,19 +30,11 @@ public static class DryWindowFeatureBuilder
 {
     /// <summary>Phase identifier strings persisted in <c>training_metadata.Phase</c>.</summary>
     public const string Phase3b = "3b";
-    // Phase3dShape / Phase3dCalibrated / Phase3e (the old cascade) all retired
-    // 2026-05-04. 3g supersedes 3d-shape (no Brier gain on the daytime label)
-    // and the old 3e cascade (cross-window monotonicity holds for all of
-    // 3h/4h/6h by construction, not just the 3h↔4h pair the cascade covered).
-    //
-    // 3f revived 2026-05-13 as a NEW phase: TorchSharp MLP on the same
-    // day-level rich features as 3b, run as a challenger in the dry-window
-    // bake-off (analogue of 3e for precipitation). Conservative architecture
-    // for the small-N tabular regime (~700 day rows per cell): [32, 16],
-    // dropout 0.3, batch 64. Bundles look like 3e's MLP layout (mlp_lead_*.pt
-    // + preprocess.json + test_predictions.parquet) under
-    // data/models/dry_window/{station}/window_{N}h/v..._phase3f/.
-    public const string Phase3f = "3f";
+    // Phase3dShape / Phase3dCalibrated / Phase3e (the old cascade) retired
+    // 2026-05-04. The dry-window-3f MLP local bake-off path was retired
+    // 2026-05-25 in model-cleanup Phase 1 (its sibling 3g/3j/3n/3s MC
+    // phases went with it). The "3f" identifier is now reserved for the
+    // Membury precip-volume model that ships in cleanup Phase 4.
 
     public const double WetThresholdMm = PrecipFeatureBuilder.WetThresholdMm;
 

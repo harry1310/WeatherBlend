@@ -51,39 +51,9 @@ public static class DryWindowPhases
         ChampionVsChallengerLabel: "Phase 3b (champion)",
         Color: "#90a4ae");
 
-    public static readonly DryWindowPhase Phase3g = new(
-        Key: "3g",
-        LongTitle: "Phase 3g — Monte Carlo over Phase 3a hourly P(wet) marginals",
-        ShortTitle: "Phase 3g (MC)",
-        Description: "Parameter-free MC over 3a hourly P(wet). Monotonic by construction.",
-        ChampionVsChallengerLabel: "Phase 3g (MC)",
-        Color: "#43a047",
-        StartHourCurveVersion: WeatherBlend.Commands.StartHourPredictCommand.OutputModelVersion);
-
-    public static readonly DryWindowPhase Phase3j = new(
-        Key: "3j",
-        LongTitle: "Phase 3j — Gaussian copula MC over Phase 3a hourly P(wet)",
-        ShortTitle: "Phase 3j (copula MC)",
-        Description: "Copula MC over 3a hourly P(wet) with a per-(station, lead) Σ fit on observed daytime binary sequences. Captures within-day wet/dry autocorrelation that iid (3g) misses. Wins 3h windows; loses 6h.",
-        ChampionVsChallengerLabel: "Phase 3j (copula)",
-        Color: "#7e57c2");
-
-    public static readonly DryWindowPhase Phase3n = new(
-        Key: "3n",
-        LongTitle: "Phase 3n — regime-conditioned copula MC (settled / unsettled Σ)",
-        ShortTitle: "Phase 3n (regime MC)",
-        Description: "Copula MC over 3a hourly P(wet) with TWO Σs per (station, lead) — Σ_settled fit on train days where NWPs agreed on hourly wet/dry, Σ_unsettled fit on disagreement days. At predict time the day's live NWP agreement picks which Σ to use.",
-        ChampionVsChallengerLabel: "Phase 3n (regime)",
-        Color: "#00897b");
-
-    public static readonly DryWindowPhase Phase3s = new(
-        Key: "3s",
-        LongTitle: "Phase 3s — iid MC over Phase 3e hourly P(wet)",
-        ShortTitle: "Phase 3s (MC over 3e)",
-        Description: "The 3g algorithm — parameter-free iid MC — but over the Phase 3e MLP's hourly P(wet) instead of 3a's. Occurrence probability ties 3g; 3e's sharper hourly marginals localise the dry block better, so 3s's value is the best-start-time curve (start-hour Brier −4.5% / Top-1 +2.7pt vs 3g at 6h).",
-        ChampionVsChallengerLabel: "Phase 3s (MC/3e)",
-        Color: "#ec407a",
-        StartHourCurveVersion: WeatherBlend.Commands.StartHourPredictCommand.OutputModelVersion3e);
+    // Phase 3g / 3j / 3n / 3s display records retired 2026-05-25 in
+    // model-cleanup Phase 1. Cleanup Phase 2 reintroduces 3p (Gaussian
+    // copula MC over 3o = 3c-oro) as the dry-window challenger.
 
     /// <summary>
     /// Display-metadata records keyed by phase string. Source of truth for
@@ -95,10 +65,6 @@ public static class DryWindowPhases
         new Dictionary<string, DryWindowPhase>(StringComparer.OrdinalIgnoreCase)
         {
             [Phase3b.Key] = Phase3b,
-            [Phase3g.Key] = Phase3g,
-            [Phase3j.Key] = Phase3j,
-            [Phase3n.Key] = Phase3n,
-            [Phase3s.Key] = Phase3s,
         };
 
     /// <summary>
