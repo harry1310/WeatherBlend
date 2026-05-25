@@ -12,6 +12,19 @@ out/
 # Data - never commit data directories
 data/
 logs/
+# Exception: orographic static features (9 per-station JSON files, ~2 KB
+# each, derived from a stable DEM). Treated as code-adjacent static
+# config — needed at both train AND predict time, same shape as
+# phases.yaml. The DEM .tif tile that generates them stays gitignored
+# (see data/static/dem/) — only the cheap derived JSONs commit. Leading
+# slashes anchor the carve-outs to the repo-root data/ dir so build-
+# output trees like src/WeatherBlend/data/ stay fully ignored.
+!/data/
+/data/*
+!/data/static/
+/data/static/*
+!/data/static/orographic/
+!/data/static/orographic/*.json
 
 # OS
 Thumbs.db
