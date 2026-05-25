@@ -97,9 +97,23 @@ jobs:
         with:
           for_date: ${{ github.event.inputs.for_date }}
 
-      # Phase 4b synthesis (2-way mean of 4a + 3e) disabled in cleanup
-      # Phase 1 (3e leg retired 2026-05-25). Cleanup Phase 2 re-wires
-      # the synthesiser to 4a + 3o and re-enables this step.
+      # Phase 4b synthesis — 2-way arithmetic mean of phase 4a (BART) and
+      # phase 3o (rich+oro) P(wet). Re-enabled 2026-05-25 in cleanup
+      # Phase 2 with the 3e leg swapped for 3o.
+      #
+      # Exit code semantics (per-station soft-skip handled inside the
+      # command):
+      #   0 — at least one station wrote 4b rows.
+      #   2 — no precipitation stations configured (config bug) — FATAL.
+      #   3 — every station fell through (no 4b manifest entry AND no
+      #       4a/3o match anywhere). Expected immediately after a fresh
+      #       deploy until both 4a (WP-side cron) and 3o (Sunday auto-
+      #       retrain) have run at least once.
+      - name: Synthesise Phase 4b (2-way mean of 4a + 3o)
+        run: |
+          code=0
+          dotnet run --project src/WeatherBlend --no-build -c Release -- phase4b-predict || code=$?
+          if [ "$code" != "0" ] && [ "$code" != "3" ]; then exit "$code"; fi
 
       - name: Push predictions to R2
         # Pushed BEFORE render so the deployed site is reading the same state

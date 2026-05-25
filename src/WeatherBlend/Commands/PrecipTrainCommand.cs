@@ -5,6 +5,7 @@ using WeatherBlend.Evaluate.Precip;
 using WeatherBlend.Models;
 using WeatherBlend.Train;
 using WeatherBlend.Train.Common;
+using WeatherBlend.Train.Oro;
 using WeatherBlend.Train.PrecipExact;
 
 namespace WeatherBlend.Commands;
@@ -52,10 +53,11 @@ public sealed class PrecipTrainCommand : TrainCommandBase
 
     /// <summary>
     /// Dispatches a precipitation train run to the phase implied by
-    /// <paramref name="featureSet"/>: lean -> 3a, rich -> 3c, exact -> 3d.
-    /// The "mlp" branch (Phase 3e) was retired 2026-05-25 in model-cleanup
-    /// Phase 1. Feature-set validity for the precipitation target is checked
-    /// by the caller (TempTrainCommand.RunAsync) before dispatch.
+    /// <paramref name="featureSet"/>: lean -> 3a, rich -> 3c, oro -> 3o,
+    /// exact -> 3d. The "mlp" branch (Phase 3e) was retired 2026-05-25 in
+    /// model-cleanup Phase 1. Feature-set validity for the precipitation
+    /// target is checked by the caller (TempTrainCommand.RunAsync) before
+    /// dispatch.
     /// </summary>
     public async Task<int> RunAsync(
         int[] leads, string? station, string featureSet,
@@ -65,6 +67,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         return featureSet switch
         {
             "rich"  => await RunPhase3cAsync(leads, station, location, ct),
+            "oro"   => await RunPhase3oAsync(leads, location, ct),
             "exact" => await RunPhase3dAsync(station, tier, includeUkv, exactLeads, cycles, location, ct),
             _       => await RunPhase3aAsync(leads, station, location, ct),
         };
@@ -612,6 +615,340 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         ["objective"]                  = "binary (LightGBM)",
         ["evaluationMetric"]           = "AUC (LightGBM default for binary)",
     };
+
+    // ---- Phase 3o: 3c-oro production (4-station Bonehill pool) -------------------
+    //
+    // 3o productionises the 2026-05-25 cleanup-plan winner: pooled LightGBM
+    // across the 4 Bonehill rainfall stations (Bellever, Bovey, Hexworthy,
+    // Princetown) on the rich (55-feat) + 9 terrain features = 64 features.
+    // Pooling gives the terrain features the cross-station diversity they
+    // need to learn from; per-station-only training had nothing to lift on
+    // since each station's elevation/aspect/etc. is a single point.
+    //
+    // Bundle layout — identical to 3a / 3c per-station bundles for predict-
+    // time plumbing reuse. The pooled model is trained ONCE per lead and
+    // the same bundle is saved under each station's subtree:
+    //   data/models/precipitation/ea_bellever_dartmoor/v{ts}_phase3o/
+    //   data/models/precipitation/ea_bovey_tracey/v{ts}_phase3o/
+    //   data/models/precipitation/ea_dartmoor_nr_hexworthy/v{ts}_phase3o/
+    //   data/models/precipitation/ea_princetown/v{ts}_phase3o/
+    // PrecipPredictCommand dispatches on metadata.Phase == "3o" into a path
+    // that reads per-station orographic JSONs at predict time + applies
+    // the pooled model with that station's terrain values + index.
+    //
+    // Climatology is per-station — represents each station's own historical
+    // wet rate (not the pooled rate), so the per-station Brier baselines in
+    // verify reflect that station's regime.
+
+    /// <summary>Stable order for the 4 Bonehill stations. station_index in
+    /// the terrain feature block IS this position (0..3) so the pooled
+    /// model learns a discrete station offset alongside the continuous
+    /// terrain values. Predict-time must use the same mapping or the model
+    /// reads the wrong "station axis" value.</summary>
+    private static readonly string[] BonehillStationOrder3o =
+    {
+        "Bellever Dartmoor",
+        "Bovey Tracey",
+        "Dartmoor nr Hexworthy",
+        "Princetown",
+    };
+
+    private async Task<int> RunPhase3oAsync(int[] leads, Config.LocationConfig location, CancellationToken ct)
+    {
+        // 3o is Bonehill-only by design (Membury terrain pool was rejected
+        // at the 2026-05-25 stage-1 bake-off — too homogeneous).
+        if (!location.Name.Equals("bonehill_rocks", StringComparison.OrdinalIgnoreCase))
+        {
+            _log.LogError("Phase 3o is Bonehill-only (location='{Loc}'). Skipping.", location.Name);
+            return 2;
+        }
+        if (location.Rainfall.Stations.Count == 0)
+        {
+            _log.LogError("No rainfall stations configured for location '{Loc}'.", location.Name);
+            return 2;
+        }
+
+        // Resolve the 4 Bonehill stations + their oro records in canonical order.
+        var oroRoot = Path.Combine("data", "static", "orographic");
+        var oroBySlug = OroStaticFeatures.LoadAll(oroRoot);
+        var pool = new List<(string Name, string Slug, OroStaticFeatures Oro, int Index)>();
+        foreach (var (name, idx) in BonehillStationOrder3o.Select((n, i) => (n, i)))
+        {
+            var match = location.Rainfall.Stations
+                .FirstOrDefault(s => s.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (match is null)
+            {
+                _log.LogError("Phase 3o: station '{Name}' missing from config.yaml's bonehill_rocks.rainfall.stations.", name);
+                return 2;
+            }
+            var slug = StationSlug.WithEaPrefix(match.Name);
+            if (!oroBySlug.TryGetValue(slug, out var oro))
+            {
+                _log.LogError("Phase 3o: no orographic record for {Slug} at {Path}. " +
+                    "Run scripts/OrographicFeatures/build_static_orographic.py.", slug, oroRoot);
+                return 2;
+            }
+            pool.Add((match.Name, slug, oro, idx));
+        }
+        _log.LogInformation("Phase 3o — 4-station Bonehill pool: [{Stations}]; leads=[{Leads}]",
+            string.Join(", ", pool.Select(p => p.Name)), string.Join(",", leads));
+
+        var modelsRoot = _cfg.Storage.ModelsPath;
+        var hp = new PrecipOccurrenceTrainer.Hyperparameters();
+        var now = DateTime.UtcNow;
+
+        // Per-station bundle paths. The same trained model gets saved under
+        // each station's subtree (per-station predict plumbing is unchanged).
+        var stationDirs = pool.ToDictionary(p => p.Slug,
+            p => ModelArtifact.BuildStationVersionDir(modelsRoot, "precipitation", p.Slug, now, suffix: "phase3o"));
+        var versionName = Path.GetFileName(stationDirs[pool[0].Slug]);
+        foreach (var dir in stationDirs.Values) Directory.CreateDirectory(dir);
+        _log.LogInformation("Pooled-bundle version name: {V}", versionName);
+
+        // Per-lead pooled training. Each lead has its own (station, oro) row
+        // build because the rich feature row depends on lead. Per-station
+        // climatology is collected for the first lead so we can save it
+        // under each station's bundle.
+        var specsPerLead = new Dictionary<int, BlenderSpec>();
+        var importanceByLead = new Dictionary<int, IEnumerable<(string Name, double Gain)>>();
+        var perLeadStationPerStation = new Dictionary<string, Dictionary<string, ModelArtifact.PerLeadStats>>(
+            pool.ToDictionary(p => p.Slug, _ => new Dictionary<string, ModelArtifact.PerLeadStats>()));
+        var climByStation = new Dictionary<string, PrecipClimatology?>(
+            pool.ToDictionary(p => p.Slug, _ => (PrecipClimatology?)null));
+        var testPredsByStation = new Dictionary<string, List<TestPredictionRow>>(
+            pool.ToDictionary(p => p.Slug, _ => new List<TestPredictionRow>()));
+
+        // RetrainGuard inputs (computed against the POOLED training matrix —
+        // the guard's "rows" / "label rate" / "NaN%" gates are evaluated
+        // against what the model actually saw at fit time, not per-station).
+        List<float[]>? firstLeadTrainFeatures = null;
+        IReadOnlyList<bool>? firstLeadTrainLabels = null;
+        int totalTrainRows = 0, totalValRows = 0, totalTestRows = 0;
+        // Per-station label rates for the guard so any per-station truth
+        // anomaly (e.g. Princetown's first 2022/2023 backfill landing
+        // mid-week) gets flagged separately.
+        var perStationLabelRates = new Dictionary<string, double>();
+
+        foreach (var lead in leads)
+        {
+            ct.ThrowIfCancellationRequested();
+            _log.LogInformation("--- Lead {Lead}h ---", lead);
+
+            var spec = PrecipRichOroFeatureBuilder.BuildSpec(_cfg.Blenders, lead);
+            specsPerLead[lead] = spec;
+            _log.LogInformation("Spec: {Spec} ({N} features)", spec, spec.FeatureCount);
+
+            // Build per-station datasets + chronological 70/15/15 splits.
+            var perStation = new List<(string Name, string Slug, BinaryDataset Ds)>();
+            foreach (var (name, slug, oro, idx) in pool)
+            {
+                ct.ThrowIfCancellationRequested();
+                var rows = PrecipRichOroFeatureBuilder.BuildForLead(
+                    _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
+                    location.Name, name, oro, idx, spec, ct);
+                if (rows.Count < 200)
+                {
+                    _log.LogWarning("  station {Slug}: only {N} rich-oro rows for lead {Lead}h — skipping station for this lead.",
+                        slug, rows.Count, lead);
+                    continue;
+                }
+                var ds = BinaryDataset.Split(rows);
+                _log.LogInformation("  {Slug}: rows={N} (wet {Pct:P1}) — train={T}/val={V}/test={E}",
+                    slug, rows.Count, rows.Count(r => r.Label) / (double)rows.Count,
+                    ds.Train.Count, ds.Val.Count, ds.Test.Count);
+                perStation.Add((name, slug, ds));
+                if (climByStation[slug] is null)
+                    climByStation[slug] = PrecipClimatology.BuildFromTraining(ds.Train);
+                if (!perStationLabelRates.ContainsKey(slug) && ds.Train.Count > 0)
+                    perStationLabelRates[slug] = ds.Train.Count(r => r.Label) / (double)ds.Train.Count;
+            }
+            if (perStation.Count < 2)
+            {
+                _log.LogError("Lead {Lead}h: <2 stations with usable data after split — abort lead.", lead);
+                continue;
+            }
+
+            // Pool train + val rows. Test slices stay per-station (we score
+            // each station individually so per-station Brier is honest).
+            var pooledTrain = perStation.SelectMany(p => p.Ds.Train).ToList();
+            var pooledVal   = perStation.SelectMany(p => p.Ds.Val).ToList();
+            _log.LogInformation("  Pooled: train={T} rows (wet {Pct:P1}), val={V} rows",
+                pooledTrain.Count,
+                pooledTrain.Count(r => r.Label) / (double)pooledTrain.Count,
+                pooledVal.Count);
+            totalTrainRows += pooledTrain.Count;
+            totalValRows   += pooledVal.Count;
+            totalTestRows  += perStation.Sum(p => p.Ds.Test.Count);
+            firstLeadTrainFeatures ??= pooledTrain.Select(r => r.Features).ToList();
+            firstLeadTrainLabels   ??= pooledTrain.Select(r => r.Label).ToList();
+
+            var trained = PrecipOccurrenceTrainer.TrainVector(pooledTrain, pooledVal, spec, hp);
+            importanceByLead[lead] = trained.FeatureImportance;
+
+            // Score per-station test slice. Each station gets its own
+            // PerLeadStats so the verify card on the Models page can show
+            // per-(station, lead) Brier honestly.
+            foreach (var (name, slug, ds) in perStation)
+            {
+                var truth = ds.Test.Select(r => r.Label ? 1.0 : 0.0).ToArray();
+                var probs = PrecipOccurrenceTrainer.PredictVectorProbability(
+                    trained.Ml, trained.Model, spec, ds.Test);
+                var brier = PrecipMetrics.Brier(probs, truth);
+                var clim = climByStation[slug]!;
+                var climPred = ds.Test.Select(r => clim.Predict(r.ValidTimeUtc)).ToArray();
+                var climBrier = PrecipMetrics.Brier(climPred, truth);
+                var binBlend = probs.Select(p => p >= 0.5 ? 1.0 : 0.0).ToArray();
+                var fbias = PrecipMetrics.FrequencyBias(binBlend, truth);
+                var best = PrecipBaselines.BestSingle(spec, ds.Val);
+                var bestValBrier = PrecipMetrics.Brier(
+                    PrecipBaselines.SingleModelWet(spec, ds.Val, best),
+                    ds.Val.Select(r => r.Label ? 1.0 : 0.0).ToArray());
+                var bestTestBrier = PrecipMetrics.Brier(
+                    PrecipBaselines.SingleModelWet(spec, ds.Test, best),
+                    truth);
+                var testMonths = ds.Test.Select(r => new DateTime(r.ValidTimeUtc.Year, r.ValidTimeUtc.Month, 1))
+                                        .Distinct().Count();
+                perLeadStationPerStation[slug][lead.ToString()] = new ModelArtifact.PerLeadStats
+                {
+                    LeadHours = lead,
+                    DataRangeTrain = $"{ds.TrainStart:yyyy-MM-dd HH:mm}Z → {ds.TrainEnd:yyyy-MM-dd HH:mm}Z",
+                    DataRangeVal   = $"{ds.ValStart:yyyy-MM-dd HH:mm}Z → {ds.ValEnd:yyyy-MM-dd HH:mm}Z",
+                    DataRangeTest  = $"{ds.TestStart:yyyy-MM-dd HH:mm}Z → {ds.TestEnd:yyyy-MM-dd HH:mm}Z",
+                    TrainRows = ds.Train.Count,
+                    ValRows   = ds.Val.Count,
+                    TestRows  = ds.Test.Count,
+                    TestCalendarMonths = testMonths,
+                    BestSingle = best,
+                    BestSingleValMae  = bestValBrier,
+                    BestSingleTestMae = bestTestBrier,
+                    BlendTestMae  = brier,
+                    BlendTestRmse = climBrier,
+                    BlendTestBias = fbias,
+                };
+                _log.LogInformation("  {Slug} lead {Lead}h Brier={B:0.0000} (clim {C:0.0000}, fbias {F:0.00})",
+                    slug, lead, brier, climBrier, fbias);
+
+                // Per-row test predictions for downstream bake-offs / 4b mint.
+                for (int i = 0; i < ds.Test.Count; i++)
+                    testPredsByStation[slug].Add(new TestPredictionRow
+                    {
+                        valid_time   = ds.Test[i].ValidTimeUtc,
+                        station      = slug,
+                        lead         = lead,
+                        p_wet        = probs[i],
+                        observed_wet = (byte)(ds.Test[i].Label ? 1 : 0),
+                    });
+            }
+
+            // Save the same trained model under EVERY station's bundle dir.
+            // 4 identical lead_{L}h.zip files on disk, one per station — wastes
+            // ~1-2 MB per lead total but keeps per-station predict plumbing
+            // unchanged and makes the bundle self-contained per station.
+            foreach (var (_, slug, _) in perStation)
+                ModelArtifact.SaveLeadModel(trained.Ml, trained.Model, trained.InputSchema, stationDirs[slug], lead);
+        }
+
+        if (specsPerLead.Count == 0)
+        {
+            _log.LogError("Phase 3o: no leads produced any model — abort.");
+            return 3;
+        }
+
+        // Per-station bundle sidecars: spec, importance, climatology,
+        // training_metadata, test_predictions.
+        foreach (var (name, slug, oro, idx) in pool)
+        {
+            var dir = stationDirs[slug];
+            ModelArtifact.SaveBlenderSpecs(dir, specsPerLead);
+            ModelArtifact.SavePerLeadFeatureImportance(dir, importanceByLead);
+            if (climByStation[slug] is not null)
+                climByStation[slug]!.SaveTo(Path.Combine(dir, ModelArtifact.ClimatologyFileName));
+            if (testPredsByStation[slug].Count > 0)
+            {
+                var p = Path.Combine(dir, "test_predictions.parquet");
+                await Parquet.Serialization.ParquetSerializer.SerializeAsync(
+                    testPredsByStation[slug], p, cancellationToken: ct);
+            }
+
+            var perLead = perLeadStationPerStation[slug];
+            var metadata = new ModelArtifact.TrainingMetadata
+            {
+                Version = versionName,
+                Target = "precipitation",
+                Phase = "3o",
+                LocationName = location.Name,
+                DataSource = "previous_runs_api+ea_rainfall+srtm_dem",
+                TrainedAtUtc = DateTime.UtcNow,
+                Hyperparameters = BuildPrecipHpDict(hp)
+                    .Concat(new[]
+                    {
+                        new KeyValuePair<string, object>("phase3o_pool_stations",
+                            string.Join(",", BonehillStationOrder3o)),
+                        new KeyValuePair<string, object>("phase3o_station_index", idx),
+                        new KeyValuePair<string, object>("phase3o_orographic_features",
+                            string.Join(",", PrecipRichOroFeatureBuilder.TerrainFeatureNames)),
+                    })
+                    .ToDictionary(kv => kv.Key, kv => kv.Value),
+                TestMae = perLead.ToDictionary(kv => $"lead_{kv.Key}h_brier", kv => kv.Value.BlendTestMae),
+                PerLead = perLead,
+                DeviationsFromBrief = new List<string>
+                {
+                    "Pooled across the 4 Bonehill rainfall stations (Bellever, Bovey, Hexworthy, Princetown). One LightGBM per lead, trained on the concat of per-station rich+oro rows. The SAME trained model is saved under every station's bundle dir so per-station predict plumbing is unchanged.",
+                    "9 terrain features appended after the rich (55) feature vector: elevation_vs_cell, relief_5km, ruggedness_5km, wind_sin, wind_cos, upwind_gain_per_wind_5km, uplift, uplift_x_q, station_id. station_id is a discrete 0..3 axis (Bellever=0, Bovey=1, Hexworthy=2, Princetown=3) — predict-time MUST use the same mapping.",
+                    "Per-station climatology (each station's own train-slice base rate) is saved alongside the pooled model so the verify rolling-Brier panel shows honest per-station baselines.",
+                },
+            };
+            ModelArtifact.SaveTrainingMetadata(dir, metadata);
+        }
+
+        // RetrainGuard runs ONCE against the pooled training matrix. The
+        // guard's "rows" / "NaN%" / "features-effective" gates measure what
+        // the model actually saw at fit time; per-station label-rate
+        // anomalies surface through the per-station labelRates dictionary.
+        var guardResult = RetrainGuard.BuildCheckAndSave(_log,
+            stationDirs[pool[0].Slug],
+            composite: $"precipitation/_pool_3o", phase: "3o", version: versionName,
+            computedAtUtc: now,
+            rowsTrain: totalTrainRows, rowsVal: totalValRows, rowsTest: totalTestRows,
+            trainFeatures: firstLeadTrainFeatures,
+            featureNames: specsPerLead.TryGetValue(leads[0], out var sp3o)
+                ? sp3o.FeatureNames.ToList() : Array.Empty<string>(),
+            locationName: location.Name,
+            labelRates: perStationLabelRates);
+        if (!guardResult.Passed)
+        {
+            _log.LogError("Aborting Phase 3o retrain — pooled-train sanity guard failed. " +
+                "Per-station orphan dirs ({Dirs}) not promoted.",
+                string.Join(", ", stationDirs.Values));
+            return 4;
+        }
+
+        // Promote per-station as challenger.
+        foreach (var (_, slug, _, _) in pool)
+        {
+            ModelArtifact.PromoteStationVersion(
+                modelsRoot, "precipitation", slug, versionName, newPhase: "3o");
+            var active = ModelArtifact.ResolveStationActive(modelsRoot, "precipitation", slug);
+            _log.LogInformation("Phase 3o {Slug} → {Dir}", slug, stationDirs[slug]);
+            _log.LogInformation("Active versions for {Slug}: [{Active}]", slug, string.Join(", ", active));
+        }
+
+        if (_skipConformal)
+        {
+            _log.LogInformation("Auto-conformal: SKIPPED (WB_SKIP_CONFORMAL=1)");
+        }
+        else
+        {
+            foreach (var (_, slug, _, _) in pool)
+            {
+                var (cf, cs) = await _precipConformal.FitOneAsync(
+                    slug, versionName, PrecipConformalFitCommand.DefaultAlpha, ct);
+                _log.LogInformation("Auto-conformal: fitted {F} leads ({S} skipped) for {Slug}/{V}",
+                    cf, cs, slug, versionName);
+            }
+        }
+        return 0;
+    }
 
     // ---- Phase 3d: exact-runtime precip blender (per-station, lead-12 champion) ---
 

@@ -269,10 +269,15 @@ jobs:
             train --target temperature --feature-set exact --leads 12,24,48
 
       - name: Train 3a (precipitation lean)
-        # 3a is one-station-per-call (unlike rich 3c/3d/3e which auto-iterate
+        # 3a is one-station-per-call (unlike rich 3c/3d which auto-iterate
         # every station of the location), so loop this location's rainfall
         # gauges via --station. The station list is read from config.yaml —
         # no hardcoded station list in the workflow.
+        # Princetown is filtered out — per the 2026-05-25 cleanup plan it
+        # joined the Bonehill pool ONLY for 3o (4-station rich+oro). 3a stays
+        # 3-station to avoid polluting the per-station 3a champion with a
+        # gauge whose pre-2024 history is thin and which the user explicitly
+        # excluded from 3a's scope.
         id: train_3a
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3a == 'true'
         continue-on-error: true
@@ -280,8 +285,8 @@ jobs:
           MATRIX_LOCATION: ${{ matrix.location }}
         run: |
           STATIONS=$(yq -r ".locations[] | select(.name == \"$MATRIX_LOCATION\") | .rainfall.stations[].name" \
-            src/WeatherBlend/config.yaml)
-          echo "3a stations for $MATRIX_LOCATION:"
+            src/WeatherBlend/config.yaml | grep -v "^Princetown$")
+          echo "3a stations for $MATRIX_LOCATION (Princetown excluded — 3o-only per cleanup plan):"
           echo "$STATIONS"
           while IFS= read -r s; do
             [ -z "$s" ] && continue
@@ -292,13 +297,31 @@ jobs:
 
       - name: Train 3c (precipitation rich)
         # 3c auto-iterates all stations of the given location — one call
-        # trains every gauge for the matrix location.
+        # trains every gauge for the matrix location. Bonehill drops 3c
+        # in cleanup Phase 2 via phases.yaml `locations: ["membury_devon"]`
+        # so the Bonehill matrix job naturally has run_3c=false; this step
+        # only fires for Membury.
         id: train_3c
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3c == 'true'
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target precipitation --feature-set rich --location ${{ matrix.location }}
+
+      - name: Train 3o (precipitation rich + orographic, 4-station Bonehill pool)
+        # 3o pools all 4 Bonehill rainfall stations (Bellever + Bovey +
+        # Hexworthy + Princetown) into one LightGBM per lead, with rich +
+        # 9 terrain features. The same trained model is saved under each
+        # station's bundle dir so the per-station predict plumbing reads
+        # 3o transparently. Bonehill-only — phases.yaml's `locations:`
+        # filter gates this off on the Membury matrix job (which the
+        # 2026-05-25 stage-1 bake-off ruled out for terrain pooling).
+        id: train_3o
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3o == 'true'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target precipitation --feature-set oro --location ${{ matrix.location }}
 
       # Train 3e (precipitation MLP) retired 2026-05-25 in model-cleanup
       # Phase 1.
@@ -324,10 +347,18 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target dry-window
 
-      # Train 3g / 3j / 3n / 3s + the precip-replay generator step were
-      # retired 2026-05-25 in model-cleanup Phase 1. Cleanup Phase 2 will
-      # add a single 3p (Gaussian copula MC over 3o) training step here
-      # in their place.
+      - name: Train 3p (dry-window Gaussian copula MC over 3o)
+        # 3p is parameter-free — no LightGBM fit, just Σ-fit from observed
+        # daytime sequences + the bound 3o champion version captured at
+        # training time. Σ is single per-station (NOT per-lead, per the
+        # cleanup-plan bake-off). Cheap (~1 min, no model fit) but MUST
+        # run AFTER 3o so the bound 3o version pointer is fresh.
+        id: train_3p
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3p == 'true'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target dry-window --feature-set copula-mc
 
       # ---- Element blenders (wind / humidity / shortwave radiation /
       # cloud cover) ---- Each is a first-class phases.yaml target now, so
@@ -366,9 +397,19 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target cloud-cover
 
-      # Mint Phase 4b bundle disabled in model-cleanup Phase 1 (its 3e
-      # leg is retired). Cleanup Phase 2 re-enables this once 4b is
-      # re-wired to 4a + 3o.
+      - name: Mint Phase 4b bundle (4a + 3o mean)
+        # Re-enabled 2026-05-25 in cleanup Phase 2 with the 3e leg swapped
+        # for 3o. Reads the latest 4a + 3o bundles already pulled from R2
+        # at job start. Bundle re-mint is one-cycle-behind on 4a updates
+        # (4a is retrained in the WP-side workflow on the same Sunday
+        # tick) but always fresh on 3o — acceptable trade for the simple
+        # flow. Gated on 3o succeeding, since that's the leg we control
+        # in this workflow.
+        id: mint_4b
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_4b == 'true' && steps.train_3o.outcome == 'success'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- phase4b-mint
 
       - name: Aggregate train results
         # Reads each step's outcome; if any failed, fails the job so
@@ -384,7 +425,10 @@ jobs:
             [3a]="${{ steps.train_3a.outcome }}"
             [3c]="${{ steps.train_3c.outcome }}"
             [3d]="${{ steps.train_3d_short.outcome }}"
+            [3o]="${{ steps.train_3o.outcome }}"
             [3b]="${{ steps.train_3b.outcome }}"
+            [3p]="${{ steps.train_3p.outcome }}"
+            [4b_mint]="${{ steps.mint_4b.outcome }}"
             [wind]="${{ steps.train_wind.outcome }}"
             [humidity]="${{ steps.train_humidity.outcome }}"
             [radiation]="${{ steps.train_radiation.outcome }}"

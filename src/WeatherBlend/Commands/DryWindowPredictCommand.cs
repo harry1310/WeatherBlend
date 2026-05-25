@@ -164,13 +164,20 @@ public sealed class DryWindowPredictCommand
         _log.LogInformation("{Key}: version {V} (phase {P}), window {W}h",
             compositeKey, metadata.Version, metadata.Phase, windowHours);
 
-        // Phase 3f — local bake-off experiment only, NOT a site-rendered
-        // phase. No C# predict path exists for 3f (its bundle artefact is
-        // a TorchSharp MLP .pt rather than a LightGBM .zip). If a stale
         // Phases 3g / 3j / 3n / 3s retired 2026-05-25 in model-cleanup
         // Phase 1 — predict dispatch removed. Surviving R2 bundles with
-        // those phase tags are filtered out by phases.yaml gating before
-        // we reach this point.
+        // those phase tags are filtered out by phases.yaml gating.
+        //
+        // Phase 3p — Gaussian copula MC over Phase 3o's hourly P(wet).
+        // No LightGBM artefacts; predict reads 3o's live prediction parquet
+        // (via the bound precip_3o_version metadata) + the bundle's
+        // correlation.json (single Σ per station) and runs copula MC.
+        if (string.Equals(metadata.Phase, DryWindow3pPredictor.Phase3p, StringComparison.Ordinal))
+        {
+            return await RunPhase3pAsync(
+                versionDir, stationSlug, windowHours, versionName, metadata,
+                targets, anchorDate, predictionMadeAt, ct);
+        }
 
         // Per-lead BlenderSpec lives in feature_schema.json.
         var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
@@ -290,6 +297,128 @@ public sealed class DryWindowPredictCommand
             return false;
         }
 
+        await WritePredictionsAsync(predictions, stationSlug, windowHours, anchorDate, metadata.Version, ct);
+        return true;
+    }
+
+    /// <summary>
+    /// Phase 3p predict path. No model.zip files; read the bound 3o
+    /// champion's hourly P(wet) parquet for the anchor cycle, extract the
+    /// daytime hour vector for each target_date, run Gaussian copula MC
+    /// against the bundle's single Σ, write a dry-window prediction row.
+    /// </summary>
+    private async Task<bool> RunPhase3pAsync(
+        string versionDir, string stationSlug, int windowHours, string versionName,
+        ModelArtifact.TrainingMetadata metadata,
+        IReadOnlyList<(int Lead, DateTime Date)> targets,
+        DateTime anchorDate, DateTime predictionMadeAt,
+        CancellationToken ct)
+    {
+        // Bound 3o version is captured in metadata at train time. If it's
+        // missing, the bundle is malformed — log + skip rather than crash.
+        var v3o = metadata.Hyperparameters.HpString(DryWindow3pPredictor.Precip3oVersionKey);
+        if (string.IsNullOrEmpty(v3o))
+        {
+            _log.LogWarning("{Key} {V}: 3p bundle is missing `{Key2}` metadata; skipping.",
+                stationSlug, versionName, DryWindow3pPredictor.Precip3oVersionKey);
+            return false;
+        }
+
+        // Σ + L loaded once per bundle.
+        double[,] L;
+        try
+        {
+            L = DryWindow3pPredictor.LoadCholesky(versionDir);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "{Key} {V}: failed to load Σ — bundle correlation.json is malformed.",
+                stationSlug, versionName);
+            return false;
+        }
+
+        // 3o's live predictions for the anchor cycle. ONE parquet covers
+        // all hourly P(wet) the MC needs; load once, slice by target_date.
+        Dictionary<DateTime, double> hourly;
+        try
+        {
+            hourly = DryWindow3pPredictor.LoadLivePredictionsHourly(
+                _cfg.Storage.PredictionsPath, stationSlug, v3o, anchorDate);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "{Key} {V}: cannot load 3o live predictions ({V3o}) for anchor {A:yyyy-MM-dd} — skipping " +
+                "(this is expected immediately after a fresh deploy until 3o has run at least once).",
+                stationSlug, versionName, v3o, anchorDate);
+            return false;
+        }
+        if (hourly.Count == 0)
+        {
+            _log.LogWarning("{Key} {V}: 3o live predictions parquet for anchor {A:yyyy-MM-dd} is empty — skipping.",
+                stationSlug, versionName, anchorDate);
+            return false;
+        }
+
+        var daytime = _cfg.DryWindow.BuildDaytimeWindow();
+        var mcSamples = metadata.Hyperparameters.HpInt("mc_samples") ?? DryWindow3pPredictor.DefaultMcSamples;
+        var rng = new Random(metadata.Hyperparameters.HpInt("mc_seed") ?? 42);
+        var predictions = new List<DryWindowPredictionRow>();
+        var primaryLocation = _cfg.Location.Name;
+
+        foreach (var (lead, targetDate) in targets)
+        {
+            ct.ThrowIfCancellationRequested();
+            var (startUtc, endUtcExclusive) = daytime.UtcHourRangeFor(DateOnly.FromDateTime(targetDate));
+            var qDaytime = DryWindow3pPredictor.ExtractDaytimeQ(hourly, targetDate, startUtc, endUtcExclusive);
+            if (qDaytime is null)
+            {
+                _log.LogWarning("{Key} {V} lead {Lead}h ({Date:yyyy-MM-dd}): daytime q vector incomplete from 3o predictions; skipping.",
+                    stationSlug, versionName, lead, targetDate);
+                continue;
+            }
+            // If Σ was fit on a 9-hour daytime window but the target date
+            // gives a different length (DST tail edge — extremely rare for
+            // Europe/London at 9-18 local), refuse rather than re-fit.
+            if (qDaytime.Length != L.GetLength(0))
+            {
+                _log.LogWarning("{Key} {V} lead {Lead}h ({Date:yyyy-MM-dd}): daytime q length {Qn} != Σ dim {Sn} — likely a DST edge day, skipping.",
+                    stationSlug, versionName, lead, targetDate, qDaytime.Length, L.GetLength(0));
+                continue;
+            }
+            var prob = DryWindow3pPredictor.ProbDryWindow(qDaytime, L, windowHours, rng, mcSamples);
+
+            predictions.Add(new DryWindowPredictionRow
+            {
+                LocationName = primaryLocation,
+                TruthStation = stationSlug,
+                WindowHours = windowHours,
+                ModelVersion = metadata.Version,
+                PredictionMadeAtUtc = predictionMadeAt,
+                TargetDateUtc = targetDate,
+                LeadHours = lead,
+                ProbHasDryWindow = prob,
+                ClimatologyProbHasDryWindow = 0.0, // 3p has no climatology
+                                                  // sidecar — verify uses the
+                                                  // per-station EA-derived base
+                                                  // rate from its own pipeline.
+                AgreementHasDryWindow = null,
+                PrecipSumMean = null,
+                LongestDryRunMean = null,
+                WetHourCountMean = null,
+                FeatureVectorHash = "",
+                ConformalSetTag = ModelArtifact.PredictConformalIfPresent(versionDir, lead, prob),
+            });
+            _log.LogInformation(
+                "  lead {Lead}h ({Date:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (3p, MC samples={Mc}, bound 3o={V3o})",
+                lead, targetDate, windowHours, prob, mcSamples, v3o);
+        }
+
+        if (predictions.Count == 0)
+        {
+            _log.LogWarning("{Key} {V}: 3p produced no predictions — likely no overlap between 3o coverage and target dates.",
+                stationSlug, versionName);
+            return false;
+        }
         await WritePredictionsAsync(predictions, stationSlug, windowHours, anchorDate, metadata.Version, ct);
         return true;
     }

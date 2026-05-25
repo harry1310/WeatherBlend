@@ -82,10 +82,20 @@ targets:
         # a Membury-cell S3 archive backfill lands.
         locations: ["bonehill_rocks"]
       # 3e (TorchSharp MLP) retired 2026-05-25 — model-cleanup Phase 1
-      # (see project_model_cleanup_plan_2026-05-25.md). The Phase 2
-      # MC bake-off settled the dry-window champion question on 3c-oro,
-      # making 3e's MLP slot redundant; its only remaining downstream
-      # consumers (3s, 4b) are retired/disabled in the same cleanup.
+      # (see project_model_cleanup_plan_2026-05-25.md).
+      # 3o (3c-oro, 4-station Bonehill pool: Bellever + Bovey + Hexworthy
+      # + Princetown) added 2026-05-25 in cleanup Phase 2. Rich (55) +
+      # 9 terrain features = 64 features. Trained pooled across all 4
+      # stations to give the terrain features cross-station diversity;
+      # bundle is saved per-station so predict-time plumbing matches
+      # 3a / 3c exactly. Bonehill-only — Membury 3o was rejected at
+      # the 2026-05-25 stage-1 bake-off (Membury terrain pool too
+      # homogeneous, +0.36% CRPS vs 3a — see project_3f_stage1_membury_
+      # bakeoff_2026-05-25.md).
+      - id: "3o"
+        role: challenger
+        impl: dotnet
+        locations: ["bonehill_rocks"]
       # 4a became per-cell on 2026-05-11 (lead-pooled flavour
       # retired). One BART per (station, lead), matching 3a's
       # architecture. Aligned-row bake-off 2026-05-10 showed per-cell
@@ -96,10 +106,15 @@ targets:
         # Bonehill-only — Membury 4a/5a not yet trained or wired in
         # WeatherProbabilistic. retrain-python reads this filter.
         locations: ["bonehill_rocks"]
-      # 4b (arithmetic mean of 4a + 3e) is disabled in cleanup Phase 1
-      # because its 3e leg has been retired. Scaffolding kept in code
-      # (Phase4bMintCommand / Phase4bPredictCommand / PrecipPhases.Phase4b);
-      # cleanup Phase 2 will re-add 4b here, re-wired to 4a + 3o.
+      # 4b re-enabled 2026-05-25 in cleanup Phase 2 with re-wired
+      # composition: arithmetic mean of 4a + 3o (was 4a + 3e before
+      # 3e was retired). Mint reads the latest 3o test_predictions
+      # alongside the latest 4a (which lands via the WP-side cron).
+      - id: "4b"
+        role: challenger
+        impl: dotnet
+        # Bonehill-only — minted from 4a + 3o, both Bonehill-only.
+        locations: ["bonehill_rocks"]
       - id: "5a"
         role: confidence
         impl: python
@@ -112,12 +127,25 @@ targets:
       # (see project_model_cleanup_plan_2026-05-25.md). The Phase 2 MC
       # bake-off settled the dry-window champion question — 3p
       # (Gaussian copula MC over 3c-oro = 3o) supersedes all four MC
-      # variants at -15.9% Brier vs 3g. 3p ships in cleanup Phase 2;
-      # 3b remains champion in the interim.
+      # variants at -15.9% Brier vs 3g. 3p ships in cleanup Phase 2
+      # as challenger; 3b remains champion until the user promotes 3p
+      # after a few weeks of clean verify data.
       # Dry-window is Bonehill-only — Membury has no dry-window truth /
       # blenders trained yet.
       - id: "3b"
         role: champion
+        impl: dotnet
+        locations: ["bonehill_rocks"]
+      # 3p (Gaussian copula MC over 3o hourly P(wet) marginals) added
+      # 2026-05-25 in cleanup Phase 2. Single empirical Σ per station
+      # from train-split observed_wet sequences — NOT per-(station, lead)
+      # like the retired 3j (Σ structure is daytime-shape and lead-
+      # independent for observed labels; pooling across leads gives
+      # tighter Σ estimate). Bake-off Brier 0.1064 aggregate vs 3g's
+      # 0.1265 (−15.9%) on post-JMA-backfill data; see project_phase2_
+      # dry_window_bakeoff_2026-05-25.md.
+      - id: "3p"
+        role: challenger
         impl: dotnet
         locations: ["bonehill_rocks"]
 

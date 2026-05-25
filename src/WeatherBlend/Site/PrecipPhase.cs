@@ -70,14 +70,26 @@ public static class PrecipPhases
         Color: "#ffa726");
 
     // Phase 3e display record retired 2026-05-25 in model-cleanup Phase 1.
-    // Phase 4b stays as a scaffolding-only display record — disabled in
-    // phases.yaml during Phase 1 (3e leg gone); cleanup Phase 2 re-wires
-    // it to 4a + 3o (3c-oro) and re-adds the phases.yaml entry.
+    // Phase 3o added 2026-05-25 in cleanup Phase 2: 3c-oro pooled across
+    // 4 Bonehill stations (Bellever + Bovey + Hexworthy + Princetown) with
+    // rich + 9 terrain features. Bonehill-only.
+    public static readonly PrecipPhase Phase3o = new(
+        Key: "3o",
+        LongTitle: "Phase 3o — rich + orographic (pooled, 4 Bonehill stations)",
+        ShortTitle: "Phase 3o (rich+oro)",
+        Description: "55-feature rich set plus 9 terrain features (elevation, slope, aspect, ruggedness, upwind gain, uplift, station id), trained pooled across the 4 Bonehill rainfall gauges to give the terrain features cross-station diversity. Replaces 3c on Bonehill (3c stays as a Membury reference).",
+        ChampionVsChallengerLabel: "Phase 3o (rich+oro)",
+        Color: "#26a69a");
+
+    // Phase 4b re-enabled 2026-05-25 in cleanup Phase 2 with rewired
+    // composition: arithmetic mean of Phase 4a (BART) + Phase 3o (rich+oro)
+    // instead of the retired 4a + 3e mean. The 2026-05-25 cleanup-plan
+    // memory + Phase 2 MC bake-off support the swap.
     public static readonly PrecipPhase Phase4b = new(
         Key: "4b",
-        LongTitle: "Phase 4b — 2-way mean (scaffolding only)",
-        ShortTitle: "Phase 4b",
-        Description: "Disabled in cleanup Phase 1 (3e leg retired). Cleanup Phase 2 re-wires to 4a + 3o.",
+        LongTitle: "Phase 4b — 2-way mean of Phase 4a + Phase 3o",
+        ShortTitle: "Phase 4b (mean)",
+        Description: "Arithmetic mean of Phase 4a (BART) and Phase 3o (rich+oro). Not a trained model — synthesised at predict time from the freshest 4a and 3o rows per (ValidTime, LeadHours). Re-wired 2026-05-25 in cleanup Phase 2 (was 4a + 3e until 3e was retired).",
         ChampionVsChallengerLabel: "Phase 4b (mean)",
         Color: "#ec407a");
 
@@ -103,11 +115,12 @@ public static class PrecipPhases
         return "#9e9e9e";
     }
 
-    /// <summary>Canonical render order: 3a → 3c → 3d → 4a → 4b.
-    /// 3e was retired 2026-05-25 in model-cleanup Phase 1.</summary>
+    /// <summary>Canonical render order: 3a → 3c → 3d → 3o → 4a → 4b.
+    /// 3e was retired 2026-05-25 in model-cleanup Phase 1; 3o (3c-oro pooled
+    /// 4-station Bonehill) added in cleanup Phase 2.</summary>
     public static readonly IReadOnlyList<PrecipPhase> All = new[]
     {
-        Phase3a, Phase3c, Phase3d, Phase4a, Phase4b,
+        Phase3a, Phase3c, Phase3d, Phase3o, Phase4a, Phase4b,
     };
 
     /// <summary>Phases that participate in the +24h overlay — currently both.</summary>

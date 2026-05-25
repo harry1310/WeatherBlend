@@ -10,6 +10,7 @@ using WeatherBlend.Site;
 using WeatherBlend.Train;
 using WeatherBlend.Train.Common;
 using WeatherBlend.Train.Exact12h;
+using WeatherBlend.Train.Oro;
 using WeatherBlend.Train.PrecipExact;
 
 namespace WeatherBlend.Commands;
@@ -268,6 +269,20 @@ public sealed class PrecipPredictCommand
         // model-cleanup Phase 1. Any 3e bundle that survives on R2 is
         // ignored — manifest gating drops it before we reach this point.
 
+        // Phase 3o (pooled rich-oro) takes a separate predict path: same
+        // 55-feat rich row as 3c PLUS a 9-feat terrain block whose dynamic
+        // entries come from NWP-ensemble-mean wind / temp / dew / pressure
+        // at each target valid_time. Predict reads the station's static
+        // orographic JSON + computes the terrain block via the SAME
+        // ComposeTerrainBlock helper the trainer used.
+        var is3o = string.Equals(metadata.Phase, "3o", StringComparison.Ordinal);
+        if (is3o)
+        {
+            return await RunStationAsOroAsync(
+                modelsRoot, station, versionDir, metadata, climatology,
+                predictionMadeAt, anchor, targets, perLeadValid, location, ct);
+        }
+
         // Phase 3d (exact-runtime) takes a separate predict path: different
         // forecast tree filter (RunTimeSource='exact'), different lead set
         // ({12, 24}), different ValidTime grid ({0, 6, 12, 18}), per-V-hour
@@ -457,6 +472,271 @@ public sealed class PrecipPredictCommand
             return false;
         }
 
+        await WritePredictionsAsync(predictions, station, anchor, metadata.Version, ct);
+        return true;
+    }
+
+    // ---- Phase 3o (pooled rich-oro) predict path ----------------------------------
+    //
+    // Same shape as RunStationAsync's rich (3c) path BUT with two changes:
+    //   1. The feature row gets an additional 9-feature terrain block
+    //      (PrecipRichOroFeatureBuilder.ComposeTerrainBlock) appended after
+    //      the 55-feat rich vector. Total feature dim 64.
+    //   2. The terrain block needs NWP-ensemble-mean wind / temp / dew /
+    //      pressure per target valid_time — pulled via the SAME SQL aux
+    //      pass the trainer used (PrecipRichOroFeatureBuilder.LoadAuxNwpMeans),
+    //      so any future feature drift between train and predict is impossible.
+    //
+    // Station-index mapping (the 9th terrain feature, oro_station_id) MUST
+    // match the train-time mapping in PrecipTrainCommand.BonehillStationOrder3o:
+    //   Bellever=0, Bovey=1, Hexworthy=2, Princetown=3.
+    // The mapping is also persisted in metadata.Hyperparameters["phase3o_station_index"]
+    // for cross-check.
+
+    /// <summary>Train-time canonical station-index mapping for Phase 3o.
+    /// Must stay in lockstep with <c>PrecipTrainCommand.BonehillStationOrder3o</c>.
+    /// Keyed by station slug (with ea_ prefix).</summary>
+    private static readonly IReadOnlyDictionary<string, int> Phase3oStationIndex =
+        new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["ea_bellever_dartmoor"]      = 0,
+            ["ea_bovey_tracey"]           = 1,
+            ["ea_dartmoor_nr_hexworthy"]  = 2,
+            ["ea_princetown"]             = 3,
+        };
+
+    private async Task<bool> RunStationAsOroAsync(
+        string modelsRoot,
+        string station,
+        string versionDir,
+        ModelArtifact.TrainingMetadata metadata,
+        PrecipClimatology climatology,
+        DateTime predictionMadeAt,
+        DateTime anchor,
+        (int Lead, DateTime Valid)[] targets,
+        IReadOnlyDictionary<int, IReadOnlyDictionary<DateTime, PivotedRow>> perLeadValid,
+        LocationConfig location,
+        CancellationToken ct)
+    {
+        // Resolve the station's terrain index. Bundle metadata carries it
+        // too — guard against a slug typo in either source.
+        if (!Phase3oStationIndex.TryGetValue(station, out var stationIndex))
+        {
+            _log.LogWarning("Station {Station}: Phase 3o bundle present but slug not in BonehillStationOrder3o map — skipping.",
+                station);
+            return true;
+        }
+        if (metadata.Hyperparameters.TryGetValue("phase3o_station_index", out var metaIdxObj))
+        {
+            // Hyperparameters round-trip as JSON; integers come back as Int64 / Int32 / etc.
+            var metaIdx = Convert.ToInt32(metaIdxObj, System.Globalization.CultureInfo.InvariantCulture);
+            if (metaIdx != stationIndex)
+            {
+                _log.LogError(
+                    "Station {Station} Phase 3o bundle {V} metadata station_index={Meta} disagrees with predict-time map={Live} — refusing to predict (train/predict feature drift).",
+                    station, metadata.Version, metaIdx, stationIndex);
+                return false;
+            }
+        }
+
+        // Load static orographic features for this station. Disk path matches
+        // the trainer's load — config-adjacent static JSON.
+        var oroPath = Path.Combine("data", "static", "orographic", $"{station}.json");
+        if (!File.Exists(oroPath))
+        {
+            _log.LogError("Station {Station}: orographic record missing at {Path} — cannot Phase 3o predict.",
+                station, oroPath);
+            return false;
+        }
+        var oroBySlug = OroStaticFeatures.LoadAll(Path.GetDirectoryName(oroPath)!);
+        if (!oroBySlug.TryGetValue(station, out var oro))
+        {
+            _log.LogError("Station {Station}: orographic record at {Path} parsed but no entry for slug.",
+                station, oroPath);
+            return false;
+        }
+
+        var ml = new MLContext(seed: 42);
+        var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
+        var canonOrder = TempFeatureBuilder.CanonicalModelOrder.ToList();
+
+        // Aux NWP-mean lookup per lead. Done lazily to avoid querying for
+        // leads we don't have predictions for.
+        var nwpMeanByLead = new Dictionary<int, Dictionary<DateTime, PrecipRichOroFeatureBuilder.NwpMeanRow>>();
+
+        // EA hourly rainfall for the rich row's persistence features —
+        // exact same load path 3c uses.
+        var friendly = ResolveFriendlyStationName(station, location);
+        if (friendly is null)
+        {
+            _log.LogError("Station {Station}: cannot resolve config name for 3o persistence lookup.", station);
+            return false;
+        }
+        var hourlyRain = PrecipRichFeatureBuilder.LoadHourlyRain(
+            _cfg.Storage.RainfallPath, location.Name, friendly, ct);
+
+        var predictions = new List<PrecipPredictionRow>();
+        foreach (var (lead, valid) in targets)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!specs.TryGetValue(lead, out var spec))
+            {
+                _log.LogWarning("Station {Station} lead {Lead}h: no BlenderSpec for lead in 3o bundle; skipping.",
+                    station, lead);
+                continue;
+            }
+            if (!perLeadValid.TryGetValue(lead, out var perValid)
+                || !perValid.TryGetValue(valid, out var pivot))
+            {
+                _log.LogWarning("Station {Station} lead {Lead}h: no forecast pivot for valid={Valid:yyyy-MM-dd HH:mm}Z; skipping.",
+                    station, lead, valid);
+                continue;
+            }
+            if (!pivot.Precip.Any(p => p.HasValue)) continue;
+
+            // Build the rich half of the spec (same as 3c). The spec passed
+            // to LightGBM is the FULL rich-oro spec; we just need the rich
+            // dim for ComposeRow + slot ordering.
+            int richDim = spec.FeatureCount - PrecipRichOroFeatureBuilder.TerrainFeatureCount;
+            // We compose the rich row using the rich sub-spec carved out of
+            // the rich-oro spec — matches the trainer's BuildForLead inner.
+            var richSpec = new BlenderSpec
+            {
+                Target = spec.Target,
+                FeatureSet = PrecipRichFeatureBuilder.SpecFeatureSet,
+                LeadHours = spec.LeadHours,
+                RequiredModels = spec.RequiredModels,
+                OptionalModels = spec.OptionalModels,
+                Models = spec.Models,
+                FeatureNames = spec.FeatureNames.Take(richDim).ToList(),
+                DataSource = spec.DataSource,
+                Tier = PrecipRichFeatureBuilder.SpecFeatureSet,
+                UkvStrategy = spec.UkvStrategy,
+            };
+
+            int N = spec.Models.Count;
+            var specPrecip = new double[N];
+            var missingRequired = new List<string>();
+            var requiredSet = spec.RequiredModels.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < N; i++)
+            {
+                var ci = canonOrder.IndexOf(spec.Models[i]);
+                var pv = pivot.Precip[ci];
+                specPrecip[i] = pv ?? double.NaN;
+                if (!pv.HasValue && requiredSet.Contains(spec.Models[i]))
+                    missingRequired.Add(spec.Models[i]);
+            }
+            if (missingRequired.Count > 0)
+            {
+                _log.LogWarning("Station {Station} lead {Lead}h: missing required precip [{M}]; skipping.",
+                    station, lead, string.Join(",", missingRequired));
+                continue;
+            }
+
+            var dew = new double[N]; var rh = new double[N];
+            var dewDep = new double[N]; var pres = new double[N];
+            for (int i = 0; i < N; i++)
+            {
+                var ci = canonOrder.IndexOf(spec.Models[i]);
+                var t = pivot.Temp2m[ci];
+                var d = pivot.Dew[ci];
+                dew[i]    = d ?? double.NaN;
+                rh[i]     = pivot.Rh[ci] ?? double.NaN;
+                dewDep[i] = (t.HasValue && d.HasValue) ? t.Value - d.Value : double.NaN;
+                pres[i]   = pivot.Pressure[ci] ?? double.NaN;
+            }
+            var runTime = valid.AddHours(-lead);
+            var persist = PrecipRichFeatureBuilder.ComputePersistence(hourlyRain, runTime);
+            var richRow = PrecipRichFeatureBuilder.ComposeRow(
+                richSpec, valid, specPrecip, dew, rh, dewDep, pres,
+                rhMean: pivot.RhMean, dewDepressionMean: pivot.DewDepressionMean,
+                cloudLowMean: pivot.CloudLowMean, cloudMidMean: pivot.CloudMidMean,
+                cloudHighMean: pivot.CloudHighMean,
+                capeMean: pivot.CapeMean, windSpeedMean: pivot.WindSpeedMean,
+                eaRainPrev24hMm: persist.Prev24hMm,
+                eaRainPrev72hMm: persist.Prev72hMm,
+                eaWetHoursLast24h: persist.WetHoursLast24h,
+                eaDryHoursTrailing: persist.DryHoursTrailing,
+                truthMmHour: 0.0);
+
+            // Terrain block — needs NWP-mean wind/temp/dew/pressure at
+            // this valid_time. Pull the lead's aux table once, then index in.
+            if (!nwpMeanByLead.TryGetValue(lead, out var auxMap))
+            {
+                auxMap = PrecipRichOroFeatureBuilder.LoadAuxNwpMeans(
+                    _cfg.Storage.ForecastsPath, location.Name, spec, ct);
+                nwpMeanByLead[lead] = auxMap;
+            }
+            if (!auxMap.TryGetValue(valid, out var nwpMean))
+            {
+                _log.LogWarning("Station {Station} lead {Lead}h valid={Valid:yyyy-MM-dd HH:mm}Z: no NWP-mean aux row for terrain block; skipping.",
+                    station, lead, valid);
+                continue;
+            }
+            var terrain = PrecipRichOroFeatureBuilder.ComposeTerrainBlock(oro, nwpMean, stationIndex);
+
+            // Concatenate rich + terrain into the final 64-dim feature vector.
+            var features = new float[spec.FeatureCount];
+            Array.Copy(richRow.Features, features, richDim);
+            for (int i = 0; i < PrecipRichOroFeatureBuilder.TerrainFeatureCount; i++)
+                features[richDim + i] = terrain[i];
+            var fullRow = new BinaryTrainingRow
+            {
+                ValidTimeUtc = valid,
+                Features = features,
+                Label = false,
+                TruthMmHour = 0.0f,
+            };
+
+            var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
+            var pWet = PrecipOccurrenceTrainer.PredictVectorProbability(ml, loadedModel, spec, new[] { fullRow });
+            var climPWet = climatology.Predict(valid);
+
+            var perModelPrecip = new double?[PrecipPredictionRow.PerModelFieldCount];
+            var perModelRun = new DateTime?[PrecipPredictionRow.PerModelFieldCount];
+            for (int i = 0; i < N; i++)
+            {
+                var ci = canonOrder.IndexOf(spec.Models[i]);
+                if (ci >= PrecipPredictionRow.PerModelFieldCount) continue;
+                perModelPrecip[ci] = specPrecip[i];
+                perModelRun[ci] = pivot.RunTime[ci];
+            }
+
+            var spreadStart = N;
+            predictions.Add(new PrecipPredictionRow
+            {
+                LocationName = location.Name,
+                TruthStation = station,
+                ModelVersion = metadata.Version,
+                PredictionMadeAtUtc = predictionMadeAt,
+                ValidTimeUtc = valid,
+                LeadHours = lead,
+                ProbWet = pWet[0],
+                ClimatologyPWet = climPWet,
+                PrecipGfs   = perModelPrecip[0], PrecipEcmwf = perModelPrecip[1],
+                PrecipIcon  = perModelPrecip[2], PrecipMf    = perModelPrecip[3],
+                PrecipUkmo  = perModelPrecip[4], PrecipGem   = perModelPrecip[5],
+                PrecipAifs  = perModelPrecip[6], PrecipJma   = perModelPrecip[7],
+                RunTimeGfs   = perModelRun[0], RunTimeEcmwf = perModelRun[1],
+                RunTimeIcon  = perModelRun[2], RunTimeMf    = perModelRun[3],
+                RunTimeUkmo  = perModelRun[4], RunTimeGem   = perModelRun[5],
+                RunTimeAifs  = perModelRun[6], RunTimeJma   = perModelRun[7],
+                PrecipMean = NanToNull(features[spreadStart + 0]),
+                PrecipStd  = NanToNull(features[spreadStart + 1]),
+                PrecipMax  = NanToNull(features[spreadStart + 2]),
+                PrecipAgreementWet01 = NanToNull(features[spreadStart + 3]),
+                FeatureVectorHash = FeatureHashing.HashFloats(features),
+                ConformalSetTag = ModelArtifact.PredictConformalIfPresent(versionDir, lead, pWet[0]),
+            });
+            _log.LogInformation("Station {Station} lead {Lead}h → P(wet) {P:0.000} (clim {Clim:0.000}, phase=3o)",
+                station, lead, pWet[0], climPWet);
+        }
+
+        if (predictions.Count == 0)
+        {
+            _log.LogWarning("Station {Station}: no 3o predictions produced.", station);
+            return false;
+        }
         await WritePredictionsAsync(predictions, station, anchor, metadata.Version, ct);
         return true;
     }

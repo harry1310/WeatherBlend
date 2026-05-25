@@ -54,6 +54,13 @@ public static class DryWindowPhases
     // Phase 3g / 3j / 3n / 3s display records retired 2026-05-25 in
     // model-cleanup Phase 1. Cleanup Phase 2 reintroduces 3p (Gaussian
     // copula MC over 3o = 3c-oro) as the dry-window challenger.
+    public static readonly DryWindowPhase Phase3p = new(
+        Key: "3p",
+        LongTitle: "Phase 3p — Gaussian copula MC over Phase 3o hourly P(wet)",
+        ShortTitle: "Phase 3p (copula MC/3o)",
+        Description: "Gaussian copula MC over the rich+orographic Phase 3o's hourly P(wet) marginals. Single empirical Σ per station, fit on train-split observed daytime wet/dry binary sequences (not per-lead — daytime-shape autocorrelation is lead-independent for truth). Bake-off Brier 0.1064 vs current 3g 0.1265 (−15.9%); composition: ~6% from source swap (3a→3o), ~11% from algorithm swap (iid→copula). Cleanup Phase 2 dry-window challenger.",
+        ChampionVsChallengerLabel: "Phase 3p (copula MC/3o)",
+        Color: "#7e57c2");
 
     /// <summary>
     /// Display-metadata records keyed by phase string. Source of truth for
@@ -65,6 +72,7 @@ public static class DryWindowPhases
         new Dictionary<string, DryWindowPhase>(StringComparer.OrdinalIgnoreCase)
         {
             [Phase3b.Key] = Phase3b,
+            [Phase3p.Key] = Phase3p,
         };
 
     /// <summary>

@@ -223,7 +223,17 @@ public static class PrecipRichOroFeatureBuilder
     // Aux SQL pass
     // -----------------------------------------------------------------------
 
-    private static Dictionary<DateTime, NwpMeanRow> LoadAuxNwpMeans(
+    /// <summary>
+    /// NWP-ensemble-mean covariates per valid_time for the given lead — wind
+    /// sin/cos/speed, temperature, dewpoint, pressure — derived from the
+    /// per-model forecast parquet pivot. Used by both train (via
+    /// BuildForLead) and predict (PrecipPredictCommand's 3o dispatch needs
+    /// the same NWP-mean values to compose the terrain block at predict
+    /// time). Public so PrecipPredictCommand can reuse the exact same SQL
+    /// path the trainer used — anything else risks a feature drift between
+    /// train and predict that would silently degrade Brier.
+    /// </summary>
+    public static Dictionary<DateTime, NwpMeanRow> LoadAuxNwpMeans(
         string forecastsPath, string locationName, BlenderSpec spec, CancellationToken ct)
     {
         using var conn = new DuckDBConnection("DataSource=:memory:");

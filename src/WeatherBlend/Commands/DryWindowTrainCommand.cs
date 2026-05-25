@@ -1,3 +1,4 @@
+using DuckDB.NET.Data;
 using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
 using WeatherBlend.Evaluate.DryWindow;
@@ -404,6 +405,293 @@ public sealed class DryWindowTrainCommand
         return 0;
     }
 
+    // ---- Phase 3p — Gaussian copula MC over 3o (cleanup Phase 2) ----------------
+    //
+    // Productionised 2026-05-25 as the dry-window challenger. Structurally:
+    //   * Marginal source: Phase 3o (3c-oro pooled across 4 Bonehill stations).
+    //   * Σ: single empirical correlation matrix per station, fit on
+    //     train-split observed daytime wet/dry binary sequences. NOT per-lead
+    //     (truth's daytime-shape autocorrelation is lead-independent by
+    //     construction — pooling across leads gives tighter Σ).
+    //
+    // Bundle layout — same as the retired 3j with one Σ instead of three:
+    //   data/models/dry_window/{station_slug}/window_{N}h/v..._phase3p/
+    //     training_metadata.json     (Phase=3p, references the 3o champion in Hyperparameters)
+    //     correlation.json           ({"Sigma": [[...]]} — ONE 9×9 per station, not per-lead)
+    //     dry_window_climatology.json
+    //
+    // The 3p version has NO model.zip files — predict reads 3o's live
+    // prediction parquet at inference time and runs copula MC over the
+    // daytime hourly q vector.
+    //
+    // Σ is fit ONCE per station and the same correlation.json gets saved
+    // into every (window) sub-bundle for that station — predict-time reads
+    // it back per (station, window, lead) cell uniformly.
+
+    public async Task<int> RunPhase3pAsync(Config.LocationConfig location, CancellationToken ct)
+    {
+        _activeLocation = location;
+        // 3p is Bonehill-only by design (dry-window targets are Bonehill-only
+        // pending Membury dry-window truth + blenders).
+        if (!_activeLocation.Name.Equals("bonehill_rocks", StringComparison.OrdinalIgnoreCase))
+        {
+            _log.LogError("Phase 3p is Bonehill-only (location='{Loc}'). Skipping.", _activeLocation.Name);
+            return 2;
+        }
+        if (_activeLocation.Rainfall.Stations.Count == 0)
+        {
+            _log.LogError("No rainfall stations configured for location '{Loc}'.", _activeLocation.Name);
+            return 2;
+        }
+
+        var modelsRoot = _cfg.Storage.ModelsPath;
+        var daytime = _cfg.DryWindow.BuildDaytimeWindow();
+        var windows = new[] { 3, 4, 6 };
+        var leads = new[] { 24, 48, 72 };
+        var rngSeed = 42;
+
+        _log.LogInformation(
+            "Phase 3p — Gaussian copula MC over 3o; stations=[{S}] windows=[{W}] leads=[{L}]",
+            string.Join(", ", _activeLocation.Rainfall.Stations.Select(s => s.Name)),
+            string.Join(",", windows), string.Join(",", leads));
+
+        // Resolve precip 3o champion per station. 3p binds to ONE 3o version
+        // per station for the lifetime of the artefact — re-running 3p training
+        // picks up the latest 3o champion at that moment.
+        var precip3oByStation = new Dictionary<string, string>();
+        foreach (var station in _activeLocation.Rainfall.Stations)
+        {
+            var stationSlug = StationSlug.WithEaPrefix(station.Name);
+            var v3o = ModelArtifact.ResolveStationPhaseVersion(modelsRoot, "precipitation", stationSlug, "3o");
+            if (string.IsNullOrEmpty(v3o))
+            {
+                _log.LogWarning("Phase 3p: no 3o champion for station {Slug} in manifest — skipping station " +
+                    "(its 3p bundle will not be produced this run; will retry once 3o is trained).", stationSlug);
+                continue;
+            }
+            precip3oByStation[stationSlug] = v3o;
+        }
+        if (precip3oByStation.Count == 0)
+        {
+            _log.LogError("Phase 3p: no station has a 3o champion yet — abort. " +
+                "Run `train --target precipitation --feature-set oro --location bonehill_rocks` first.");
+            return 3;
+        }
+
+        int cellFailures = 0, cellsTrained = 0;
+        foreach (var station in _activeLocation.Rainfall.Stations)
+        {
+            ct.ThrowIfCancellationRequested();
+            var stationSlug = StationSlug.WithEaPrefix(station.Name);
+            if (!precip3oByStation.TryGetValue(stationSlug, out var v3o)) continue;
+
+            // Load hourly EA truth across the station's full history. Build
+            // per-day daytime wet/dry binary sequences. Threshold = 0.1 mm/h
+            // (same as PrecipFeatureBuilder.WetThresholdMm).
+            var sequencesByDate = LoadDaytimeBinarySequences(station.Name, daytime, ct);
+            if (sequencesByDate.Count < 200)
+            {
+                _log.LogWarning("Phase 3p {Slug}: only {N} daytime-complete days of truth — too few to fit Σ; skipping.",
+                    stationSlug, sequencesByDate.Count);
+                cellFailures++;
+                continue;
+            }
+            _log.LogInformation("Phase 3p {Slug}: {N} daytime-complete days of EA truth " +
+                "({Start:yyyy-MM-dd}..{End:yyyy-MM-dd}); fitting Σ on train slice.",
+                stationSlug,
+                sequencesByDate.Count,
+                sequencesByDate.Keys.Min(),
+                sequencesByDate.Keys.Max());
+
+            // Chronological 70/15/15 split BY DATE — matches the 3b / 3o
+            // training split boundaries on the same underlying truth series,
+            // so any cross-bake-off comparison reads off identical test rows.
+            var sortedDates = sequencesByDate.Keys.OrderBy(d => d).ToList();
+            int nTrain = (int)Math.Floor(sortedDates.Count * 0.70);
+            int nVal   = (int)Math.Floor(sortedDates.Count * 0.15);
+            var trainDates = sortedDates.Take(nTrain).ToList();
+            var valDates   = sortedDates.Skip(nTrain).Take(nVal).ToList();
+            var testDates  = sortedDates.Skip(nTrain + nVal).ToList();
+
+            // Fit Σ on train-slice sequences.
+            var trainSequences = trainDates.Select(d => sequencesByDate[d]).ToArray();
+            double[,] sigma;
+            try
+            {
+                sigma = DryWindow3pPredictor.FitCorrelation(trainSequences);
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex, "Phase 3p {Slug}: Σ fit failed — likely a degenerate train slice (no wet days, or constant per-hour).", stationSlug);
+                cellFailures++;
+                continue;
+            }
+            // Sanity-check Cholesky succeeds (will throw if Σ isn't strictly SPD).
+            try { _ = DryWindow3pPredictor.CholeskyDecompose(sigma); }
+            catch (Exception ex)
+            {
+                _log.LogError(ex, "Phase 3p {Slug}: Σ Cholesky failed — Σ not strictly positive-definite.", stationSlug);
+                cellFailures++;
+                continue;
+            }
+
+            // Climatology — daily base rate over train slice. Matches the
+            // shape DryWindow3b emits + the PrecipClimatology shape for site
+            // baselines. The dry-window climatology is per (station, window)
+            // so this gets saved once per (station, window) bundle below.
+            // Empty by default since the climatology used by predict is the
+            // day-of-year base rate already encoded in 3o; 3p doesn't have
+            // its own climatology object yet (verify computes it on the fly).
+
+            var now = DateTime.UtcNow;
+            // One bundle per (station, window) — matches 3b layout so the
+            // existing dry-window predict / verify plumbing reads 3p
+            // bundles without modification.
+            foreach (var window in windows)
+            {
+                ct.ThrowIfCancellationRequested();
+                var compositeKey = $"{stationSlug}/window_{window}h";
+                var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "dry_window", compositeKey, now, suffix: "phase3p");
+                var versionName = Path.GetFileName(versionDir);
+                Directory.CreateDirectory(versionDir);
+
+                // Write the SAME Σ into every window's correlation.json — Σ
+                // is the daytime-shape autocorrelation and is window-independent.
+                DryWindow3pPredictor.WriteCorrelationJson(versionDir, sigma);
+
+                // Per-lead metadata stub — predict reads these to know which
+                // (station, lead) cells the bundle covers. Brier numbers are
+                // left blank; verify fills them in once live predictions land.
+                var perLead = leads.ToDictionary(
+                    l => l.ToString(),
+                    l => new ModelArtifact.PerLeadStats
+                    {
+                        LeadHours = l,
+                        DataRangeTrain = $"{trainDates.First():yyyy-MM-dd} → {trainDates.Last():yyyy-MM-dd}",
+                        DataRangeVal   = valDates.Count > 0 ? $"{valDates.First():yyyy-MM-dd} → {valDates.Last():yyyy-MM-dd}" : "—",
+                        DataRangeTest  = testDates.Count > 0 ? $"{testDates.First():yyyy-MM-dd} → {testDates.Last():yyyy-MM-dd}" : "—",
+                        TrainRows = trainDates.Count,
+                        ValRows   = valDates.Count,
+                        TestRows  = testDates.Count,
+                        TestCalendarMonths = testDates.Select(d => new DateTime(d.Year, d.Month, 1)).Distinct().Count(),
+                        BestSingle = "",
+                        BestSingleValMae  = 0.0,
+                        BestSingleTestMae = 0.0,
+                        BlendTestMae  = 0.0,
+                        BlendTestRmse = 0.0,
+                        BlendTestBias = 0.0,
+                    });
+
+                var metadata = new ModelArtifact.TrainingMetadata
+                {
+                    Version = versionName,
+                    Target = "dry_window",
+                    Phase = DryWindow3pPredictor.Phase3p,
+                    LocationName = _activeLocation.Name,
+                    DataSource = "ea_rainfall+3o_live_predictions",
+                    TrainedAtUtc = now,
+                    Hyperparameters = new Dictionary<string, object>
+                    {
+                        ["mc_samples"] = DryWindow3pPredictor.DefaultMcSamples,
+                        ["mc_seed"] = rngSeed,
+                        ["sigma_dim"] = sigma.GetLength(0),
+                        ["sigma_n_train_days"] = trainSequences.Length,
+                        ["window_hours"] = window,
+                        [DryWindow3pPredictor.Precip3oVersionKey] = v3o,
+                    },
+                    TestMae = perLead.ToDictionary(kv => $"lead_{kv.Key}h_brier", kv => kv.Value.BlendTestMae),
+                    PerLead = perLead,
+                    DeviationsFromBrief = new List<string>
+                    {
+                        "Phase 3p — parameter-free Gaussian copula MC over Phase 3o's hourly P(wet) marginals. No LightGBM, no learned weights; predict reads 3o's live prediction parquet at inference time and runs MC.",
+                        "Single empirical Σ per station from train-split observed_wet sequences (not per-(station, lead) like the retired 3j). Σ structure is lead-independent for observed labels; pooling gives a tighter estimate.",
+                        $"3o champion bound at training time: {v3o}. Re-run dry-window train --feature-set copula-mc to rebind to a newer 3o champion.",
+                        "Cross-window monotonicity P(N=3) ≥ P(N=4) ≥ P(N=6) is guaranteed by computing all windows from a SINGLE shared correlated-Bernoulli sequence per MC sample.",
+                        "Brier numbers are blank in training_metadata — verify scores live predictions vs EA truth as cycles produce 3p rows.",
+                    },
+                };
+                ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
+
+                // Promote as challenger per (station, window).
+                ModelArtifact.PromoteStationVersion(modelsRoot, "dry_window", compositeKey, versionName,
+                    newPhase: DryWindow3pPredictor.Phase3p);
+                _log.LogInformation("Phase 3p {Key} → {Dir}", compositeKey, versionDir);
+            }
+            cellsTrained++;
+        }
+
+        _log.LogInformation("Phase 3p complete. CellsTrained={C} CellFailures={F}", cellsTrained, cellFailures);
+        await Task.CompletedTask;
+        if (cellsTrained == 0) return 3;
+        return cellFailures > 0 ? 4 : 0;
+    }
+
+    /// <summary>
+    /// Load per-day daytime wet/dry binary sequences for one EA rainfall
+    /// station. Returns a dict keyed by target_date (UTC) — each value is a
+    /// byte[] of length daytime.DurationHours, 1 = wet hour (≥ 0.1 mm), 0 =
+    /// dry. Days with any missing daytime hour are dropped so Σ-fit sees
+    /// only complete sequences (matches the daytime-completeness gate the
+    /// label builder applies to 3b training rows).
+    /// </summary>
+    private Dictionary<DateOnly, byte[]> LoadDaytimeBinarySequences(
+        string stationName, DaytimeWindow daytime, CancellationToken ct)
+    {
+        var rainfallPath = _cfg.Storage.RainfallPath;
+        var glob = Path.Combine(rainfallPath, "**", "*.parquet").Replace('\\', '/');
+        var escLocation = _activeLocation.Name.Replace("'", "''");
+        var escStation  = stationName.Replace("'", "''");
+        // 15-min totals roll up to hourly via SUM with a "all 4 quarters present"
+        // gate — identical aggregation to DryWindowFeatureBuilder.LoadHourlyTruth.
+        var sql = $@"
+SELECT date_trunc('hour', ObservedTimeUtc) AS valid_time,
+       SUM(Value15MinMm) AS mm_hour
+FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+WHERE LocationName = '{escLocation}'
+  AND StationName  = '{escStation}'
+  AND Value15MinMm IS NOT NULL
+GROUP BY 1
+HAVING COUNT(*) = 4
+ORDER BY 1";
+
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        var hourly = new SortedDictionary<DateTime, double>();
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            ct.ThrowIfCancellationRequested();
+            var t = DateTime.SpecifyKind(r.GetDateTime(0), DateTimeKind.Utc);
+            hourly[t] = r.GetDouble(1);
+        }
+
+        const double WetThresholdMm = 0.1;
+        var result = new Dictionary<DateOnly, byte[]>();
+        if (hourly.Count == 0) return result;
+        var minDay = DateOnly.FromDateTime(hourly.Keys.First().Date);
+        var maxDay = DateOnly.FromDateTime(hourly.Keys.Last().Date);
+        for (var d = minDay; d <= maxDay; d = d.AddDays(1))
+        {
+            var (startUtc, endUtcExclusive) = daytime.UtcHourRangeFor(d);
+            var seqLen = endUtcExclusive - startUtc;
+            // Sanity: skip days whose daytime range collapsed (off-by-one edge
+            // around DST or window mis-config).
+            if (seqLen <= 0) continue;
+            var midnight = new DateTime(d.Year, d.Month, d.Day, 0, 0, 0, DateTimeKind.Utc);
+            var seq = new byte[seqLen];
+            bool complete = true;
+            for (int h = 0; h < seqLen; h++)
+            {
+                var t = midnight.AddHours(startUtc + h);
+                if (!hourly.TryGetValue(t, out var mm)) { complete = false; break; }
+                seq[h] = (byte)(mm >= WetThresholdMm ? 1 : 0);
+            }
+            if (complete) result[d] = seq;
+        }
+        return result;
+    }
 
 
     private string[]? ResolveStations(string stationArg)

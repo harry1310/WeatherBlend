@@ -11,15 +11,15 @@ namespace WeatherBlend.Commands;
 
 /// <summary>
 /// Phase 4b one-time bundle minter. 4b isn't a trained model — it's
-/// the arithmetic mean of phase 4a + phase 3e P(wet), identified as
+/// the arithmetic mean of phase 4a + phase 3o P(wet), identified as
 /// the best production stack in the 2026-05-12 bake-off. The bundle
 /// exists so render / verify / Models page treat 4b as a first-class
 /// phase: there's a versioned dir per station with metadata,
 /// climatology, feature schema, training_summary, and a
-/// test_predictions.parquet derived from the inner-join of 4a + 3e's
+/// test_predictions.parquet derived from the inner-join of 4a + 3o's
 /// own test_predictions parquets.
 ///
-/// Runs once per Sunday auto-retrain (after 4a + 3e are minted) plus
+/// Runs once per Sunday auto-retrain (after 4a + 3o are minted) plus
 /// any time the user wants to refresh the bundle manually. Updates
 /// MANIFEST.Active via PromoteStationVersion so the new 4b version
 /// replaces the previous one (lead-overlap-aware: same phase, same lead
@@ -32,10 +32,10 @@ namespace WeatherBlend.Commands;
 ///                            versions in DeviationsFromBrief.
 ///   training_summary.json    Minimal stub for RetrainGuard.
 ///   feature_schema.json      One BlenderSpec per lead listing p_4a +
-///                            p_3e as inputs (so the Spec page renders
+///                            p_3o as inputs (so the Spec page renders
 ///                            a meaningful card).
-///   test_predictions.parquet Inner-join of 4a + 3e test_predictions
-///                            with p_wet = mean(p_4a, p_3e).
+///   test_predictions.parquet Inner-join of 4a + 3o test_predictions
+///                            with p_wet = mean(p_4a, p_3o).
 ///   climatology.json         Copied from 3a's bundle — same station,
 ///                            same wet indicator, identical baseline.
 /// </summary>
@@ -53,7 +53,7 @@ public sealed class Phase4bMintCommand
 
     /// <summary>
     /// Per-station outcome. <see cref="Skipped"/> is NOT a failure: a
-    /// station with no 4a or 3e bundle simply isn't provisioned for 4b
+    /// station with no 4a or 3o bundle simply isn't provisioned for 4b
     /// (e.g. Membury — 4a was never trained there). Skips must not fail
     /// the mint step, otherwise the Sunday retrain red-Xes over a model
     /// that was never meant to exist at that location.
@@ -97,7 +97,7 @@ public sealed class Phase4bMintCommand
             }
         }
         _log.LogInformation("Done. Minted: {OK}, skipped: {Skip}, failed: {Err}.", nOk, nSkip, nErr);
-        // Skips don't fail the step — only genuine errors (4a+3e present
+        // Skips don't fail the step — only genuine errors (4a+3o present
         // but the mint itself broke) escalate to exit 3.
         return nErr == 0 ? 0 : 3;
     }
@@ -120,24 +120,24 @@ public sealed class Phase4bMintCommand
         if (!Directory.Exists(stationDir))
             return (MintOutcome.Skipped, $"no precipitation models dir at {stationDir} — not provisioned for 4b");
 
-        // 4a / 3e supply the test_predictions to join. 3a supplies only
+        // 4a / 3o supply the test_predictions to join. 3a supplies only
         // the location pin (training_metadata) + climatology copy — it does
         // NOT need a test_predictions.parquet, so resolve it on the file 4b
         // actually consumes. Requiring test_predictions there was the bug
         // that 403'd Bovey/Hexworthy 4b on the first CI retrain.
         var bundle4a = FindLatestBundle(stationDir, "_phase4a", "test_predictions.parquet");
-        var bundle3e = FindLatestBundle(stationDir, "_phase3e", "test_predictions.parquet");
+        var bundle3o = FindLatestBundle(stationDir, "_phase3o", "test_predictions.parquet");
         var bundle3a = FindLatestBundle(stationDir, phaseSuffix: null, ModelArtifact.TrainingMetadataFileName);
-        // No 4a or no 3e ⇒ this station isn't a 4b station (e.g. Membury,
+        // No 4a or no 3o ⇒ this station isn't a 4b station (e.g. Membury,
         // where 4a has never been trained). Skip, don't fail.
         if (bundle4a is null) return (MintOutcome.Skipped, $"no 4a bundle — station not provisioned for 4b ({stationDir})");
-        if (bundle3e is null) return (MintOutcome.Skipped, $"no 3e bundle — station not provisioned for 4b ({stationDir})");
-        // With 4a + 3e present, a missing 3a bundle IS a genuine fault.
+        if (bundle3o is null) return (MintOutcome.Skipped, $"no 3o bundle — station not provisioned for 4b ({stationDir})");
+        // With 4a + 3o present, a missing 3a bundle IS a genuine fault.
         if (bundle3a is null) return (MintOutcome.Failed, $"no 3a bundle (needed for location + climatology) under {stationDir}");
 
         // Pull the active location from the 3a bundle's metadata — 4b
         // inherits the location pinning. If a station ever ends up with
-        // 3a + 3e + 4a trained on different locations, RetrainGuard
+        // 3a + 3o + 4a trained on different locations, RetrainGuard
         // would have refused those promotions long before we got here.
         var meta3a = ModelArtifact.LoadTrainingMetadata(bundle3a);
         var location = string.IsNullOrEmpty(meta3a.LocationName)
@@ -149,9 +149,9 @@ public sealed class Phase4bMintCommand
         // {valid_time, station, lead, p_wet, observed_wet}.
         var joined = ReadAndJoinTestPredictions(
             Path.Combine(bundle4a, "test_predictions.parquet"),
-            Path.Combine(bundle3e, "test_predictions.parquet"));
+            Path.Combine(bundle3o, "test_predictions.parquet"));
         if (joined.Count == 0)
-            return (MintOutcome.Failed, "inner-join of 4a + 3e test_predictions produced 0 rows");
+            return (MintOutcome.Failed, "inner-join of 4a + 3o test_predictions produced 0 rows");
 
         // Write bundle dir + artefacts.
         var outDir = Path.Combine(stationDir, version);
@@ -181,12 +181,12 @@ public sealed class Phase4bMintCommand
             var y = rows.Select(r => r.Observed ? 1.0 : 0.0).ToArray();
             var p = rows.Select(r => r.PWet).ToArray();
             var p4a = rows.Select(r => r.PWet4a).ToArray();
-            var p3e = rows.Select(r => r.PWet3e).ToArray();
+            var p3o = rows.Select(r => r.PWet3o).ToArray();
             var brierBlend = Brier(p, y);
             var brier4a    = Brier(p4a, y);
-            var brier3e    = Brier(p3e, y);
-            var bestBrier  = Math.Min(brier4a, brier3e);
-            var bestName   = brier3e <= brier4a ? "p_3e" : "p_4a";
+            var brier3o    = Brier(p3o, y);
+            var bestBrier  = Math.Min(brier4a, brier3o);
+            var bestName   = brier3o <= brier4a ? "p_3o" : "p_4a";
             perLead[leadGroup.Key.ToString()] = new ModelArtifact.PerLeadStats
             {
                 LeadHours          = leadGroup.Key,
@@ -214,24 +214,24 @@ public sealed class Phase4bMintCommand
             Target        = "precipitation",
             Phase         = Phase,
             LocationName  = location,
-            DataSource    = $"derived: mean(p_4a, p_3e) — 4a={Path.GetFileName(bundle4a)}, 3e={Path.GetFileName(bundle3e)}",
+            DataSource    = $"derived: mean(p_4a, p_3o) — 4a={Path.GetFileName(bundle4a)}, 3o={Path.GetFileName(bundle3o)}",
             TrainedAtUtc  = trainedAt,
             Hyperparameters = new Dictionary<string, object>
             {
                 ["method"]            = "arithmetic_mean",
-                ["components"]        = new[] { "p_4a", "p_3e" },
+                ["components"]        = new[] { "p_4a", "p_3o" },
                 ["source_bundle_4a"]  = Path.GetFileName(bundle4a)!,
-                ["source_bundle_3e"]  = Path.GetFileName(bundle3e)!,
+                ["source_bundle_3o"]  = Path.GetFileName(bundle3o)!,
             },
             TestMae = perLead.ToDictionary(
                 kv => $"lead_{kv.Key}h_brier",
                 kv => kv.Value.BlendTestMae),
             DeviationsFromBrief = new List<string>
             {
-                "Phase 4b is NOT a trained model — it is the arithmetic mean of phase 4a's BART P(wet) and phase 3e's MLP P(wet). The bundle is minted by Phase4bMintCommand (typically after Sunday auto-retrain) so the ModelMetadata + Manifest plumbing treats it as a first-class phase (renders on rain forecasts, scored by verify, shown on the Models page). The 'training' step is the join + average.",
-                "test_predictions.parquet is the inner-join of 4a and 3e's test_predictions parquets with p_wet = (p_4a + p_3e) / 2. PerLead.BlendTestMae reports Brier on that joined slice — matches the 2026-05-12 LightGBM-meta-learner bake-off finding (mean Brier 0.0830 vs best single 3e at 0.0844).",
-                "No feature schema, no LightGBM/MLP/BART training step. Phase4bPredictCommand performs the same arithmetic on the live cycle's 4a + 3e prediction parquets — predict-and-render runs it inline between predict-all and the R2 push.",
-                "PerLeadStats fields repurposed: BlendTestMae=Brier on joined test slice, BlendTestBias=mean(p − y), BlendTestRmse=0.0 (not meaningful), BestSingleTestMae=Brier of the better of 4a/3e alone on the same slice.",
+                "Phase 4b is NOT a trained model — it is the arithmetic mean of phase 4a's BART P(wet) and phase 3o's MLP P(wet). The bundle is minted by Phase4bMintCommand (typically after Sunday auto-retrain) so the ModelMetadata + Manifest plumbing treats it as a first-class phase (renders on rain forecasts, scored by verify, shown on the Models page). The 'training' step is the join + average.",
+                "test_predictions.parquet is the inner-join of 4a and 3o's test_predictions parquets with p_wet = (p_4a + p_3o) / 2. PerLead.BlendTestMae reports Brier on that joined slice — matches the 2026-05-12 LightGBM-meta-learner bake-off finding (mean Brier 0.0830 vs best single 3o at 0.0844).",
+                "No feature schema, no LightGBM/MLP/BART training step. Phase4bPredictCommand performs the same arithmetic on the live cycle's 4a + 3o prediction parquets — predict-and-render runs it inline between predict-all and the R2 push.",
+                "PerLeadStats fields repurposed: BlendTestMae=Brier on joined test slice, BlendTestBias=mean(p − y), BlendTestRmse=0.0 (not meaningful), BestSingleTestMae=Brier of the better of 4a/3o alone on the same slice.",
                 "Climatology copied from the station's 3a bundle — 4b targets the same wet/dry indicator at the same station, so the baseline is identical.",
             },
             PerLead = perLead,
@@ -240,7 +240,7 @@ public sealed class Phase4bMintCommand
             JsonSerializer.Serialize(metadata, new JsonSerializerOptions { WriteIndented = true }), ct);
 
         // 4. feature_schema.json — one BlenderSpec per lead, two
-        // synthetic "models" (p_4a, p_3e). Lets the Spec page render
+        // synthetic "models" (p_4a, p_3o). Lets the Spec page render
         // 4b's card without bespoke handling.
         var leadInts = perLead.Keys.Select(int.Parse).OrderBy(x => x).ToArray();
         var schemaPerLead = leadInts.ToDictionary(
@@ -252,8 +252,8 @@ public sealed class Phase4bMintCommand
                 LeadHours      = L,
                 RequiredModels = Array.Empty<string>(),
                 OptionalModels = Array.Empty<string>(),
-                Models         = new[] { "phase4a", "phase3e" },
-                FeatureNames   = new[] { "p_4a", "p_3e" },
+                Models         = new[] { "phase4a", "phase3o" },
+                FeatureNames   = new[] { "p_4a", "p_3o" },
                 DataSource     = BlenderDataSource.OpenMeteoPreviousRuns,  // closest match — 4b doesn't have its own
                 Tier           = "4b-synth",
                 UkvStrategy    = WeatherBlend.Train.Exact12h.Exact12hFeatureBuilder.UkvPickStrategy.Strict,
@@ -301,7 +301,7 @@ public sealed class Phase4bMintCommand
     /// <paramref name="requiredFile"/>. <paramref name="phaseSuffix"/> null
     /// matches the suffix-less 3a champion dirs; a non-null suffix matches
     /// exactly (e.g. <c>_phase4a</c>). The required-file gate differs per
-    /// caller: 4a/3e are resolved on <c>test_predictions.parquet</c> (the
+    /// caller: 4a/3o are resolved on <c>test_predictions.parquet</c> (the
     /// data 4b joins), 3a on <c>training_metadata.json</c> (4b only needs
     /// 3a for the location pin + a best-effort climatology copy).
     /// </summary>
@@ -326,19 +326,19 @@ public sealed class Phase4bMintCommand
     }
 
     private record JoinedRow(DateTime ValidTime, string Station, int Lead,
-                             double PWet4a, double PWet3e, double PWet, bool Observed);
+                             double PWet4a, double PWet3o, double PWet, bool Observed);
 
-    private static List<JoinedRow> ReadAndJoinTestPredictions(string parquet4a, string parquet3e)
+    private static List<JoinedRow> ReadAndJoinTestPredictions(string parquet4a, string parquet3o)
     {
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
         var p4a = parquet4a.Replace("\\", "/");
-        var p3e = parquet3e.Replace("\\", "/");
+        var p3o = parquet3o.Replace("\\", "/");
         var sql = $@"
 SELECT a.valid_time, a.station, a.lead,
-       a.p_wet AS p_4a, e.p_wet AS p_3e, a.observed_wet
+       a.p_wet AS p_4a, e.p_wet AS p_3o, a.observed_wet
 FROM read_parquet('{p4a}') a
-INNER JOIN read_parquet('{p3e}') e
+INNER JOIN read_parquet('{p3o}') e
   ON a.valid_time = e.valid_time
  AND a.station    = e.station
  AND a.lead       = e.lead

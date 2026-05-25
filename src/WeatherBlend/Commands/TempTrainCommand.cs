@@ -99,10 +99,11 @@ public sealed class TempTrainCommand : TrainCommandBase
         }
 
         var fs = (featureSet ?? "lean").ToLowerInvariant();
-        if (fs is not ("lean" or "rich" or "exact"))
+        if (fs is not ("lean" or "rich" or "oro" or "exact" or "copula-mc"))
         {
-            _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich | exact. " +
-                "(MC / mlp variants retired 2026-05-25 in model-cleanup Phase 1.)", featureSet);
+            _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich | oro | exact | copula-mc. " +
+                "(3g/3j/3n/3s and mlp variants retired 2026-05-25 in model-cleanup Phase 1; " +
+                "copula-mc is the cleanup-Phase-2 Phase 3p binding.)", featureSet);
             return 2;
         }
         // "exact" = Phase 2d (temperature) or Phase 3d (precipitation) — same
@@ -111,6 +112,22 @@ public sealed class TempTrainCommand : TrainCommandBase
         {
             _log.LogError(
                 "--feature-set {Fs} is only supported for targets temperature, precipitation.", fs);
+            return 2;
+        }
+        // "oro" = Phase 3o (precipitation rich + 9 terrain features, 4-station
+        // Bonehill pool). Precipitation-only.
+        if (fs == "oro" && t != "precipitation")
+        {
+            _log.LogError(
+                "--feature-set {Fs} is only supported for target precipitation.", fs);
+            return 2;
+        }
+        // "copula-mc" = Phase 3p (Gaussian copula MC over Phase 3o hourly
+        // marginals). Dry-window-only.
+        if (fs == "copula-mc" && t != "dry-window")
+        {
+            _log.LogError(
+                "--feature-set {Fs} is only supported for target dry-window.", fs);
             return 2;
         }
         if (elementTarget is not null && fs != "lean")
@@ -166,13 +183,15 @@ public sealed class TempTrainCommand : TrainCommandBase
             "precipitation" => await _precip.RunAsync(
                                    leads, station, fs, tier, includeUkv,
                                    exactLeads, cycles, location, ct),
-            // dry-window: only Phase 3b ships post-2026-05-25 cleanup;
-            // 3g / 3j / 3n / 3s and the legacy 3f MLP bake-off branches are
-            // gone. "rich" silently maps to 3b for symmetry with the other
-            // dispatchers.
-            "dry-window"    => await _dryWindow.RunAsync(
-                                   station ?? "all", window ?? "all", leads,
-                                   location, ct),
+            // dry-window: lean / rich / default → Phase 3b (53 features);
+            // copula-mc → Phase 3p (Gaussian copula MC over 3o, cleanup
+            // Phase 2). 3g / 3j / 3n / 3s and the legacy 3f MLP bake-off
+            // branches were retired in cleanup Phase 1.
+            "dry-window"    => fs == "copula-mc"
+                                   ? await Dispatch3pAsync(_dryWindow, location, ct)
+                                   : await _dryWindow.RunAsync(
+                                         station ?? "all", window ?? "all", leads,
+                                         location, ct),
             // Per-variable element blenders: one dispatcher routes wind / humidity /
             // shortwave-radiation / cloud-cover to its dedicated IElementBlender.
             _ when elementTarget is not null
@@ -191,6 +210,18 @@ public sealed class TempTrainCommand : TrainCommandBase
         "120" => new[] { 120 },
         _     => null,
     };
+
+    /// <summary>
+    /// Phase 3p dispatcher — separate from RunAsync because RunPhase3pAsync
+    /// doesn't take station / window / leads args (3p iterates all configured
+    /// stations and all 3 (windows × 3 leads) per station internally). Kept
+    /// out of the switch expression so the return type stays Task&lt;int&gt;.
+    /// </summary>
+    private static Task<int> Dispatch3pAsync(
+        DryWindowTrainCommand dryWindow,
+        Config.LocationConfig location,
+        CancellationToken ct)
+        => dryWindow.RunPhase3pAsync(location, ct);
 
     private async Task<int> RunPhase2bAsync(int[] leads, Config.LocationConfig location, CancellationToken ct)
     {
