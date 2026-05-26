@@ -226,12 +226,13 @@ public static class PrecipRichOroFeatureBuilder
     /// <summary>
     /// NWP-ensemble-mean covariates per valid_time for the given lead — wind
     /// sin/cos/speed, temperature, dewpoint, pressure — derived from the
-    /// per-model forecast parquet pivot. Used by both train (via
-    /// BuildForLead) and predict (PrecipPredictCommand's 3o dispatch needs
-    /// the same NWP-mean values to compose the terrain block at predict
-    /// time). Public so PrecipPredictCommand can reuse the exact same SQL
-    /// path the trainer used — anything else risks a feature drift between
-    /// train and predict that would silently degrade Brier.
+    /// OFFSET_DAY (Open-Meteo Previous Runs) backfilled forecast tree.
+    /// Used at TRAINING TIME only — predict-time use must call
+    /// <see cref="LoadAuxNwpMeansLive"/> instead because offset_day is
+    /// historical backfill and doesn't carry rows for future valid_times.
+    /// (Caught 2026-05-26 — the predict path naively called this method and
+    /// every future-valid lookup returned a miss, producing zero 3o
+    /// predictions for the live cycle.)
     /// </summary>
     public static Dictionary<DateTime, NwpMeanRow> LoadAuxNwpMeans(
         string forecastsPath, string locationName, BlenderSpec spec, CancellationToken ct)
@@ -252,6 +253,83 @@ public static class PrecipRichOroFeatureBuilder
         sb.AppendLine($"    WHERE LocationName = '{escLocation}'");
         sb.AppendLine("      AND RunTimeSource = 'offset_day'");
         sb.AppendLine($"      AND LeadHours = {spec.LeadHours}");
+        sb.AppendLine($"      AND Model IN {modelInClause}");
+        sb.AppendLine(")");
+        sb.AppendLine("SELECT ValidTimeUtc,");
+        sb.AppendLine("       AVG(SIN(WindDirection10m * pi() / 180.0)) AS wind_sin,");
+        sb.AppendLine("       AVG(COS(WindDirection10m * pi() / 180.0)) AS wind_cos,");
+        sb.AppendLine("       AVG(WindSpeed10m)    AS wind_speed,");
+        sb.AppendLine("       AVG(Temperature2m)   AS temp_c,");
+        sb.AppendLine("       AVG(DewPoint2m)      AS dew_c,");
+        sb.AppendLine("       AVG(SurfacePressure) AS pres_hpa");
+        sb.AppendLine("FROM latest WHERE rn = 1 GROUP BY ValidTimeUtc ORDER BY ValidTimeUtc;");
+
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sb.ToString();
+        using var r = cmd.ExecuteReader();
+
+        var map = new Dictionary<DateTime, NwpMeanRow>();
+        while (r.Read())
+        {
+            ct.ThrowIfCancellationRequested();
+            var t = r.GetDateTime(0);
+            var windSin = r.IsDBNull(1) ? double.NaN : r.GetDouble(1);
+            var windCos = r.IsDBNull(2) ? double.NaN : r.GetDouble(2);
+            var ws      = r.IsDBNull(3) ? double.NaN : r.GetDouble(3);
+            var tc      = r.IsDBNull(4) ? double.NaN : r.GetDouble(4);
+            var td      = r.IsDBNull(5) ? double.NaN : r.GetDouble(5);
+            var p       = r.IsDBNull(6) ? double.NaN : r.GetDouble(6);
+            map[t] = new NwpMeanRow(windSin, windCos, ws, tc, td, p);
+        }
+        return map;
+    }
+
+    /// <summary>
+    /// Predict-time variant of <see cref="LoadAuxNwpMeans"/> that reads the
+    /// LIVE forecast tree (<c>RunTimeSource &lt;&gt; 'offset_day'</c>) — the
+    /// same tree PrecipPredictCommand's main pivot already uses. Bounded by
+    /// the (earliestValid, latestValid) target window so the query stays
+    /// cheap.
+    ///
+    /// Why this exists separately from <see cref="LoadAuxNwpMeans"/>: the
+    /// offset_day tree is Open-Meteo Previous Runs backfill — historical
+    /// only. Future valid_times have no offset_day rows, so the train-time
+    /// SQL returns an empty dict at predict time and the 3o predict path
+    /// silently skips every (station, lead, valid) tuple. Caught
+    /// 2026-05-26 — see <see cref="LoadAuxNwpMeans"/>'s XML doc for the
+    /// failure mode.
+    ///
+    /// Picks the freshest RunTimeUtc per (ValidTimeUtc, Model) — same
+    /// freshest-wins discipline as PrecipPredictCommand.QueryLatestForecastRows.
+    /// Drops the per-lead filter (train uses <c>LeadHours = N</c>; live
+    /// predict uses whatever the freshest cycle gives, regardless of
+    /// resulting lead) — this introduces a small train/predict semantic
+    /// asymmetry on the terrain-block inputs, but the alternative (require
+    /// an exact lead row in the live tree) would skip the cycle entirely
+    /// for any (target_lead, valid) that the latest cycle doesn't happen
+    /// to land at exactly lead=24, which is the common case.
+    /// </summary>
+    public static Dictionary<DateTime, NwpMeanRow> LoadAuxNwpMeansLive(
+        string forecastsPath, string locationName, BlenderSpec spec,
+        DateTime earliestValid, DateTime latestValid, CancellationToken ct)
+    {
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+
+        var fcGlob = Path.Combine(forecastsPath, "**", "*.parquet").Replace('\\', '/').Replace("'", "''");
+        var escLocation = locationName.Replace("'", "''");
+        var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
+
+        var sb = new StringBuilder();
+        sb.AppendLine("WITH latest AS (");
+        sb.AppendLine("    SELECT ValidTimeUtc, Model,");
+        sb.AppendLine("           WindDirection10m, WindSpeed10m, Temperature2m, DewPoint2m, SurfacePressure,");
+        sb.AppendLine("           ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, Model ORDER BY RunTimeUtc DESC) AS rn");
+        sb.AppendLine($"    FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)");
+        sb.AppendLine($"    WHERE LocationName = '{escLocation}'");
+        sb.AppendLine("      AND (RunTimeSource IS NULL OR RunTimeSource <> 'offset_day')");
+        sb.AppendLine($"      AND ValidTimeUtc BETWEEN TIMESTAMP '{earliestValid:yyyy-MM-dd HH:mm:ss}'");
+        sb.AppendLine($"                            AND TIMESTAMP '{latestValid:yyyy-MM-dd HH:mm:ss}'");
         sb.AppendLine($"      AND Model IN {modelInClause}");
         sb.AppendLine(")");
         sb.AppendLine("SELECT ValidTimeUtc,");

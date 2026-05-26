@@ -536,9 +536,14 @@ public sealed class PrecipPredictCommand
     //      (PrecipRichOroFeatureBuilder.ComposeTerrainBlock) appended after
     //      the 55-feat rich vector. Total feature dim 64.
     //   2. The terrain block needs NWP-ensemble-mean wind / temp / dew /
-    //      pressure per target valid_time — pulled via the SAME SQL aux
-    //      pass the trainer used (PrecipRichOroFeatureBuilder.LoadAuxNwpMeans),
-    //      so any future feature drift between train and predict is impossible.
+    //      pressure per target valid_time. Predict pulls these via
+    //      PrecipRichOroFeatureBuilder.LoadAuxNwpMeansLIVE — the live
+    //      forecast tree (RunTimeSource != 'offset_day'), bounded by the
+    //      target valid_time window. The train-time LoadAuxNwpMeans reads
+    //      the historical offset_day backfill which has no rows for
+    //      future valid_times — caught 2026-05-26 when every (station,
+    //      lead, valid) skipped with "no NWP-mean aux row for terrain
+    //      block" and the live cycle wrote zero 3o predictions.
     //
     // Station-index mapping (the 9th terrain feature, oro_station_id) MUST
     // match the train-time mapping in PrecipTrainCommand.BonehillStationOrder3o:
@@ -617,9 +622,33 @@ public sealed class PrecipPredictCommand
         var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
         var canonOrder = TempFeatureBuilder.CanonicalModelOrder.ToList();
 
-        // Aux NWP-mean lookup per lead. Done lazily to avoid querying for
-        // leads we don't have predictions for.
-        var nwpMeanByLead = new Dictionary<int, Dictionary<DateTime, PrecipRichOroFeatureBuilder.NwpMeanRow>>();
+        // Live-tree NWP-mean aux for the target valid-time window. Loaded
+        // ONCE for the whole predict run (not per lead) — the live tree's
+        // freshest-per-(valid, model) pick is lead-independent, so a single
+        // bounded query covers every (lead, valid) tuple we'll ask about.
+        // Cheaper than the per-lead caching the buggy v1 used, and avoids
+        // re-issuing the same SQL across leads.
+        var auxValidWindow = targets.Length == 0
+            ? (Earliest: DateTime.MinValue, Latest: DateTime.MaxValue)
+            : (Earliest: targets.Min(t => t.Valid), Latest: targets.Max(t => t.Valid));
+        // Use any lead's spec for the Model IN list — the spec's NWP
+        // membership doesn't vary by lead in the rich-oro spec. Pick the
+        // first spec we have so we don't have to special-case empty.
+        var anySpec = specs.Values.FirstOrDefault();
+        Dictionary<DateTime, PrecipRichOroFeatureBuilder.NwpMeanRow> nwpMeanByValid;
+        if (anySpec is not null)
+        {
+            nwpMeanByValid = PrecipRichOroFeatureBuilder.LoadAuxNwpMeansLive(
+                _cfg.Storage.ForecastsPath, location.Name, anySpec,
+                auxValidWindow.Earliest, auxValidWindow.Latest, ct);
+            _log.LogInformation(
+                "Station {Station}: loaded {N} NWP-mean aux rows from LIVE tree for valid window {S:yyyy-MM-dd HH:mm}Z..{E:yyyy-MM-dd HH:mm}Z (3o predict).",
+                station, nwpMeanByValid.Count, auxValidWindow.Earliest, auxValidWindow.Latest);
+        }
+        else
+        {
+            nwpMeanByValid = new();
+        }
 
         // EA hourly rainfall for the rich row's persistence features —
         // exact same load path 3c uses.
@@ -717,16 +746,11 @@ public sealed class PrecipPredictCommand
                 truthMmHour: 0.0);
 
             // Terrain block — needs NWP-mean wind/temp/dew/pressure at
-            // this valid_time. Pull the lead's aux table once, then index in.
-            if (!nwpMeanByLead.TryGetValue(lead, out var auxMap))
+            // this valid_time. The live-tree aux table was loaded once
+            // above for the entire predict window; just index into it.
+            if (!nwpMeanByValid.TryGetValue(valid, out var nwpMean))
             {
-                auxMap = PrecipRichOroFeatureBuilder.LoadAuxNwpMeans(
-                    _cfg.Storage.ForecastsPath, location.Name, spec, ct);
-                nwpMeanByLead[lead] = auxMap;
-            }
-            if (!auxMap.TryGetValue(valid, out var nwpMean))
-            {
-                _log.LogWarning("Station {Station} lead {Lead}h valid={Valid:yyyy-MM-dd HH:mm}Z: no NWP-mean aux row for terrain block; skipping.",
+                _log.LogWarning("Station {Station} lead {Lead}h valid={Valid:yyyy-MM-dd HH:mm}Z: no NWP-mean aux row in live tree for terrain block; skipping.",
                     station, lead, valid);
                 continue;
             }
