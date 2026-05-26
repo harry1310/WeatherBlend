@@ -43,11 +43,15 @@ public static class DryWindowFeatureBuilder
     // ------------------------------------------------------------------------
 
     private static List<DryWindowLabelBuilder.HourlyTruth> LoadHourlyTruth(
-        string rainfallPath, string locationName, string stationName, CancellationToken ct)
+        string rainfallPath, string locationName, string stationName,
+        DateTime? minValidTime, CancellationToken ct)
     {
         var glob = NormaliseGlob(Path.Combine(rainfallPath, "**", "*.parquet"));
         var escStation  = stationName.Replace("'", "''");
         var escLocation = locationName.Replace("'", "''");
+        var minObservedFilter = minValidTime.HasValue
+            ? $"  AND ObservedTimeUtc >= TIMESTAMP '{minValidTime.Value:yyyy-MM-dd HH:mm:ss}'\n"
+            : string.Empty;
 
         var sql = $@"
 SELECT date_trunc('hour', ObservedTimeUtc) AS valid_time,
@@ -56,7 +60,7 @@ FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
 WHERE LocationName = '{escLocation}'
   AND StationName  = '{escStation}'
   AND Value15MinMm IS NOT NULL
-GROUP BY 1
+{minObservedFilter}GROUP BY 1
 HAVING COUNT(*) = 4
 ORDER BY 1";
 
@@ -331,6 +335,7 @@ ORDER BY 1";
         BlenderSpec spec,
         int windowHours,
         DaytimeWindow daytime,
+        DateTime? minValidTime = null,
         CancellationToken ct = default)
     {
         if (windowHours < 1 || windowHours > daytime.DurationHours)
@@ -338,7 +343,7 @@ ORDER BY 1";
                 $"Window length {windowHours} exceeds the daytime range ({daytime.DurationHours}h).");
 
         // Step 1: hourly truth + per-day labels.
-        var truth = LoadHourlyTruth(rainfallPath, locationName, stationName, ct);
+        var truth = LoadHourlyTruth(rainfallPath, locationName, stationName, minValidTime, ct);
         var labels = DryWindowLabelBuilder.Build(truth, new[] { windowHours }, daytime);
         if (labels.Labels.Count == 0) return new List<CommonRow>();
 
@@ -352,7 +357,7 @@ ORDER BY 1";
 
         // Step 2: forecasts for the lead band, restricted to spec.Models.
         var forecast = LoadForecastsForSpec(
-            forecastsPath, locationName, spec, ct);
+            forecastsPath, locationName, spec, minValidTime, ct);
 
         // Bucket per (target-date, model-id) → ForecastDay (24-hour holder).
         var perModelDay = new Dictionary<(DateOnly Date, string Model), ForecastDay>();
@@ -518,11 +523,15 @@ ORDER BY 1";
     }
 
     private static List<ForecastRow> LoadForecastsForSpec(
-        string forecastsPath, string locationName, BlenderSpec spec, CancellationToken ct)
+        string forecastsPath, string locationName, BlenderSpec spec,
+        DateTime? minValidTime, CancellationToken ct)
     {
         var glob = NormaliseGlob(Path.Combine(forecastsPath, "**", "*.parquet"));
         var escLocation = locationName.Replace("'", "''");
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
+        var minValidTimeFilter = minValidTime.HasValue
+            ? $"      AND ValidTimeUtc >= TIMESTAMP '{minValidTime.Value:yyyy-MM-dd HH:mm:ss}'\n"
+            : string.Empty;
 
         var sql = $@"
 WITH latest AS (
@@ -541,7 +550,7 @@ WITH latest AS (
       AND RunTimeSource = 'offset_day'
       AND LeadHours BETWEEN {spec.LeadHours} AND {spec.LeadHours + 23}
       AND Model IN {modelInClause}
-)
+{minValidTimeFilter})
 SELECT ValidTimeUtc, Model,
        Precipitation, PrecipitationProbability,
        RelativeHumidity2m, Temperature2m, DewPoint2m,

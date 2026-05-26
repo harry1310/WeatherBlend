@@ -251,6 +251,12 @@ public sealed class TempTrainCommand : TrainCommandBase
         List<float[]>? firstLeadTrainFeatures = null;
         int totalTrainRows = 0, totalValRows = 0, totalTestRows = 0;
 
+        // Per-phase training-data cutoff (2026-05-26 — see PhaseRegistry).
+        var minValidTime2b = PhaseRegistry.Default.AllPhases("temperature")
+            .SingleOrDefault(p => p.Id == "2b")?.MinValidTime;
+        if (minValidTime2b.HasValue)
+            _log.LogInformation("Phase 2b training-data cutoff: ValidTimeUtc >= {Cutoff:yyyy-MM-dd} (from phases.yaml)", minValidTime2b.Value);
+
         foreach (var lead in leads)
         {
             ct.ThrowIfCancellationRequested();
@@ -265,6 +271,7 @@ public sealed class TempTrainCommand : TrainCommandBase
                 _cfg.Storage.Era5Path,
                 location.Name,
                 spec,
+                minValidTime2b,
                 ct);
             _log.LogInformation("Loaded {N} rows spanning {S:yyyy-MM-dd} → {E:yyyy-MM-dd}",
                 rows.Count,
@@ -419,6 +426,12 @@ public sealed class TempTrainCommand : TrainCommandBase
         List<float[]>? firstLeadTrainFeatures = null;
         int totalTrainRows = 0, totalValRows = 0, totalTestRows = 0;
 
+        // Per-phase training-data cutoff (2026-05-26 — see PhaseRegistry).
+        var minValidTime2c = PhaseRegistry.Default.AllPhases("temperature")
+            .SingleOrDefault(p => p.Id == "2c")?.MinValidTime;
+        if (minValidTime2c.HasValue)
+            _log.LogInformation("Phase 2c training-data cutoff: ValidTimeUtc >= {Cutoff:yyyy-MM-dd} (from phases.yaml)", minValidTime2c.Value);
+
         foreach (var lead in leads)
         {
             ct.ThrowIfCancellationRequested();
@@ -433,6 +446,7 @@ public sealed class TempTrainCommand : TrainCommandBase
                 _cfg.Storage.Era5Path,
                 location.Name,
                 spec,
+                minValidTime2c,
                 ct);
             _log.LogInformation("Loaded {N} rich rows spanning {S:yyyy-MM-dd} → {E:yyyy-MM-dd}",
                 rows.Count,

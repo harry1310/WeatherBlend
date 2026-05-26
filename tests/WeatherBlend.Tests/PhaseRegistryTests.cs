@@ -303,4 +303,104 @@ public class PhaseRegistryTests
         ActivePhasePolicy.IsActive("precipitation", "5a").Should().BeFalse();
         ActivePhasePolicy.Priority("precipitation", "3a").Should().Be(0);
     }
+
+    // ---- min_valid_time parsing (2026-05-26) ------------------------------
+
+    [Fact]
+    public void MinValidTime_absent_resolves_to_null()
+    {
+        // Existing phases without a min_valid_time entry must continue
+        // to expose null — i.e. "no cutoff, train on the full history".
+        // Regression: a parser that defaulted to 'now' or '1970-01-01'
+        // would silently shift every existing phase's training window.
+        var yaml = """
+            targets:
+              precipitation:
+                phases:
+                  - id: "3a"
+                    role: champion
+                    impl: dotnet
+            """;
+        var reg = PhaseRegistry.LoadFromYaml(yaml);
+        var entry = reg.AllPhases("precipitation").Single(p => p.Id == "3a");
+        entry.MinValidTime.Should().BeNull();
+    }
+
+    [Fact]
+    public void MinValidTime_iso_date_parses_to_UTC_midnight()
+    {
+        // The shipping convention — a bare date string. Must parse to
+        // midnight UTC; downstream feature-builder SQL embeds the value
+        // as a DuckDB TIMESTAMP literal.
+        var yaml = """
+            targets:
+              precipitation:
+                phases:
+                  - id: "3a"
+                    role: champion
+                    impl: dotnet
+                    minValidTime: "2024-01-01"
+            """;
+        var reg = PhaseRegistry.LoadFromYaml(yaml);
+        var entry = reg.AllPhases("precipitation").Single(p => p.Id == "3a");
+        entry.MinValidTime.Should().Be(new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        entry.MinValidTime!.Value.Kind.Should().Be(DateTimeKind.Utc);
+    }
+
+    [Fact]
+    public void MinValidTime_invalid_string_throws_with_useful_message()
+    {
+        // Defensive: a typo in the YAML must NOT silently become "no
+        // cutoff". The user has to see the breakage. The thrown message
+        // must include the target + phase id so debugging from a CI log
+        // is one grep away.
+        var bad = """
+            targets:
+              precipitation:
+                phases:
+                  - id: "3a"
+                    role: champion
+                    impl: dotnet
+                    minValidTime: "not a date"
+            """;
+        Action act = () => PhaseRegistry.LoadFromYaml(bad);
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*precipitation*3a*not a date*");
+    }
+
+    [Fact]
+    public void MinValidTime_production_yaml_pins_2024_cutoff_on_affected_phases()
+    {
+        // Locks the 2026-05-26 cutoff decision in the shipped YAML.
+        // Any future edit that removes the field from these phases will
+        // trip this test, which is the intended forcing function — the
+        // cutoff is load-bearing for 3c / 3b post-JMA-extension and
+        // shouldn't be silently dropped.
+        var reg = PhaseRegistry.Default;
+        var expectedCutoff = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        foreach (var (target, phase) in new[]
+        {
+            ("temperature",    "2b"),
+            ("temperature",    "2c"),
+            ("precipitation",  "3a"),
+            ("precipitation",  "3c"),
+            ("precipitation",  "4a"),
+            ("precipitation",  "5a"),
+            ("dry_window",     "3b"),
+        })
+        {
+            var entry = reg.AllPhases(target).SingleOrDefault(p => p.Id == phase);
+            entry.Should().NotBeNull($"phases.yaml must still declare {target}/{phase}");
+            entry!.MinValidTime.Should().Be(expectedCutoff,
+                $"{target}/{phase} must carry the 2024 cutoff " +
+                "(see project_3a_3b_data_drift_2026-05-26 memory).");
+        }
+
+        // 3o is the explicit non-exception — its terrain + non-precip aux
+        // features stay informative pre-2024, so it keeps the full range.
+        var threeOh = reg.AllPhases("precipitation").Single(p => p.Id == "3o");
+        threeOh.MinValidTime.Should().BeNull(
+            "3o is the sole forecast-tree phase exempt from the 2024 cutoff.");
+    }
 }

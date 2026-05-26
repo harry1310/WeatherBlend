@@ -37,15 +37,25 @@
 targets:
   temperature:
     phases:
+      # minValidTime: 2024-01-01 added 2026-05-26 after the JMA-extension
+      # surfaced that GFS / ICON / ECMWF / MF / GEM / AIFS only have valid
+      # forecast data from 2024 onward in our archive — pre-2024 rows are
+      # NULL-padded and dilute the LightGBM signal at the rich-feature
+      # phases. 3o is the sole exception (terrain + non-precip aux stay
+      # informative pre-2024). 2d not flagged because exact-runtime uses
+      # a different (raw S3) tree.
+      #
       # 2d ships as champion at lead 12h only (per-lead champion in
       # TemperatureManifest.ChampionByLead); 2b stays Current for 24/48/
       # 72/96/120 where 2d isn't trained. 2c keeps its challenger slot.
       - id: "2b"
         role: champion
         impl: dotnet
+        minValidTime: "2024-01-01"
       - id: "2c"
         role: challenger
         impl: dotnet
+        minValidTime: "2024-01-01"
       - id: "2d"
         role: challenger
         impl: dotnet
@@ -66,6 +76,7 @@ targets:
       - id: "3a"
         role: champion
         impl: dotnet
+        minValidTime: "2024-01-01"
       # 3c retained as a Membury-only reference (per the 2026-05-25 cleanup
       # plan — kept for Membury after the 3f stage-1 bake-off showed 3a /
       # 3c / 3c-oro within 0.4% CRPS there). Dropped from Bonehill in
@@ -75,6 +86,7 @@ targets:
         role: challenger
         impl: dotnet
         locations: ["membury_devon"]
+        minValidTime: "2024-01-01"
       - id: "3d"
         role: challenger
         impl: dotnet
@@ -106,6 +118,7 @@ targets:
         # Bonehill-only — Membury 4a/5a not yet trained or wired in
         # WeatherProbabilistic. retrain-python reads this filter.
         locations: ["bonehill_rocks"]
+        minValidTime: "2024-01-01"
       # 4b re-enabled 2026-05-25 in cleanup Phase 2 with re-wired
       # composition: arithmetic mean of 4a + 3o (was 4a + 3e before
       # 3e was retired). Mint reads the latest 3o test_predictions
@@ -120,6 +133,7 @@ targets:
         impl: python
         # Bonehill-only — Membury 5a not yet trained.
         locations: ["bonehill_rocks"]
+        minValidTime: "2024-01-01"
 
   rainfall_amount:
     # Membury-only NGBoost-LogNormal regressor over the wet hours of
@@ -153,6 +167,7 @@ targets:
         role: champion
         impl: dotnet
         locations: ["bonehill_rocks"]
+        minValidTime: "2024-01-01"
       # 3p (Gaussian copula MC over 3o hourly P(wet) marginals) added
       # 2026-05-25 in cleanup Phase 2. Single empirical Σ per station
       # from train-split observed_wet sequences — NOT per-(station, lead)

@@ -105,6 +105,7 @@ public static class TempFeatureBuilder
         string era5Path,
         string locationName,
         BlenderSpec spec,
+        DateTime? minValidTime = null,
         CancellationToken ct = default)
     {
         using var conn = new DuckDBConnection("DataSource=:memory:");
@@ -113,6 +114,13 @@ public static class TempFeatureBuilder
         var fcGlob = NormaliseGlob(Path.Combine(forecastsPath, "**", "*.parquet"));
         var eraGlob = NormaliseGlob(Path.Combine(era5Path, "**", "*.parquet"));
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
+        // Optional training-data cutoff (2026-05-26 — JMA-extension caused
+        // pre-2024 NULL rows from other NWPs to dilute the LightGBM signal).
+        // Same fragment applied to both forecast (latest) and ERA5 sides so
+        // the join doesn't silently drop rows past the cutoff.
+        var minValidTimeFilter = minValidTime.HasValue
+            ? $" AND ValidTimeUtc >= TIMESTAMP '{minValidTime.Value:yyyy-MM-dd HH:mm:ss}'"
+            : string.Empty;
 
         var pivotCols = string.Join(",\n        ",
             spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN Temperature2m END) AS temp_{ShortName(m)}"));
@@ -130,7 +138,8 @@ public static class TempFeatureBuilder
         var fcWhere =
             $"LocationName = '{locationName}' AND RunTimeSource = 'offset_day' " +
             $"AND LeadHours = {spec.LeadHours} AND Temperature2m IS NOT NULL " +
-            $"AND Model IN {modelInClause}";
+            $"AND Model IN {modelInClause}" +
+            minValidTimeFilter;
 
         var sql = $@"
 WITH latest AS (
@@ -155,7 +164,7 @@ era5 AS (
     SELECT ValidTimeUtc, Temperature2m AS era5_temp
     FROM read_parquet('{eraGlob}', hive_partitioning = false, union_by_name = true)
     WHERE LocationName = '{locationName}'
-      AND Temperature2m IS NOT NULL
+      AND Temperature2m IS NOT NULL{minValidTimeFilter}
 )
 SELECT
     p.ValidTimeUtc,

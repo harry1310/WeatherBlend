@@ -93,6 +93,7 @@ public static class PrecipRichFeatureBuilder
         string rainfallPath,
         string locationName,
         string stationName,
+        DateTime? minValidTime,
         CancellationToken ct)
     {
         using var conn = new DuckDBConnection("DataSource=:memory:");
@@ -100,6 +101,9 @@ public static class PrecipRichFeatureBuilder
         var rnGlob = NormaliseGlob(Path.Combine(rainfallPath, "**", "*.parquet"));
         var escLocation = locationName.Replace("'", "''");
         var escStation  = stationName.Replace("'", "''");
+        var minObservedFilter = minValidTime.HasValue
+            ? $"  AND ObservedTimeUtc >= TIMESTAMP '{minValidTime.Value:yyyy-MM-dd HH:mm:ss}'\n"
+            : string.Empty;
 
         var sql = $@"
 SELECT date_trunc('hour', ObservedTimeUtc) AS valid_time,
@@ -108,7 +112,7 @@ FROM read_parquet('{rnGlob}', hive_partitioning = false, union_by_name = true)
 WHERE LocationName = '{escLocation}'
   AND StationName  = '{escStation}'
   AND Value15MinMm IS NOT NULL
-GROUP BY 1
+{minObservedFilter}GROUP BY 1
 HAVING COUNT(*) = 4
 ORDER BY 1;
 ";
@@ -227,9 +231,10 @@ ORDER BY 1;
         string locationName,
         string stationName,
         BlenderSpec spec,
+        DateTime? minValidTime = null,
         CancellationToken ct = default)
     {
-        var hourlyRain = LoadHourlyRain(rainfallPath, locationName, stationName, ct);
+        var hourlyRain = LoadHourlyRain(rainfallPath, locationName, stationName, minValidTime, ct);
         if (hourlyRain.Count == 0) return new List<BinaryTrainingRow>();
 
         using var conn = new DuckDBConnection("DataSource=:memory:");
@@ -253,6 +258,8 @@ ORDER BY 1;
         sb.AppendLine("      AND RunTimeSource = 'offset_day'");
         sb.AppendLine($"      AND LeadHours = {spec.LeadHours}");
         sb.AppendLine($"      AND Model IN {modelInClause}");
+        if (minValidTime.HasValue)
+            sb.AppendLine($"      AND ValidTimeUtc >= TIMESTAMP '{minValidTime.Value:yyyy-MM-dd HH:mm:ss}'");
         sb.AppendLine("),");
         sb.AppendLine("pivoted AS (");
         sb.AppendLine("    SELECT ValidTimeUtc,");

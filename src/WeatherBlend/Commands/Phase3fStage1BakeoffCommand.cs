@@ -92,9 +92,9 @@ public sealed class Phase3fStage1BakeoffCommand
             {
                 ct.ThrowIfCancellationRequested();
                 var lean    = PrecipFeatureBuilder.BuildForLead(_cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
-                    memburyLoc.Name, st.Name, leanSpec, ct);
+                    memburyLoc.Name, st.Name, leanSpec, minValidTime: null, ct);
                 var rich    = PrecipRichFeatureBuilder.BuildForLead(_cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
-                    memburyLoc.Name, st.Name, richSpec, ct);
+                    memburyLoc.Name, st.Name, richSpec, minValidTime: null, ct);
                 var richOro = PrecipRichOroFeatureBuilder.BuildForLead(_cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
                     memburyLoc.Name, st.Name, st.Oro, st.Index, richOroSpec, ct);
 

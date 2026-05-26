@@ -368,7 +368,7 @@ public sealed class PrecipPredictCommand
                 return false;
             }
             hourlyRain = PrecipRichFeatureBuilder.LoadHourlyRain(
-                _cfg.Storage.RainfallPath, location.Name, friendly, ct);
+                _cfg.Storage.RainfallPath, location.Name, friendly, minValidTime: null, ct);
             _log.LogInformation("Station {Station}: loaded {N} hourly rainfall rows for persistence features (friendly='{Friendly}')",
                 station, hourlyRain.Count, friendly);
         }
@@ -659,7 +659,7 @@ public sealed class PrecipPredictCommand
             return false;
         }
         var hourlyRain = PrecipRichFeatureBuilder.LoadHourlyRain(
-            _cfg.Storage.RainfallPath, location.Name, friendly, ct);
+            _cfg.Storage.RainfallPath, location.Name, friendly, minValidTime: null, ct);
 
         var predictions = new List<PrecipPredictionRow>();
         foreach (var (lead, valid) in targets)

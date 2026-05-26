@@ -103,6 +103,7 @@ public static class PrecipFeatureBuilder
         string locationName,
         string stationName,
         BlenderSpec spec,
+        DateTime? minValidTime = null,
         CancellationToken ct = default)
     {
         using var conn = new DuckDBConnection("DataSource=:memory:");
@@ -113,6 +114,20 @@ public static class PrecipFeatureBuilder
         var escStation = stationName.Replace("'", "''");
         var escLocation = locationName.Replace("'", "''");
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
+
+        // Optional per-phase training-data cutoff (2026-05-26 — see
+        // PhaseRegistry.ParseMinValidTime + project_3a_3b_data_drift memory).
+        // Applied to BOTH SQL CTEs that select on ValidTimeUtc so truth and
+        // forecast rows are clipped on the same boundary — otherwise the
+        // inner-join between hourly_truth and pivoted would silently drop
+        // any row past the cutoff. ISO-format here keeps the DuckDB literal
+        // unambiguous regardless of DuckDB's default date locale.
+        var minValidTimeFilter = minValidTime.HasValue
+            ? $"      AND ValidTimeUtc >= TIMESTAMP '{minValidTime.Value:yyyy-MM-dd HH:mm:ss}'\n"
+            : string.Empty;
+        var minObservedTimeFilter = minValidTime.HasValue
+            ? $"      AND ObservedTimeUtc >= TIMESTAMP '{minValidTime.Value:yyyy-MM-dd HH:mm:ss}'\n"
+            : string.Empty;
 
         var precipPivot = string.Join(",\n        ",
             spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN Precipitation END) AS precip_{TempFeatureBuilder.ShortName(m)}"));
@@ -132,7 +147,7 @@ WITH hourly_truth AS (
     WHERE LocationName = '{escLocation}'
       AND StationName  = '{escStation}'
       AND Value15MinMm IS NOT NULL
-    GROUP BY 1
+{minObservedTimeFilter}    GROUP BY 1
     HAVING COUNT(*) = 4
 ),
 latest AS (
@@ -151,7 +166,7 @@ latest AS (
       AND RunTimeSource = 'offset_day'
       AND LeadHours = {spec.LeadHours}
       AND Model IN {modelInClause}
-),
+{minValidTimeFilter}),
 pivoted AS (
     SELECT
         ValidTimeUtc,

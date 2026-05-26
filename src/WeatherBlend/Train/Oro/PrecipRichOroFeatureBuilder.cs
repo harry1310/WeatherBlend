@@ -102,8 +102,14 @@ public static class PrecipRichOroFeatureBuilder
             UkvStrategy = richOroSpec.UkvStrategy,
         };
 
+        // 3o is the SOLE forecast-tree phase exempt from the 2026-05-26
+        // min_valid_time cutoff — its terrain features + LoadAuxNwpMeans
+        // pull stay informative on pre-2024 rows where most NWPs' precip
+        // is NULL. So always pass null here. See phases.yaml + PhaseRegistry
+        // for the explicit exemption.
         var richRows = PrecipRichFeatureBuilder.BuildForLead(
-            forecastsPath, rainfallPath, locationName, stationName, richSpec, ct);
+            forecastsPath, rainfallPath, locationName, stationName, richSpec,
+            minValidTime: null, ct);
         if (richRows.Count == 0) return richRows;
 
         var aux = LoadAuxNwpMeans(forecastsPath, locationName, richSpec, ct);

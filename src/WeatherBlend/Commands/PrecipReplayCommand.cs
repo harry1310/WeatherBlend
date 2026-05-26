@@ -108,7 +108,7 @@ public sealed class PrecipReplayCommand
             _log.LogInformation("--- lead {Lead}h ---", lead);
             var rows = PrecipFeatureBuilder.BuildForLead(
                 _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
-                _cfg.Location.Name, friendly, spec, ct);
+                _cfg.Location.Name, friendly, spec, minValidTime: null, ct);
             _log.LogInformation("  {N} rows ({S:yyyy-MM-dd}..{E:yyyy-MM-dd})",
                 rows.Count,
                 rows.Count > 0 ? rows[0].ValidTimeUtc : DateTime.MinValue,

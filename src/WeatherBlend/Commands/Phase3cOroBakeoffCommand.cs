@@ -156,7 +156,7 @@ public sealed class Phase3cOroBakeoffCommand
                 ct.ThrowIfCancellationRequested();
                 var rich = PrecipRichFeatureBuilder.BuildForLead(
                     _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
-                    st.Loc.Name, st.Name, richSpec, ct);
+                    st.Loc.Name, st.Name, richSpec, minValidTime: null, ct);
                 var richOro = PrecipRichOroFeatureBuilder.BuildForLead(
                     _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
                     st.Loc.Name, st.Name, st.Oro, st.Index, richOroSpec, ct);

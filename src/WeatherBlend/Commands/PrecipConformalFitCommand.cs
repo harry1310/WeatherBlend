@@ -250,13 +250,13 @@ public sealed class PrecipConformalFitCommand
             {
                 rows = PrecipRichFeatureBuilder.BuildForLead(
                     _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
-                    _cfg.Location.Name, stationName, spec, ct);
+                    _cfg.Location.Name, stationName, spec, minValidTime: null, ct);
             }
             else
             {
                 rows = PrecipFeatureBuilder.BuildForLead(
                     _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
-                    _cfg.Location.Name, stationName, spec, ct);
+                    _cfg.Location.Name, stationName, spec, minValidTime: null, ct);
             }
             if (rows.Count < 500)
             {

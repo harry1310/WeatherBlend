@@ -232,7 +232,8 @@ public sealed class PhaseRegistry
                         .Where(l => !string.IsNullOrWhiteSpace(l))
                         .Select(l => l.Trim())
                         .ToArray();
-                entries.Add(new PhaseEntry(raw.Id, role, impl, locations));
+                var minValidTime = ParseMinValidTime(raw.MinValidTime, target, raw.Id);
+                entries.Add(new PhaseEntry(raw.Id, role, impl, locations, minValidTime));
             }
 
             // Sanity: at most one champion per target. Multiple champions
@@ -283,6 +284,40 @@ public sealed class PhaseRegistry
                 $"Target '{target}' phase '{phaseId}' has unknown impl '{raw}'. Expected: dotnet | python."),
         };
 
+    /// <summary>
+    /// Parse the optional <c>min_valid_time</c> field on a phase entry.
+    /// Absent / empty → null (no cutoff). String must be an ISO-8601 date
+    /// or date-time the .NET DateTime parser accepts in invariant culture;
+    /// returned as UTC. Throws with a useful message on parse failure
+    /// rather than silently treating it as "no cutoff" — silent fallbacks
+    /// here are the regression mode (drift creeps into the training slice
+    /// without anyone noticing).
+    ///
+    /// Why this exists: the 2026-05-26 JMA-extension surfaced that several
+    /// NWP archives (GFS / ICON / ECMWF / MF / GEM / AIFS) only have
+    /// valid data from 2024 onward — pre-2024 rows are NULL-padded and
+    /// dilute the training signal of 3a / 3c / 3b / 2b / 2c / 4a / 5a.
+    /// 3o is excluded from the cutoff because its terrain features and
+    /// LoadAuxNwpMeans non-precip-aux pull (Wind / Temp / DewPoint /
+    /// SurfacePressure, which DO populate pre-2024) keep it informative
+    /// across the JMA-extended range.
+    /// </summary>
+    private static DateTime? ParseMinValidTime(string? raw, string target, string phaseId)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        if (!DateTime.TryParse(
+                raw,
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
+                out var dt))
+        {
+            throw new InvalidOperationException(
+                $"Target '{target}' phase '{phaseId}' has invalid min_valid_time '{raw}'. " +
+                $"Expected an ISO-8601 date (e.g. '2024-01-01') or full timestamp.");
+        }
+        return DateTime.SpecifyKind(dt, DateTimeKind.Utc);
+    }
+
     // ---- YAML POCOs (private; the public surface is PhaseEntry) -------
 
     private sealed class PhaseRegistryDocument
@@ -304,6 +339,13 @@ public sealed class PhaseRegistry
         /// <summary>Optional per-phase location filter (Phase B, commit 7).
         /// Absent / empty = all configured locations.</summary>
         public List<string>? Locations { get; set; }
+
+        /// <summary>Optional per-phase training-data cutoff (2026-05-26).
+        /// ISO-8601 date or timestamp. Absent / empty = no cutoff.
+        /// YAML field name follows CamelCaseNamingConvention →
+        /// <c>minValidTime</c>. See <see cref="ParseMinValidTime"/> for why.
+        /// </summary>
+        public string? MinValidTime { get; set; }
     }
 }
 
@@ -313,7 +355,8 @@ public sealed class PhaseRegistry
 /// on the role/impl enums without re-reading the YAML.
 /// </summary>
 public sealed record PhaseEntry(
-    string Id, PhaseRole Role, PhaseImpl Impl, IReadOnlyList<string> Locations)
+    string Id, PhaseRole Role, PhaseImpl Impl, IReadOnlyList<string> Locations,
+    DateTime? MinValidTime = null)
 {
     /// <summary>
     /// True if this phase should be trained / shipped for

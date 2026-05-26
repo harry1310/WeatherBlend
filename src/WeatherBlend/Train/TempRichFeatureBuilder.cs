@@ -117,6 +117,7 @@ public static class TempRichFeatureBuilder
         string era5Path,
         string locationName,
         BlenderSpec spec,
+        DateTime? minValidTime = null,
         CancellationToken ct = default)
     {
         using var conn = new DuckDBConnection("DataSource=:memory:");
@@ -126,6 +127,10 @@ public static class TempRichFeatureBuilder
         var eraGlob = NormaliseGlob(Path.Combine(era5Path, "**", "*.parquet"));
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
         var n = spec.Models.Count;
+        // 2026-05-26: optional training-data cutoff (see PhaseRegistry).
+        var minValidTimeFilter = minValidTime.HasValue
+            ? $"      AND ValidTimeUtc >= TIMESTAMP '{minValidTime.Value:yyyy-MM-dd HH:mm:ss}'"
+            : string.Empty;
 
         // Column order in the SELECT must match what we read in the loop.
         // Build dynamically from spec.Models so the layout stays in lockstep.
@@ -142,6 +147,7 @@ public static class TempRichFeatureBuilder
         sb.AppendLine($"      AND LeadHours = {spec.LeadHours}");
         sb.AppendLine("      AND Temperature2m IS NOT NULL");
         sb.AppendLine($"      AND Model IN {modelInClause}");
+        if (minValidTime.HasValue) sb.AppendLine(minValidTimeFilter);
         sb.AppendLine("),");
         sb.AppendLine("pivoted AS (");
         sb.AppendLine("    SELECT ValidTimeUtc,");
@@ -161,6 +167,7 @@ public static class TempRichFeatureBuilder
         sb.AppendLine("    SELECT ValidTimeUtc, Temperature2m AS era5_temp");
         sb.AppendLine($"    FROM read_parquet('{eraGlob}', hive_partitioning = false, union_by_name = true)");
         sb.AppendLine($"    WHERE LocationName = '{locationName}' AND Temperature2m IS NOT NULL");
+        if (minValidTime.HasValue) sb.AppendLine(minValidTimeFilter);
         sb.AppendLine(")");
         sb.AppendLine("SELECT p.ValidTimeUtc,");
         for (int i = 0; i < n; i++) sb.Append($"    p.temp_{TempFeatureBuilder.ShortName(spec.Models[i])},");

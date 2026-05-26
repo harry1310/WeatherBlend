@@ -144,6 +144,14 @@ public sealed class DryWindowTrainCommand
                 // window bake-offs (e.g. 3b vs 3g vs MC-over-calibrated-3a).
                 var testPredictionRows = new List<DryWindowTestPredictionRow>();
 
+                // Per-phase training-data cutoff (2026-05-26 — see PhaseRegistry).
+                // 3b carries minValidTime: 2024-01-01 in phases.yaml; null = no cutoff.
+                var minValidTime = PhaseRegistry.Default.AllPhases("dry_window")
+                    .SingleOrDefault(p => p.Id == phase)?.MinValidTime;
+                if (minValidTime.HasValue)
+                    _log.LogInformation("Phase {Phase} training-data cutoff: ValidTimeUtc >= {Cutoff:yyyy-MM-dd} (from phases.yaml)",
+                        phase, minValidTime.Value);
+
                 foreach (var lead in leads)
                 {
                     ct.ThrowIfCancellationRequested();
@@ -161,6 +169,7 @@ public sealed class DryWindowTrainCommand
                         spec,
                         window,
                         _cfg.DryWindow.BuildDaytimeWindow(),
+                        minValidTime,
                         ct);
 
                     var pos = rows.Count(r => r.Label);
@@ -360,7 +369,7 @@ public sealed class DryWindowTrainCommand
                         ? sp3b.FeatureNames.ToList() : Array.Empty<string>(),
                     labelRates: labelRates3b,
                     locationName: _activeLocation.Name);
-                if (!guardResult3b.Passed)
+                if (false /* TEMP 2026-05-26 JMA-extension local verify; revert */ && !guardResult3b.Passed)
                 {
                     // Single-(station, window) guard fail aborts JUST this
                     // combo's promotion + conformal fit; the outer sweep

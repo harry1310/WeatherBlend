@@ -128,7 +128,8 @@ public sealed class DryWindowConformalFitCommand
             var spec = DryWindowFeatureBuilder.BuildSpec(_cfg.Blenders, lead, DryWindowFeatureBuilder.Phase3b);
             var rows = DryWindowFeatureBuilder.BuildForLead(
                 _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
-                _cfg.Location.Name, stationName, spec, windowHours, daytime, ct);
+                _cfg.Location.Name, stationName, spec, windowHours, daytime,
+                minValidTime: null, ct);
             if (rows.Count < 100)
             {
                 _log.LogWarning("  lead {L}h: only {N} rows; skipping", lead, rows.Count);
