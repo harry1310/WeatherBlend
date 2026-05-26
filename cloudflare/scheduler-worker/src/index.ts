@@ -276,6 +276,27 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
   const branch = wfRun.head_branch ?? "(unknown)";
   const sha = (wfRun.head_sha ?? "").slice(0, 7);
 
+  // ---- Chain-fire gate (2026-05-26) ---------------------------------------
+  // All cross-workflow chain hops below fire ONLY when the upstream run was
+  // dispatched by THIS worker (via its GH App token), never when a human
+  // `gh workflow run` dispatch finishes. Rule: "manual runs do not trigger
+  // downstream automation; only the scheduled cron path does."
+  //
+  // Signal: triggering_actor.type is "Bot" for the worker's GH App; "User"
+  // for `gh workflow run` from a developer. The CI-failure issue logic
+  // below the chain section is INTENTIONALLY left ungated — a manual run
+  // that fails should still file an issue.
+  //
+  // Without this gate, every `gh workflow run retrain-python.yml -f
+  // phases=3f` during weekday debugging chains a retrain-blenders run via
+  // Hop B; multiplied across the 6 hops this is what produced the
+  // chained-run pile-up on 2026-05-26 (5 retrain-blenders runs from 5
+  // manual retrain-python dispatches, plus the cancelled-pile-up that
+  // blocked GH Actions on this repo).
+  const actorType = wfRun.triggering_actor?.type;
+  const actorLogin = wfRun.triggering_actor?.login ?? "(unknown)";
+  const isWorkerDispatched = actorType === "Bot";
+
   // ---- Completion-driven workflow chains ------------------------------
   // The worker chains workflows off each other's workflow_run completion
   // so a dependent job runs as soon as — and only after — its input is
@@ -288,6 +309,12 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
   //   F.1 predict               ─(success)─────────► predict-3f
   //                             ─(failure)─────────► render-site (bypass)
   //   F   predict-3f            ─(any completion)──► render-site
+  //
+  // EVERY hop below is gated on the upstream run being worker-dispatched
+  // (triggering_actor.type === "Bot"). Manual `gh workflow run` dispatches
+  // (type === "User") fall straight through to the CI-failure issue logic
+  // without triggering downstream chains. See the gate block above.
+  //
   // A+B are the weekly retrain — serial so retrain-blenders' 4b mint
   // reads this cycle's fresh 4a rather than racing it. C+D+F.1+F are
   // the 6-hourly predict path; D+F.1+F replaced the fused
@@ -301,6 +328,14 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
   // Every hop dispatches via workflow_dispatch — the same path the
   // cron uses, so no GitHub App permission beyond the actions:write
   // the worker already relies on.
+
+  if (!isWorkerDispatched) {
+    console.log(
+      `chain hops SKIPPED: triggering_actor=${actorLogin} type=${actorType ?? "?"} — ` +
+      `only worker-dispatched (type=Bot) runs trigger downstream chains. ` +
+      `Falling through to ci-failure issue logic.`
+    );
+  } else {
 
   // Hop A — refresh → python. Gated on a successful refresh (no retrain
   // on stale data) AND on it being a Sunday: previous-runs-refresh runs
@@ -441,8 +476,12 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
     }
   }
 
+  } // end of isWorkerDispatched chain-hops block (gate opened above Hop A)
+
   // Every hop falls through — the ci-failure issue logic below still runs
-  // for the workflow_run that triggered this handler.
+  // for the workflow_run that triggered this handler. CI-failure issues
+  // ARE filed for manual-dispatch failures too (the gate above scopes
+  // chain-dispatches, not failure visibility).
 
   const issueTitle = `[ci-fail] ${wfName}`;
   // `cancelled` included: a timeout-minutes breach completes as `cancelled`,
@@ -516,6 +555,14 @@ interface WorkflowRunPayload {
     head_sha: string | null;
     conclusion: "success" | "failure" | "cancelled" | "skipped" | "timed_out" | "neutral" | "startup_failure" | null;
     html_url: string;
+    /** Who dispatched the run. The GH App that this worker authenticates
+     * as has `type: "Bot"`; `gh workflow run` (human) dispatches have
+     * `type: "User"`. handleWorkflowRun uses this to gate cross-workflow
+     * chains — only worker-dispatched runs trigger downstream hops. */
+    triggering_actor?: {
+      login: string;
+      type: "Bot" | "User" | string;
+    } | null;
   };
   repository: {
     full_name: string;
