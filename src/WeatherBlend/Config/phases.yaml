@@ -121,6 +121,23 @@ targets:
         # Bonehill-only — Membury 5a not yet trained.
         locations: ["bonehill_rocks"]
 
+  rainfall_amount:
+    # Membury-only NGBoost-LogNormal regressor over the wet hours of
+    # the day, gated at predict time by Phase 3a's hourly P(wet).
+    # Two-stage distributional forecast: π · LogNormal(μ_log, σ_log)
+    # mixed with (1-π) · δ_0. Source binding (3f -> 3a) is hardcoded
+    # in IntensityModelSources.cs, not in phases.yaml — same
+    # discipline DryWindowMcSources established before its 2026-05-25
+    # retirement. Plan: docs/RAINFALL_AMOUNT_3F_PLAN.md. Bonehill
+    # rollout deferred (the original 2026-05-22/23 bake-off was a
+    # Membury exploration; Bonehill 3f is a separate decision once
+    # 3f Membury has clean verify history).
+    phases:
+      - id: "3f"
+        role: champion
+        impl: python
+        locations: ["membury_devon"]
+
   dry_window:
     phases:
       # 3g / 3j / 3n / 3s retired 2026-05-25 in model-cleanup Phase 1
