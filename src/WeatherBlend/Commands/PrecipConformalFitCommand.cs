@@ -48,6 +48,49 @@ public sealed class PrecipConformalFitCommand
     /// always present at the same coverage level as the back-fill command.</summary>
     public const double DefaultAlpha = 0.10;
 
+    /// <summary>
+    /// Precipitation phases this command's per-lead row-build dispatch
+    /// knows how to handle. Adding a new rich-variant phase to phases.yaml
+    /// requires:
+    ///   1. Adding its id here.
+    ///   2. Adding a matching dispatch arm in <see cref="FitOneAsync"/>
+    ///      that calls the appropriate feature builder (lean / rich /
+    ///      rich-oro / future).
+    /// The two-step requirement is enforced by
+    /// <c>HyperparameterExtensionsTests.PrecipConformalFitCommand_HandledPhases_covers_active_dotnet_phases</c>
+    /// — that test catches a phases.yaml entry without a HandledPhases
+    /// counterpart, surfacing the exact "no dispatch arm for this phase"
+    /// scenario that bit the 2026-05-26 3o retrain (fell through to the
+    /// lean feature builder and crashed with "Feature pack mismatch:
+    /// wrote 23, expected 68"). See also
+    /// [[reference_conformal_fit_phase_dispatch]] in memory.
+    ///
+    /// Phase 3d is intentionally OMITTED from the set — its exact-runtime
+    /// feature builder isn't plumbed in here and the command explicitly
+    /// skips 3d with a warning before reaching the lead loop. 4a / 4b /
+    /// 5a are likewise out (impl=python or different command, no
+    /// PrecipConformalFitCommand involvement at all).
+    /// </summary>
+    public static readonly HashSet<string> HandledPhases =
+        new(StringComparer.Ordinal) { "3a", "3c", "3o" };
+
+    /// <summary>Phases this command knowingly skips (no dispatch arm).
+    /// Companion to <see cref="HandledPhases"/> — the coverage test
+    /// allows either-or, so a phase here doesn't fail the assertion.
+    /// Today:
+    ///   * <c>3d</c> — exact-runtime feature builder isn't plumbed in
+    ///     here yet. Conformal fit early-returns with a warning. The
+    ///     exact-runtime tag stays null on 3d predict rows in the
+    ///     meantime (legacy-row behaviour, harmless).
+    ///   * <c>4b</c> — impl=dotnet but SYNTHESISED by
+    ///     <see cref="Phase4bMintCommand"/>, not trained, so no
+    ///     LightGBM model exists for conformal to fit a calibrator
+    ///     against. Listed here so the phase-coverage test passes
+    ///     while making the "we considered 4b, conformal doesn't apply"
+    ///     intent explicit.</summary>
+    public static readonly HashSet<string> DocumentedSkipPhases =
+        new(StringComparer.Ordinal) { "3d", "4b" };
+
     public async Task<int> RunAsync(double alpha, CancellationToken ct)
     {
         var modelsRoot = _cfg.Storage.ModelsPath;
@@ -114,11 +157,30 @@ public sealed class PrecipConformalFitCommand
         // 3d ConformalSetTag stays null on predict rows in the meantime
         // (legacy-row behaviour, harmless). Adding 3d support is a follow-
         // up: needs PrecipExactFeatureBuilder.Build to be plumbed in here.
-        if (string.Equals(metadata.Phase, "3d", StringComparison.Ordinal))
+        if (DocumentedSkipPhases.Contains(metadata.Phase))
+        {
+            // 3d (exact-runtime) lands here today. Documented skip set lives
+            // alongside HandledPhases so the coverage test sees both halves
+            // of "things this command knows about".
+            _log.LogWarning(
+                "{S} {V}: phase={P} is a documented-skip for conformal fit; not yet supported. Skipping.",
+                stationSlug, versionName, metadata.Phase);
+            return Task.FromResult((fitted, skipped + metadata.PerLead.Count));
+        }
+
+        // L1 gate (added 2026-05-26 after 3o silently fell through to the
+        // lean builder and crashed with "Feature pack mismatch: wrote 23,
+        // expected 68"). If a phase isn't in HandledPhases AND isn't a
+        // DocumentedSkipPhases entry, refuse to attempt conformal fit
+        // rather than letting the per-lead dispatch fall through to the
+        // wrong feature builder.
+        if (!HandledPhases.Contains(metadata.Phase))
         {
             _log.LogWarning(
-                "{S} {V}: phase=3d uses exact-runtime feature builder; conformal fit not yet supported. Skipping.",
-                stationSlug, versionName);
+                "{S} {V}: phase={P} not in PrecipConformalFitCommand.HandledPhases — skipping. " +
+                "Add it to HandledPhases AND wire a feature-builder arm in the per-lead loop " +
+                "before this can fit calibrators.",
+                stationSlug, versionName, metadata.Phase);
             return Task.FromResult((fitted, skipped + metadata.PerLead.Count));
         }
 
