@@ -441,7 +441,15 @@ public sealed class DryWindowPredictCommand
                     stationSlug, versionName, lead, targetDate, qDaytime.Length, L.GetLength(0));
                 continue;
             }
-            var prob = DryWindow3pPredictor.ProbDryWindow(qDaytime, L, windowHours, rng, mcSamples);
+            // Stats variant runs the same MC + RNG seed; returns P(window)
+            // alongside the per-sample longest-dry-run distribution. Populates
+            // McMean/McP10/McP50/McP90 on the row — the site reads the
+            // P10/P90 band as the 3p confidence inline detail
+            // (3p has no fitted conformal calibrator on disk; the band is
+            // the only confidence signal we ship without retrain-dependency
+            // plumbing — see 2026-05-26 thread).
+            var mc = DryWindow3pPredictor.ProbDryWindowWithStats(qDaytime, L, windowHours, rng, mcSamples);
+            var prob = mc.ProbWindow;
 
             predictions.Add(new DryWindowPredictionRow
             {
@@ -461,12 +469,17 @@ public sealed class DryWindowPredictCommand
                 PrecipSumMean = null,
                 LongestDryRunMean = null,
                 WetHourCountMean = null,
+                McMeanLongestDryRunHours = mc.MeanLongestDryRunHours,
+                McP10LongestDryRunHours  = mc.P10LongestDryRunHours,
+                McP50LongestDryRunHours  = mc.P50LongestDryRunHours,
+                McP90LongestDryRunHours  = mc.P90LongestDryRunHours,
                 FeatureVectorHash = "",
                 ConformalSetTag = ModelArtifact.PredictConformalIfPresent(versionDir, lead, prob),
             });
             _log.LogInformation(
-                "  lead {Lead}h ({Date:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (3p, MC samples={Mc}, bound 3o={V3o})",
-                lead, targetDate, windowHours, prob, mcSamples, v3o);
+                "  lead {Lead}h ({Date:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (3p, MC samples={Mc}, longest dry run P10–P90={P10}-{P90}h, bound 3o={V3o})",
+                lead, targetDate, windowHours, prob, mcSamples,
+                mc.P10LongestDryRunHours, mc.P90LongestDryRunHours, v3o);
         }
 
         if (predictions.Count == 0)

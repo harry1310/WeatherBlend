@@ -230,33 +230,63 @@ public static partial class SitePages
                         mcTd = $"<td>{mcCell}</td>";
                     }
 
-                    // Conformal-set chip: "Confident" when the prediction set
-                    // is a singleton, "Ambiguous" when both classes are in
-                    // the 90% set. We pick the smallest available lead's tag;
-                    // if no row has a fitted conformal calibrator, "—". τ is
-                    // looked up by (version, lead) so each phase reads its
-                    // own calibrator without cross-talk.
+                    // Confidence chip. Two routes depending on what's on the row:
                     //
-                    // Tag-to-label INVERSION vs precip: ConformalSetTag stores
-                    // the calibrator's "positive class" semantics — for
-                    // dry-window the positive class IS "dry block exists",
-                    // so "Wet" → confident DRY day, "Dry" → confident WET day.
+                    // (a) ConformalSetTag populated (3b — bundle ships a fitted
+                    //     90%-coverage calibrator) → conformal chip + τ. The
+                    //     calibrator's "positive class" for dry-window IS "dry
+                    //     block exists", so its "Wet" → confident DRY day and
+                    //     "Dry" → confident WET day (this inversion is local to
+                    //     the dry-window page, not precip's).
+                    //
+                    // (b) No ConformalSetTag (3p — parameter-free copula MC
+                    //     over 3o; no analogous val-slice replay tree, see
+                    //     2026-05-26 thread) → derive chip from probability
+                    //     proximity to 0.5 (heuristic, no coverage guarantee)
+                    //     and append the per-MC-sample longest-dry-run band
+                    //     as the inline detail. Narrow P10–P90 = robust;
+                    //     wide = fragile.
+                    //
+                    // We pick the smallest available lead's row so the user
+                    // sees the freshest forecast — same as the lead pick in
+                    // the agreement / mc / best-start cells above.
                     string conformalCell = "—";
                     foreach (var lead in leadOrder)
                     {
                         if (!byLead.TryGetValue(lead, out var d)) continue;
-                        if (string.IsNullOrEmpty(d.ConformalSetTag)) continue;
-                        var (label, cls) = d.ConformalSetTag switch
+                        if (!string.IsNullOrEmpty(d.ConformalSetTag))
                         {
-                            "Ambiguous" => ("ambiguous", "low"),
-                            "Wet"       => ("confident dry", "high"),
-                            "Dry"       => ("confident wet", "high"),
-                            _           => (d.ConformalSetTag.ToLowerInvariant(), "unknown"),
+                            var (label, cls) = d.ConformalSetTag switch
+                            {
+                                "Ambiguous" => ("ambiguous", "low"),
+                                "Wet"       => ("confident dry", "high"),
+                                "Dry"       => ("confident wet", "high"),
+                                _           => (d.ConformalSetTag.ToLowerInvariant(), "unknown"),
+                            };
+                            var tauPart = input.DryWindowConformalTau.TryGetValue((d.Version, d.LeadHours), out var tau)
+                                ? string.Create(Ci, $" · τ={(tau * 100):0}%")
+                                : "";
+                            conformalCell = string.Create(Ci, $"<span class=\"conf conf-{cls}\">{label}</span> <small>(P={(d.ProbHasDryWindow * 100):0}%{tauPart})</small>");
+                            break;
+                        }
+                        // Heuristic fallback for MC phases (3p) — chip from
+                        // ProbHasDryWindow proximity to 0.5 with ±0.20 band.
+                        // This intentionally mirrors the conformal chip's
+                        // shape ("confident dry" / "ambiguous" / "confident
+                        // wet") without claiming a 90% coverage guarantee.
+                        var (hLabel, hCls) = d.ProbHasDryWindow switch
+                        {
+                            >= 0.80 => ("confident dry", "high"),
+                            <= 0.20 => ("confident wet", "high"),
+                            _       => ("ambiguous",     "low"),
                         };
-                        var tauPart = input.DryWindowConformalTau.TryGetValue((d.Version, d.LeadHours), out var tau)
-                            ? string.Create(Ci, $" · τ={(tau * 100):0}%")
-                            : "";
-                        conformalCell = string.Create(Ci, $"<span class=\"conf conf-{cls}\">{label}</span> <small>(P={(d.ProbHasDryWindow * 100):0}%{tauPart})</small>");
+                        var bandPart = (d.McP10LongestDryRunHours, d.McP90LongestDryRunHours) switch
+                        {
+                            ({ } p10, { } p90) =>
+                                string.Create(Ci, $" · run {p10:0}–{p90:0}h"),
+                            _ => "",
+                        };
+                        conformalCell = string.Create(Ci, $"<span class=\"conf conf-{hCls}\">{hLabel}</span> <small>(P={(d.ProbHasDryWindow * 100):0}%{bandPart})</small>");
                         break;
                     }
 
@@ -320,7 +350,7 @@ public static partial class SitePages
                             <th class="num">+72h</th>
                             {agreementHeader}
                             {mcHeader}
-                            <th>Conformal <small>(90% set)</small></th>
+                            <th>Confidence</th>
                             {bestStartHeader}
                           </tr>
                         </thead>

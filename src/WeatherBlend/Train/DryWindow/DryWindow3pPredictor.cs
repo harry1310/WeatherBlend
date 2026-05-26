@@ -126,6 +126,86 @@ public static class DryWindow3pPredictor
         => ProbDryWindow(qHourly, choleskyL, new[] { windowLength }, rng, nSamples)[windowLength];
 
     /// <summary>
+    /// Summary of the per-MC-sample longest-dry-run distribution. Mirrors the
+    /// retired 3g's aleatoric-uncertainty fields on <see cref="Models.DryWindowPredictionRow"/>
+    /// — site uses this as a confidence signal (narrow P10–P90 band → headline
+    /// P(dry-window) is robust; wide band → fragile). 3p has no fitted conformal
+    /// calibrator (3p is parameter-free MC over a separate model, so the
+    /// "fit on val slice" pattern 3b uses doesn't carry over without a 3o val
+    /// replay tree), so the MC band is the only signal we can ship without a
+    /// retrain dependency on 3o.
+    /// </summary>
+    public readonly record struct DryWindowMcStats(
+        double ProbWindow,
+        double MeanLongestDryRunHours,
+        int P10LongestDryRunHours,
+        int P50LongestDryRunHours,
+        int P90LongestDryRunHours);
+
+    /// <summary>
+    /// Single copula-MC pass yielding both P(window) and the per-MC-sample
+    /// longest-dry-run distribution stats. Same draws, same RNG seed → same
+    /// P(window) as the plain <see cref="ProbDryWindow(double[], double[,], int, Random, int)"/>
+    /// overload for the same caller (verified by
+    /// <c>ProbDryWindowWithStats_matches_ProbDryWindow_for_same_seed</c>).
+    /// One extra <c>int[nSamples]</c> alloc + a per-sample comparator vs the
+    /// plain overload — negligible at the 20k default.
+    /// </summary>
+    public static DryWindowMcStats ProbDryWindowWithStats(
+        double[] qHourly,
+        double[,] choleskyL,
+        int windowLength,
+        Random rng,
+        int nSamples = DefaultMcSamples)
+    {
+        if (qHourly.Length == 0)
+            return new DryWindowMcStats(0.0, 0.0, 0, 0, 0);
+
+        int n = qHourly.Length;
+        if (choleskyL.GetLength(0) != n || choleskyL.GetLength(1) != n)
+            throw new ArgumentException(
+                $"Cholesky factor dimensions ({choleskyL.GetLength(0)}×{choleskyL.GetLength(1)}) " +
+                $"do not match qHourly length ({n}).", nameof(choleskyL));
+
+        var sampler = new BoxMullerSampler();
+        var eps = new double[n];
+        var longestRuns = new int[nSamples];
+        int hits = 0;
+        long longestSum = 0;
+        for (int s = 0; s < nSamples; s++)
+        {
+            for (int h = 0; h < n; h++) eps[h] = sampler.Sample(rng);
+
+            int run = 0, longest = 0;
+            for (int h = 0; h < n; h++)
+            {
+                double z = 0.0;
+                for (int k = 0; k <= h; k++) z += choleskyL[h, k] * eps[k];
+                double u = StandardNormalCdf(z);
+                bool dry = u >= qHourly[h];
+                run = dry ? run + 1 : 0;
+                if (run > longest) longest = run;
+            }
+            longestRuns[s] = longest;
+            longestSum += longest;
+            if (longest >= windowLength) hits++;
+        }
+
+        // Sort once for the quantiles. nSamples = 20k by default → ~200 µs on
+        // a laptop, dominated by the MC pass itself.
+        Array.Sort(longestRuns);
+        int Quantile(double q) =>
+            longestRuns[Math.Clamp((int)Math.Floor(q * (nSamples - 1)), 0, nSamples - 1)];
+
+        return new DryWindowMcStats(
+            ProbWindow: (double)hits / nSamples,
+            MeanLongestDryRunHours: (double)longestSum / nSamples,
+            P10LongestDryRunHours: Quantile(0.10),
+            P50LongestDryRunHours: Quantile(0.50),
+            P90LongestDryRunHours: Quantile(0.90));
+    }
+
+    /// <summary>
     /// Standard normal CDF Φ(z) via Abramowitz-Stegun 7.1.26 (max abs error
     /// ≈ 1.5e-7). Bernoulli quantisation downstream wipes out any sub-ε
     /// difference.

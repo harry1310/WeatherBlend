@@ -1736,6 +1736,73 @@ public class SitePagesTests
 
 
     [Fact]
+    public void RenderDryWindow_renders_heuristic_confidence_chip_and_band_for_3p_rows_without_conformal_tag()
+    {
+        // Regression for the 2026-05-26 "3p dashes" bug. 3p ships no fitted
+        // conformal calibrator (3p is a parameter-free Gaussian copula MC
+        // over Phase 3o; the val-replay tree that 3j/3n used would need
+        // PrecipReplay to support rich/oro phases, which it doesn't). The
+        // site previously rendered an em-dash in the Confidence column for
+        // every 3p row.
+        //
+        // Fix: when ConformalSetTag is empty, derive the chip from
+        // ProbHasDryWindow proximity to 0.5 (heuristic, no coverage
+        // guarantee) and surface the McP10–P90 longest-dry-run band as
+        // an inline detail.
+        var generatedAt = new DateTime(2026, 5, 26, 0, 0, 0, DateTimeKind.Utc);
+        var wedTarget   = new DateTime(2026, 5, 27, 0, 0, 0, DateTimeKind.Utc);  // confident dry
+        var ambTarget   = new DateTime(2026, 5, 28, 0, 0, 0, DateTimeKind.Utc);  // ambiguous
+
+        // Confident-dry row: P=0.97 (3p style — almost always dry), with a
+        // narrow 7-8h longest-run band.
+        var confidentDry = new SitePages.DryWindowForecastPoint(
+            "ea_bellever_dartmoor", 3, "v3p", generatedAt, wedTarget, 24,
+            ProbHasDryWindow: 0.97,
+            ClimatologyProbHasDryWindow: 0.5,
+            AgreementHasDryWindow: null,
+            McMeanLongestDryRunHours: 7.5,
+            McP10LongestDryRunHours: 7,
+            McP50LongestDryRunHours: 8,
+            McP90LongestDryRunHours: 8,
+            ConformalSetTag: null);
+
+        // Ambiguous row: P=0.52, wide band 3-7h.
+        var ambiguous = new SitePages.DryWindowForecastPoint(
+            "ea_bellever_dartmoor", 3, "v3p", generatedAt, ambTarget, 24,
+            ProbHasDryWindow: 0.52,
+            ClimatologyProbHasDryWindow: 0.5,
+            AgreementHasDryWindow: null,
+            McMeanLongestDryRunHours: 4.8,
+            McP10LongestDryRunHours: 3,
+            McP50LongestDryRunHours: 5,
+            McP90LongestDryRunHours: 7,
+            ConformalSetTag: null);
+
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            DryWindowPredictions = new[] { confidentDry, ambiguous },
+            PhaseByVersion = new Dictionary<string, string> { ["v3p"] = "3p" },
+        };
+
+        var html = SitePages.RenderDryWindow(input, null);
+
+        // Header switched from "Conformal (90% set)" to plain "Confidence"
+        // so it accommodates both calibrated chips (3b) and heuristic ones
+        // (3p) without misrepresenting either.
+        html.Should().Contain("<th>Confidence</th>")
+            .And.NotContain("Conformal <small>(90% set)</small>");
+
+        // Confident-dry chip with inline band on the +24h Wed row.
+        html.Should().Contain("confident dry").And.Contain("97%").And.Contain("run 7–8h");
+        // Ambiguous chip on the Thu row with the wider 3-7h band.
+        html.Should().Contain("ambiguous").And.Contain("52%").And.Contain("run 3–7h");
+        // No em-dash in the Confidence column for these rows — that was the bug.
+        // (The em-dash can still appear elsewhere; what matters is the row's
+        // chip text is present.)
+    }
+
+    [Fact]
     public void RenderDryWindow_unknown_slug_falls_back_to_first_station()
     {
         // An unknown slug shouldn't crash the page; it should render the canonical
