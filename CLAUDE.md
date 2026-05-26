@@ -103,8 +103,8 @@ hops dispatch via `workflow_dispatch` with `force=true`. Manual override:
 
 **Pre-train sanity gate (RetrainGuard).** Each trainer (TempTrainCommand,
 DryWindowTrainCommand, ElementTrainerHarness on the .NET side; train_4a.py
-+ run_phase5_bayesian.py on the Python side) computes a
-`training_summary.json` post-fit and compares against the previous run's
+on the Python side) computes a `training_summary.json` post-fit and
+compares against the previous run's
 on disk. Defaults: rows ±30%, NaN% absolute 0.20, label-rate 0.10,
 features-effective 0 (any change aborts). Fail = log structured breach,
 exit 4, skip the manifest promotion. Orphan version dirs sit on disk

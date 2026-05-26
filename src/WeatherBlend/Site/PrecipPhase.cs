@@ -94,10 +94,8 @@ public static class PrecipPhases
         Color: "#ec407a");
 
     /// <summary>Light shade of Phase 4a's amber for the q05/q95 credible
-    /// interval bracket lines on the BART panel. Mirrors the
-    /// median-vs-band shade split used for 5a (BayesianMedian/BayesianBand)
-    /// — same hue family as the median, saturation difference reads as
-    /// "edges of the same uncertainty band". Material amber-200.</summary>
+    /// interval bracket lines on the BART panel — saturation difference
+    /// reads as "edges of the same uncertainty band". Material amber-200.</summary>
     public const string Phase4aBand = "#ffcc80";
 
     /// <summary>

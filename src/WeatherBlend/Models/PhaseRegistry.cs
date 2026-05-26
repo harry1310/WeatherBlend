@@ -32,12 +32,10 @@ public sealed class PhaseRegistry
     }
 
     /// <summary>
-    /// Champion-first ID lists per target, EXCLUDING role=confidence
-    /// phases. Drop-in replacement for the old hardcoded
-    /// <c>ActivePhasePolicy.ByTarget</c> dict — anything filtering "what
-    /// gets a Models card" or "what's a real prediction line" reads from
-    /// here. Confidence-role phases (e.g. 5a) are reachable via
-    /// <see cref="AllPhases"/> instead.
+    /// Champion-first ID lists per target. Drop-in replacement for the old
+    /// hardcoded <c>ActivePhasePolicy.ByTarget</c> dict — anything filtering
+    /// "what gets a Models card" or "what's a real prediction line" reads
+    /// from here.
     /// </summary>
     public IReadOnlyDictionary<string, IReadOnlyList<string>> ByTarget
     {
@@ -46,10 +44,7 @@ public sealed class PhaseRegistry
             var dict = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
             foreach (var (target, phases) in _byTarget)
             {
-                dict[target] = phases
-                    .Where(p => p.Role != PhaseRole.Confidence)
-                    .Select(p => p.Id)
-                    .ToArray();
+                dict[target] = phases.Select(p => p.Id).ToArray();
             }
             return dict;
         }
@@ -59,8 +54,7 @@ public sealed class PhaseRegistry
     /// Champion-first phase-ID list for a (target, location) pair —
     /// <see cref="ByTarget"/> filtered to phases whose phases.yaml
     /// <c>locations:</c> filter admits <paramref name="location"/> (a
-    /// phase with no filter applies everywhere). Confidence-role phases
-    /// are excluded, same as <see cref="ByTarget"/>. Phase B (commit 7):
+    /// phase with no filter applies everywhere). Phase B (commit 7):
     /// lets the per-location retrain fanout skip a phase that has no
     /// archive for a given location (e.g. 2d / 3d for membury_devon).
     /// </summary>
@@ -68,21 +62,18 @@ public sealed class PhaseRegistry
     {
         if (!_byTarget.TryGetValue(target, out var phases)) return Array.Empty<string>();
         return phases
-            .Where(p => p.Role != PhaseRole.Confidence && p.AppliesToLocation(location))
+            .Where(p => p.AppliesToLocation(location))
             .Select(p => p.Id)
             .ToArray();
     }
 
     /// <summary>
     /// Targets (champion-first) that <paramref name="location"/> can render —
-    /// any target whose phases.yaml lineup has at least one champion-or-
-    /// challenger phase admitting <paramref name="location"/>. Used by
-    /// site rendering to decide which sections to draw per location and by
-    /// predict-all to derive its (location, target) matrix; once 3b lands,
-    /// verify uses it too. Confidence-role phases (e.g. 5a) are excluded
-    /// because they don't render as a prediction line — same rule as
-    /// <see cref="ByTarget"/> / <see cref="ByTargetAndLocation"/>. Order is
-    /// stable (yaml-target order). Returns empty list if the location has
+    /// any target whose phases.yaml lineup has at least one phase admitting
+    /// <paramref name="location"/>. Used by site rendering to decide which
+    /// sections to draw per location and by predict-all to derive its
+    /// (location, target) matrix; once 3b lands, verify uses it too. Order
+    /// is stable (yaml-target order). Returns empty list if the location has
     /// no applicable phase at all (would happen if every target's lineup is
     /// locations-filtered away from this loc — useful as a "should we even
     /// render a page for this loc?" gate).
@@ -94,7 +85,6 @@ public sealed class PhaseRegistry
         {
             foreach (var p in phases)
             {
-                if (p.Role == PhaseRole.Confidence) continue;
                 if (!p.AppliesToLocation(location)) continue;
                 result.Add(target);
                 break;
@@ -105,25 +95,22 @@ public sealed class PhaseRegistry
 
     /// <summary>
     /// Returns true iff the (target, phase) pair is in the shipping
-    /// lineup AS A PREDICTION LINE — i.e. champion or challenger, NOT
-    /// confidence-role. Empty / null phase strings are never active.
+    /// lineup AS A PREDICTION LINE — i.e. champion or challenger.
+    /// Empty / null phase strings are never active.
     /// Mirrors the pre-YAML <c>ActivePhasePolicy.IsActive</c> contract.
     /// </summary>
     public bool IsActive(string target, string? phase)
     {
         if (string.IsNullOrEmpty(phase)) return false;
         if (!_byTarget.TryGetValue(target, out var phases)) return false;
-        return phases.Any(p =>
-            p.Role != PhaseRole.Confidence &&
-            string.Equals(p.Id, phase, StringComparison.Ordinal));
+        return phases.Any(p => string.Equals(p.Id, phase, StringComparison.Ordinal));
     }
 
     /// <summary>
     /// Index of <paramref name="phase"/> in <paramref name="target"/>'s
-    /// champion-first list (confidence-role excluded). Lower = champion.
-    /// Returns <see cref="int.MaxValue"/> for unknown / inactive /
-    /// confidence-role phases so callers can sort with the rest of their
-    /// data without special-casing nulls.
+    /// champion-first list. Lower = champion. Returns
+    /// <see cref="int.MaxValue"/> for unknown / inactive phases so callers
+    /// can sort with the rest of their data without special-casing nulls.
     /// </summary>
     public int Priority(string target, string phase)
     {
@@ -131,7 +118,6 @@ public sealed class PhaseRegistry
         int idx = 0;
         foreach (var p in phases)
         {
-            if (p.Role == PhaseRole.Confidence) continue;
             if (string.Equals(p.Id, phase, StringComparison.Ordinal)) return idx;
             idx++;
         }
@@ -160,10 +146,7 @@ public sealed class PhaseRegistry
     }
 
     /// <summary>
-    /// Full per-target phase list INCLUDING confidence-role entries.
-    /// Train workflows use this so role=confidence phases (5a) are still
-    /// retrained on the Sunday sweep even though they don't render as
-    /// prediction lines. Order is YAML order = champion-first.
+    /// Full per-target phase list. Order is YAML order = champion-first.
     /// </summary>
     public IReadOnlyList<PhaseEntry> AllPhases(string target)
         => _byTarget.TryGetValue(target, out var phases)
@@ -270,9 +253,8 @@ public sealed class PhaseRegistry
         {
             "champion" => PhaseRole.Champion,
             "challenger" => PhaseRole.Challenger,
-            "confidence" => PhaseRole.Confidence,
             _ => throw new InvalidOperationException(
-                $"Target '{target}' phase '{phaseId}' has unknown role '{raw}'. Expected: champion | challenger | confidence."),
+                $"Target '{target}' phase '{phaseId}' has unknown role '{raw}'. Expected: champion | challenger."),
         };
 
     private static PhaseImpl ParseImpl(string raw, string target, string phaseId)
@@ -296,7 +278,7 @@ public sealed class PhaseRegistry
     /// Why this exists: the 2026-05-26 JMA-extension surfaced that several
     /// NWP archives (GFS / ICON / ECMWF / MF / GEM / AIFS) only have
     /// valid data from 2024 onward — pre-2024 rows are NULL-padded and
-    /// dilute the training signal of 3a / 3c / 3b / 2b / 2c / 4a / 5a.
+    /// dilute the training signal of 3a / 3c / 3b / 2b / 2c / 4a.
     /// 3o is excluded from the cutoff because its terrain features and
     /// LoadAuxNwpMeans non-precip-aux pull (Wind / Temp / DewPoint /
     /// SurfacePressure, which DO populate pre-2024) keep it informative
@@ -374,15 +356,11 @@ public sealed record PhaseEntry(
 
 /// <summary>
 /// Phase rendering / lifecycle role per phases.yaml.
-/// <see cref="Confidence"/> phases are excluded from the Models page and
-/// from <see cref="ActivePhasePolicy.IsActive"/> — they overlay another
-/// phase's line (5a → 4a) rather than rendering as their own line.
 /// </summary>
 public enum PhaseRole
 {
     Champion,
     Challenger,
-    Confidence,
 }
 
 /// <summary>

@@ -67,8 +67,8 @@ public sealed class PrecipConformalFitCommand
     ///
     /// Phase 3d is intentionally OMITTED from the set — its exact-runtime
     /// feature builder isn't plumbed in here and the command explicitly
-    /// skips 3d with a warning before reaching the lead loop. 4a / 4b /
-    /// 5a are likewise out (impl=python or different command, no
+    /// skips 3d with a warning before reaching the lead loop. 4a / 4b are
+    /// likewise out (impl=python or different command, no
     /// PrecipConformalFitCommand involvement at all).
     /// </summary>
     public static readonly HashSet<string> HandledPhases =

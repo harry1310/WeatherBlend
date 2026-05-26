@@ -15,13 +15,10 @@
 # Roles (one of):
 #   champion    — first-in-list per target; predict/site treat as Current
 #   challenger  — competing model that gets a card alongside champion
-#   confidence  — trained + predicted but renders only as a credible-band
-#                 overlay on top of another phase's prediction line
-#                 (Phase 5a fits this — Bayesian P(wet) CI overlay on 4a)
 #
 # Impls (one of):
 #   dotnet      — trained by WeatherBlend (Microsoft.ML / LightGBM)
-#   python      — trained by WeatherProbabilistic (rpy2 / pymc / blackjax)
+#   python      — trained by WeatherProbabilistic (dbarts / ngboost)
 #
 # locations (optional list): per-phase location filter (Phase B). Absent
 #   means "every configured location". A non-empty list scopes the phase
@@ -29,10 +26,6 @@
 #   bonehill_rocks-only until a Membury-cell S3 archive backfill lands.
 #   Read via PhaseRegistry.ByTargetAndLocation / PhaseEntry.AppliesToLocation;
 #   the per-location retrain fanout skips a phase a location can't train.
-#
-# IsActive() / Models-page filtering EXCLUDES role=confidence so 5a doesn't
-# render as a prediction line. Train workflows include role=confidence so
-# the Sunday auto-retrain catches it.
 
 targets:
   temperature:
@@ -70,9 +63,7 @@ targets:
       # trained. 3c keeps its challenger slot. 4a (dbarts BART, trained +
       # predicted in WeatherProbabilistic, written to the same predictions
       # tree) added 2026-05-09 as a cross-lead challenger; beats deployed
-      # 3a in all 9 (station × lead) cells tested (avg −5.7% Brier). 5a
-      # (Bayesian logreg) is role=confidence — overlays as a credible
-      # band on the 4a line, no separate Models card.
+      # 3a in all 9 (station × lead) cells tested (avg −5.7% Brier).
       - id: "3a"
         role: champion
         impl: dotnet
@@ -115,7 +106,7 @@ targets:
       - id: "4a"
         role: challenger
         impl: python
-        # Bonehill-only — Membury 4a/5a not yet trained or wired in
+        # Bonehill-only — Membury 4a not yet trained or wired in
         # WeatherProbabilistic. retrain-python reads this filter.
         locations: ["bonehill_rocks"]
         minValidTime: "2024-01-01"
@@ -128,12 +119,6 @@ targets:
         impl: dotnet
         # Bonehill-only — minted from 4a + 3o, both Bonehill-only.
         locations: ["bonehill_rocks"]
-      - id: "5a"
-        role: confidence
-        impl: python
-        # Bonehill-only — Membury 5a not yet trained.
-        locations: ["bonehill_rocks"]
-        minValidTime: "2024-01-01"
 
   rainfall_amount:
     # Membury-only NGBoost-LogNormal regressor over the wet hours of

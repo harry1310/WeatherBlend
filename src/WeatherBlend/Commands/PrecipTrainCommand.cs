@@ -127,9 +127,9 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         IReadOnlyList<bool>? firstLeadTrainLabels = null;
         int totalTrainRows = 0, totalValRows = 0, totalTestRows = 0;
         // Per-row held-out test predictions for downstream bake-offs (e.g.
-        // 3a + 4a linear pool). Schema mirrors 5a's test_predictions.parquet
-        // so a single bake-off script can inner-join across phases. Buffered
-        // across the lead loop, written after.
+        // 3a + 4a linear pool). Schema is the canonical test_predictions
+        // schema so a single bake-off script can inner-join across phases.
+        // Buffered across the lead loop, written after.
         var testPredictionRows = new List<TestPredictionRow>();
 
         // Per-phase training-data cutoff from phases.yaml (2026-05-26).
@@ -283,10 +283,10 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
         // test_predictions.parquet — per-row held-out probabilities for
-        // downstream bake-offs (e.g. 3a + 4a linear pool). Same schema as
-        // 5a's test_predictions.parquet (valid_time, station, lead, p_wet,
-        // observed_wet) so a single bake-off script can inner-join across
-        // phases without per-phase schema branches.
+        // downstream bake-offs (e.g. 3a + 4a linear pool). Canonical schema
+        // (valid_time, station, lead, p_wet, observed_wet) so a single
+        // bake-off script can inner-join across phases without per-phase
+        // schema branches.
         if (testPredictionRows.Count > 0)
         {
             await ParquetSerializer.SerializeAsync(
@@ -412,7 +412,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         IReadOnlyList<bool>? firstLeadTrainLabels = null;
         int totalTrainRows = 0, totalValRows = 0, totalTestRows = 0;
         // Per-row held-out test predictions for the bake-off parquet —
-        // same canonical schema 3a/3e/4a/5a write so a single stacking
+        // same canonical schema 3a/3e/4a write so a single stacking
         // analysis can inner-join across phases. Added 2026-05-11
         // (3c was previously missing test_predictions, blocking
         // 3c-vs-3e-vs-4a stacking work).

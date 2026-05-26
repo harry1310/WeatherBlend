@@ -57,7 +57,7 @@ locations:
     # distinct upwind-geometry anchor to the 6-station pool that the three
     # existing Bonehill gauges + the three Membury gauges otherwise lack.
     # Side-effect: next Sunday auto-retrain picks Princetown up across every
-    # per-station phase (3a/3c/3b/3d/3g/3s/3j/3n + Python 4a/5a), producing
+    # per-station phase (3a/3c/3b/3d/3g/3s/3j/3n + Python 4a), producing
     # a per-station Princetown set alongside the pooled blender.
     rainfall:
       stations:

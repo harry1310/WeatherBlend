@@ -166,16 +166,9 @@ ORDER BY ModelVersion, LeadHours, ValidTimeUtc";
 
         // ConformalSetTag persisted only since precip-conformal-fit (2026-05-03).
         // ProbWetStd / ProbWetQ05 / ProbWetQ95 / Ci80Width / Ci90Width persisted
-        // since the Bayesian-uncertainty alignment 2026-05-09 (4a + 5a).
+        // since the Bayesian-uncertainty alignment 2026-05-09 (4a).
         // union_by_name in the read clause silently fills NULL for older parquets
         // missing any of these columns — handled by NullableDouble in MapPrecipRow.
-        //
-        // 5a's parquet is narrower than 3a/3c/3d/4a: no ClimatologyPWet, no
-        // per-NWP Precip*. union_by_name fills those NULL; MapPrecipRow's
-        // ClimatologyPWet path uses the same null-safe read so 5a rows pass
-        // through cleanly. Verify computes Brier without ClimatologyPWet (it
-        // joins predictions to truth directly); BSS for 5a will be NaN, which
-        // is correct given the column genuinely doesn't exist.
         var sql = $@"
 SELECT LocationName, TruthStation, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
        ProbWet, ClimatologyPWet,
@@ -188,11 +181,9 @@ FROM {fromClause}
 WHERE LocationName IN ({locationInList})
   AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
   AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
-  -- 5a's lead-as-feature predict can write occasional null-band rows
-  -- (cycle×lead combos where Open-Meteo features were missing and the
-  -- predictor wrote nulls instead of skipping). MapPrecipRow's GetDouble(6)
-  -- assumes non-null and would throw — filter at SQL instead, mirrors the
-  -- guard QueryBayesianCi already had.
+  -- Defensive: predictors occasionally write null-band rows (cycle×lead
+  -- combos where Open-Meteo features were missing). MapPrecipRow's
+  -- GetDouble(6) assumes non-null and would throw — filter at SQL.
   AND ProbWet IS NOT NULL
 ORDER BY TruthStation, ModelVersion, LeadHours, ValidTimeUtc";
 
@@ -209,8 +200,9 @@ ORDER BY TruthStation, ModelVersion, LeadHours, ValidTimeUtc";
         ValidTimeUtc        = r.GetDateTime(4),
         LeadHours           = r.GetInt32(5),
         ProbWet             = r.GetDouble(6),
-        // ClimatologyPWet null-safe so 5a rows (no climatology column) pass
-        // through with NaN; verify still computes Brier from ProbWet vs truth.
+        // ClimatologyPWet null-safe so older parquets without the column
+        // pass through with NaN; verify still computes Brier from ProbWet
+        // vs truth.
         ClimatologyPWet     = r.IsDBNull(7) ? double.NaN : r.GetDouble(7),
         PrecipGfs   = NullableDouble(r,  8),
         PrecipEcmwf = NullableDouble(r,  9),
@@ -223,8 +215,8 @@ ORDER BY TruthStation, ModelVersion, LeadHours, ValidTimeUtc";
         PrecipAgreementWet01 = NullableDouble(r, 16),
         FeatureVectorHash    = r.IsDBNull(17) ? "" : r.GetString(17),
         ConformalSetTag      = r.IsDBNull(18) ? null : r.GetString(18),
-        // Bayesian-uncertainty columns (4a + 5a). NullableDouble returns
-        // null for older parquets (pre-2026-05-09 4a, all 3a/3c/3d).
+        // Bayesian-uncertainty columns (4a). NullableDouble returns null
+        // for older parquets (pre-2026-05-09 4a, all 3a/3c/3d).
         ProbWetStd  = NullableDouble(r, 19),
         ProbWetQ05  = NullableDouble(r, 20),
         ProbWetQ95  = NullableDouble(r, 21),

@@ -1741,7 +1741,7 @@ public class SitePagesTests
         // Regression for the 2026-05-26 "Rain pages conformal tables are a mess"
         // findings:
         //   1) Daily P(wet) summary table had only one date (May 19) because
-        //      the all-phase latestPerValid tiebreak let 4a/4b/5a/3e rows win
+        //      the all-phase latestPerValid tiebreak let 4a/4b rows win
         //      the freshness race for most hours, then the champion-phase
         //      filter dropped them — collapsing whole dates out of the daily
         //      grouping.

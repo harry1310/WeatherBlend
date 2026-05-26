@@ -48,7 +48,7 @@ type Dispatch = { workflow: string; repo?: string; inputs?: Record<string, strin
  */
 const WORKFLOW_FOR_CRON: Record<string, Dispatch[]> = {
   // collect.yml — Open-Meteo + ERA5 + METAR + EA + MO DataHub. Its
-  // completion chains predict-4a + predict-5a (handleWorkflowRun Hop C).
+  // completion chains predict-4a (handleWorkflowRun Hop C).
   "45 2,8,14,20 * * *": [{ workflow: "collect.yml" }],
   // s3-collect.yml — raw S3 exact-runtime cycles for the 2d/3d blenders.
   // Its completion chains predict.yml (handleWorkflowRun Hop D), and
@@ -58,13 +58,13 @@ const WORKFLOW_FOR_CRON: Record<string, Dispatch[]> = {
   // ship 3f data same-cycle. predict-and-render.yml is retained as a
   // fallback (revert path).
   //
-  // predict-4a, predict-5a, predict, and render-site are no longer
-  // cron'd — they hang off the two completions above. That frees crons
-  // (Cloudflare free tier caps at 5) and makes the dependency order
-  // explicit instead of leaning on fixed-offset timing:
-  //   collect ─(success)─► predict-4a + predict-5a
+  // predict-4a, predict, and render-site are no longer cron'd — they
+  // hang off the two completions above. That frees crons (Cloudflare
+  // free tier caps at 5) and makes the dependency order explicit
+  // instead of leaning on fixed-offset timing:
+  //   collect ─(success)─► predict-4a
   //   s3-collect ─────────► predict ─────────────────► render-site
-  // s3-collect sits at :05 (not :00) so the collect→4a/5a chain — which
+  // s3-collect sits at :05 (not :00) so the collect→4a chain — which
   // starts when collect finishes ~HH:50 — gets a clear ~15 min run-room
   // before predict is chained off s3-collect.
   "5 3,9,15,21 * * *": [{ workflow: "s3-collect.yml" }],
@@ -303,7 +303,7 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
   // ready, instead of racing a fixed-offset cron. Seven hops:
   //   A   previous-runs-refresh ─(success, Sunday)─► retrain-python
   //   B   retrain-python        ─(any completion)──► retrain-blenders
-  //   C   collect               ─(success)─────────► predict-4a, predict-5a
+  //   C   collect               ─(success)─────────► predict-4a
   //   D   s3-collect            ─(any completion)──► predict
   //   E   verify                ─(success)─────────► render-site
   //   F.1 predict               ─(success)─────────► predict-3f
@@ -318,6 +318,9 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
   // A+B are the weekly retrain — serial so retrain-blenders' 4b mint
   // reads this cycle's fresh 4a rather than racing it. C+D+F.1+F are
   // the 6-hourly predict path; D+F.1+F replaced the fused
+  //
+  // Predict chain (C) used to fan to predict-4a + predict-5a; 5a was
+  // retired 2026-05-26.
   // predict-and-render workflow with split predict + predict-3f +
   // render so 3f's stage-2 (in WeatherProbabilistic) lands fresh data
   // on R2 between predict and render. E still redraws the site after
@@ -379,21 +382,19 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
     );
   }
 
-  // Hop C — collect → 4a/5a predict. predict-4a and predict-5a (both in
-  // WeatherProbabilistic) consume the Open-Meteo forecasts collect.yml
-  // just pushed to R2; chaining off collect's completion runs them on
-  // fresh data the moment it lands instead of racing a fixed cron.
-  // Gated on success — a failed collect leaves stale data, so skip and
-  // wait for the next cycle. Path check uses the leading slash so
-  // `s3-collect.yml` (Hop D) doesn't also match here.
+  // Hop C — collect → 4a predict. predict-4a (WeatherProbabilistic)
+  // consumes the Open-Meteo forecasts collect.yml just pushed to R2;
+  // chaining off collect's completion runs it on fresh data the moment
+  // it lands instead of racing a fixed cron. Gated on success — a
+  // failed collect leaves stale data, so skip and wait for the next
+  // cycle. Path check uses the leading slash so `s3-collect.yml`
+  // (Hop D) doesn't also match here.
   if ((wfRun.path ?? "").endsWith("/collect.yml") && conclusion === "success") {
-    for (const wf of ["predict-4a.yml", "predict-5a.yml"]) {
-      try {
-        await dispatchWorkflow(env, wf, "harry1310/WeatherProbabilistic");
-        console.log(`predict chain: collect success → dispatched ${wf}`);
-      } catch (e) {
-        console.error(`predict chain: failed to dispatch ${wf}: ${e}`);
-      }
+    try {
+      await dispatchWorkflow(env, "predict-4a.yml", "harry1310/WeatherProbabilistic");
+      console.log("predict chain: collect success → dispatched predict-4a.yml");
+    } catch (e) {
+      console.error(`predict chain: failed to dispatch predict-4a.yml: ${e}`);
     }
   }
 

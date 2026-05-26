@@ -17,7 +17,7 @@ Cloudflare crons (4)                          Workflow dispatched
 30 9 * * MON,THU     (Mon + Thu 09:30 UTC)     →  verify.yml
 
 Chained off workflow_run completions (not cron'd — see handleWorkflowRun):
-  collect    ─(success)────►  predict-4a + predict-5a   (WeatherProbabilistic)
+  collect    ─(success)────►  predict-4a                (WeatherProbabilistic)
   s3-collect ─(completion)─►  predict-and-render
   verify     ─(success)────►  render-site
   previous-runs-refresh ─(Sunday success)─►  retrain-python ─►  retrain-blenders
@@ -43,15 +43,15 @@ Four crons. The 6-hour collect/predict slot (HH ∈ {2, 8, 14, 20}) runs:
 | Cron | Workflow | Why this time |
 |------|----------|---------------|
 | `45 2,8,14,20 * * *` | `collect.yml` | Every 6h, `:45` past the hour — the offset gives Open-Meteo's GEM ingest time to land (earlier ticks went out on a stale GEM cycle). Runs in ~2.5–3.5 min. |
-| `5 3,9,15,21 * * *` | `s3-collect.yml` | Raw S3 exact-runtime cycle pulls (GFS / IFS / AIFS / MO Global / UKV / GEFS) for the 2d/3d blenders. The ~9h gap past the previous synoptic cycle clears every publisher (slowest is ECMWF IFS, ~T+7-8h). At `:05` not `:00` so the `collect → predict-4a/5a` chain (which starts when collect finishes ~HH:50) has run-room before `predict-and-render` is chained off s3-collect. Typical runtime 5–8 min, 60-min timeout. |
+| `5 3,9,15,21 * * *` | `s3-collect.yml` | Raw S3 exact-runtime cycle pulls (GFS / IFS / AIFS / MO Global / UKV / GEFS) for the 2d/3d blenders. The ~9h gap past the previous synoptic cycle clears every publisher (slowest is ECMWF IFS, ~T+7-8h). At `:05` not `:00` so the `collect → predict-4a` chain (which starts when collect finishes ~HH:50) has run-room before `predict-and-render` is chained off s3-collect. Typical runtime 5–8 min, 60-min timeout. |
 | `0 12 * * *` | `era5-refresh.yml` + `previous-runs-refresh.yml` | ECMWF publishes ERA5T ~09–10 UTC and Open-Meteo ingests within hours; 12:00 is past both, so the refresh lands on fresh data. Both pull a 14-day rolling window. On a **Sunday**, `previous-runs-refresh`'s success chains the weekly retrain. |
 | `30 9 * * MON,THU` | `verify.yml` | Twice-weekly Mon + Thu 09:30 UTC. **Use day-name aliases (`MON`, `THU`) not numbers — Cloudflare cron uses 1=Sunday (not POSIX 0=Sunday), so `* * 1,4` fires Sun+Wed.** |
 
-`predict-4a`, `predict-5a` and `predict-and-render` are **not cron'd** — each
-is dispatched when its upstream workflow completes (`handleWorkflowRun`,
+`predict-4a` and `predict-and-render` are **not cron'd** — each is
+dispatched when its upstream workflow completes (`handleWorkflowRun`,
 Hops C and D in `src/index.ts`):
 
-- `collect` success → `predict-4a` + `predict-5a` (they consume collect's Open-Meteo forecasts).
+- `collect` success → `predict-4a` (consumes collect's Open-Meteo forecasts).
 - `s3-collect` completion → `predict-and-render` (it consumes s3-collect's exact-runtime cycles).
 
 Chaining runs each the moment its input is ready instead of guessing a fixed

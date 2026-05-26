@@ -95,21 +95,6 @@ public static partial class SitePages
         /// so the eye reads MO Spot as a distinct comparison line on
         /// every chart it appears on.</summary>
         public const string MetOfficeSpot = "#2e7d32";
-
-        /// <summary>Dark line colour for the WeatherProbabilistic Bayesian
-        /// posterior median P(wet) line on the precip forecast page.
-        /// Material light-blue-900 — distinct from ECMWF's light-blue-400
-        /// and from every blend-purple. Reads as "considered, dark" against
-        /// the brand purples, communicating "different model, sibling
-        /// project."</summary>
-        public const string BayesianMedian = "#01579b";
-
-        /// <summary>Light shade of <see cref="BayesianMedian"/> for the
-        /// q05/q95 credible-interval bracket lines (90% band, aligned with
-        /// 4a's panel). Same hue family so the reader pairs them with the
-        /// median line; saturation difference reads as "edges of the same
-        /// uncertainty band". Material light-blue-300.</summary>
-        public const string BayesianBand = "#4fc3f7";
     }
 
     /// <summary>NWPs that feed the temperature blender — the seven that
@@ -509,17 +494,6 @@ public static partial class SitePages
             = Array.Empty<NwpTemperatureForecastPoint>();
 
         /// <summary>
-        /// Bayesian P(wet) posterior summary points from the
-        /// WeatherProbabilistic sibling repo. Drives the per-row confidence
-        /// signal on the precip forecast page (Phase 2e). Empty when the
-        /// upstream workflow hasn't yet pushed any anchor's parquets — the
-        /// renderer degrades silently to "no Bayesian CI section" rather
-        /// than rendering empty plots.
-        /// </summary>
-        public IReadOnlyList<BayesianCiPoint> BayesianCi { get; init; }
-            = Array.Empty<BayesianCiPoint>();
-
-        /// <summary>
         /// Structured weekly verify history loaded from
         /// <c>data/reports/verify_*.json</c>. One entry per (target, asOf)
         /// run; the Models-page renderer filters per-card on (target,
@@ -628,42 +602,6 @@ public static partial class SitePages
     /// Phase grouping mirrors <see cref="RollingMaePoint"/>.</summary>
     public sealed record RollingBrierPoint(string Station, string Phase, int LeadHours, DateTime WindowEndUtc, double BlendBrier, int N);
 
-    /// <summary>
-    /// One row from the WeatherProbabilistic Phase 2b live-predict output.
-    /// Per-(station, valid_time, lead) Bayesian P(wet) posterior summary
-    /// from the sibling repo's PyMC partial-pooling model. Used as a
-    /// confidence signal next to 3a's deterministic ProbWet on the precip
-    /// forecast page — narrow CI80 → high confidence, wide CI80 → low.
-    ///
-    /// <c>StationSlug</c> is the path-partition key
-    /// (<c>ea_bellever_dartmoor</c>, <c>ea_bovey_tracey</c>,
-    /// <c>ea_dartmoor_nr_hexworthy</c>) the renderer uses to join 5a's
-    /// CI band against the per-lead precip page. <c>PredictedAtUtc</c>
-    /// is the timestamp embedded in <c>ModelVersion</c> for picking the
-    /// freshest cycle when multiple have predicted the same (valid, lead).
-    ///
-    /// Parquet schema lives at
-    /// data/predictions/precipitation/{station_slug}/
-    /// model_version=v..._phase5a/date=*/predictions.parquet — written by
-    /// the predict-5a.yml workflow on every HH+1:00 cron tick.
-    /// (Renamed 2026-05-09 from precipitation_bayesian_ci/widths.parquet
-    /// when Phase 5 → 5a moved to first-class predictions tree.)
-    /// </summary>
-    public sealed record BayesianCiPoint(
-        string StationSlug,
-        DateTime ValidTimeUtc,
-        int LeadHours,
-        DateTime PredictedAtUtc,
-        double PWetMean,
-        double PWetStd,
-        double PWetQ05,
-        double PWetQ10,
-        double PWetQ50,
-        double PWetQ90,
-        double PWetQ95,
-        double Ci80Width,
-        double Ci90Width);
-
     public sealed record PrecipForecastPoint(
         string Station,
         string Version,
@@ -696,10 +634,9 @@ public static partial class SitePages
         string? ConformalSetTag = null,
         // Bayesian-uncertainty quantiles (added 2026-05-09). Persisted by
         // phases that compute a posterior per row — 4a (BART) writes them
-        // for live predictions; 5a writes them but the renderer reads 5a
-        // via QueryBayesianCi, not this record. Null on 3a/3c/3d/2x rows
-        // and on pre-2026-05-09 4a rows. Render path uses Q05/Q95 to draw
-        // a dashed band around the 4a champion's prediction line.
+        // for live predictions. Null on 3a/3c/3d/2x rows and on pre-2026-05-09
+        // 4a rows. Render path uses Q05/Q95 to draw a dashed band around the
+        // 4a champion's prediction line.
         double? ProbWetQ05 = null,
         double? ProbWetQ95 = null,
         double? Ci80Width  = null,

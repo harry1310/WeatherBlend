@@ -108,7 +108,7 @@ jobs:
         # location / station / NWP catalogue lives in
         # src/WeatherBlend/{Config/phases.yaml, config.yaml}. Pushing both
         # to R2 on every refresh keeps WeatherProbabilistic
-        # (retrain-python / predict-4a / predict-5a / 5a-runner-smoke) in
+        # (retrain-python / predict-4a / predict-3f) in
         # sync with WB's main without a cross-repo checkout step. rclone
         # copy is a no-op when the file is unchanged.
         #

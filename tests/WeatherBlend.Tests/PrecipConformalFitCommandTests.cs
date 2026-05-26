@@ -36,13 +36,10 @@ public class PrecipConformalFitCommandTests
 
         // The conformal fit is invoked from PrecipTrainCommand's train paths
         // after a successful promote. Only impl=dotnet phases reach the
-        // .NET trainer; impl=python phases (4a / 5a) are served by their
-        // own WP-side workflows that handle calibration independently.
-        // Confidence-role phases (5a is the only one today) don't get a
-        // conformal fit because they aren't rendered as prediction lines.
+        // .NET trainer; impl=python phases (4a) are served by their own
+        // WP-side workflows that handle calibration independently.
         var dotnetPhases = allPrecipPhases
             .Where(p => p.Impl == PhaseImpl.Dotnet)
-            .Where(p => p.Role != PhaseRole.Confidence)
             .Select(p => p.Id)
             .ToHashSet(StringComparer.Ordinal);
 

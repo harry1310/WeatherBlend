@@ -41,8 +41,8 @@ public sealed class PrecipPredictCommand
     /// active precipitation phases in phases.yaml, these are the ones
     /// PrecipPredictCommand serves — the remainder are skipped silently
     /// because they're handled elsewhere:
-    ///   * <c>4a</c> / <c>5a</c> — impl=python, served by predict-4a.yml /
-    ///                              predict-5a.yml in WeatherProbabilistic.
+    ///   * <c>4a</c>            — impl=python, served by predict-4a.yml
+    ///                              in WeatherProbabilistic.
     ///   * <c>4b</c>           — impl=dotnet but synthesised by
     ///                            <see cref="Phase4bPredictCommand"/> (its
     ///                            own CLI subcommand, invoked as a separate
@@ -225,20 +225,18 @@ public sealed class PrecipPredictCommand
         LocationConfig location,
         CancellationToken ct)
     {
-        // Python-trained phases (4a per-cell BART, 5a INLA Bayesian) live
-        // in WeatherProbabilistic and have their own dedicated predict
-        // workflows (predict-4a.yml + predict-5a.yml). Their bundles end up
-        // in the same data/models/precipitation/{station}/ tree + their
-        // versions are auto-promoted into MANIFEST.json's Active (since
-        // 2026-05-12), so once-around the Active loop in this .NET
-        // PrecipPredictCommand they'd hit `metadata.Phase == "4a"` or
-        // "5a" and try to load a LightGBM blender that isn't there.
-        // Worse — train_4a.py writes BestSingleTestMae=null which the .NET
-        // PerLeadStats deserialiser rejects (System.Double can't accept
-        // null), so we crash BEFORE reaching the dispatch. Cheapest fix:
-        // sniff the version-name suffix and skip without trying to load.
-        // Caught 2026-05-12 03:22 UTC by predict-and-render run 25711115753
-        // shortly after the manifest fix promoted 4a back into Active.
+        // Python-trained phases (4a per-cell BART) live in
+        // WeatherProbabilistic and have their own dedicated predict
+        // workflow (predict-4a.yml). Their bundles end up in the same
+        // data/models/precipitation/{station}/ tree + their versions are
+        // auto-promoted into MANIFEST.json's Active (since 2026-05-12),
+        // so once-around the Active loop in this .NET PrecipPredictCommand
+        // they'd hit `metadata.Phase == "4a"` and try to load a LightGBM
+        // blender that isn't there. Worse — train_4a.py writes
+        // BestSingleTestMae=null which the .NET PerLeadStats deserialiser
+        // rejects (System.Double can't accept null), so we crash BEFORE
+        // reaching the dispatch. Cheapest fix: sniff the version-name
+        // suffix and skip without trying to load.
         // Two-layer phase gating (introduced 2026-05-26 to replace the
         // older hardcoded-suffix guards). Source of truth:
         //   L1 (project-wide): phases.yaml — "is this phase active in our
@@ -257,10 +255,10 @@ public sealed class PrecipPredictCommand
         // the default lean/rich row build and threw "Feature pack mismatch:
         // wrote 23, expected 59".)
         //
-        // L2 catches valid-but-not-mine phases: 4a / 5a (impl=python, served
-        // by predict-4a.yml / predict-5a.yml), 4b (impl=dotnet but its own
-        // CLI command Phase4bPredictCommand handles it inside
-        // predict-and-render's "Synthesise Phase 4b" step).
+        // L2 catches valid-but-not-mine phases: 4a (impl=python, served by
+        // predict-4a.yml), 4b (impl=dotnet but its own CLI command
+        // Phase4bPredictCommand handles it inside predict-and-render's
+        // "Synthesise Phase 4b" step).
         var phaseFromSuffix = ModelArtifact.ExtractPhaseFromVersionName(modelVersion);
         if (phaseFromSuffix is not null)
         {

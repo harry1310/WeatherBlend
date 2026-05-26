@@ -29,28 +29,28 @@ compatibility_date = "2025-04-01"
 #                                            (Cloudflare cron uses 1=Sunday, not POSIX
 #                                            0=Sunday — day names avoid the off-by-one trap)
 #
-# Only 4 crons — predict-4a, predict-5a and predict-and-render are NOT cron'd.
+# Only 4 crons — predict-4a and predict-and-render are NOT cron'd.
 # They are chained off workflow_run completions in src/index.ts
 # (handleWorkflowRun, Hops C and D):
 #
 #   HH:45    collect       (cron)
-#      └─ on success ─► predict-4a + predict-5a   (WeatherProbabilistic; consume
-#                                                  collect's Open-Meteo forecasts)
+#      └─ on success ─► predict-4a   (WeatherProbabilistic; consumes
+#                                     collect's Open-Meteo forecasts)
 #   HH+1:05  s3-collect    (cron)
 #      └─ on completion ─► predict-and-render     (consumes the exact-runtime
 #                                                  cycles s3-collect just landed)
 #
 # Why chained, not cron'd: predict-and-render genuinely depends on s3-collect,
-# and predict-4a/5a depend on collect. Chaining runs each the moment its input
+# and predict-4a depends on collect. Chaining runs each the moment its input
 # is ready rather than guessing a fixed offset, and it frees a cron (Cloudflare
 # free tier caps at 5). collect, s3-collect and predict-and-render also share
 # the GitHub Actions `weatherblend-data` concurrency group
 # (cancel-in-progress: false), so even under the old cron timing the render
 # could never start mid-collect — the chain just makes that ordering explicit.
 #
-# s3-collect is at :05 (not :00) to give the collect→predict-4a/5a chain
-# run-room: collect finishes ~HH:50, 4a/5a chain off it, and predict-and-render
-# only fires once s3-collect (HH+1:05) completes — comfortably after 4a/5a.
+# s3-collect is at :05 (not :00) to give the collect→predict-4a chain
+# run-room: collect finishes ~HH:50, 4a chains off it, and predict-and-render
+# only fires once s3-collect (HH+1:05) completes — comfortably after 4a.
 #
 # Two more chains: the Sunday weekly retrain (Hops A/B -- the noon
 # previous-runs-refresh, on a Sunday success, chains retrain-python ->

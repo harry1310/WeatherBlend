@@ -237,7 +237,7 @@ public static partial class SitePages
     /// <summary>
     /// History days for the rain forecast tab's shared X axis. Wider than
     /// <see cref="ForecastChartHistoryDays"/> (3) because the rain page has
-    /// stacked panels (top P(wet) + 4a + 5a + NWP rate) and the eye benefits
+    /// stacked panels (top P(wet) + 4a + NWP rate) and the eye benefits
     /// from a wider context window when comparing them top-to-bottom.
     /// User-set 2026-05-10 alongside the per-tab axis-unification work.
     /// </summary>
@@ -264,7 +264,6 @@ public static partial class SitePages
         {
             "3c" => "#1976D2",                       // blue — rich-feature LightGBM
             "3d" => NwpPalette.BlendExactChallenger, // magenta — exact-runtime (unchanged)
-            "3e" => "#2E7D32",                       // green — TorchSharp MLP
             "4b" => "#F57C00",                       // orange — 2-way mean (headline stack)
             _    => NwpPalette.BlendChallenger,      // fallback for future challengers
         };
@@ -369,7 +368,7 @@ public static partial class SitePages
         var latestPerValidByStation = new Dictionary<string, IReadOnlyList<PrecipForecastPoint>>(StringComparer.Ordinal);
         // Champion-phase-scoped peer of latestPerValid. The freshness tiebreak
         // candidate pool is restricted to rows whose phase matches the
-        // precipitation champion (3a) — 4a/4b/5a/3e re-predict more often and
+        // precipitation champion (3a) — 4a/4b re-predict more often and
         // were silently winning the all-phase tiebreak in latestPerValid,
         // killing the daily + hourly conformal tables (their rows have no
         // ConformalSetTag). Daily summary + hourly P(wet) tables read off
@@ -381,8 +380,8 @@ public static partial class SitePages
 
         // Pre-compute the latest-per-(station, valid) lists up front so we
         // can derive the page-wide X axis window before rendering any chart.
-        // Every chart on this lead-tab (top P(wet), per-station 4a, per-station
-        // 5a, page-level NWP precip rate) shares the same (xMin, xMax) so the
+        // Every chart on this lead-tab (top P(wet), per-station 4a,
+        // page-level NWP precip rate) shares the same (xMin, xMax) so the
         // reader can scan top-to-bottom on a fixed time grid. Window is:
         //   xMin = now − RainChartHistoryDays (currently 7d)
         //   xMax = furthest valid_time present in OUR top P(wet) chart's data
@@ -534,7 +533,6 @@ public static partial class SitePages
             s.Append(RenderPrecipDailySummaryTable(championVisiblePerValid));
             s.Append(RenderPrecipHourlyConfidenceTable(championHourlyPerValid, station, input.PrecipConformalTau));
             s.Append(RenderPhase4aPanel(input, station, lead, pageXMin, pageXMax));
-            s.Append(RenderBayesianCiPanel(input, station, lead, pageXMin, pageXMax));
         }
 
         // Page-level NWP precipitation_probability (PoP) chart — moved
@@ -648,32 +646,10 @@ public static partial class SitePages
     /// chart with three series: posterior median P(wet) (solid, dark
     /// blue) plus q05 and q95 (dashed, light blue) bracketing the median
     /// (90% band, matching 4a's panel — was 80% / q10–q90 before 2026-05-10).
-    /// Above the chart, a one-line summary giving median P(wet) average
-    /// and CI80 width average across the rendered hours, plus a tier
-    /// label (high / medium / low confidence) so the eye can read it
-    /// without computing widths in their head.
-    ///
-    /// Sits below the existing per-station P(wet) chart on the precip
-    /// forecast page. The Bayesian model is from the WeatherProbabilistic
-    /// sibling repo (Phase 5a — hierarchical Bayesian logistic regression
-    /// with lead-as-feature, partial-pooling across stations, 5 NWP precip
-    /// features) — distinct model from 3a's LightGBM, so the median line
-    /// is a real independent second opinion, not a re-rendering of the
-    /// headline. What we use it for is the WIDTH (CI80) per row: the
-    /// 2026-04 Phase 4 bake-off found narrow-CI rows have ~5x lower Brier
-    /// than wide-CI rows, so CI80 transfers as a forecast-skill flag
-    /// downstream.
-    ///
-    /// Silent skip if (a) no rows for this (station, lead) pair (e.g.
-    /// before the first predict-5a.yml fire, or for stations the 5a
-    /// model hasn't been retrained for yet), or (b) the lead isn't in
-    /// the trained set.
-    /// </summary>
     /// <summary>
     /// Standalone 4a panel — pulled out of the main P(wet) chart 2026-05-09
     /// because adding 4a's median + dashed Q05/Q95 on top of 3a/3c/3d + 4
-    /// per-NWP PoP overlays + climatology made the chart visually
-    /// unreadable. Mirrors <see cref="RenderBayesianCiPanel"/>'s shape.
+    /// per-NWP PoP overlays + climatology made the chart visually unreadable.
     /// Silent skip if no 4a rows for this (station, lead) pair (e.g. before
     /// the first predict-4a.yml fire).
     /// </summary>
@@ -711,16 +687,12 @@ public static partial class SitePages
             .ToList();
         if (rows.Count == 0) return "";
 
-        // Visual consistency with 5a: CI brackets render in
-        // PrecipPhases.Phase4aBand (lighter amber), main line in
-        // PrecipPhases.Phase4a.Color (full amber). Series order
-        // q95 → main → q05 mirrors 5a so the chart tooltip reads
-        // top-to-bottom 95% / centre / 5%. NB the "centre line" here is
-        // ProbWet (posterior MEAN), not Q50 (median) — 4a's parquet
-        // exposes both but the panel has always plotted the mean as the
-        // headline. 5a plots Q50 by convention; we don't unify the
-        // headline source because they're meaningfully different
-        // summaries and the existing labels reflect that.
+        // CI brackets render in PrecipPhases.Phase4aBand (lighter amber),
+        // main line in PrecipPhases.Phase4a.Color (full amber). Series
+        // order q95 → main → q05 so the chart tooltip reads top-to-bottom
+        // 95% / centre / 5%. NB the "centre line" here is ProbWet
+        // (posterior MEAN), not Q50 (median) — 4a's parquet exposes both
+        // but the panel has always plotted the mean as the headline.
         var color = PrecipPhases.Phase4a.Color;
         var bandColor = PrecipPhases.Phase4aBand;
         var meanPts = rows.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet)).ToList();
@@ -750,80 +722,6 @@ public static partial class SitePages
             XLabel = "Valid time (UTC)",
             YLabel = "Probability",
             Series = series,
-            Height = 180,
-            FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
-            FormatY = v => v.ToString("0.00", Ci),
-            TodayLineX = input.GeneratedAtUtc.ToOADate(),
-            XMin = xMin,
-            XMax = xMax,
-        }));
-        return s.ToString();
-    }
-
-    private static string RenderBayesianCiPanel(
-        SiteInputs input, string stationSlug, int lead,
-        double xMin, double xMax)
-    {
-        if (input.BayesianCi.Count == 0) return "";
-
-        // Match Phase 5a CI rows to the precip station via slug — both
-        // sides share the same key (BayesianCiPoint.StationSlug is parsed
-        // off the predictions parquet path partition; stationSlug here is
-        // the page's station). Stations the 5a model hasn't been retrained
-        // for yet just produce 0 matches and skip silently.
-        //
-        // No now-1h floor: showing past hours alongside future gives eye-
-        // context ("model said X for last day, says Y now") and the
-        // renderer's outer windowStart still bounds the dataset.
-        //
-        // Filter on a ±12h band around the page's nominal lead rather than
-        // strict equality. Phase 5a (lead-as-feature) emits one row per
-        // (cycle, lead) pair with the ACTUAL run-to-valid offset; strict
-        // `LeadHours == 24` would only catch cycles at HH ∈ {0,6,12,18}
-        // landing on 00/06/12/18Z valid_times — same cycle-grid bottleneck
-        // we hit before. The band keeps the per-lead-page distinction
-        // (lead-24 page = "predictions made roughly 24h ahead") while
-        // letting hourly cycle output fill the chart densely. Bands tile
-        // cleanly: [12,36], [36,60], [60,84] for the three pages.
-        var rows = input.BayesianCi
-            .Where(p => string.Equals(p.StationSlug, stationSlug, StringComparison.OrdinalIgnoreCase)
-                        && p.LeadHours >= lead - 12 && p.LeadHours < lead + 12)
-            .GroupBy(p => p.ValidTimeUtc)
-            .Select(g => g.OrderByDescending(p => p.PredictedAtUtc)
-                          .ThenByDescending(p => p.LeadHours)
-                          .First())
-            .OrderBy(p => p.ValidTimeUtc)
-            .ToList();
-        if (rows.Count == 0) return "";
-
-        var medianPts = rows.Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.PWetQ50)).ToList();
-        var q05Pts = rows.Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.PWetQ05)).ToList();
-        var q95Pts = rows.Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.PWetQ95)).ToList();
-
-        var s = new StringBuilder();
-        s.Append("<h4>Bayesian credible interval — independent confidence signal</h4>");
-        // No summary text — the chart is self-explanatory: tight band =
-        // confident, wide band = uncertain. An averaged tier was tried
-        // 2026-05-06 and reverted on user feedback ("why a single value?")
-        // because it smeared per-hour variability the chart already shows.
-        // Band aligned to 4a's 90% (q05/q95) on 2026-05-10 — the prior
-        // 80% was an inheritance from the bayesian_ci era; matching 4a
-        // makes the two confidence panels visually comparable.
-        s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
-        {
-            Title = $"Bayesian P(wet) median + 90% CI — {PrettyStation(stationSlug)} — +{lead}h",
-            XLabel = "Valid time (UTC)",
-            YLabel = "Probability",
-            // Median solid; q05/q95 dashed so the legend reads them as
-            // "band edges" not as independent forecast lines, even though
-            // they share the BayesianBand swatch (semantically symmetric —
-            // both are the same posterior's quantile bracket).
-            Series = new List<LineSeries>
-            {
-                new("q95 (upper)", NwpPalette.BayesianBand, q95Pts, Dashed: true),
-                new("Median",      NwpPalette.BayesianMedian, medianPts),
-                new("q05 (lower)", NwpPalette.BayesianBand, q05Pts, Dashed: true),
-            },
             Height = 180,
             FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
             FormatY = v => v.ToString("0.00", Ci),

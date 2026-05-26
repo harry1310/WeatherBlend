@@ -111,10 +111,9 @@ public sealed class PrecipPredictionRow
     public string? ConformalSetTag { get; init; }
 
     // ---- Bayesian-uncertainty columns (added 2026-05-09) -------------------
-    // Persisted by phases that compute a posterior distribution per row:
-    // 4a (dbarts BART) and 5a (Bayesian logreg). Null on 3a/3c/3d/2x rows
-    // and on pre-2026-05-09 4a rows. Renderers should treat null as
-    // "uncertainty signal not available" and skip the band.
+    // Persisted by 4a (dbarts BART) — the per-row posterior. Null on
+    // 3a/3c/3d/2x rows and on pre-2026-05-09 4a rows. Renderers should
+    // treat null as "uncertainty signal not available" and skip the band.
     public double? ProbWetStd { get; init; }
     public double? ProbWetQ05 { get; init; }
     public double? ProbWetQ95 { get; init; }

@@ -191,19 +191,10 @@ public static class ModelArtifact
 
         /// <summary>
         /// Best-single model val MAE. Nullable because Python-trained phases
-        /// (4a per-cell BART, 5a INLA) don't compute a per-NWP best-single
-        /// baseline — train_4a / extend_5a emit JSON `null` here. .NET
-        /// trainers (2b/2c/2d/3a/3c/3d/3e/3b/3g/element) always write a real
-        /// number. Pre-2026-05-12 this was non-nullable double; the
-        /// deserialiser silently rejected 4a/5a's null in
-        /// ModelMetadataRepository.GetPhaseByVersion (which reads the whole
-        /// POCO just to grab the Phase string), so 4a's PhaseByVersion entry
-        /// went missing and RenderPhase4aPanel filtered to 0 rows — chart
-        /// went blank starting 2026-05-10 22:08 UTC when the per-cell 4a
-        /// refactor minted a bundle with null at every lead. Models page
-        /// already handles NaN/missing via the em-dash branch in
-        /// SitePages.Models.cs:216-218 — no consumer change needed beyond
-        /// unwrapping at the SitePages.PerLeadMetric construction site.
+        /// (4a per-cell BART) don't compute a per-NWP best-single baseline —
+        /// train_4a emits JSON `null` here. .NET trainers (2b/2c/2d/3a/3c/3d/
+        /// 3e/3b/3g/element) always write a real number. Models page handles
+        /// NaN/missing via the em-dash branch in SitePages.Models.cs.
         /// </summary>
         public double? BestSingleValMae { get; set; }
 
@@ -211,7 +202,7 @@ public static class ModelArtifact
         /// Same model identified by val MAE, scored on the test set. Lets the report
         /// answer "does the blend beat best-single on the SAME split?" without picking
         /// a different best per split (which would be cherry-picking). Nullable for
-        /// the same reason as BestSingleValMae above (4a/5a don't emit it).
+        /// the same reason as BestSingleValMae above (4a doesn't emit it).
         /// </summary>
         public double? BestSingleTestMae { get; set; }
 

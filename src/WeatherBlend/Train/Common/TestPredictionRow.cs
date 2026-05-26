@@ -7,7 +7,7 @@ namespace WeatherBlend.Train.Common;
 /// (valid_time, station, lead) to fit pooling weights.
 ///
 /// Schema deliberately matches WeatherProbabilistic's
-/// <c>scripts/run_phase5_bayesian.py</c> + <c>train_4a.py</c> output:
+/// <c>scripts/train_4a.py</c> output:
 /// <c>{valid_time, station, lead, p_wet, observed_wet}</c>. A single
 /// bake-off script can inner-join across phases without per-phase
 /// schema branches.

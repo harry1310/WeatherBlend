@@ -20,23 +20,18 @@ namespace WeatherBlend.Models;
 /// <c>"3d_shape"</c>, <c>"3d_calibrated"</c>, <c>"3e"</c>, <c>"3f"</c>) still
 /// have parquet rows on disk because their predict trees aged into the rolling
 /// window before being retired. The renderer drops them — they're reference-only.
-///
-/// Confidence-role phases (5a) are also excluded from this façade — they
-/// render as a credible-band overlay, not a prediction line. Train workflows
-/// reach them via <see cref="PhaseRegistry.AllPhases"/>.
 /// </summary>
 public static class ActivePhasePolicy
 {
     /// <summary>
     /// Champion-first ID lists per target, from <c>phases.yaml</c>.
-    /// Confidence-role phases are excluded — see class summary.
     /// </summary>
     public static IReadOnlyDictionary<string, IReadOnlyList<string>> ByTarget
         => PhaseRegistry.Default.ByTarget;
 
     /// <summary>
     /// True iff the (target, phase) pair is in the shipping lineup AS A
-    /// PREDICTION LINE — champion or challenger, not confidence-role.
+    /// PREDICTION LINE — champion or challenger.
     /// Empty / null phase strings are never active.
     /// </summary>
     public static bool IsActive(string target, string? phase)
