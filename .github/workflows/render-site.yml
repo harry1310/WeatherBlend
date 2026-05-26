@@ -17,8 +17,16 @@ env:
 # numbers surface on the site as soon as they're computed — the worker
 # gates that on verify succeeding. Was a GitHub-native `on: workflow_run`
 # trigger; moved to the worker 2026-05-22 so every workflow-to-workflow
-# hop lives in one place. predict-and-render.yml handles the routine
-# 6-hourly render. Manual dispatch supported for one-off re-renders.
+# hop lives in one place.
+#
+# Phase 3 prereq (2026-05-26): the routine 6-hourly render is in the
+# process of moving from the fused predict-and-render.yml to this
+# workflow, chained off predict.yml's completion (handleWorkflowRun
+# new Hop F). The flip is a separate scheduler-worker commit because
+# wrangler-deploy needs validation before flipping production. Until
+# then predict-and-render.yml still handles the routine 6-hourly
+# render, and this workflow runs ONLY on Hop E + manual dispatch.
+# See docs/RAINFALL_AMOUNT_3F_PLAN.md section 3 for the chain diagram.
 on:
   workflow_dispatch:
     inputs:

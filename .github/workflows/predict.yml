@@ -10,19 +10,28 @@ env:
   RCLONE_LOW_LEVEL_RETRIES: "20"
   RCLONE_RETRIES: "5"
 
-# Manual-dispatch only. The scheduled predict cycle runs as part of the
-# combined `predict-and-render.yml` workflow; running predict on its own
-# cron would double the work. This file is preserved for one-off manual
-# reruns (e.g. retroactive --for-date fills, or re-running predict after a
-# model artefact bump without immediately re-rendering the site).
+# Predict-only production workflow.
 #
-# Note: this workflow no longer triggers `render-site` on completion — the
-# auto-trigger was scoped to predict's old scheduled cadence and is now
-# owned by predict-and-render. If you want the manual run to also refresh
-# the site, dispatch render-site manually after this finishes.
+# Phase 3 prereq (2026-05-26): split predict-and-render.yml's fused
+# predict + render so that the future Hop E (predict-3f, in
+# WeatherProbabilistic) can sandwich between predict (this workflow)
+# and render-site (render-site.yml) — giving the rainfall_amount card
+# same-cycle site freshness rather than the one-cycle lag 4a accepts
+# today. See docs/RAINFALL_AMOUNT_3F_PLAN.md section 3 for the chain
+# diagram + decision rationale.
+#
+# The Cloudflare scheduler-worker (cloudflare/scheduler-worker/src/index.ts)
+# still chains s3-collect.completed -> predict-and-render.yml today;
+# this workflow is the DROP-IN replacement, ready to take over once
+# the worker's handleWorkflowRun Hop D is flipped (separate commit;
+# wrangler-deploy gate makes the worker change risky to bundle here).
+# Manual dispatch supported in the meantime for one-off reruns (e.g.
+# retroactive --for-date fills, or refreshing predictions without a
+# render).
 #
 # All predict targets + their order + their soft-skip codes live in
-# `.github/actions/predict-all`, shared verbatim with predict-and-render.
+# `.github/actions/predict-all`, shared verbatim with predict-and-render
+# until that file is retired.
 on:
   workflow_dispatch:
     inputs:
@@ -38,7 +47,11 @@ concurrency:
 jobs:
   predict:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 25 min — predict-all takes ~5-8 min across all targets, plus the
+    # 4b synthesis (~30s), plus the R2 push (~1-2 min for incremental).
+    # Matches predict-and-render's predict-side budget; the 5 min cut
+    # is the render+deploy slice that now lives in render-site.yml.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -48,9 +61,9 @@ jobs:
           dotnet-quality: preview
 
       # All R2 trees the predict targets read come via the shared composite
-      # — same list predict-and-render uses, no risk of drift. The composite
-      # also installs + configures rclone so a subsequent push back to R2
-      # works without re-setting credentials.
+      # — same list predict-and-render + render-site use, no risk of drift.
+      # The composite also installs + configures rclone so the push back to
+      # R2 below works without re-setting credentials.
       - uses: ./.github/actions/sync-render-inputs
         with:
           bucket: ${{ secrets.R2_BUCKET }}
@@ -62,19 +75,35 @@ jobs:
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
 
       # Every predict target in dependency order — temp / precip / dry-window /
-      # elements / feels-like / start-hour. Soft-skip codes per target are
-      # documented in the composite. Was previously inlined here in 6+ duplicated
-      # steps that drifted (start-hour was missing) — now shared with the
-      # scheduled predict-and-render workflow.
+      # elements / feels-like. Soft-skip codes per target are documented in
+      # the composite. Shared verbatim with predict-and-render.yml until that
+      # file retires.
       - uses: ./.github/actions/predict-all
         with:
           for_date: ${{ github.event.inputs.for_date }}
+
+      # Phase 4b synthesis — 2-way arithmetic mean of phase 4a (BART) and
+      # phase 3o (rich+oro) P(wet). Mirrors the step in predict-and-render.yml.
+      # Exit code semantics (per-station soft-skip handled inside the
+      # command):
+      #   0 — at least one station wrote 4b rows.
+      #   2 — no precipitation stations configured (config bug) — FATAL.
+      #   3 — every station fell through (no 4b manifest entry AND no
+      #       4a/3o match anywhere). Expected immediately after a fresh
+      #       deploy until both 4a (WP-side cron) and 3o (Sunday auto-
+      #       retrain) have run at least once.
+      - name: Synthesise Phase 4b (2-way mean of 4a + 3o)
+        run: |
+          code=0
+          dotnet run --project src/WeatherBlend --no-build -c Release -- phase4b-predict || code=$?
+          if [ "$code" != "0" ] && [ "$code" != "3" ]; then exit "$code"; fi
 
       - name: Push predictions to R2
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         # copy (not sync) — additive only, never deletes remote files. Forecasts
         # are no longer modified here (the collect workflow owns that subtree).
+        # Includes the freshly-synthesised 4b parquet from the step above.
         run: |
           rclone copy ./data/predictions "r2:${R2_BUCKET}/data/predictions" --fast-list --transfers 16 --checkers 32 --progress
 
