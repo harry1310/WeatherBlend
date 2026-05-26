@@ -136,20 +136,61 @@ public sealed class PrecipConformalFitCommand
             }
 
             // Same row build + chronological split as the original
-            // training. 3a uses the lean PrecipFeatureBuilder (23
-            // features); 3c uses PrecipRichFeatureBuilder (59
-            // features). Dispatch on the saved metadata.Phase so
-            // we reproduce the exact training-time row vectors —
-            // the feature builder MUST match the spec the model
-            // was fit against, otherwise the schema mismatch trips
-            // PrecipFeatureBuilder.ComposeRow's pack-length check.
-            var rows = PrecipPhases.IsRich(metadata.Phase)
-                ? PrecipRichFeatureBuilder.BuildForLead(
+            // training. The feature builder MUST match the spec the
+            // model was fit against, otherwise the schema mismatch
+            // trips ComposeRow's pack-length check (caught 2026-05-26
+            // when 3o's first CI retrain crashed with "Feature pack
+            // mismatch: wrote 23, expected 68" — conformal-fit hadn't
+            // been taught about 3o's rich+oro path).
+            //   * 3a (lean)  → PrecipFeatureBuilder        (23 feat)
+            //   * 3c (rich)  → PrecipRichFeatureBuilder    (59 feat)
+            //   * 3o (rich+oro, pooled 4-station Bonehill)
+            //                → PrecipRichOroFeatureBuilder (68 feat)
+            List<BinaryTrainingRow> rows;
+            if (string.Equals(metadata.Phase, "3o", StringComparison.Ordinal))
+            {
+                // 3o needs the per-station orographic record + the
+                // train-time station index. Index is stamped on the
+                // bundle's training_metadata.Hyperparameters so we
+                // recover the exact (oro, index) pair the train run
+                // used, not a re-derived guess.
+                var oroRoot = Path.Combine("data", "static", "orographic");
+                var oroBySlug = WeatherBlend.Train.Oro.OroStaticFeatures.LoadAll(oroRoot);
+                if (!oroBySlug.TryGetValue(stationSlug, out var oro))
+                {
+                    _log.LogWarning(
+                        "  {Slug} lead {L}h: orographic record missing for 3o conformal fit (expected at {OroPath}); skipping.",
+                        stationSlug, lead, Path.Combine(oroRoot, $"{stationSlug}.json"));
+                    skipped++;
+                    continue;
+                }
+                var stationIndexObj = metadata.Hyperparameters.GetValueOrDefault("phase3o_station_index");
+                if (stationIndexObj is null)
+                {
+                    _log.LogWarning(
+                        "  {Slug} lead {L}h: 3o bundle missing `phase3o_station_index` metadata; skipping conformal.",
+                        stationSlug, lead);
+                    skipped++;
+                    continue;
+                }
+                var stationIndex = Convert.ToInt32(stationIndexObj,
+                    System.Globalization.CultureInfo.InvariantCulture);
+                rows = WeatherBlend.Train.Oro.PrecipRichOroFeatureBuilder.BuildForLead(
                     _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
-                    _cfg.Location.Name, stationName, spec, ct)
-                : PrecipFeatureBuilder.BuildForLead(
+                    _cfg.Location.Name, stationName, oro, stationIndex, spec, ct);
+            }
+            else if (PrecipPhases.IsRich(metadata.Phase))
+            {
+                rows = PrecipRichFeatureBuilder.BuildForLead(
                     _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
                     _cfg.Location.Name, stationName, spec, ct);
+            }
+            else
+            {
+                rows = PrecipFeatureBuilder.BuildForLead(
+                    _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
+                    _cfg.Location.Name, stationName, spec, ct);
+            }
             if (rows.Count < 500)
             {
                 _log.LogWarning("  lead {L}h: only {N} rows; skipping", lead, rows.Count);
