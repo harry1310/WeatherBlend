@@ -398,7 +398,9 @@ public static partial class SitePages
                 if (fl.RelativeHumidityPct is double rh)
                     rows.Append(Ci, $"<tr><td>Humidity</td><td class=\"num\">{rh:0} %</td></tr>");
                 if (fl.WindSpeed10mMs is double ws)
-                    rows.Append(Ci, $"<tr><td>Wind 10 m</td><td class=\"num\">{ws:0.0} m/s</td></tr>");
+                    // Stored as m/s; display as km/h (× 3.6) since the
+                    // overview audience reads km/h natively.
+                    rows.Append(Ci, $"<tr><td>Wind 10 m</td><td class=\"num\">{ws * 3.6:0.0} km/h</td></tr>");
                 if (fl.ShortwaveDownWm2 is double sw)
                     rows.Append(Ci, $"<tr><td>Shortwave down</td><td class=\"num\">{sw:0} W/m²</td></tr>");
                 if (fl.CloudCoverPct is double cc)
