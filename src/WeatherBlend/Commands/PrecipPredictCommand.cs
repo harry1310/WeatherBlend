@@ -50,7 +50,7 @@ public sealed class PrecipPredictCommand
     /// Adding a new precipitation phase to phases.yaml that THIS command
     /// should handle = add its id here too. The L1 gate (phases.yaml
     /// membership) catches the retired-phase case automatically — no
-    /// hardcoded "skip 3e/3g/..." suffix lists.
+    /// hardcoded suffix-blocklist needed.
     /// </summary>
     private static readonly HashSet<string> HandledPrecipPhases =
         new(StringComparer.Ordinal) { "3a", "3c", "3d", "3o" };
@@ -247,13 +247,12 @@ public sealed class PrecipPredictCommand
         //                      below so adding a new phase requires an
         //                      intentional code change matching the YAML.
         //
-        // L1 catches orphaned bundles from retired phases (e.g. 3e after
-        // cleanup Phase 1) still living in the manifest's Active list.
-        // PromoteStationVersion only replaces same-phase entries — retired
-        // bundles never age out on their own. (Caught 2026-05-26 03:18 UTC
-        // by predict-and-render run 26430107996 — a stale 3e bundle hit
-        // the default lean/rich row build and threw "Feature pack mismatch:
-        // wrote 23, expected 59".)
+        // L1 catches orphaned bundles from retired phases still living in
+        // the manifest's Active list. PromoteStationVersion only replaces
+        // same-phase entries — retired bundles never age out on their own.
+        // (Caught 2026-05-26 03:18 UTC by predict-and-render run
+        // 26430107996 — a stale retired-phase bundle hit the default
+        // lean/rich row build and threw "Feature pack mismatch".)
         //
         // L2 catches valid-but-not-mine phases: 4a (impl=python, served by
         // predict-4a.yml), 4b (impl=dotnet but its own CLI command
@@ -315,10 +314,6 @@ public sealed class PrecipPredictCommand
 
         _log.LogInformation("Station {Station}: using blender version {V} (phase={Phase})",
             station, metadata.Version, metadata.Phase);
-
-        // Phase 3e (TorchSharp MLP) predict path retired 2026-05-25 in
-        // model-cleanup Phase 1. Any 3e bundle that survives on R2 is
-        // ignored — manifest gating drops it before we reach this point.
 
         // Phase 3o (pooled rich-oro) takes a separate predict path: same
         // 55-feat rich row as 3c PLUS a 9-feat terrain block whose dynamic

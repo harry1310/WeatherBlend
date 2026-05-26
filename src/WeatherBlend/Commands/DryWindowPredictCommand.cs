@@ -292,10 +292,9 @@ public sealed class DryWindowPredictCommand
             }
 
             // Apply isotonic calibration if the artefact carries one — older
-            // pre-calibration models simply return raw probs unchanged. For
-            // 3e/4h the calibrator was fitted to the PRODUCT against 4h truth
-            // at training time, so applying it here is the right end-to-end
-            // calibration step.
+            // pre-calibration models simply return raw probs unchanged. The
+            // calibrator was fitted against window-length truth at training
+            // time, so applying it here is the right end-to-end step.
             var calibrator = ModelArtifact.TryLoadLeadCalibrator(versionDir, lead);
             var prob = calibrator is null ? rawProb : calibrator.Predict(rawProb);
             var climProb = climatology.Predict(targetDate);

@@ -74,9 +74,6 @@ public sealed class PrecipReplayCommand
                 "at a 3a (lean) version, or extend replay with an exact-runtime path.");
             return 2;
         }
-        // Phase 3e (TorchSharp MLP) replay path was retired 2026-05-25 in
-        // model-cleanup Phase 1.
-
         var friendly = ResolveFriendlyStationName(truthStationSlug);
         if (friendly is null)
         {

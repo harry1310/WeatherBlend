@@ -846,10 +846,10 @@ public static partial class SitePages
 
             content.Append(Ci, $"<h4>{window}-hour dry window</h4>");
 
-            // Bucket by phase so 3b champion + 3e challenger render as
-            // separate tables under the same window heading. Mirrors the
-            // dry-window page's per-phase grouping. Phases not in
-            // DryWindowPhases.All silently drop (they're retired).
+            // Bucket by phase so the champion + each active challenger
+            // render as separate tables under the same window heading.
+            // Mirrors the dry-window page's per-phase grouping. Phases
+            // not in DryWindowPhases.All silently drop (they're retired).
             bool anyPhaseRendered = false;
             foreach (var phase in DryWindowPhases.All)
             {
@@ -915,9 +915,8 @@ public static partial class SitePages
                 }
 
                 // Only emit the phase sub-heading when more than one phase
-                // is shipping for this window — single-phase windows (6h)
-                // stay clean, multi-phase windows (3h, 4h with 3b + 3e)
-                // get headed for clarity.
+                // is shipping for this window — single-phase windows stay
+                // clean; multi-phase windows get headed for clarity.
                 if (DryWindowPhases.All.Count > 1)
                 {
                     content.Append(Ci, $"<h5>{Escape(phase.ShortTitle)}</h5>");

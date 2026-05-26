@@ -26,11 +26,10 @@ namespace WeatherBlend.Commands;
 /// identical seed, identical features.
 ///
 /// If B wins systematically → the JMA 2022-2023 backfill is net-negative and
-/// the v1-v6 plus 3e-oro bake-offs from 2026-05-24/25 are running on
-/// contaminated data. Filter back to 2024+ and re-run the comparison.
+/// earlier bake-offs running on contaminated data. Filter back to 2024+
+/// and re-run.
 /// If A wins → backfill is net-positive despite sparsity, current results stand.
-/// If tied → sparse rows are neutral; original 3e advantage was sample-size
-/// dependent, not data-quality dependent.
+/// If tied → sparse rows are neutral; backfill is data-quality-independent.
 /// </summary>
 public sealed class Phase3cDataWindowBakeoffCommand
 {
@@ -230,10 +229,10 @@ public sealed class Phase3cDataWindowBakeoffCommand
         sb.AppendLine("## Verdict guide");
         sb.AppendLine();
         sb.AppendLine("- **B clearly wins** (Δ B vs A < -1% across most cells): JMA 2022-2023 backfill is net-negative.");
-        sb.AppendLine("  Filter rich SQL back to ValidTimeUtc >= 2024-01-01. The v1-v6 + 3e-oro results from");
-        sb.AppendLine("  2026-05-24/25 ran on contaminated data — original 3e-vs-3c story (3e wins) likely still holds.");
+        sb.AppendLine("  Filter rich SQL back to ValidTimeUtc >= 2024-01-01. Earlier bake-offs that included 2022-23");
+        sb.AppendLine("  ran on contaminated data and should be re-run.");
         sb.AppendLine("- **A clearly wins** (Δ B vs A > +1%): backfill is net-positive despite sparsity. Current results stand.");
-        sb.AppendLine("- **Tied** (|Δ| < 0.5%): backfill is neutral; original 3e win was sample-size-dependent.");
+        sb.AppendLine("- **Tied** (|Δ| < 0.5%): backfill is neutral.");
         sb.AppendLine();
         sb.AppendLine("Bonehill stations (with the JMA backfill) drive the answer; Membury stations (which always had");
         sb.AppendLine("dense 2022+ JMA from its 2026-05-11 backfill) provide a control — if Δ is ~0 for Membury but");

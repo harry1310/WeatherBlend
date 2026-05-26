@@ -68,7 +68,6 @@ Membury upgrade paths post-cleanup-Phase-2:
     (Membury terrain pool too homogeneous, +0.36% CRPS vs 3a).
   * Membury **3c** stays as a reference (within 0.4% CRPS of 3a, so
     swapping it in or out is noise-level).
-3e was the legacy MLP and is retired (cleanup Phase 1, 2026-05-25).
 
 ## 1. C# side (WeatherBlend)
 

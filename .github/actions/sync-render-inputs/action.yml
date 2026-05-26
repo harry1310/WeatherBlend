@@ -83,7 +83,7 @@ runs:
         #     every TruthRepository rainfall query is SQL-filtered on
         #     ObservedTimeUtc, so only the last windowDays of partitions
         #     are touched.
-        #   - PrecipPredictCommand's rich/3e/3d persistence features
+        #   - PrecipPredictCommand's rich/3d persistence features
         #     (PrecipRichFeatureBuilder.LoadHourlyRain) — Prev24hMm /
         #     Prev72hMm etc., a ≤72h lookback before the live run anchor.
         # verify (deep history) runs from a different workflow and pulls

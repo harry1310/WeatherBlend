@@ -117,9 +117,8 @@ public sealed class DryWindowTrainCommand
                 ct.ThrowIfCancellationRequested();
                 var compositeKey = $"{StationSlug.WithEaPrefix(stationName)}/window_{window}h";
                 var now = DateTime.UtcNow;
-                // 3b → v{ts} (champion, no suffix). 3g uses its own RunPhase3gAsync
-                // which sets the _phase3g suffix; the 3d-shape / 3e suffix branches
-                // were retired 2026-05-04.
+                // 3b → v{ts} (champion, no suffix). Any future challenger
+                // adds its own _phaseXX suffix.
                 var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "dry_window", compositeKey, now);
                 var versionName = Path.GetFileName(versionDir);
 

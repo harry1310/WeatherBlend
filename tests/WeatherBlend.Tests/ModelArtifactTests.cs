@@ -655,23 +655,22 @@ public class ModelArtifactTests : IDisposable
     }
 
     [Fact]
-    public void PromoteStationVersion_replaces_same_phase_3e_idempotently()
+    public void PromoteStationVersion_replaces_same_phase_challenger_idempotently()
     {
-        // Direct regression for the dry-window 3e use case the user shipped:
-        // re-running 3e training should replace the previous 3e in Active
-        // without disturbing the 3b champion entry.
+        // Re-running a challenger's training should replace the previous
+        // challenger entry in Active without disturbing the champion entry.
         var station = "ea_bellever_dartmoor/window_4h";
 
-        WritePhaseMetadata(VersionDir("dry_window", station, "v_3b"),   "v_3b",   "3b");
-        WritePhaseMetadata(VersionDir("dry_window", station, "v_3e_a"), "v_3e_a", "3e");
+        WritePhaseMetadata(VersionDir("dry_window", station, "v_3b"),    "v_3b",    "3b");
+        WritePhaseMetadata(VersionDir("dry_window", station, "v_chal_a"), "v_chal_a", "3p");
         ModelArtifact.UpdateStationManifest(_root, "dry_window", station, "v_3b");
-        ModelArtifact.SetStationActive(_root, "dry_window", station, new[] { "v_3b", "v_3e_a" });
+        ModelArtifact.SetStationActive(_root, "dry_window", station, new[] { "v_3b", "v_chal_a" });
 
-        WritePhaseMetadata(VersionDir("dry_window", station, "v_3e_b"), "v_3e_b", "3e");
+        WritePhaseMetadata(VersionDir("dry_window", station, "v_chal_b"), "v_chal_b", "3p");
         ModelArtifact.PromoteStationVersion(
-            _root, "dry_window", station, "v_3e_b", newPhase: "3e");
+            _root, "dry_window", station, "v_chal_b", newPhase: "3p");
 
         ReadManifest("dry_window").Stations[station].Active
-            .Should().BeEquivalentTo(new[] { "v_3b", "v_3e_b" });
+            .Should().BeEquivalentTo(new[] { "v_3b", "v_chal_b" });
     }
 }

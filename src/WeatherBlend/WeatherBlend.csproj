@@ -46,10 +46,6 @@
     <!-- ML (for the trainer in phase 2) -->
     <PackageReference Include="Microsoft.ML" Version="4.0.0" />
     <PackageReference Include="Microsoft.ML.LightGbm" Version="4.0.0" />
-
-    <!-- TorchSharp + TorchSharp-cpu (Phase 3e MLP) removed 2026-05-25
-         in model-cleanup Phase 1 — 3e was the only consumer of the
-         libtorch binaries, saving ~500 MB native install per platform. -->
   </ItemGroup>
 
 </Project>

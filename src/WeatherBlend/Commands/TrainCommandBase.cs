@@ -5,7 +5,7 @@ namespace WeatherBlend.Commands;
 
 /// <summary>
 /// Shared scaffold for the per-target train commands — <see cref="TempTrainCommand"/>
-/// (Phase 2b/2c/2d) and <see cref="PrecipTrainCommand"/> (Phase 3a/3c/3d/3e).
+/// (Phase 2b/2c/2d) and <see cref="PrecipTrainCommand"/> (Phase 3a/3c/3d/3o).
 ///
 /// Holds only the logger + config every phase trainer needs. The per-phase
 /// fit/guard/promote bodies stay in the subclasses: the temperature loop is a

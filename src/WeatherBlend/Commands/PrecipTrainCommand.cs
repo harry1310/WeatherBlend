@@ -16,8 +16,8 @@ namespace WeatherBlend.Commands;
 ///
 /// Phase 3a: LightGBM binary classifier for P(hour has >= 0.1 mm). Leads {24,48,72,120}.
 /// Phase 3c: rich-feature LightGBM occurrence blender — 3a champion/challenger.
-/// Phase 3e: TorchSharp MLP occurrence blender — head-to-head NN-vs-GBT on the 3c spec.
 /// Phase 3d: exact-runtime occurrence blender (P1/P2 tier), lead-12 champion.
+/// Phase 3o: rich + orographic features pooled across 4 Bonehill stations.
 ///
 /// Split out of TempTrainCommand on 2026-05-19 (code-quality refactor P1) so a
 /// precipitation phase is no longer navigated inside a file named "Temp". The
@@ -54,10 +54,8 @@ public sealed class PrecipTrainCommand : TrainCommandBase
     /// <summary>
     /// Dispatches a precipitation train run to the phase implied by
     /// <paramref name="featureSet"/>: lean -> 3a, rich -> 3c, oro -> 3o,
-    /// exact -> 3d. The "mlp" branch (Phase 3e) was retired 2026-05-25 in
-    /// model-cleanup Phase 1. Feature-set validity for the precipitation
-    /// target is checked by the caller (TempTrainCommand.RunAsync) before
-    /// dispatch.
+    /// exact -> 3d. Feature-set validity for the precipitation target is
+    /// checked by the caller (TempTrainCommand.RunAsync) before dispatch.
     /// </summary>
     public async Task<int> RunAsync(
         int[] leads, string? station, string featureSet,
@@ -412,10 +410,8 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         IReadOnlyList<bool>? firstLeadTrainLabels = null;
         int totalTrainRows = 0, totalValRows = 0, totalTestRows = 0;
         // Per-row held-out test predictions for the bake-off parquet —
-        // same canonical schema 3a/3e/4a write so a single stacking
-        // analysis can inner-join across phases. Added 2026-05-11
-        // (3c was previously missing test_predictions, blocking
-        // 3c-vs-3e-vs-4a stacking work).
+        // same canonical schema 3a/4a write so a single stacking
+        // analysis can inner-join across phases.
         var testPredictionRows = new List<TestPredictionRow>();
 
         // Per-phase training-data cutoff (2026-05-26 — see PhaseRegistry).
@@ -520,7 +516,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
                 lead, blendBrier, climBrier, bss, fbias, best, bestTestBrierR, bestValBrier, deltaPctR);
 
             // Per-row test predictions for the bake-off parquet (2026-05-11
-            // — was missing from 3c, blocking 3c/3e/4a stacking analysis).
+            // — was missing from 3c, blocking 3c/4a stacking analysis).
             for (int i = 0; i < ds.Test.Count; i++)
             {
                 testPredictionRows.Add(new TestPredictionRow

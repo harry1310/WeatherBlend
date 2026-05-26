@@ -212,11 +212,6 @@ public static class Program
                 services.AddTransient<Phase3cOroBakeoffCommand>();
                 services.AddTransient<Phase3cDataWindowBakeoffCommand>();
                 services.AddTransient<Phase3fStage1BakeoffCommand>();
-                // Phase3eOroBakeoffCommand + Phase4bComparisonBakeoffCommand
-                // + Phase4bAdd3aCommand retired 2026-05-25 in model-cleanup
-                // Phase 1 (their primary subject phases — 3e + the 4-way
-                // 3c/3c-oro/3e/4a comparison — are gone). Phase 2 of the
-                // cleanup productionises 3o (= 3c-oro) directly.
                 // Live S3 collect — refreshes the five exact-runtime sources
                 // the 2d temperature blender consumes (GFS / IFS / AIFS /
                 // Met Office Global / Met Office UKV). Each is a thin
@@ -568,9 +563,6 @@ public static class Program
         });
         root.AddCommand(oroBakeoff);
 
-        // precip-3e-oro-bakeoff retired 2026-05-25 in model-cleanup Phase 1
-        // alongside Phase 3e itself.
-
         // precip-data-window-bakeoff — A vs B diagnostic. Trains per-station
         // 3c on full data vs 2024+ only, scores on identical test rows.
         // Answers: did the JMA 2022-2023 backfill help or hurt 3c?
@@ -583,11 +575,6 @@ public static class Program
             ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
         });
         root.AddCommand(dataWindowBakeoff);
-
-        // precip-4b-comparison + precip-4b-add-3a retired 2026-05-25 in
-        // model-cleanup Phase 1 (the 4-phase comparison was 3c/3c-oro/3e/4a;
-        // 3e is gone, 3c is dropped in cleanup Phase 2, and 4a's stage-1 is
-        // settled — no rerun planned).
 
         // precip-3f-stage1-bakeoff — trains per-station 3a / 3c + pooled 3c-oro
         // for the 3 Membury rainfall stations, dumps test predictions for the
@@ -787,7 +774,7 @@ public static class Program
         });
         root.AddCommand(predict);
 
-        // ---- phase4b-predict — synthesise the 2-way mean of 4a + 3e ----
+        // ---- phase4b-predict — synthesise the 2-way mean of 4a + 3o ----
         // No options today; reads stations from config.yaml. Optional
         // --for-date supports backfill scenarios (same shape as predict).
         var p4bForDateOpt = new Option<DateOnly?>(
@@ -795,7 +782,7 @@ public static class Program
             description: "Anchor date YYYY-MM-DD (UTC). Omit = today's date (the live cycle).");
         var phase4bPredict = new Command(
             "phase4b-predict",
-            "Synthesise Phase 4b predictions (mean of 4a + 3e) for the current cycle.")
+            "Synthesise Phase 4b predictions (mean of 4a + 3o) for the current cycle.")
         {
             p4bForDateOpt,
         };
@@ -807,10 +794,10 @@ public static class Program
         });
         root.AddCommand(phase4bPredict);
 
-        // ---- phase4b-mint — refresh the 4b bundle after a 4a/3e retrain ----
+        // ---- phase4b-mint — refresh the 4b bundle after a 4a/3o retrain ----
         var phase4bMint = new Command(
             "phase4b-mint",
-            "Mint a fresh Phase 4b bundle from the latest 4a + 3e test_predictions (run after Sunday auto-retrain).");
+            "Mint a fresh Phase 4b bundle from the latest 4a + 3o test_predictions (run after Sunday auto-retrain).");
         phase4bMint.SetHandler(async (ctx) =>
         {
             var cmd = host.Services.GetRequiredService<Phase4bMintCommand>();

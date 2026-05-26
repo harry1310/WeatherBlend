@@ -84,8 +84,6 @@ targets:
         # Exact-runtime (raw S3 cycle archive) — bonehill_rocks only until
         # a Membury-cell S3 archive backfill lands.
         locations: ["bonehill_rocks"]
-      # 3e (TorchSharp MLP) retired 2026-05-25 — model-cleanup Phase 1
-      # (see project_model_cleanup_plan_2026-05-25.md).
       # 3o (3c-oro, 4-station Bonehill pool: Bellever + Bovey + Hexworthy
       # + Princetown) added 2026-05-25 in cleanup Phase 2. Rich (55) +
       # 9 terrain features = 64 features. Trained pooled across all 4
@@ -110,10 +108,9 @@ targets:
         # WeatherProbabilistic. retrain-python reads this filter.
         locations: ["bonehill_rocks"]
         minValidTime: "2024-01-01"
-      # 4b re-enabled 2026-05-25 in cleanup Phase 2 with re-wired
-      # composition: arithmetic mean of 4a + 3o (was 4a + 3e before
-      # 3e was retired). Mint reads the latest 3o test_predictions
-      # alongside the latest 4a (which lands via the WP-side cron).
+      # 4b: arithmetic mean of 4a + 3o. Mint reads the latest 3o
+      # test_predictions alongside the latest 4a (which lands via
+      # the WP-side cron).
       - id: "4b"
         role: challenger
         impl: dotnet

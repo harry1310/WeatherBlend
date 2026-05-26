@@ -255,7 +255,7 @@ public static partial class SitePages
     ///
     /// Pre-2026-05-12 every challenger shared NwpPalette.BlendChallenger
     /// (light purple) with the only distinction being 2d/3d (magenta) —
-    /// adding 3e + 4b put 4 lines on identical colour, unreadable.
+    /// adding 4b put multiple lines on identical colour, unreadable.
     /// </summary>
     private static string PrecipPhaseColor(string phase, bool isChampion)
     {

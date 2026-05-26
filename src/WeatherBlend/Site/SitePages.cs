@@ -704,7 +704,7 @@ public static partial class SitePages
         double ProbHasDryWindow,
         double ClimatologyProbHasDryWindow,
         double? AgreementHasDryWindow,
-        // Phase 3g aleatoric uncertainty (null on 3b/3e/3c rows). Summary of
+        // Phase 3g aleatoric uncertainty (null on 3b/3c rows). Summary of
         // the per-MC-sample longest-dry-run distribution; narrow P10–P90 →
         // headline P(any block) is robust across MC realisations under
         // independence; wide → fragile. Defaulted to null so existing

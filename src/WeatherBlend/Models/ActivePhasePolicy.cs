@@ -17,7 +17,7 @@ namespace WeatherBlend.Models;
 ///     under (the card's phase must be in the active list).
 ///
 /// Phases NOT in the YAML (e.g. <c>"2b_redo"</c>, <c>"3a_isotonic"</c>,
-/// <c>"3d_shape"</c>, <c>"3d_calibrated"</c>, <c>"3e"</c>, <c>"3f"</c>) still
+/// <c>"3d_shape"</c>, <c>"3d_calibrated"</c>) still
 /// have parquet rows on disk because their predict trees aged into the rolling
 /// window before being retired. The renderer drops them — they're reference-only.
 /// </summary>

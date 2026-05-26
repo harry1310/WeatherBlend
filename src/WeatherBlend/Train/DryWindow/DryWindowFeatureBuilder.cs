@@ -30,11 +30,8 @@ public static class DryWindowFeatureBuilder
 {
     /// <summary>Phase identifier strings persisted in <c>training_metadata.Phase</c>.</summary>
     public const string Phase3b = "3b";
-    // Phase3dShape / Phase3dCalibrated / Phase3e (the old cascade) retired
-    // 2026-05-04. The dry-window-3f MLP local bake-off path was retired
-    // 2026-05-25 in model-cleanup Phase 1 (its sibling 3g/3j/3n/3s MC
-    // phases went with it). The "3f" identifier is now reserved for the
-    // Membury precip-volume model that ships in cleanup Phase 4.
+    // The "3f" identifier is reserved for the Membury precip-volume
+    // model (rainfall_amount target), not a dry-window phase.
 
     public const double WetThresholdMm = PrecipFeatureBuilder.WetThresholdMm;
 
@@ -254,8 +251,7 @@ ORDER BY 1";
     /// <summary>
     /// Resolve the runtime <see cref="BlenderSpec"/> for dry-window at a given lead.
     /// Phase argument is retained for API compatibility but only the 53-feature
-    /// base layout (<see cref="Phase3b"/>, <c>featureSet="base"</c>) is supported
-    /// after the 2026-05-04 retirement of 3d-shape / 3e / 3f.
+    /// base layout (<see cref="Phase3b"/>, <c>featureSet="base"</c>) is supported.
     ///
     /// Layout per active model count N:
     ///   6 per-model variables × N (sum, max_hour, wet_count, longest_dry, has_dry, prob_max)

@@ -193,7 +193,7 @@ public static class ModelArtifact
         /// Best-single model val MAE. Nullable because Python-trained phases
         /// (4a per-cell BART) don't compute a per-NWP best-single baseline —
         /// train_4a emits JSON `null` here. .NET trainers (2b/2c/2d/3a/3c/3d/
-        /// 3e/3b/3g/element) always write a real number. Models page handles
+        /// 3b/3g/element) always write a real number. Models page handles
         /// NaN/missing via the em-dash branch in SitePages.Models.cs.
         /// </summary>
         public double? BestSingleValMae { get; set; }
@@ -988,8 +988,8 @@ public static class ModelArtifact
     /// <summary>
     /// Append a single version to the station's Active list (champion + challengers).
     /// Idempotent: a version that's already Active is left in place. Doesn't touch
-    /// Current. Used by 3e to register itself as a challenger alongside the existing
-    /// 3b champion without disturbing the latter.
+    /// Current. Used by challenger phases to register themselves alongside an
+    /// existing champion without disturbing the latter.
     /// </summary>
     public static void AddStationActive(string modelsRoot, string target, string station, string versionDirName)
     {

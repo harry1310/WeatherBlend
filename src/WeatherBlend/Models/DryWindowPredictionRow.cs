@@ -83,7 +83,7 @@ public sealed class DryWindowPredictionRow
     // the spread of the underlying continuous quantity (longest dry run
     // in hours), which is what 3g actually computes during the same MC
     // pass. Useful as a confidence signal: narrow P10–P90 band → headline
-    // robust; wide band → headline fragile. Null on 3b/3e/3c rows since
+    // robust; wide band → headline fragile. Null on 3b/3c rows since
     // those phases don't run MC and the field has no analogue.
 
     public double? McMeanLongestDryRunHours { get; init; }

@@ -4,12 +4,9 @@ namespace WeatherBlend.Site;
 
 /// <summary>
 /// One dry-window training phase. Mirrors <see cref="PrecipPhase"/> for the
-/// dry-window champion/challenger group: 3b is the production champion, 3g
-/// is the parameter-free MC challenger, 3j (added 2026-05-13) is the
-/// Gaussian copula MC sibling of 3g that captures within-day wet/dry
-/// autocorrelation. 3d-shape / 3d-calibrated / 3e (legacy) / 3f (legacy)
-/// were retired 2026-05-04 — see <see cref="Models.ActivePhasePolicy"/>
-/// for the shipping list.
+/// dry-window champion/challenger group: 3b is the production champion,
+/// 3p is the Gaussian copula MC challenger (cleanup Phase 2). See
+/// <see cref="Models.ActivePhasePolicy"/> for the current shipping list.
 /// </summary>
 /// <param name="Key">Stable identifier matching <c>training_metadata.Phase</c> exactly.</param>
 /// <param name="LongTitle">Heading used on the dry-window page where space allows the full feature-count gloss.</param>
@@ -20,11 +17,10 @@ namespace WeatherBlend.Site;
 /// <param name="StartHourCurveVersion">
 /// On-disk <c>model_version</c> of this phase's start-hour curve under
 /// <c>data/predictions/dry_window_start_hour/…/model_version=…/</c>, or
-/// <c>null</c> when the phase produces no start-hour curve. Only the
-/// iid-MC phases have one — 3g (curve <c>v2</c>, MC over 3a) and 3s
-/// (curve <c>v2-3e</c>, MC over 3e). The renderer routes each phase's
-/// "best start" column + start-hour chart to its own curve via this key,
-/// so 3g and 3s never read each other's curve.
+/// <c>null</c> when the phase produces no start-hour curve. Only MC
+/// phases have one. The renderer routes each phase's "best start" column
+/// + start-hour chart to its own curve via this key, so phases never
+/// read each other's curve.
 /// </param>
 public sealed record DryWindowPhase(
     string Key,

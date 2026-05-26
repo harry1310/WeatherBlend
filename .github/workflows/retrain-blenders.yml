@@ -28,7 +28,6 @@ env:
 #   - all phases sequentially: ~30-60 min total
 #   - Per-phase wall: 2b/2c/2d/3a/3c/3d ~3-5 min each;
 #     3b ~5-8 min (per-station per-window); element 4 × ~2 min.
-#     3e/3g/3j/3n/3s retired 2026-05-25 in model-cleanup Phase 1.
 #
 # Adding a new .NET phase (e.g. 2e):
 #   1. Add to Config/phases.yaml with role=challenger, impl=dotnet
@@ -323,9 +322,6 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target precipitation --feature-set oro --location ${{ matrix.location }}
 
-      # Train 3e (precipitation MLP) retired 2026-05-25 in model-cleanup
-      # Phase 1.
-
       - name: Train 3d (precipitation exact-runtime, leads 12/24/48/72)
         # 3d is a SHORT-lead exact-runtime phase. Its averaging UKV picker
         # resolves up to 72h but throws "UKV averaging picks not defined"
@@ -398,13 +394,12 @@ jobs:
             train --target cloud-cover
 
       - name: Mint Phase 4b bundle (4a + 3o mean)
-        # Re-enabled 2026-05-25 in cleanup Phase 2 with the 3e leg swapped
-        # for 3o. Reads the latest 4a + 3o bundles already pulled from R2
-        # at job start. Bundle re-mint is one-cycle-behind on 4a updates
-        # (4a is retrained in the WP-side workflow on the same Sunday
-        # tick) but always fresh on 3o — acceptable trade for the simple
-        # flow. Gated on 3o succeeding, since that's the leg we control
-        # in this workflow.
+        # Reads the latest 4a + 3o bundles already pulled from R2 at job
+        # start. Bundle re-mint is one-cycle-behind on 4a updates (4a is
+        # retrained in the WP-side workflow on the same Sunday tick) but
+        # always fresh on 3o — acceptable trade for the simple flow.
+        # Gated on 3o succeeding, since that's the leg we control in
+        # this workflow.
         id: mint_4b
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_4b == 'true' && steps.train_3o.outcome == 'success'
         continue-on-error: true

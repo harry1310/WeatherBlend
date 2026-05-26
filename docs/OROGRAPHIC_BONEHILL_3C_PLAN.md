@@ -11,8 +11,8 @@ terrain baked in" sketch was a feature/target mismatch, and per-station
 3c with each station's own terrain only improves the gauges themselves.
 
 Scope: precipitation 3c target only. If pooled-with-terrain wins, the
-features and pooled-fit pattern extend naturally to 4a (BART), 3e (MLP)
-and dry-window targets — each a follow-on bake-off, not in scope here.
+features and pooled-fit pattern extend naturally to 4a (BART) and
+dry-window targets — each a follow-on bake-off, not in scope here.
 
 ## Why pooling
 
@@ -356,7 +356,7 @@ gauge-verified line — its skill is inferred from the gauge bake-off.
 
 ## Why this scoped narrowly
 
-- **3c only**: 3a, 3e, 4a are separate bake-offs even if this wins.
+- **3c only**: 3a, 4a are separate bake-offs even if this wins.
 - **Bonehill prediction target**: Membury could in principle benefit
   from the same pooled model evaluated at Membury terrain, but the
   upfront ask is the Bonehill story. Add Membury predict scope as a
@@ -375,8 +375,8 @@ gauge-verified line — its skill is inferred from the gauge bake-off.
 - **Membury `3c-oro` line on the Membury site**: trivial once the
   pooled model is trained — feed Membury terrain at predict time, ship
   under `membury_devon` location scope.
-- **4a-oro / 3e-oro**: same terrain features into BART / MLP feature
-  vectors. Separate bake-offs.
+- **4a-oro**: same terrain features into BART feature vectors. Separate
+  bake-off.
 - **Smith-Barstad full physical model**: justified only if
   `uplift_x_humidity` is the dominant lift source in v1 SHAP.
 - **Brunt-Väisälä from multi-level T**: collector-side change to pull

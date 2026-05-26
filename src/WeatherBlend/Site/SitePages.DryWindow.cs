@@ -98,9 +98,8 @@ public static partial class SitePages
 
         // Index the start-hour curves once per (station, window, lead,
         // target_date, version) so the inner loop is O(1) per row. Version is
-        // part of the key because two iid-MC phases now write curves for the
-        // same cell — 3g (model_version v2, MC over 3a) and 3s (v2-3e, MC over
-        // 3e) — and without it the ToDictionary would throw on the collision.
+        // part of the key so phases writing curves to the same cell under
+        // different model_versions don't collide in the ToDictionary call.
         // Each phase reads only its own curve via DryWindowPhase.StartHourCurveVersion.
         // Empty dictionary when no curves on disk — renderer falls back
         // gracefully to the pre-curve table layout.
@@ -392,10 +391,9 @@ public static partial class SitePages
     /// window) as a line chart: x = daytime block-start hour (UTC), y =
     /// P(an N-hour dry block runs from this hour) — the per-start-hour
     /// marginal (RawProduct), one line per forecast horizon. Only the
-    /// iid-MC phases carry a start-hour
-    /// curve — the phase identifies its own curve via
-    /// <see cref="DryWindowPhase.StartHourCurveVersion"/>, so 3g reads the
-    /// <c>v2</c> curve and 3s the <c>v2-3e</c> curve with no cross-talk.
+    /// iid-MC phases carry a start-hour curve — the phase identifies its
+    /// own curve via <see cref="DryWindowPhase.StartHourCurveVersion"/>,
+    /// so each phase reads its own curve with no cross-talk.
     /// For each horizon the curve from the freshest prediction run (latest
     /// <c>PredictedAtUtc</c>) on or after <paramref name="cutoff"/> is drawn,
     /// so the panel reads as "the next forecastable day at +24h / +48h / +72h"

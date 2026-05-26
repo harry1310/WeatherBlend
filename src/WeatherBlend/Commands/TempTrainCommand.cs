@@ -156,7 +156,7 @@ public sealed class TempTrainCommand : TrainCommandBase
 
         // Resolve --location into the active LocationConfig. Every target's
         // trainer reads from this — temperature 2b/2c/2d, precipitation
-        // 3a/3c/3d/3e, dry-window, and the element blenders (Phase B,
+        // 3a/3c/3d/3o, dry-window, and the element blenders (Phase B,
         // commit 3). No trainer hardcodes _cfg.Location any more.
         Config.LocationConfig? location = _cfg.Location;
         if (!string.IsNullOrWhiteSpace(locationOverride))
