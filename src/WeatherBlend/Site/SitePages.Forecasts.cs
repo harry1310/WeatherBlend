@@ -874,18 +874,14 @@ public static partial class SitePages
             // Conformal chip from the conformal calibrator (precip-
             // conformal-fit). Only rendered when at least one row in this
             // (station, lead) batch has a tag — keeps the column off legacy
-            // forecasts that pre-date the calibrator. τ shown alongside the
-            // chip when the calibrator is available so the reader can see
-            // the model's overall ambiguity zone (low τ = narrow ambiguity
-            // band, model commits on more rows; high τ = wider band).
+            // forecasts that pre-date the calibrator. τ is a per-(station,
+            // version, lead) constant and now lives in the table caption
+            // (see below); duplicating it on every row was confusing readers
+            // into thinking it varied per hour.
             string conformalTd = "";
             if (anyConformal)
             {
-                var chip = RenderConformalChip(r.ConformalSetTag);
-                var tauPart = precipConformalTau.TryGetValue((station, r.Version, r.LeadHours), out var tau)
-                    ? string.Create(Ci, $" <small>τ={(tau * 100):0}%</small>")
-                    : "";
-                conformalTd = "<td>" + chip + tauPart + "</td>";
+                conformalTd = "<td>" + RenderConformalChip(r.ConformalSetTag) + "</td>";
             }
             rows.Append(Ci, $"""
                 <tr>
@@ -897,12 +893,32 @@ public static partial class SitePages
                 """);
         }
 
-        var conformalTh = anyConformal
-            ? "<th>Conformal <small>(90% set · τ)</small></th>"
-            : "";
+        var conformalTh = anyConformal ? "<th>Conformal <small>(90% set)</small></th>" : "";
+        // τ is a per-(station, version, lead) constant fit at calibration
+        // time — show it ONCE in the summary line, not once per row.
+        // Collect the distinct τ values across the rows in this table (in
+        // practice all rows share one (version, lead) so this collapses to
+        // one value; we render as a comma-joined list if it ever doesn't).
+        var tauCaption = "";
+        if (anyConformal)
+        {
+            var taus = latestPerValid
+                .Select(r => precipConformalTau.TryGetValue((station, r.Version, r.LeadHours), out var t)
+                    ? (double?)t : null)
+                .Where(t => t.HasValue)
+                .Select(t => t!.Value)
+                .Distinct()
+                .OrderBy(t => t)
+                .ToList();
+            if (taus.Count > 0)
+            {
+                var tauStr = string.Join(", ", taus.Select(t => string.Create(Ci, $"{(t * 100):0}%")));
+                tauCaption = $" · τ={tauStr}";
+            }
+        }
         return $"""
             <details class="hourly-detail">
-              <summary>Hourly P(wet) — NWP ensemble agreement (per-NWP wet-vote spread)</summary>
+              <summary>Hourly P(wet) — NWP ensemble agreement (per-NWP wet-vote spread){tauCaption}</summary>
               <figure>
                 <table>
                   <thead>
