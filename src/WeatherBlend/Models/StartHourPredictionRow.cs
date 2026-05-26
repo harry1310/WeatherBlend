@@ -7,11 +7,13 @@ namespace WeatherBlend.Models;
 /// <c>(TruthStation, WindowHours, LeadHours, TargetDateUtc)</c> we emit one
 /// row per candidate start hour <c>StartHourUtc</c> in the daytime UTC range.
 ///
-/// Pure derivation from
-///   - hourly P(wet) at lead L from the Phase-3a precipitation blender
-///     (<see cref="PrecipPredictionRow"/>), plus
-///   - daily P(∃ N-hour dry block) at lead L from the Phase-3b/3d dry-window
-///     blender (<see cref="DryWindowPredictionRow"/>).
+/// Produced today by Phase 3p as a byproduct of its copula-MC pass — the
+/// same draws that compute <c>ProbHasDryWindow</c> also track whether each
+/// candidate window <c>[s, s+N)</c> was entirely dry. The start-hour curve
+/// and the daily probability therefore stay numerically consistent (no
+/// drift between "P(any block today) = X" and "Σ start-hour probs = Y" with
+/// Y ≠ X under independence; under the copula the relationship is the
+/// dependency-aware analogue).
 ///
 /// <see cref="RawProduct"/> is the per-start-hour marginal — P(an N-hour dry
 /// block starting at this hour), the "chance of a dry walk if you set off
@@ -76,11 +78,12 @@ public sealed class StartHourPredictionRow
     /// the calibration anchor for this row's <see cref="CalibratedProb"/>.</summary>
     public required double DailyProbAnyBlock { get; init; }
 
-    /// <summary>Phase-3a champion version that supplied the hourly P(wet)
-    /// inputs. Provenance for retrospective re-scoring.</summary>
+    /// <summary>Source precip-phase champion version that supplied the
+    /// hourly P(wet) inputs (3o for the 3p start-hour curve). Provenance
+    /// for retrospective re-scoring.</summary>
     public required string PrecipVersion { get; init; }
 
-    /// <summary>Phase-3b/3d champion version that supplied
+    /// <summary>Dry-window blender version that supplied
     /// <see cref="DailyProbAnyBlock"/>.</summary>
     public required string DryWindowVersion { get; init; }
 }

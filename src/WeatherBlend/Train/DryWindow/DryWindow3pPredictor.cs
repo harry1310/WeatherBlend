@@ -202,6 +202,95 @@ public static class DryWindow3pPredictor
     }
 
     /// <summary>
+    /// Single copula-MC pass returning both the daily stats (as
+    /// <see cref="ProbDryWindowWithStats"/> would) AND a per-start-hour
+    /// curve: <c>StartHourProbs[h]</c> = MC fraction of samples in which
+    /// hours <c>[h, h + windowLength)</c> were all dry.
+    ///
+    /// Curve length is <c>max(0, n - windowLength + 1)</c> where
+    /// <c>n = qHourly.Length</c>. <see cref="DryWindowMcStats.ProbWindow"/>
+    /// equals "P(any start hour wins)" — the union over the start-hour
+    /// curve, which under the same draws is the longest-dry-run-≥-N
+    /// indicator, so this method's <c>ProbWindow</c> matches
+    /// <see cref="ProbDryWindowWithStats"/> for the same RNG seed.
+    /// </summary>
+    public static (DryWindowMcStats Stats, double[] StartHourProbs) ProbDryWindowWithStartHours(
+        double[] qHourly,
+        double[,] choleskyL,
+        int windowLength,
+        Random rng,
+        int nSamples = DefaultMcSamples)
+    {
+        if (qHourly.Length == 0 || windowLength <= 0 || windowLength > qHourly.Length)
+            return (new DryWindowMcStats(0.0, 0.0, 0, 0, 0), Array.Empty<double>());
+
+        int n = qHourly.Length;
+        if (choleskyL.GetLength(0) != n || choleskyL.GetLength(1) != n)
+            throw new ArgumentException(
+                $"Cholesky factor dimensions ({choleskyL.GetLength(0)}×{choleskyL.GetLength(1)}) " +
+                $"do not match qHourly length ({n}).", nameof(choleskyL));
+
+        int nStarts = n - windowLength + 1;
+        var startHits = new long[nStarts];
+
+        var sampler = new BoxMullerSampler();
+        var eps = new double[n];
+        var dry = new bool[n];
+        var longestRuns = new int[nSamples];
+        int hits = 0;
+        long longestSum = 0;
+
+        for (int s = 0; s < nSamples; s++)
+        {
+            for (int h = 0; h < n; h++) eps[h] = sampler.Sample(rng);
+
+            int run = 0, longest = 0;
+            for (int h = 0; h < n; h++)
+            {
+                double z = 0.0;
+                for (int k = 0; k <= h; k++) z += choleskyL[h, k] * eps[k];
+                double u = StandardNormalCdf(z);
+                bool isDry = u >= qHourly[h];
+                dry[h] = isDry;
+                run = isDry ? run + 1 : 0;
+                if (run > longest) longest = run;
+            }
+            longestRuns[s] = longest;
+            longestSum += longest;
+            if (longest >= windowLength) hits++;
+
+            // Per-start-hour pass over the same dry[] vector. A block at
+            // start h exists iff dry[h..h+W) are all true. Using the running
+            // 'run' values we could shortcut, but the explicit AND loop is
+            // simpler and still ~1 ns/hour at n=9 — dwarfed by the MC math.
+            for (int start = 0; start < nStarts; start++)
+            {
+                bool allDry = true;
+                for (int h = start; h < start + windowLength; h++)
+                {
+                    if (!dry[h]) { allDry = false; break; }
+                }
+                if (allDry) startHits[start]++;
+            }
+        }
+
+        Array.Sort(longestRuns);
+        int Quantile(double q) =>
+            longestRuns[Math.Clamp((int)Math.Floor(q * (nSamples - 1)), 0, nSamples - 1)];
+
+        var startProbs = new double[nStarts];
+        for (int s = 0; s < nStarts; s++) startProbs[s] = (double)startHits[s] / nSamples;
+
+        var stats = new DryWindowMcStats(
+            ProbWindow: (double)hits / nSamples,
+            MeanLongestDryRunHours: (double)longestSum / nSamples,
+            P10LongestDryRunHours: Quantile(0.10),
+            P50LongestDryRunHours: Quantile(0.50),
+            P90LongestDryRunHours: Quantile(0.90));
+        return (stats, startProbs);
+    }
+
+    /// <summary>
     /// Standard normal CDF Φ(z) via Abramowitz-Stegun 7.1.26 (max abs error
     /// ≈ 1.5e-7). Bernoulli quantisation downstream wipes out any sub-ε
     /// difference.

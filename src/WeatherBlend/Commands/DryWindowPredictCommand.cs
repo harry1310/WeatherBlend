@@ -414,6 +414,7 @@ public sealed class DryWindowPredictCommand
         var mcSamples = metadata.Hyperparameters.HpInt("mc_samples") ?? DryWindow3pPredictor.DefaultMcSamples;
         var rng = new Random(metadata.Hyperparameters.HpInt("mc_seed") ?? 42);
         var predictions = new List<DryWindowPredictionRow>();
+        var startHourRows = new List<StartHourPredictionRow>();
         var primaryLocation = _cfg.Location.Name;
 
         foreach (var (lead, targetDate) in targets)
@@ -436,14 +437,14 @@ public sealed class DryWindowPredictCommand
                     stationSlug, versionName, lead, targetDate, qDaytime.Length, L.GetLength(0));
                 continue;
             }
-            // Stats variant runs the same MC + RNG seed; returns P(window)
-            // alongside the per-sample longest-dry-run distribution. Populates
-            // McMean/McP10/McP50/McP90 on the row — the site reads the
-            // P10/P90 band as the 3p confidence inline detail
-            // (3p has no fitted conformal calibrator on disk; the band is
-            // the only confidence signal we ship without retrain-dependency
-            // plumbing — see 2026-05-26 thread).
-            var mc = DryWindow3pPredictor.ProbDryWindowWithStats(qDaytime, L, windowHours, rng, mcSamples);
+            // ProbDryWindowWithStartHours runs ONE MC pass producing:
+            //   - the headline P(window) + longest-dry-run band (Stats)
+            //   - per-start-hour P(N-hour block at that hour) (StartHourProbs)
+            // Same draws, same RNG seed → curve and headline are guaranteed
+            // numerically consistent (the headline is the union of the
+            // start-hour events under the same copula draws).
+            var (mc, startProbs) = DryWindow3pPredictor.ProbDryWindowWithStartHours(
+                qDaytime, L, windowHours, rng, mcSamples);
             var prob = mc.ProbWindow;
 
             predictions.Add(new DryWindowPredictionRow
@@ -471,10 +472,41 @@ public sealed class DryWindowPredictCommand
                 FeatureVectorHash = "",
                 ConformalSetTag = ModelArtifact.PredictConformalIfPresent(versionDir, lead, prob),
             });
+
+            // Emit one start-hour row per candidate start. ConditionalProb
+            // normalises RawProduct to sum to 1 (where in the day, given
+            // any block exists); CalibratedProb rescales it to sum to the
+            // headline so caller-side aggregation stays self-consistent.
+            double rawSum = 0.0;
+            for (int i = 0; i < startProbs.Length; i++) rawSum += startProbs[i];
+            for (int i = 0; i < startProbs.Length; i++)
+            {
+                double raw = startProbs[i];
+                double cond = rawSum > 0 ? raw / rawSum : (startProbs.Length > 0 ? 1.0 / startProbs.Length : 0.0);
+                double calibrated = cond * prob;
+                startHourRows.Add(new StartHourPredictionRow
+                {
+                    LocationName = primaryLocation,
+                    TruthStation = stationSlug,
+                    WindowHours = windowHours,
+                    ModelVersion = Phase3pStartHourVersion,
+                    PredictionMadeAtUtc = predictionMadeAt,
+                    TargetDateUtc = targetDate,
+                    LeadHours = lead,
+                    StartHourUtc = startUtc + i,
+                    RawProduct = raw,
+                    ConditionalProb = cond,
+                    CalibratedProb = calibrated,
+                    DailyProbAnyBlock = prob,
+                    PrecipVersion = v3o,
+                    DryWindowVersion = metadata.Version,
+                });
+            }
+
             _log.LogInformation(
-                "  lead {Lead}h ({Date:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (3p, MC samples={Mc}, longest dry run P10–P90={P10}-{P90}h, bound 3o={V3o})",
+                "  lead {Lead}h ({Date:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (3p, MC samples={Mc}, longest dry run P10–P90={P10}-{P90}h, start-hours={Nstarts}, bound 3o={V3o})",
                 lead, targetDate, windowHours, prob, mcSamples,
-                mc.P10LongestDryRunHours, mc.P90LongestDryRunHours, v3o);
+                mc.P10LongestDryRunHours, mc.P90LongestDryRunHours, startProbs.Length, v3o);
         }
 
         if (predictions.Count == 0)
@@ -484,8 +516,47 @@ public sealed class DryWindowPredictCommand
             return false;
         }
         await WritePredictionsAsync(predictions, stationSlug, windowHours, anchorDate, metadata.Version, ct);
+        await WriteStartHourRowsAsync(startHourRows, stationSlug, windowHours, anchorDate, ct);
         return true;
     }
+
+    /// <summary>On-disk <c>model_version</c> tag for the start-hour curves
+    /// 3p writes under <c>data/predictions/dry_window_start_hour/</c>. Must
+    /// stay in sync with <see cref="WeatherBlend.Site.DryWindowPhases.Phase3p"/>'s
+    /// <c>StartHourCurveVersion</c>.</summary>
+    public const string Phase3pStartHourVersion = "v3-3p";
+
+    private async Task WriteStartHourRowsAsync(
+        IReadOnlyList<StartHourPredictionRow> rows,
+        string stationSlug, int windowHours, DateTime anchorDate,
+        CancellationToken ct)
+    {
+        if (rows.Count == 0) return;
+        var dateStr = anchorDate.ToString("yyyy-MM-dd");
+        var outPath = Path.Combine(_cfg.Storage.PredictionsPath,
+            "dry_window_start_hour",
+            stationSlug,
+            $"window_{windowHours}h",
+            $"model_version={Phase3pStartHourVersion}",
+            $"date={dateStr}",
+            "predictions.parquet");
+        var total = await PredictionParquetWriter.WriteAsync(outPath, rows, MergeStartHourRows, ct);
+        _log.LogInformation("  wrote {New} start-hour rows ({Station}/{Window}h, file now holds {Total}) → {Path}",
+            rows.Count, stationSlug, windowHours, total, outPath);
+    }
+
+    /// <summary>Concat existing + new start-hour rows and dedup on
+    /// <c>(PredictionMadeAtUtc, TargetDateUtc, LeadHours, StartHourUtc)</c> —
+    /// the row's natural identity. ValidTime is the start hour for this surface.</summary>
+    internal static List<StartHourPredictionRow> MergeStartHourRows(
+        IEnumerable<StartHourPredictionRow> existing,
+        IEnumerable<StartHourPredictionRow> incoming)
+        => PredictionParquetWriter.Merge(existing, incoming,
+            dedupKey:  r => (r.PredictionMadeAtUtc, r.TargetDateUtc, r.LeadHours, r.StartHourUtc),
+            freshness: r => r.PredictionMadeAtUtc,
+            orderBy:   rows => rows.OrderBy(r => r.TargetDateUtc)
+                                   .ThenBy(r => r.LeadHours)
+                                   .ThenBy(r => r.StartHourUtc));
 
 
     private List<KeyValuePair<string, ModelArtifact.StationEntry>> FilterEntries(

@@ -53,7 +53,8 @@ public static class DryWindowPhases
         ShortTitle: "Phase 3p (copula MC/3o)",
         Description: "Gaussian copula MC over the rich+orographic Phase 3o's hourly P(wet) marginals. Single empirical Σ per station, fit on train-split observed daytime wet/dry binary sequences (daytime-shape autocorrelation is lead-independent for truth, so per-lead Σs pool into one). Captures within-day wet/dry autocorrelation that an iid sampler misses. Bake-off Brier 0.1064 aggregate on the 9 (station, lead) Bonehill cells.",
         ChampionVsChallengerLabel: "Phase 3p (copula MC/3o)",
-        Color: "#7e57c2");
+        Color: "#7e57c2",
+        StartHourCurveVersion: "v3-3p");
 
     /// <summary>
     /// Display-metadata records keyed by phase string. Source of truth for

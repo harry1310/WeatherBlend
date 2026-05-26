@@ -125,10 +125,8 @@ public sealed class RenderSiteCommand
             ConformalSetTag:             r.ConformalSetTag)).ToList();
         _log.LogInformation("Loaded {N} dry-window prediction rows (all locations).", dryWindowAllLocs.Count);
 
-        // Start-hour predictions not produced by any active phase. Site
-        // renders the chart as absent when the list is empty.
-        IReadOnlyList<SitePages.StartHourForecastPoint> startHourAllLocs =
-            Array.Empty<SitePages.StartHourForecastPoint>();
+        var startHourAllLocs = QueryStartHourPredictions(windowStart, predictionEnd, ct);
+        _log.LogInformation("Loaded {N} start-hour curve rows (all locations).", startHourAllLocs.Count);
 
         var metOfficeSpotAllLocs = QueryMetOfficeSpotForecasts(windowStart, predictionEnd, ct);
         _log.LogInformation("Loaded {N} Met Office Spot forecast rows (all locations).", metOfficeSpotAllLocs.Count);
@@ -1318,5 +1316,67 @@ FROM ranked WHERE rn = 1 ORDER BY LocationName, ValidTimeUtc, LeadHours";
             _log, "Met Office Spot tree empty — comparison line will be absent.", ct);
     }
 
+    /// <summary>
+    /// Dry-window start-hour curves: one row per (Station, WindowHours,
+    /// LeadHours, TargetDateUtc, StartHourUtc), produced today by Phase 3p
+    /// as a byproduct of its copula-MC pass. Read off
+    /// <c>data/predictions/dry_window_start_hour/{station}/window_{N}h/
+    /// model_version={v}/date={anchor}/predictions.parquet</c>. Returns an
+    /// empty list on first-ever-deploy (no curves on disk yet) so the
+    /// dry-window page degrades silently to "no chart".
+    /// </summary>
+    private IReadOnlyList<SitePages.StartHourForecastPoint> QueryStartHourPredictions(
+        DateTime start, DateTime end, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        var subdir = Path.Combine(_cfg.Storage.PredictionsPath, "dry_window_start_hour");
+        if (!Directory.Exists(subdir))
+        {
+            _log.LogInformation(
+                "Start-hour curves tree at {Dir} not present — chart will be absent until the next 3p predict cycle lands.",
+                subdir);
+            return Array.Empty<SitePages.StartHourForecastPoint>();
+        }
+
+        var glob = ParquetReader.Glob(Path.Combine(subdir, "**", "*.parquet"));
+        // Probe: a fresh deploy may have the dir but no parquet yet, or
+        // historical parquets predating ConditionalProb. read_parquet
+        // would throw on the missing column.
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        if (!ParquetReader.HasColumn(conn, glob, "ConditionalProb"))
+        {
+            _log.LogWarning("Start-hour curves tree has no ConditionalProb-shaped rows yet — chart will be absent.");
+            return Array.Empty<SitePages.StartHourForecastPoint>();
+        }
+
+        var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
+        if (string.IsNullOrEmpty(locFilter)) locFilter = "''";
+
+        var sql = $@"
+SELECT TruthStation, WindowHours, ModelVersion, PredictionMadeAtUtc, TargetDateUtc, LeadHours,
+       StartHourUtc, RawProduct, ConditionalProb, CalibratedProb, DailyProbAnyBlock, LocationName
+FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+WHERE LocationName IN ({locFilter})
+  AND TargetDateUtc >= TIMESTAMP '{start.Date:yyyy-MM-dd HH:mm:ss}'
+  AND TargetDateUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+ORDER BY LocationName, TruthStation, WindowHours, LeadHours, TargetDateUtc, StartHourUtc";
+
+        return ParquetReader.Query(conn, sql, r => new SitePages.StartHourForecastPoint(
+            Station:           r.GetString(0),
+            WindowHours:       r.GetInt32(1),
+            Version:           r.GetString(2),
+            PredictedAtUtc:    r.GetDateTime(3),
+            TargetDateUtc:     r.GetDateTime(4),
+            LeadHours:         r.GetInt32(5),
+            StartHourUtc:      r.GetInt32(6),
+            RawProduct:        r.GetDouble(7),
+            ConditionalProb:   r.GetDouble(8),
+            CalibratedProb:    r.GetDouble(9),
+            DailyProbAnyBlock: r.GetDouble(10),
+            LocationName:      r.GetString(11)),
+            _log, "Start-hour curves tree empty — chart will be absent.", ct);
+    }
 
 }
