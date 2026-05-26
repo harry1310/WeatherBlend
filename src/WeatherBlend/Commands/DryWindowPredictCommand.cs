@@ -215,8 +215,15 @@ public sealed class DryWindowPredictCommand
                 targets, anchorDate, predictionMadeAt, ct);
         }
 
+        // Belt-and-braces against the 2026-05-26 regression: the dispatch
+        // above is the primary defence (3p returns before the check), but
+        // also gate the File.Exists guard on PhaseRequiresClimatology so a
+        // future refactor that re-orders the dispatch below the check
+        // can't silently re-reject 3p (or any future climatology-free
+        // phase) for missing a file it never ships. The named helper is
+        // unit-tested in DryWindowPredictCommandTests.
         var climPath = Path.Combine(versionDir, "dry_window_climatology.json");
-        if (!File.Exists(climPath))
+        if (PhaseRequiresClimatology(metadata.Phase) && !File.Exists(climPath))
         {
             _log.LogWarning("{Key} {V}: missing climatology at {P}; skipping.", compositeKey, versionName, climPath);
             return false;
@@ -496,6 +503,21 @@ public sealed class DryWindowPredictCommand
         }
         return result;
     }
+
+    /// <summary>
+    /// Returns true iff <paramref name="phase"/>'s bundle is expected to ship
+    /// a <c>dry_window_climatology.json</c> artefact. The climatology-free
+    /// phases are dispatched earlier in <c>RunAsync</c>; this helper also
+    /// gates the <c>File.Exists</c> guard so a future refactor that
+    /// re-orders the dispatch below the check can't silently re-reject
+    /// climatology-free bundles for missing a file they're not meant to
+    /// ship — the regression of 2026-05-26 (3p bundles getting rejected
+    /// with "missing climatology" across two retrain sweeps, 0 3p
+    /// predictions on R2). Add a new phase to the exempt list AND give
+    /// it a dispatch branch above; both are mandatory.
+    /// </summary>
+    internal static bool PhaseRequiresClimatology(string phase) =>
+        !string.Equals(phase, DryWindow3pPredictor.Phase3p, StringComparison.Ordinal);
 
     internal static bool SlugMatches(string slug, string arg)
     {
