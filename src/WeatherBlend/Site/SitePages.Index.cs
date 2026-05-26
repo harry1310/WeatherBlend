@@ -34,20 +34,41 @@ public static partial class SitePages
         var dayWindowStart = dayUtc.AddHours(firstHour);
         var dayWindowEnd   = dayUtc.AddHours(lastHourExcl);
 
-        // Champion-only filter, per lead. ChampionByLead pins specific
+        // Champion-PHASE filter, per lead. ChampionByLead pins specific
         // (lead → version) overrides (e.g. 2d champions lead 12h while 2b
         // stays Current at 24+); any lead missing from the dict falls back
         // to CurrentVersion. Empty CurrentVersion = no manifest, fall back
         // to "any" so a freshly-deployed environment still renders cards.
+        //
+        // Match by PHASE rather than strict version (2026-05-26): a retrain
+        // mints a new champion version whose predictions only target the
+        // anchor day forward, leaving today's window orphaned for any phase
+        // without a sub-24h lead (i.e. anything other than 2d / 3d). The
+        // PREVIOUS champion-phase bundle still has predictions covering
+        // today's hours — those rows live in input.Predictions thanks to
+        // the unfiltered scan in PredictionsRepository — they just no
+        // longer match the strict-equality champion-version check.
+        // Falling back to version-equality when the phase metadata is
+        // missing keeps test fixtures (which don't always populate
+        // PhaseByVersion) working unchanged.
         string ChampionForLead(int lead)
         {
             if (input.ChampionByLead.TryGetValue(lead, out var perLead) && !string.IsNullOrEmpty(perLead))
                 return perLead;
             return input.CurrentVersion;
         }
+        bool MatchesChampionPhase(string rowVersion, int lead)
+        {
+            var champVersion = ChampionForLead(lead);
+            if (string.Equals(rowVersion, champVersion, StringComparison.Ordinal)) return true;
+            return input.PhaseByVersion.TryGetValue(rowVersion, out var rowPhase)
+                && input.PhaseByVersion.TryGetValue(champVersion, out var champPhase)
+                && !string.IsNullOrEmpty(rowPhase)
+                && string.Equals(rowPhase, champPhase, StringComparison.Ordinal);
+        }
         var cardSource = string.IsNullOrEmpty(input.CurrentVersion) && input.ChampionByLead.Count == 0
             ? input.Predictions
-            : input.Predictions.Where(p => p.ModelVersion == ChampionForLead(p.LeadHours));
+            : input.Predictions.Where(p => MatchesChampionPhase(p.ModelVersion, p.LeadHours));
 
         // For each future valid_time, take the smallest lead (most recent
         // cycle); within ties, freshest PredictionMadeAt wins. Restrict to
@@ -80,10 +101,22 @@ public static partial class SitePages
         // challengers lead the per-lead forecast + Models pages instead.
         var pwetStation = OverviewPwetStation(input);
         input.PrecipCurrentByStation.TryGetValue(pwetStation, out var pwetChampion);
+        // Match by champion PHASE for the same retrain-window reason as the
+        // temperature tiles above — yesterday's still-3a bundle covers
+        // today's hours that today's freshly-minted bundle doesn't.
+        bool MatchesPwetPhase(string rowVersion)
+        {
+            if (string.IsNullOrEmpty(pwetChampion)) return false;
+            if (string.Equals(rowVersion, pwetChampion, StringComparison.Ordinal)) return true;
+            return input.PhaseByVersion.TryGetValue(rowVersion, out var rowPhase)
+                && input.PhaseByVersion.TryGetValue(pwetChampion, out var champPhase)
+                && !string.IsNullOrEmpty(rowPhase)
+                && string.Equals(rowPhase, champPhase, StringComparison.Ordinal);
+        }
         var pwetByValid = string.IsNullOrEmpty(pwetChampion)
             ? new Dictionary<DateTime, PrecipForecastPoint>()
             : input.PrecipPredictions
-                .Where(r => r.Station == pwetStation && r.Version == pwetChampion)
+                .Where(r => r.Station == pwetStation && MatchesPwetPhase(r.Version))
                 .GroupBy(r => r.ValidTimeUtc)
                 .ToDictionary(
                     g => g.Key,
@@ -265,9 +298,21 @@ public static partial class SitePages
                 return perLead;
             return input.CurrentVersion;
         }
+        // Phase-matching (with version-equality fallback) mirrors the
+        // RenderIndex filter so the sub-nav doesn't disagree with the day
+        // body. See the longer comment in RenderIndex for the rationale.
+        bool MatchesChampionPhase(string rowVersion, int lead)
+        {
+            var champVersion = ChampionForLead(lead);
+            if (string.Equals(rowVersion, champVersion, StringComparison.Ordinal)) return true;
+            return input.PhaseByVersion.TryGetValue(rowVersion, out var rowPhase)
+                && input.PhaseByVersion.TryGetValue(champVersion, out var champPhase)
+                && !string.IsNullOrEmpty(rowPhase)
+                && string.Equals(rowPhase, champPhase, StringComparison.Ordinal);
+        }
         var cardSource = string.IsNullOrEmpty(input.CurrentVersion) && input.ChampionByLead.Count == 0
             ? input.Predictions
-            : input.Predictions.Where(p => p.ModelVersion == ChampionForLead(p.LeadHours));
+            : input.Predictions.Where(p => MatchesChampionPhase(p.ModelVersion, p.LeadHours));
 
         return cardSource
             .Where(p => p.ValidTimeUtc > input.GeneratedAtUtc

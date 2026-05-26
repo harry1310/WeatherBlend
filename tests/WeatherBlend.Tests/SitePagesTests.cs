@@ -340,6 +340,70 @@ public class SitePagesTests
     }
 
     [Fact]
+    public void RenderIndex_today_falls_back_to_previous_champion_phase_bundle()
+    {
+        // Regression for the 2026-05-26 Membury "no forward predictions in
+        // this day's outdoor window" bug. When a retrain mints a new
+        // champion version mid-day, every post-retrain predict cycle's
+        // lead-24h+ rows target anchor.Date.AddDays(1) forward — leaving
+        // today's window orphaned for any location without a sub-24h-lead
+        // phase (Membury has 2b champion / 2c challenger only — no 2d).
+        // Yesterday's still-2b bundle wrote lead-24h rows for today and
+        // they're loaded into input.Predictions; the home page must fall
+        // back to them when today's bundle has no rows in window.
+        //
+        // 09:00Z anchor so the strict `ValidTimeUtc > GeneratedAtUtc`
+        // filter keeps the today-noon row in the day-0 tile window.
+        var generatedAt = new DateTime(2026, 5, 26, 9, 0, 0, DateTimeKind.Utc);
+        var todayNoon  = generatedAt.Date.AddHours(12);                  // today, in window
+        var tomorrowNoon = generatedAt.Date.AddDays(1).AddHours(12);     // tomorrow, in window
+
+        TempPredictionRow Row(string version, DateTime predictedAt, DateTime valid, double t) => new()
+        {
+            LocationName = "Membury", ModelVersion = version,
+            PredictionMadeAtUtc = predictedAt,
+            ValidTimeUtc = valid, LeadHours = 24,
+            BlendTemperature = t,
+            FeatureVectorHash = "",
+        };
+
+        // Two 2b bundles: yesterday's (covers today, dropped pre-fix) and
+        // today's (covers tomorrow only). Both tagged phase=2b in
+        // PhaseByVersion so the new filter unifies them.
+        var preds = new[]
+        {
+            Row("v-2b-yesterday", generatedAt.AddDays(-1), todayNoon,    16.5),
+            Row("v-2b-today",     generatedAt,             tomorrowNoon, 18.0),
+        };
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            Predictions = preds,
+            CurrentVersion = "v-2b-today",
+            PhaseByVersion = new Dictionary<string, string>
+            {
+                ["v-2b-yesterday"] = "2b",
+                ["v-2b-today"]     = "2b",
+            },
+        };
+
+        var todayHtml    = SitePages.RenderIndex(input, dayOffset: 0);
+        var tomorrowHtml = SitePages.RenderIndex(input, dayOffset: 1);
+
+        // Today's body must render the yesterday-bundle tile, not the empty
+        // state — this is the Membury "broken Today tab" scenario the fix
+        // targets.
+        todayHtml.Should().Contain("16.5°C");
+        todayHtml.Should().NotContain("No forward predictions in this day");
+        // And tomorrow's body still renders today's bundle's row — the
+        // freshest-PredictionMadeAt tiebreak in the smallest-lead-wins
+        // group means today's bundle wins where both bundles cover the
+        // same valid_time, but here only the today bundle has a tomorrow
+        // row so it just renders on its own.
+        tomorrowHtml.Should().Contain("18.0°C");
+    }
+
+    [Fact]
     public void RenderIndex_resolves_pwet_gauge_per_rendered_location()
     {
         // Regression: the Overview P(wet) headline gauge used to be hardcoded
