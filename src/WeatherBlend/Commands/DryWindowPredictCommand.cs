@@ -196,6 +196,25 @@ public sealed class DryWindowPredictCommand
                 compositeKey, versionName, metadata.LocationName, location.Name);
             return false;
         }
+        _log.LogInformation("{Key}: version {V} (phase {P}), window {W}h",
+            compositeKey, metadata.Version, metadata.Phase, windowHours);
+
+        // Phases 3g / 3j / 3n / 3s retired 2026-05-25 in model-cleanup
+        // Phase 1 — predict dispatch removed. Surviving R2 bundles with
+        // those phase tags are filtered out by phases.yaml gating.
+        //
+        // Phase 3p — Gaussian copula MC over Phase 3o's hourly P(wet).
+        // No LightGBM artefacts and no climatology by design (line ~448
+        // emits ClimatologyProbHasDryWindow=0.0). Dispatch before the
+        // climatology check so 3p bundles aren't rejected for missing
+        // a file they're never meant to ship.
+        if (string.Equals(metadata.Phase, DryWindow3pPredictor.Phase3p, StringComparison.Ordinal))
+        {
+            return await RunPhase3pAsync(
+                versionDir, stationSlug, windowHours, versionName, metadata,
+                targets, anchorDate, predictionMadeAt, ct);
+        }
+
         var climPath = Path.Combine(versionDir, "dry_window_climatology.json");
         if (!File.Exists(climPath))
         {
@@ -208,24 +227,6 @@ public sealed class DryWindowPredictCommand
         // dry-window didn't move test Brier vs raw 3b. Old 3d-calibrated
         // artefacts on R2 are inert; if any persist in a manifest's Active
         // list they should be dropped.
-
-        _log.LogInformation("{Key}: version {V} (phase {P}), window {W}h",
-            compositeKey, metadata.Version, metadata.Phase, windowHours);
-
-        // Phases 3g / 3j / 3n / 3s retired 2026-05-25 in model-cleanup
-        // Phase 1 — predict dispatch removed. Surviving R2 bundles with
-        // those phase tags are filtered out by phases.yaml gating.
-        //
-        // Phase 3p — Gaussian copula MC over Phase 3o's hourly P(wet).
-        // No LightGBM artefacts; predict reads 3o's live prediction parquet
-        // (via the bound precip_3o_version metadata) + the bundle's
-        // correlation.json (single Σ per station) and runs copula MC.
-        if (string.Equals(metadata.Phase, DryWindow3pPredictor.Phase3p, StringComparison.Ordinal))
-        {
-            return await RunPhase3pAsync(
-                versionDir, stationSlug, windowHours, versionName, metadata,
-                targets, anchorDate, predictionMadeAt, ct);
-        }
 
         // Per-lead BlenderSpec lives in feature_schema.json.
         var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
