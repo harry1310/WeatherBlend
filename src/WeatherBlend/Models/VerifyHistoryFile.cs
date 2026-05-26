@@ -137,4 +137,49 @@ public sealed class VerifyHistoryRow
     /// <c>[ActualLeadBucketLowH, ActualLeadBucketLowH + 6)</c>.
     /// </summary>
     public int? ActualLeadBucketLowH { get; init; }
+
+    // ---- Phase 3f (rainfall_amount) distributional metrics -------------
+    //
+    // Populated only on rainfall_amount target rows. The mixed
+    // distribution F(x) = (1-π)·δ_0(x) + π·LogNormal(μ_log, σ_log)(x)
+    // produced by 3f doesn't fit a single Brier/MAE headline, so verify
+    // emits an expanded metric set. <see cref="BlendMetric"/> carries
+    // mean CRPS (the primary skill metric); the fields below carry the
+    // calibration + reliability companions the site's skill widgets
+    // surface alongside it. All nullable so existing producers (temp /
+    // precip / dry-window / element) keep emitting clean JSON.
+
+    /// <summary>Mean absolute error on the WET observed rows only —
+    /// secondary skill metric. <c>|median_mm − observed_mm|</c> averaged
+    /// over rows where <c>observed_mm > 0</c>. Null on non-rainfall_amount
+    /// rows.</summary>
+    public double? MaeWet { get; init; }
+
+    /// <summary>Empirical coverage of the announced 80% predictive
+    /// interval — fraction of observed values in [P10, P90]. Should be
+    /// ~0.80 for a well-calibrated forecast. Departures flag
+    /// under/over-spread independent of CRPS.</summary>
+    public double? Coverage80 { get; init; }
+
+    /// <summary>Mean of the per-row PIT values
+    /// <c>(1-π) + π·LogNormalCDF(y; μ, σ)</c> for wet observations, or
+    /// the per-row mass at zero for dry obs (uniform sample from
+    /// <c>[0, 1-π]</c>). Should be ~0.5 if the distribution is well-
+    /// calibrated. Departures flag bias.</summary>
+    public double? PitMean { get; init; }
+
+    /// <summary>PIT histogram bin counts (10 equal-width bins on
+    /// <c>[0, 1]</c>) — flat for a well-calibrated forecast; bumps at
+    /// 0 / 1 flag over/under-spread; tilt flags mean bias. The skill
+    /// page renders this as a bar chart so the reader sees the shape
+    /// directly. Sums to <see cref="N"/>.</summary>
+    public List<int>? PitBins { get; init; }
+
+    /// <summary>Per-threshold Brier scores for the exceedance forecasts
+    /// (P(mm/h ≥ threshold) vs the binary observed exceedance). Keys are
+    /// stringified thresholds (e.g. <c>"0.1"</c>, <c>"1"</c>, <c>"5"</c>,
+    /// <c>"10"</c>); the configured threshold list lives in
+    /// <c>BlendersConfig.RainfallAmount["3f"].PredictOutput.ExceedanceMm</c>.
+    /// Lower is better, same direction as <see cref="BlendMetric"/>.</summary>
+    public Dictionary<string, double>? ExceedanceBriers { get; init; }
 }

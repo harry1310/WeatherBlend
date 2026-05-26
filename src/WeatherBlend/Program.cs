@@ -179,6 +179,7 @@ public static class Program
                 // PrecipAblateCommand removed in Phase 6 of unify-model-membership refactor.
                 services.AddTransient<TempVerifyCommand>();
                 services.AddTransient<PrecipVerifyCommand>();
+                services.AddTransient<RainfallAmountVerifyCommand>();
                 services.AddTransient<RenderSiteCommand>();
                 services.AddTransient<DryWindowDiagnosticCommand>();
                 services.AddTransient<DryWindowConformalFitCommand>();
@@ -847,7 +848,7 @@ public static class Program
 
         var verifyTargetOpt = new Option<string>(
             name: "--target",
-            description: "Target variable: temperature | precipitation | dry-window | wind | humidity | shortwave-radiation | cloud-cover",
+            description: "Target variable: temperature | precipitation | rainfall-amount | dry-window | wind | humidity | shortwave-radiation | cloud-cover",
             getDefaultValue: () => "temperature");
         var verifyAsOfOpt = new Option<DateOnly?>(
             name: "--as-of",
@@ -896,6 +897,13 @@ public static class Program
             if (string.Equals(target, "precipitation", StringComparison.OrdinalIgnoreCase))
             {
                 var cmd = host.Services.GetRequiredService<PrecipVerifyCommand>();
+                ctx.ExitCode = await cmd.RunAsync(
+                    truthStation, asOf, windowDays ?? 30, latencyDays, drift, ctx.GetCancellationToken());
+            }
+            else if (string.Equals(target, "rainfall-amount", StringComparison.OrdinalIgnoreCase)
+                     || string.Equals(target, "rainfall_amount", StringComparison.OrdinalIgnoreCase))
+            {
+                var cmd = host.Services.GetRequiredService<RainfallAmountVerifyCommand>();
                 ctx.ExitCode = await cmd.RunAsync(
                     truthStation, asOf, windowDays ?? 30, latencyDays, drift, ctx.GetCancellationToken());
             }

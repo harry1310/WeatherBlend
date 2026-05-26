@@ -169,6 +169,35 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- verify $ARGS
           echo "exit=$?" >> "$GITHUB_OUTPUT"
 
+      - name: Verify rainfall amount (Phase 3f, Membury-only at present)
+        # Distributional verify for 3f. Scores the mixed
+        # (1-π)·δ_0 + π·LogNormal(μ,σ) against EA hourly rainfall truth and
+        # emits CRPS / PIT / coverage / per-threshold exceedance Brier. Same
+        # 30-day window + 1.5× drift threshold as the precip step (CRPS sits
+        # in the same scale as Brier on this data). Soft-exit 2 when no 3f
+        # bundles exist yet (fresh deploy without a Sunday retrain) so the
+        # workflow doesn't go red for a no-op slice.
+        id: verify_rainfall_amount_run
+        run: |
+          AS_OF="${{ github.event.inputs.as_of }}"
+          WINDOW="${{ github.event.inputs.window_days }}"
+          DRIFT="${{ github.event.inputs.drift }}"
+          ARGS="--target rainfall-amount --truth-station all"
+          if [ -n "$AS_OF" ]; then ARGS="$ARGS --as-of $AS_OF"; fi
+          if [ -n "$WINDOW" ]; then ARGS="$ARGS --window-days $WINDOW"; fi
+          if [ -n "$DRIFT" ]; then ARGS="$ARGS --drift $DRIFT"; fi
+          set +e
+          dotnet run --project src/WeatherBlend --no-build -c Release -- verify $ARGS
+          code=$?
+          set -e
+          # exit 2 = "no rainfall_amount artefacts" — expected during initial
+          # rollout before train_3f has run anywhere. Surface as a soft skip,
+          # not a job failure.
+          case "$code" in
+            2) echo "::notice::No 3f bundles yet — skipping rainfall_amount verify."; code=0 ;;
+          esac
+          echo "exit=$code" >> "$GITHUB_OUTPUT"
+
       - name: Verify dry-window start-hour curves (all configured locations)
         # Scores the per-start-hour curves derived from precip + dry-window
         # blender outputs. No drift threshold — the curve is a derivation, not
@@ -272,6 +301,7 @@ jobs:
         run: |
           T_EXIT="${{ steps.verify_run.outputs.exit }}"
           P_EXIT="${{ steps.verify_precip_run.outputs.exit }}"
+          R_EXIT="${{ steps.verify_rainfall_amount_run.outputs.exit }}"
           D_EXIT="${{ steps.verify_dry_window_run.outputs.exit }}"
           E_DRIFT="${{ steps.verify_elements_run.outputs.drift }}"
           E_FAIL="${{ steps.verify_elements_run.outputs.fail }}"
@@ -286,6 +316,11 @@ jobs:
             0) ;;
             4) echo "::warning::Precipitation drift detected — see verify report."; drifted_targets+=("precipitation") ;;
             *) echo "::error::Precipitation verify step exited $P_EXIT (non-drift failure)."; fail=1 ;;
+          esac
+          case "$R_EXIT" in
+            0) ;;
+            4) echo "::warning::Rainfall-amount drift detected — see verify report."; drifted_targets+=("rainfall_amount") ;;
+            *) echo "::error::Rainfall-amount verify step exited $R_EXIT (non-drift failure)."; fail=1 ;;
           esac
           case "$D_EXIT" in
             0) ;;

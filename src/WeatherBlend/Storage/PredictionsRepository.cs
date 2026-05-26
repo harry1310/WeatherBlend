@@ -233,6 +233,84 @@ ORDER BY TruthStation, ModelVersion, LeadHours, ValidTimeUtc";
     };
 
     // -----------------------------------------------------------------
+    // Rainfall amount (Phase 3f distributional forecast)
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// Phase 3f rainfall_amount predictions whose <c>ValidTimeUtc</c> falls in
+    /// [<paramref name="start"/>, <paramref name="end"/>], optionally scoped to a
+    /// list of <paramref name="stations"/>. Pass <c>null</c> or an empty list to
+    /// scan the whole rainfall_amount subtree; pass an explicit list to limit to
+    /// those station partitions (verify pattern).
+    ///
+    /// Schema mirrors <see cref="RainfallAmountPredictionRow"/>. The Python
+    /// writer (predict_3f.py) emits these column names verbatim — any
+    /// rename here MUST be made in lockstep with the Python side or the
+    /// DuckDB read trips on a missing column.
+    /// </summary>
+    public IReadOnlyList<RainfallAmountPredictionRow> GetRainfallAmountPredictions(
+        IReadOnlyList<string>? stations,
+        DateTime start, DateTime end, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        var fromClause = (stations is null || stations.Count == 0)
+            ? $"read_parquet('{ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath, "rainfall_amount", "**", "*.parquet"))}', hive_partitioning = false, union_by_name = true)"
+            : "read_parquet([" + string.Join(", ", stations.Select(s =>
+                "'" + ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath, "rainfall_amount", s, "**", "*.parquet")) + "'"))
+                + "], hive_partitioning = false, union_by_name = true)";
+
+        var locationInList = string.Join(", ",
+            _cfg.Locations.Select(l => "'" + l.Name.Replace("'", "''") + "'"));
+        if (string.IsNullOrEmpty(locationInList)) locationInList = "''";
+
+        var sql = $@"
+SELECT LocationName, TruthStation, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
+       Pi, MuLog, SigmaLog,
+       MeanMmPerHr, MedianMmPerHr,
+       P2_5MmPerHr, P10MmPerHr, P50MmPerHr, P90MmPerHr, P97_5MmPerHr,
+       PExceed0_1, PExceed1, PExceed5, PExceed10,
+       Precip3aVersion
+FROM {fromClause}
+WHERE LocationName IN ({locationInList})
+  AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
+  AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+  -- Defensive: predict_3f silently skips cells where the (μ, σ) NGBoost
+  -- inference failed; those rows shouldn't reach the parquet, but
+  -- filter on Pi anyway so a half-written cycle can't crash MapRainfallAmountRow.
+  AND Pi IS NOT NULL
+ORDER BY TruthStation, ModelVersion, LeadHours, ValidTimeUtc";
+
+        return ParquetReader.Query(sql, MapRainfallAmountRow,
+            _log, "Rainfall amount predictions tree empty — 3f reads will return no rows.", ct);
+    }
+
+    private static RainfallAmountPredictionRow MapRainfallAmountRow(IDataReader r) => new()
+    {
+        LocationName        = r.GetString(0),
+        TruthStation        = r.GetString(1),
+        ModelVersion        = r.GetString(2),
+        PredictionMadeAtUtc = r.GetDateTime(3),
+        ValidTimeUtc        = r.GetDateTime(4),
+        LeadHours           = r.GetInt32(5),
+        Pi                  = r.GetDouble(6),
+        MuLog               = r.GetDouble(7),
+        SigmaLog            = r.GetDouble(8),
+        MeanMmPerHr         = r.GetDouble(9),
+        MedianMmPerHr       = r.GetDouble(10),
+        P2_5MmPerHr         = r.GetDouble(11),
+        P10MmPerHr          = r.GetDouble(12),
+        P50MmPerHr          = r.GetDouble(13),
+        P90MmPerHr          = r.GetDouble(14),
+        P97_5MmPerHr        = r.GetDouble(15),
+        PExceed0_1          = r.GetDouble(16),
+        PExceed1            = r.GetDouble(17),
+        PExceed5            = r.GetDouble(18),
+        PExceed10           = r.GetDouble(19),
+        Precip3aVersion     = r.IsDBNull(20) ? "" : r.GetString(20),
+    };
+
+    // -----------------------------------------------------------------
     // Dry window
     // -----------------------------------------------------------------
 
