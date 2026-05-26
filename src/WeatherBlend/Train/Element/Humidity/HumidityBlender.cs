@@ -21,7 +21,7 @@ public sealed class HumidityBlender : IElementBlender
     {
         var inputs = new ElementTrainerHarness.ElementTrainerInputs(
             Target: Target,
-            Hyperparameters: new TempTrainer.Hyperparameters(),
+            Hyperparameters: TempTrainer.Hyperparameters.Default(),
             ModelsRoot: _cfg.Storage.ModelsPath,
             BuildSpec: lead => HumidityFeatureBuilder.BuildSpec(_cfg.Blenders, lead),
             LoadRowsForSpec: (spec, c) => HumidityFeatureBuilder.BuildForLead(

@@ -232,7 +232,7 @@ public sealed class TempTrainCommand : TrainCommandBase
         var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "temperature", stationKey, now);
         var versionName = Path.GetFileName(versionDir);
 
-        var hp = new TempTrainer.Hyperparameters();
+        var hp = TempTrainer.Hyperparameters.Default();
         _log.LogInformation("Phase 2b — training per-lead blenders for leads [{Leads}]",
             string.Join(",", leads));
         _log.LogInformation("Hyperparameters: iter={Iter} lr={Lr} leaves={Leaves} esr={Esr} seed={Seed}",
@@ -409,7 +409,7 @@ public sealed class TempTrainCommand : TrainCommandBase
         var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "temperature", stationKey, now, suffix: "phase2c");
         var versionName = Path.GetFileName(versionDir);
 
-        var hp = new TempTrainer.Hyperparameters();
+        var hp = TempTrainer.Hyperparameters.Default();
         _log.LogInformation("Phase 2c — rich-feature blender (88 features), leads [{Leads}]",
             string.Join(",", leads));
         _log.LogInformation("Hyperparameters: iter={Iter} lr={Lr} leaves={Leaves} esr={Esr} seed={Seed} (identical to Phase 2b — feature richness is the only variable)",
@@ -593,11 +593,12 @@ public sealed class TempTrainCommand : TrainCommandBase
         // Using one HP set across both leads keeps the artefact reproducible
         // from a single command — per-lead HP tuning can land later if the
         // delta justifies the complexity.
-        var hp = new TempTrainer.Hyperparameters(
-            LearningRate: 0.05,
-            NumberOfLeaves: 31,
-            MinimumExampleCountPerLeaf: 50,
-            FeatureFraction: 1.0);
+        var hp = TempTrainer.Hyperparameters.Default() with
+        {
+            LearningRate = 0.05,
+            MinimumExampleCountPerLeaf = 50,
+            FeatureFraction = 1.0,
+        };
 
         var tier = Exact12hFeatureBuilder.AllTiers.First(t => t.Name == (tierName ?? "T2"));
         bool IncludeUkv = includeUkvOpt ?? true;

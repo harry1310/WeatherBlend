@@ -21,7 +21,7 @@ public sealed class CloudBlender : IElementBlender
     {
         var inputs = new ElementTrainerHarness.ElementTrainerInputs(
             Target: Target,
-            Hyperparameters: new TempTrainer.Hyperparameters(),
+            Hyperparameters: TempTrainer.Hyperparameters.Default(),
             ModelsRoot: _cfg.Storage.ModelsPath,
             BuildSpec: lead => CloudFeatureBuilder.BuildSpec(_cfg.Blenders, lead),
             LoadRowsForSpec: (spec, c) => CloudFeatureBuilder.BuildForLead(

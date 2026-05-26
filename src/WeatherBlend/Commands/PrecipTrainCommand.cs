@@ -109,7 +109,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "precipitation", stationSlug, now);
         var versionName = Path.GetFileName(versionDir);
 
-        var hp = new PrecipOccurrenceTrainer.Hyperparameters();
+        var hp = PrecipOccurrenceTrainer.Hyperparameters.Default();
         _log.LogInformation("Phase 3a — precipitation occurrence classifier, station='{Station}', leads=[{Leads}]",
             primaryStation, string.Join(",", leads));
         _log.LogInformation("Hyperparameters: iter={Iter} lr={Lr} leaves={Leaves} esr={Esr} seed={Seed}",
@@ -369,7 +369,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         }
 
         var modelsRoot = _cfg.Storage.ModelsPath;
-        var hp = new PrecipOccurrenceTrainer.Hyperparameters();
+        var hp = PrecipOccurrenceTrainer.Hyperparameters.Default();
 
         _log.LogInformation("Phase 3c — rich-feature precip blender, location='{Loc}', stations=[{Stations}], leads=[{Leads}]",
             location.Name, string.Join(", ", stationsToTrain), string.Join(",", leads));
@@ -708,7 +708,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             string.Join(", ", pool.Select(p => p.Name)), string.Join(",", leads));
 
         var modelsRoot = _cfg.Storage.ModelsPath;
-        var hp = new PrecipOccurrenceTrainer.Hyperparameters();
+        var hp = PrecipOccurrenceTrainer.Hyperparameters.Default();
         var now = DateTime.UtcNow;
 
         // Per-station bundle paths. The same trained model gets saved under
@@ -995,7 +995,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         }
 
         var modelsRoot = _cfg.Storage.ModelsPath;
-        var hp = new PrecipOccurrenceTrainer.Hyperparameters();
+        var hp = PrecipOccurrenceTrainer.Hyperparameters.Default();
         var tier = PrecipExactFeatureBuilder.AllTiers.First(t => t.Name == (tierName ?? "P1"));
         bool IncludeUkv = includeUkvOpt ?? true;
         var leadsToTrain = exactLeads is { Length: > 0 } ? exactLeads : DefaultPhase3dLeads;

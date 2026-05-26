@@ -40,7 +40,28 @@ public sealed class TempTrainer
         // TempTrainer.Train<T>.
         double SubsampleFraction = 0.8,
         int SubsampleFrequency = 1,
-        double FeatureFraction = 0.8);
+        double FeatureFraction = 0.8)
+    {
+        /// <summary>
+        /// Default Hyperparameters with optional smoke-time overrides via env
+        /// vars. <c>WB_SMOKE_ITER</c> caps NumberOfIterations + scales the
+        /// EarlyStoppingRound proportionally; <c>WB_SMOKE_LEAVES</c> sets a
+        /// smaller NumberOfLeaves. Unset env vars leave production defaults
+        /// (500 / 30 / 31) untouched — every workflow / cron / manual run
+        /// without those env vars gets bit-identical behaviour to a plain
+        /// <c>new Hyperparameters()</c>.
+        /// </summary>
+        public static Hyperparameters Default()
+        {
+            var iter = int.TryParse(Environment.GetEnvironmentVariable("WB_SMOKE_ITER"), out var i) ? i : 500;
+            var esr  = int.TryParse(Environment.GetEnvironmentVariable("WB_SMOKE_ESR"),  out var e) ? e : 30;
+            var lvs  = int.TryParse(Environment.GetEnvironmentVariable("WB_SMOKE_LEAVES"), out var l) ? l : 31;
+            return new Hyperparameters(
+                NumberOfIterations: iter,
+                EarlyStoppingRound: Math.Min(esr, iter),
+                NumberOfLeaves: lvs);
+        }
+    }
 
     public sealed record TrainedBlender(
         MLContext Ml,

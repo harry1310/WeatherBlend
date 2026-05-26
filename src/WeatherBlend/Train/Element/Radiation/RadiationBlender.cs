@@ -21,7 +21,7 @@ public sealed class RadiationBlender : IElementBlender
     {
         var inputs = new ElementTrainerHarness.ElementTrainerInputs(
             Target: Target,
-            Hyperparameters: new TempTrainer.Hyperparameters(),
+            Hyperparameters: TempTrainer.Hyperparameters.Default(),
             ModelsRoot: _cfg.Storage.ModelsPath,
             BuildSpec: lead => RadiationFeatureBuilder.BuildSpec(_cfg.Blenders, lead),
             LoadRowsForSpec: (spec, c) => RadiationFeatureBuilder.BuildForLead(
