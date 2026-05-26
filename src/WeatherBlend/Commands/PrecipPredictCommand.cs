@@ -232,6 +232,25 @@ public sealed class PrecipPredictCommand
             return true;   // not a failure — just not this command's job
         }
 
+        // Retired-phase pre-empt (cleanup Phase 1, 2026-05-25). Stale 3e
+        // MLP bundles persist in MANIFEST.json's Active list until the next
+        // Sunday auto-retrain rewrites it — phases.yaml only filters the
+        // SITE-RENDERING active list, not the on-R2 manifest. Without this
+        // guard the default RunStationAsync below tries to compose a lean
+        // (23-feat) row against the 3e bundle's rich (59-feat) spec and
+        // throws "Feature pack mismatch: wrote 23, expected 59"
+        // (caught 2026-05-26 03:18 UTC, predict-and-render run 26430107996).
+        // Skip silently — the bundle ages out of Active when its station's
+        // 3o (cleanup Phase 2 challenger) gets promoted in its place.
+        if (modelVersion.EndsWith("_phase3e", StringComparison.Ordinal))
+        {
+            _log.LogInformation(
+                "Station {Station}: skipping {V} — phase 3e retired 2026-05-25, no predict path. " +
+                "Bundle will leave Active on the next station promote sweep.",
+                station, modelVersion);
+            return true;
+        }
+
         var versionDir = ModelArtifact.ResolveStationVersionDir(modelsRoot, "precipitation", station, modelVersion);
         var metadata = ModelArtifact.LoadTrainingMetadata(versionDir);
         if (metadata.PerLead.Count == 0)

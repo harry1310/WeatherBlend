@@ -138,6 +138,34 @@ public sealed class DryWindowPredictCommand
             _log.LogWarning("{Key}: version dir missing → {Dir}; skipping.", compositeKey, versionDir);
             return false;
         }
+
+        // Retired-phase pre-empt (cleanup Phase 1, 2026-05-25). 3g/3j/3n/3s
+        // bundles persist in MANIFEST.json's Active list until the next
+        // Sunday auto-retrain rewrites it — phases.yaml only filters the
+        // SITE-RENDERING active list, not the on-R2 manifest. Each of these
+        // retired phases would otherwise crash this method differently
+        // (3g/3s have no model.zip → LoadLeadModel throws; 3j/3n likewise +
+        // their correlation.json loader is gone). Skip on suffix BEFORE the
+        // metadata read so a missing trainings_metadata.json + spec doesn't
+        // get to fail later. Same pattern as PrecipPredictCommand's
+        // 4a/4b/5a/3e pre-empts. Caught alongside the 3e mismatch in
+        // run 26430107996 (2026-05-26 03:18 UTC).
+        if (versionName.EndsWith("_phase3g", StringComparison.Ordinal)
+            || versionName.EndsWith("_phase3j", StringComparison.Ordinal)
+            || versionName.EndsWith("_phase3n", StringComparison.Ordinal)
+            || versionName.EndsWith("_phase3s", StringComparison.Ordinal))
+        {
+            var which = versionName.EndsWith("_phase3g", StringComparison.Ordinal) ? "3g"
+                      : versionName.EndsWith("_phase3j", StringComparison.Ordinal) ? "3j"
+                      : versionName.EndsWith("_phase3n", StringComparison.Ordinal) ? "3n"
+                      : "3s";
+            _log.LogInformation(
+                "{Key}: skipping {V} — phase {Which} retired 2026-05-25 in cleanup Phase 1, no predict path. " +
+                "Bundle will leave Active on the next (composite, window) promote sweep.",
+                compositeKey, versionName, which);
+            return true;
+        }
+
         var metadata = ModelArtifact.LoadTrainingMetadata(versionDir);
         // Phase A multi-location safety: metadata.LocationName is
         // [JsonRequired] so a missing field already threw at deserialise.
