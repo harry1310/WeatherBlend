@@ -10,29 +10,26 @@ env:
   RCLONE_LOW_LEVEL_RETRIES: "20"
   RCLONE_RETRIES: "5"
 
-# Combined predict + site render, running every 6 hours paired with collect.
-# The original `predict.yml` and `render-site.yml` workflows are kept for
-# manual dispatch only and no longer auto-trigger anything — see those
-# files for per-step semantics. The bodies below are merged with no
-# behaviour changes other than:
-#   - one shared build + R2 sync
-#   - predictions pushed to R2 once between predict and render so the deployed
-#     site reads its own freshly-written outputs
+# Legacy fused predict + render. Production now runs the split
+# (predict.yml -> predict-3f.yml -> render-site.yml chain — see
+# cloudflare/scheduler-worker/src/index.ts hops D / F.1 / F). This
+# workflow is KEPT as a fallback so a chain break can revert by
+# flipping Hop D back here and disabling F.1+F. It MUST stay
+# behaviourally identical to "predict.yml then render-site.yml" or
+# the revert isn't a revert.
 #
-# Dispatch: chained off s3-collect's completion by the weatherblend-scheduler
-# Cloudflare Worker (handleWorkflowRun, Hop D) — NOT cron'd. The raw S3
-# exact-runtime cycles s3-collect lands feed the 2d/3d predictors below, so
-# the render runs the moment s3-collect finishes (~03:1x, 09:1x, 15:1x,
-# 21:1x UTC in practice). See cloudflare/scheduler-worker/ for the full
-# schedule + chain rationale.
+# Divergence proof: every step that does real work (predict-all,
+# predict-tail = 4b synthesis + R2 push, render-and-deploy = render +
+# Pages deploy) is a composite action under .github/actions/. The
+# split workflows AND this fused one reference the exact same
+# composites — there's no inline duplicated bash, so a future edit
+# to (say) the 4b exit-code policy lands in predict-tail/action.yml
+# and shows up in all callers automatically.
 #
-# Both collects finish before this runs, enforced two ways:
-# (1) the chain — the Worker dispatches this only on s3-collect's completion
-#     webhook, and s3-collect itself runs after collect;
-# (2) shared `weatherblend-data` concurrency group with cancel-in-progress=false
-#     — a hard backstop: if anything overruns, predict queues until the lock
-#     frees. cancel-in-progress=false so a job mid-write to predictions is
-#     never interrupted.
+# Concurrency: shared `weatherblend-data` group with cancel-in-progress=false
+# — a hard backstop: if anything overruns, predict queues until the lock
+# frees. cancel-in-progress=false so a job mid-write to predictions is
+# never interrupted.
 on:
   # Schedule moved to Cloudflare 2026-05-01 (cloudflare/scheduler-worker/);
   # GitHub's `schedule:` trigger removed then. This workflow is no longer
@@ -89,58 +86,27 @@ jobs:
       - name: Build
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
 
-      # Every predict target in dependency order — temp / precip / dry-window /
-      # elements / feels-like / start-hour. Soft-skip codes per target are
-      # documented in the composite. Shared verbatim with predict.yml so the
-      # two workflows can never drift on which targets run.
+      # Predict-all composite: every predict target in dependency order.
+      # Identical to predict.yml (same composite, single source of truth).
       - uses: ./.github/actions/predict-all
         with:
           for_date: ${{ github.event.inputs.for_date }}
 
-      # Phase 4b synthesis — 2-way arithmetic mean of phase 4a (BART) and
-      # phase 3o (rich+oro) P(wet). Re-enabled 2026-05-25 in cleanup
-      # Phase 2 with the 3e leg swapped for 3o.
-      #
-      # Exit code semantics (per-station soft-skip handled inside the
-      # command):
-      #   0 — at least one station wrote 4b rows.
-      #   2 — no precipitation stations configured (config bug) — FATAL.
-      #   3 — every station fell through (no 4b manifest entry AND no
-      #       4a/3o match anywhere). Expected immediately after a fresh
-      #       deploy until both 4a (WP-side cron) and 3o (Sunday auto-
-      #       retrain) have run at least once.
-      - name: Synthesise Phase 4b (2-way mean of 4a + 3o)
-        run: |
-          code=0
-          dotnet run --project src/WeatherBlend --no-build -c Release -- phase4b-predict || code=$?
-          if [ "$code" != "0" ] && [ "$code" != "3" ]; then exit "$code"; fi
-
-      - name: Push predictions to R2
-        # Pushed BEFORE render so the deployed site is reading the same state
-        # any external consumer would see in R2. copy (not sync) — additive only.
-        # Includes the freshly-synthesised 4b parquet from the step above.
-        env:
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-        run: |
-          rclone copy ./data/predictions "r2:${R2_BUCKET}/data/predictions" --fast-list --transfers 16 --checkers 32 --progress
-
-      - name: Render site
-        run: |
-          WINDOW="${{ github.event.inputs.window_days }}"
-          ROLLING="${{ github.event.inputs.rolling_window_days }}"
-          ARGS="--output data/site"
-          if [ -n "$WINDOW" ]; then ARGS="$ARGS --window-days $WINDOW"; fi
-          if [ -n "$ROLLING" ]; then ARGS="$ARGS --rolling-window-days $ROLLING"; fi
-          dotnet run --project src/WeatherBlend --no-build -c Release -- render-site $ARGS
-
-      - name: Deploy to Cloudflare Pages
-        uses: cloudflare/wrangler-action@v3
+      # 4b synthesis + R2 push. Identical to predict.yml — same composite.
+      # The push happens BEFORE render so the deployed site reads the same
+      # state any external R2 consumer would see.
+      - uses: ./.github/actions/predict-tail
         with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          # --branch main promotes to the production URL (weatherblend.pages.dev);
-          # without it the deploy would only get a preview URL.
-          command: pages deploy data/site --project-name weatherblend --branch main --commit-dirty=true
+          r2_bucket: ${{ secrets.R2_BUCKET }}
+
+      # Render-site CLI + Cloudflare Pages deploy. Identical to
+      # render-site.yml — same composite.
+      - uses: ./.github/actions/render-and-deploy
+        with:
+          window_days: ${{ github.event.inputs.window_days }}
+          rolling_window_days: ${{ github.event.inputs.rolling_window_days }}
+          cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Upload logs as artifact
         if: failure()

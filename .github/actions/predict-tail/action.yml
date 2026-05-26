@@ -1,0 +1,52 @@
+name: Predict tail (4b synthesis + R2 push)
+description: |
+  The post-predict-all steps shared by predict.yml and predict-and-render.yml:
+
+    1. Synthesise Phase 4b (2-way arithmetic mean of phase 4a BART + phase 3o rich+oro).
+    2. Push the entire data/predictions tree to R2 (additive copy, never deletes).
+
+  Single source of truth so the two callers can never drift on the 4b
+  exit-code semantics, the R2 push flags, or the order. Re-introduced 2026-05-26
+  to make predict-and-render.yml structurally equivalent to predict.yml +
+  render-site.yml (the legacy fused workflow is kept only as a fallback per
+  cloudflare/scheduler-worker/src/index.ts's revert-path comment).
+
+  Caller is responsible for:
+    - checkout
+    - dotnet build (release, --no-build is used here)
+    - the prior predict-all composite (writes 4a + 3o + others into
+      data/predictions for 4b to read)
+    - the R2 sync (data/models needed so Phase4bMintCommand can resolve
+      MANIFEST.Active to a 4b version)
+
+inputs:
+  r2_bucket:
+    description: "R2 bucket name (secrets.R2_BUCKET)."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Synthesise Phase 4b (2-way mean of 4a + 3o)
+      # Exit code semantics (per-station soft-skip handled inside the command):
+      #   0 — at least one station wrote 4b rows.
+      #   2 — no precipitation stations configured (config bug) — FATAL.
+      #   3 — every station fell through (no 4b manifest entry AND no 4a/3o
+      #       match anywhere). Expected immediately after a fresh deploy
+      #       until both 4a (WP-side cron) and 3o (Sunday auto-retrain)
+      #       have run at least once.
+      shell: bash
+      run: |
+        code=0
+        dotnet run --project src/WeatherBlend --no-build -c Release -- phase4b-predict || code=$?
+        if [ "$code" != "0" ] && [ "$code" != "3" ]; then exit "$code"; fi
+
+    - name: Push predictions to R2
+      # copy (not sync) — additive only, never deletes remote files. Forecasts
+      # are no longer modified here (the collect workflow owns that subtree).
+      # Includes the freshly-synthesised 4b parquet from the step above.
+      shell: bash
+      env:
+        R2_BUCKET: ${{ inputs.r2_bucket }}
+      run: |
+        rclone copy ./data/predictions "r2:${R2_BUCKET}/data/predictions" --fast-list --transfers 16 --checkers 32 --progress

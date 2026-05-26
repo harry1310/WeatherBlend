@@ -75,37 +75,19 @@ jobs:
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
 
       # Every predict target in dependency order — temp / precip / dry-window /
-      # elements / feels-like. Soft-skip codes per target are documented in
-      # the composite. Shared verbatim with predict-and-render.yml until that
-      # file retires.
+      # elements / feels-like. Single source of truth shared with
+      # predict-and-render.yml so the two callers can never drift on
+      # targets / order / exit-code semantics.
       - uses: ./.github/actions/predict-all
         with:
           for_date: ${{ github.event.inputs.for_date }}
 
-      # Phase 4b synthesis — 2-way arithmetic mean of phase 4a (BART) and
-      # phase 3o (rich+oro) P(wet). Mirrors the step in predict-and-render.yml.
-      # Exit code semantics (per-station soft-skip handled inside the
-      # command):
-      #   0 — at least one station wrote 4b rows.
-      #   2 — no precipitation stations configured (config bug) — FATAL.
-      #   3 — every station fell through (no 4b manifest entry AND no
-      #       4a/3o match anywhere). Expected immediately after a fresh
-      #       deploy until both 4a (WP-side cron) and 3o (Sunday auto-
-      #       retrain) have run at least once.
-      - name: Synthesise Phase 4b (2-way mean of 4a + 3o)
-        run: |
-          code=0
-          dotnet run --project src/WeatherBlend --no-build -c Release -- phase4b-predict || code=$?
-          if [ "$code" != "0" ] && [ "$code" != "3" ]; then exit "$code"; fi
-
-      - name: Push predictions to R2
-        env:
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-        # copy (not sync) — additive only, never deletes remote files. Forecasts
-        # are no longer modified here (the collect workflow owns that subtree).
-        # Includes the freshly-synthesised 4b parquet from the step above.
-        run: |
-          rclone copy ./data/predictions "r2:${R2_BUCKET}/data/predictions" --fast-list --transfers 16 --checkers 32 --progress
+      # 4b synthesis + R2 push. Identical composite called by
+      # predict-and-render.yml so the two can never drift on the 4b
+      # exit-code policy or rclone push flags.
+      - uses: ./.github/actions/predict-tail
+        with:
+          r2_bucket: ${{ secrets.R2_BUCKET }}
 
       - name: Upload logs as artifact
         if: failure()

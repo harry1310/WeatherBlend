@@ -1,0 +1,62 @@
+name: Render site + deploy to Cloudflare Pages
+description: |
+  The site-render-and-deploy slice shared by render-site.yml and predict-and-render.yml:
+
+    1. Run the dotnet `render-site` command to produce data/site/.
+    2. Deploy data/site/ to the weatherblend Cloudflare Pages project on the
+       main branch (production URL).
+
+  Single source of truth so the two callers can never drift on the
+  render CLI arguments, the Pages project name, or the deploy branch.
+  Re-introduced 2026-05-26 to make predict-and-render.yml structurally
+  equivalent to predict.yml + render-site.yml (the legacy fused workflow
+  is kept only as a fallback per cloudflare/scheduler-worker/src/index.ts's
+  revert-path comment).
+
+  Caller is responsible for:
+    - checkout
+    - dotnet build (release, --no-build is used here)
+    - the R2 sync that pulls every tree RenderSiteCommand reads
+      (.github/actions/sync-render-inputs)
+    - for the predict-and-render case: pushing predictions to R2 BEFORE
+      calling this composite, so the deployed site reads the same state
+      external R2 consumers see.
+
+inputs:
+  window_days:
+    description: "How many days of predictions to include (table + charts). Empty → command default."
+    required: false
+    default: ""
+  rolling_window_days:
+    description: "Rolling-MAE window size for verification charts. Empty → command default."
+    required: false
+    default: ""
+  cloudflare_api_token:
+    description: "secrets.CLOUDFLARE_API_TOKEN — wrangler Pages deploy."
+    required: true
+  cloudflare_account_id:
+    description: "secrets.CLOUDFLARE_ACCOUNT_ID — wrangler Pages deploy."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Render site
+      shell: bash
+      env:
+        WINDOW: ${{ inputs.window_days }}
+        ROLLING: ${{ inputs.rolling_window_days }}
+      run: |
+        ARGS="--output data/site"
+        if [ -n "$WINDOW" ]; then ARGS="$ARGS --window-days $WINDOW"; fi
+        if [ -n "$ROLLING" ]; then ARGS="$ARGS --rolling-window-days $ROLLING"; fi
+        dotnet run --project src/WeatherBlend --no-build -c Release -- render-site $ARGS
+
+    - name: Deploy to Cloudflare Pages
+      uses: cloudflare/wrangler-action@v3
+      with:
+        apiToken: ${{ inputs.cloudflare_api_token }}
+        accountId: ${{ inputs.cloudflare_account_id }}
+        # --branch main promotes to the production URL (weatherblend.pages.dev);
+        # without it the deploy would only get a preview URL.
+        command: pages deploy data/site --project-name weatherblend --branch main --commit-dirty=true

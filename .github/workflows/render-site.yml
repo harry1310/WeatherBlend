@@ -77,23 +77,15 @@ jobs:
       - name: Build
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
 
-      - name: Render site
-        run: |
-          WINDOW="${{ github.event.inputs.window_days }}"
-          ROLLING="${{ github.event.inputs.rolling_window_days }}"
-          ARGS="--output data/site"
-          if [ -n "$WINDOW" ]; then ARGS="$ARGS --window-days $WINDOW"; fi
-          if [ -n "$ROLLING" ]; then ARGS="$ARGS --rolling-window-days $ROLLING"; fi
-          dotnet run --project src/WeatherBlend --no-build -c Release -- render-site $ARGS
-
-      - name: Deploy to Cloudflare Pages
-        uses: cloudflare/wrangler-action@v3
+      # render-site CLI + Cloudflare Pages deploy. Identical composite
+      # called by predict-and-render.yml so the two can never drift on
+      # the render arguments, Pages project name, or deploy branch.
+      - uses: ./.github/actions/render-and-deploy
         with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          # --branch main promotes to the production URL (weatherblend.pages.dev);
-          # without it the deploy would only get a preview URL.
-          command: pages deploy data/site --project-name weatherblend --branch main --commit-dirty=true
+          window_days: ${{ github.event.inputs.window_days }}
+          rolling_window_days: ${{ github.event.inputs.rolling_window_days }}
+          cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Upload logs as artifact
         if: failure()
