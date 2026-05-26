@@ -498,7 +498,23 @@ public static partial class SitePages
                 .Where(r => r.ValidTimeUtc >= visibleStart && r.ValidTimeUtc <= visibleEnd)
                 .ToList();
 
-            s.Append(RenderPrecipDailySummaryTable(visiblePerValid));
+            // Daily-summary table is conceptually a CHAMPION-model overview
+            // (its conformal columns count rows the calibrator tagged
+            // confident-wet / ambiguous / confident-dry, and only the
+            // champion + LightGBM challengers have conformal calibrators —
+            // 4a/4b/5a don't). Filtering visiblePerValid to the champion
+            // phase keeps the wet/amb/dry counts honest: without this
+            // filter, the random tie-break on (station, valid_time) picks
+            // freshest row at random across all phases, and hours that
+            // landed on 4a/4b/5a rows had no ConformalSetTag and silently
+            // dropped into "untagged" → 0/0/0 days on the site.
+            // (Caught 2026-05-26 — site review.)
+            var championPrecipPhase = ActivePhasePolicy.ChampionPhase("precipitation");
+            var championPerValid = visiblePerValid
+                .Where(r => input.PhaseByVersion.TryGetValue(r.Version, out var ph)
+                            && string.Equals(ph, championPrecipPhase, StringComparison.Ordinal))
+                .ToList();
+            s.Append(RenderPrecipDailySummaryTable(championPerValid));
             s.Append(RenderPrecipHourlyConfidenceTable(visiblePerValid, station, input.PrecipConformalTau));
             s.Append(RenderPhase4aPanel(input, station, lead, pageXMin, pageXMax));
             s.Append(RenderBayesianCiPanel(input, station, lead, pageXMin, pageXMax));
@@ -882,7 +898,7 @@ public static partial class SitePages
         // consistent across both tables.
         return $"""
             <details class="hourly-detail">
-              <summary>Daily P(wet) summary</summary>
+              <summary>Daily P(wet) summary — champion conformal calibrator (90% set)</summary>
               <figure>
                 <table>
                   <thead>
@@ -974,7 +990,7 @@ public static partial class SitePages
             : "";
         return $"""
             <details class="hourly-detail">
-              <summary>Hourly P(wet) + NWP agreement</summary>
+              <summary>Hourly P(wet) — NWP ensemble agreement (per-NWP wet-vote spread)</summary>
               <figure>
                 <table>
                   <thead>

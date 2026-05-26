@@ -90,7 +90,18 @@ public class ConfigTests
 
         bound.Locations.Should().HaveCount(2);
         bound.Locations[0].Name.Should().Be("bonehill_rocks");
-        bound.Locations[0].Rainfall.Stations.Should().HaveCount(3);
+        // Bonehill rainfall: Bellever + Bovey + Hexworthy + Princetown
+        // (Princetown re-added 2026-05-25 in anticipation of Phase 3o's
+        // 4-station pool — per the cleanup plan its history is back-
+        // filled to 2022-01-01, matching the other three. Princetown is
+        // 3o-only — the retrain-blenders.yml 3a step explicitly filters
+        // it out via `grep -v "^Princetown$"`).
+        bound.Locations[0].Rainfall.Stations.Should().HaveCount(4);
+        bound.Locations[0].Rainfall.Stations.Select(s => s.Name).Should()
+            .Contain("Bellever Dartmoor")
+            .And.Contain("Bovey Tracey")
+            .And.Contain("Dartmoor nr Hexworthy")
+            .And.Contain("Princetown");
         bound.Locations[0].Metar.Primary.Should().Be("EGTE");
         bound.Locations[0].Metar.Fallback.Should().Be("EGDY");
         bound.Locations[1].Name.Should().Be("membury_devon");
