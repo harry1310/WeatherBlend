@@ -35,6 +35,26 @@ public sealed class PrecipPredictCommand
 
     private static readonly int[] DefaultLeads = Leads.Full;
 
+    /// <summary>
+    /// Phases this command's predict path knows how to dispatch (L2 of the
+    /// two-layer phase gating in <see cref="RunStationAsync"/>). Of the
+    /// active precipitation phases in phases.yaml, these are the ones
+    /// PrecipPredictCommand serves — the remainder are skipped silently
+    /// because they're handled elsewhere:
+    ///   * <c>4a</c> / <c>5a</c> — impl=python, served by predict-4a.yml /
+    ///                              predict-5a.yml in WeatherProbabilistic.
+    ///   * <c>4b</c>           — impl=dotnet but synthesised by
+    ///                            <see cref="Phase4bPredictCommand"/> (its
+    ///                            own CLI subcommand, invoked as a separate
+    ///                            step inside predict-and-render.yml).
+    /// Adding a new precipitation phase to phases.yaml that THIS command
+    /// should handle = add its id here too. The L1 gate (phases.yaml
+    /// membership) catches the retired-phase case automatically — no
+    /// hardcoded "skip 3e/3g/..." suffix lists.
+    /// </summary>
+    private static readonly HashSet<string> HandledPrecipPhases =
+        new(StringComparer.Ordinal) { "3a", "3c", "3d", "3o" };
+
     public PrecipPredictCommand(ILogger<PrecipPredictCommand> log, AppConfig cfg)
     {
         _log = log;
@@ -219,36 +239,50 @@ public sealed class PrecipPredictCommand
         // sniff the version-name suffix and skip without trying to load.
         // Caught 2026-05-12 03:22 UTC by predict-and-render run 25711115753
         // shortly after the manifest fix promoted 4a back into Active.
-        if (modelVersion.EndsWith("_phase4a", StringComparison.Ordinal)
-            || modelVersion.EndsWith("_phase4b", StringComparison.Ordinal)
-            || modelVersion.EndsWith("_phase5a", StringComparison.Ordinal))
+        // Two-layer phase gating (introduced 2026-05-26 to replace the
+        // older hardcoded-suffix guards). Source of truth:
+        //   L1 (project-wide): phases.yaml — "is this phase active in our
+        //                      project AT ALL?" — answered by
+        //                      PhaseRegistry.AllPhases(target).
+        //   L2 (per-command):  HandledPhases — "of the active phases, which
+        //                      does THIS command serve?" — explicit set
+        //                      below so adding a new phase requires an
+        //                      intentional code change matching the YAML.
+        //
+        // L1 catches orphaned bundles from retired phases (e.g. 3e after
+        // cleanup Phase 1) still living in the manifest's Active list.
+        // PromoteStationVersion only replaces same-phase entries — retired
+        // bundles never age out on their own. (Caught 2026-05-26 03:18 UTC
+        // by predict-and-render run 26430107996 — a stale 3e bundle hit
+        // the default lean/rich row build and threw "Feature pack mismatch:
+        // wrote 23, expected 59".)
+        //
+        // L2 catches valid-but-not-mine phases: 4a / 5a (impl=python, served
+        // by predict-4a.yml / predict-5a.yml), 4b (impl=dotnet but its own
+        // CLI command Phase4bPredictCommand handles it inside
+        // predict-and-render's "Synthesise Phase 4b" step).
+        var phaseFromSuffix = ModelArtifact.ExtractPhaseFromVersionName(modelVersion);
+        if (phaseFromSuffix is not null)
         {
-            var which = modelVersion.EndsWith("_phase4a", StringComparison.Ordinal) ? "4a"
-                      : modelVersion.EndsWith("_phase4b", StringComparison.Ordinal) ? "4b"
-                      : "5a";
-            _log.LogInformation(
-                "Station {Station}: skipping {V} — Python-{Workflow} phase, served by its own predict step.",
-                station, modelVersion, which);
-            return true;   // not a failure — just not this command's job
-        }
-
-        // Retired-phase pre-empt (cleanup Phase 1, 2026-05-25). Stale 3e
-        // MLP bundles persist in MANIFEST.json's Active list until the next
-        // Sunday auto-retrain rewrites it — phases.yaml only filters the
-        // SITE-RENDERING active list, not the on-R2 manifest. Without this
-        // guard the default RunStationAsync below tries to compose a lean
-        // (23-feat) row against the 3e bundle's rich (59-feat) spec and
-        // throws "Feature pack mismatch: wrote 23, expected 59"
-        // (caught 2026-05-26 03:18 UTC, predict-and-render run 26430107996).
-        // Skip silently — the bundle ages out of Active when its station's
-        // 3o (cleanup Phase 2 challenger) gets promoted in its place.
-        if (modelVersion.EndsWith("_phase3e", StringComparison.Ordinal))
-        {
-            _log.LogInformation(
-                "Station {Station}: skipping {V} — phase 3e retired 2026-05-25, no predict path. " +
-                "Bundle will leave Active on the next station promote sweep.",
-                station, modelVersion);
-            return true;
+            var registeredPrecipPhases = PhaseRegistry.Default.AllPhases("precipitation");
+            var inYaml = registeredPrecipPhases
+                .Any(p => string.Equals(p.Id, phaseFromSuffix, StringComparison.Ordinal));
+            if (!inYaml)
+            {
+                _log.LogInformation(
+                    "Station {Station}: skipping {V} — phase '{Phase}' not in phases.yaml " +
+                    "(orphaned bundle in manifest Active; will leave on next promote sweep).",
+                    station, modelVersion, phaseFromSuffix);
+                return true;
+            }
+            if (!HandledPrecipPhases.Contains(phaseFromSuffix))
+            {
+                _log.LogInformation(
+                    "Station {Station}: skipping {V} — phase '{Phase}' active in phases.yaml " +
+                    "but served by a different predict path. PrecipPredictCommand handles only [{Handled}].",
+                    station, modelVersion, phaseFromSuffix, string.Join(", ", HandledPrecipPhases));
+                return true;
+            }
         }
 
         var versionDir = ModelArtifact.ResolveStationVersionDir(modelsRoot, "precipitation", station, modelVersion);

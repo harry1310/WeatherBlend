@@ -32,6 +32,18 @@ public sealed class DryWindowPredictCommand
     private readonly ILogger<DryWindowPredictCommand> _log;
     private readonly AppConfig _cfg;
 
+    /// <summary>
+    /// Phases this command's predict path knows how to dispatch (L2 of the
+    /// two-layer phase gating in <see cref="RunCompositeVersionAsync"/>).
+    /// Of the active dry_window phases in phases.yaml, these are the ones
+    /// DryWindowPredictCommand serves. Today the set IS the full
+    /// dry_window phase list (no Python-side or cross-command split as
+    /// precipitation has), but the layer is symmetric with
+    /// PrecipPredictCommand and ready for a future split.
+    /// </summary>
+    private static readonly HashSet<string> HandledDryWindowPhases =
+        new(StringComparer.Ordinal) { "3b", "3p" };
+
     public DryWindowPredictCommand(ILogger<DryWindowPredictCommand> log, AppConfig cfg)
     {
         _log = log;
@@ -139,31 +151,39 @@ public sealed class DryWindowPredictCommand
             return false;
         }
 
-        // Retired-phase pre-empt (cleanup Phase 1, 2026-05-25). 3g/3j/3n/3s
-        // bundles persist in MANIFEST.json's Active list until the next
-        // Sunday auto-retrain rewrites it — phases.yaml only filters the
-        // SITE-RENDERING active list, not the on-R2 manifest. Each of these
-        // retired phases would otherwise crash this method differently
-        // (3g/3s have no model.zip → LoadLeadModel throws; 3j/3n likewise +
-        // their correlation.json loader is gone). Skip on suffix BEFORE the
-        // metadata read so a missing trainings_metadata.json + spec doesn't
-        // get to fail later. Same pattern as PrecipPredictCommand's
-        // 4a/4b/5a/3e pre-empts. Caught alongside the 3e mismatch in
-        // run 26430107996 (2026-05-26 03:18 UTC).
-        if (versionName.EndsWith("_phase3g", StringComparison.Ordinal)
-            || versionName.EndsWith("_phase3j", StringComparison.Ordinal)
-            || versionName.EndsWith("_phase3n", StringComparison.Ordinal)
-            || versionName.EndsWith("_phase3s", StringComparison.Ordinal))
+        // Two-layer phase gating (introduced 2026-05-26). See
+        // PrecipPredictCommand.RunStationAsync for the architecture note —
+        // identical pattern.
+        //   L1: phases.yaml membership (catches retired-phase orphans like
+        //       3g/3j/3n/3s still living in the on-R2 manifest's Active
+        //       list because PromoteStationVersion only replaces same-phase
+        //       entries).
+        //   L2: HandledDryWindowPhases set (catches phases active in
+        //       phases.yaml but served by a different predict path — none
+        //       today for dry_window, but the layer is symmetric with
+        //       PrecipPredictCommand and ready for future phases).
+        var phaseFromSuffix = ModelArtifact.ExtractPhaseFromVersionName(versionName);
+        if (phaseFromSuffix is not null)
         {
-            var which = versionName.EndsWith("_phase3g", StringComparison.Ordinal) ? "3g"
-                      : versionName.EndsWith("_phase3j", StringComparison.Ordinal) ? "3j"
-                      : versionName.EndsWith("_phase3n", StringComparison.Ordinal) ? "3n"
-                      : "3s";
-            _log.LogInformation(
-                "{Key}: skipping {V} — phase {Which} retired 2026-05-25 in cleanup Phase 1, no predict path. " +
-                "Bundle will leave Active on the next (composite, window) promote sweep.",
-                compositeKey, versionName, which);
-            return true;
+            var registeredDryWindowPhases = PhaseRegistry.Default.AllPhases("dry_window");
+            var inYaml = registeredDryWindowPhases
+                .Any(p => string.Equals(p.Id, phaseFromSuffix, StringComparison.Ordinal));
+            if (!inYaml)
+            {
+                _log.LogInformation(
+                    "{Key}: skipping {V} — phase '{Phase}' not in phases.yaml " +
+                    "(orphaned bundle in manifest Active; will leave on next promote sweep).",
+                    compositeKey, versionName, phaseFromSuffix);
+                return true;
+            }
+            if (!HandledDryWindowPhases.Contains(phaseFromSuffix))
+            {
+                _log.LogInformation(
+                    "{Key}: skipping {V} — phase '{Phase}' active in phases.yaml " +
+                    "but served by a different predict path. DryWindowPredictCommand handles only [{Handled}].",
+                    compositeKey, versionName, phaseFromSuffix, string.Join(", ", HandledDryWindowPhases));
+                return true;
+            }
         }
 
         var metadata = ModelArtifact.LoadTrainingMetadata(versionDir);

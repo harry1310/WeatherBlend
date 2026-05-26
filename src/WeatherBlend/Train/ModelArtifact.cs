@@ -245,6 +245,30 @@ public static class ModelArtifact
         return Path.Combine(modelsRoot, target, station, name).Replace('\\', '/');
     }
 
+    /// <summary>
+    /// Extract the phase tag from a version-directory name produced by
+    /// <see cref="BuildStationVersionDir"/>. Looks for the trailing
+    /// <c>_phase{Id}</c> suffix and returns the <c>{Id}</c> part —
+    /// e.g. <c>"v2026-05-24_130922_phase3c"</c> → <c>"3c"</c>,
+    /// <c>"v2026-05-25_220312_phase3o"</c> → <c>"3o"</c>.
+    /// Returns <c>null</c> when the version has no <c>_phase</c> marker
+    /// (older pre-suffix bundles).
+    ///
+    /// Used by predict commands to do the cheap project-wide phase gate
+    /// (Layer 1: "is this phase in phases.yaml at all?") BEFORE reading
+    /// <c>training_metadata.json</c>, so an orphaned bundle from a retired
+    /// phase fails fast without an expensive disk read or schema mismatch.
+    /// </summary>
+    public static string? ExtractPhaseFromVersionName(string modelVersion)
+    {
+        if (string.IsNullOrEmpty(modelVersion)) return null;
+        const string marker = "_phase";
+        var idx = modelVersion.LastIndexOf(marker, StringComparison.Ordinal);
+        if (idx < 0) return null;
+        var tag = modelVersion[(idx + marker.Length)..];
+        return string.IsNullOrEmpty(tag) ? null : tag;
+    }
+
     /// <summary>Save one pipeline for a specific lead bucket.</summary>
     public static void SaveLeadModel(
         MLContext ml,
