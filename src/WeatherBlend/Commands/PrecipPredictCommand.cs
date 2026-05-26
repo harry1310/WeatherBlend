@@ -579,11 +579,15 @@ public sealed class PrecipPredictCommand
                 station);
             return true;
         }
-        if (metadata.Hyperparameters.TryGetValue("phase3o_station_index", out var metaIdxObj))
+        // HpInt unwraps JsonElement → int — Convert.ToInt32 can't handle
+        // JsonElement (InvalidCastException, caught 2026-05-26 in retrain
+        // rerun 26437976508). HpInt returns null on missing keys / wrong
+        // types so the != cross-check is silently skipped on legacy
+        // bundles that don't carry the station_index stamp.
+        var metaIdx = metadata.Hyperparameters.HpInt("phase3o_station_index");
+        if (metaIdx is not null)
         {
-            // Hyperparameters round-trip as JSON; integers come back as Int64 / Int32 / etc.
-            var metaIdx = Convert.ToInt32(metaIdxObj, System.Globalization.CultureInfo.InvariantCulture);
-            if (metaIdx != stationIndex)
+            if (metaIdx.Value != stationIndex)
             {
                 _log.LogError(
                     "Station {Station} Phase 3o bundle {V} metadata station_index={Meta} disagrees with predict-time map={Live} — refusing to predict (train/predict feature drift).",

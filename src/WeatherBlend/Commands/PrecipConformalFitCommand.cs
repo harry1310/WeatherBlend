@@ -164,8 +164,15 @@ public sealed class PrecipConformalFitCommand
                     skipped++;
                     continue;
                 }
-                var stationIndexObj = metadata.Hyperparameters.GetValueOrDefault("phase3o_station_index");
-                if (stationIndexObj is null)
+                // HpInt unwraps JsonElement properly — round-tripping the
+                // training_metadata dict through System.Text.Json deserialises
+                // every value as a JsonElement, and Convert.ToInt32 can't
+                // handle that (InvalidCastException, caught 2026-05-26 in
+                // retrain rerun 26437976508). HpInt returns null on missing
+                // keys / wrong types so the next check still catches "no
+                // index stamped" cleanly.
+                var stationIndex = metadata.Hyperparameters.HpInt("phase3o_station_index");
+                if (stationIndex is null)
                 {
                     _log.LogWarning(
                         "  {Slug} lead {L}h: 3o bundle missing `phase3o_station_index` metadata; skipping conformal.",
@@ -173,11 +180,9 @@ public sealed class PrecipConformalFitCommand
                     skipped++;
                     continue;
                 }
-                var stationIndex = Convert.ToInt32(stationIndexObj,
-                    System.Globalization.CultureInfo.InvariantCulture);
                 rows = WeatherBlend.Train.Oro.PrecipRichOroFeatureBuilder.BuildForLead(
                     _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
-                    _cfg.Location.Name, stationName, oro, stationIndex, spec, ct);
+                    _cfg.Location.Name, stationName, oro, stationIndex.Value, spec, ct);
             }
             else if (PrecipPhases.IsRich(metadata.Phase))
             {
