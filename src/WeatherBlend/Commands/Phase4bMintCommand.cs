@@ -36,7 +36,7 @@ namespace WeatherBlend.Commands;
 ///                            a meaningful card).
 ///   test_predictions.parquet Inner-join of 4a + 3o test_predictions
 ///                            with p_wet = mean(p_4a, p_3o).
-///   climatology.json         Copied from 3a's bundle — same station,
+///   climatology.json         Copied from 3o's bundle — same station,
 ///                            same wet indicator, identical baseline.
 /// </summary>
 public sealed class Phase4bMintCommand
@@ -120,29 +120,30 @@ public sealed class Phase4bMintCommand
         if (!Directory.Exists(stationDir))
             return (MintOutcome.Skipped, $"no precipitation models dir at {stationDir} — not provisioned for 4b");
 
-        // 4a / 3o supply the test_predictions to join. 3a supplies only
-        // the location pin (training_metadata) + climatology copy — it does
-        // NOT need a test_predictions.parquet, so resolve it on the file 4b
-        // actually consumes. Requiring test_predictions there was the bug
-        // that 403'd Bovey/Hexworthy 4b on the first CI retrain.
+        // 4a / 3o supply the test_predictions to join. Location pin +
+        // climatology come from 3o — 4b is composed FROM 4a + 3o, and
+        // 3o's bundle already ships both training_metadata.json (with
+        // LocationName) and climatology.json at the same station, so
+        // there's no reason to drag a separate 3a dependency through.
+        // (Pre-2026-05-26 the mint pulled both fields from 3a because
+        // 4b's stage-2 source was then 3e, which didn't carry
+        // climatology. The 3e→3o composition swap removed that
+        // constraint; this commit closes it out.)
         var bundle4a = FindLatestBundle(stationDir, "_phase4a", "test_predictions.parquet");
         var bundle3o = FindLatestBundle(stationDir, "_phase3o", "test_predictions.parquet");
-        var bundle3a = FindLatestBundle(stationDir, phaseSuffix: null, ModelArtifact.TrainingMetadataFileName);
         // No 4a or no 3o ⇒ this station isn't a 4b station (e.g. Membury,
         // where 4a has never been trained). Skip, don't fail.
         if (bundle4a is null) return (MintOutcome.Skipped, $"no 4a bundle — station not provisioned for 4b ({stationDir})");
         if (bundle3o is null) return (MintOutcome.Skipped, $"no 3o bundle — station not provisioned for 4b ({stationDir})");
-        // With 4a + 3o present, a missing 3a bundle IS a genuine fault.
-        if (bundle3a is null) return (MintOutcome.Failed, $"no 3a bundle (needed for location + climatology) under {stationDir}");
 
-        // Pull the active location from the 3a bundle's metadata — 4b
-        // inherits the location pinning. If a station ever ends up with
-        // 3a + 3o + 4a trained on different locations, RetrainGuard
+        // Pull the active location from the 3o bundle's metadata — 4b
+        // inherits 3o's location pinning. If a station ever ended up
+        // with 3o + 4a trained on different locations, RetrainGuard
         // would have refused those promotions long before we got here.
-        var meta3a = ModelArtifact.LoadTrainingMetadata(bundle3a);
-        var location = string.IsNullOrEmpty(meta3a.LocationName)
+        var meta3o = ModelArtifact.LoadTrainingMetadata(bundle3o);
+        var location = string.IsNullOrEmpty(meta3o.LocationName)
             ? _cfg.Location.Name
-            : meta3a.LocationName;
+            : meta3o.LocationName;
 
         // Read both test_predictions parquets via DuckDB, inner-join on
         // (valid_time, lead) — the canonical schema is
@@ -232,7 +233,7 @@ public sealed class Phase4bMintCommand
                 "test_predictions.parquet is the inner-join of 4a and 3o's test_predictions parquets with p_wet = (p_4a + p_3o) / 2. PerLead.BlendTestMae reports Brier on that joined slice — matches the 2026-05-12 LightGBM-meta-learner bake-off finding (mean Brier 0.0830 vs best single 3o at 0.0844).",
                 "No feature schema, no LightGBM/MLP/BART training step. Phase4bPredictCommand performs the same arithmetic on the live cycle's 4a + 3o prediction parquets — predict-and-render runs it inline between predict-all and the R2 push.",
                 "PerLeadStats fields repurposed: BlendTestMae=Brier on joined test slice, BlendTestBias=mean(p − y), BlendTestRmse=0.0 (not meaningful), BestSingleTestMae=Brier of the better of 4a/3o alone on the same slice.",
-                "Climatology copied from the station's 3a bundle — 4b targets the same wet/dry indicator at the same station, so the baseline is identical.",
+                "Climatology copied from the station's 3o bundle — 4b targets the same wet/dry indicator at the same station, so the baseline is identical.",
             },
             PerLead = perLead,
         };
@@ -260,9 +261,9 @@ public sealed class Phase4bMintCommand
             });
         ModelArtifact.SaveBlenderSpecs(outDir, schemaPerLead);
 
-        // 5. climatology.json — copy from 3a's bundle. Same station,
+        // 5. climatology.json — copy from 3o's bundle. Same station,
         // same wet indicator, identical baseline rate.
-        var climSrc = Path.Combine(bundle3a, ModelArtifact.ClimatologyFileName);
+        var climSrc = Path.Combine(bundle3o, ModelArtifact.ClimatologyFileName);
         if (File.Exists(climSrc))
             File.Copy(climSrc, Path.Combine(outDir, ModelArtifact.ClimatologyFileName), overwrite: true);
 
