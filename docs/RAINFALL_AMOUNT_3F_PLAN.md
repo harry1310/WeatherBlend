@@ -19,8 +19,9 @@ where π comes from 3a and (μ_log, σ_log) come from NGBoost.
 
 Identity is fixed: **3f IS "NGBoost-LogNormal over Phase 3a"**. The source
 binding is hardcoded (see `IntensityModelSources.cs` below), not a config
-flip — same discipline as `DryWindowMcSources` for 3g/3j/3n/3s. If we ever
-want NGBoost-over-3c or NGBoost-over-4a, that's a new phase id, not a
+flip — same discipline that the deleted-2026-05-25 `DryWindowMcSources`
+established for the retired 3g/3j/3n/3s family. If we ever want
+NGBoost-over-3c or NGBoost-over-4a, that's a new phase id, not a
 reconfigured 3f.
 
 ## Decisions already taken
@@ -30,13 +31,18 @@ reconfigured 3f.
 | Target name | `rainfall_amount` |
 | Phase id | `3f` |
 | Locations (initial) | `membury_devon` only — Bonehill comes later, possibly never |
-| Predict cadence | every 6 hours, chained off `predict-and-render` completion |
+| Predict cadence | every 6 hours, chained off `predict` completion (Hop E) |
 | Stage 1 source | Phase 3a (raw probabilities, NO PAV — sensitivity test 2026-05-23 showed PAV is a no-op) |
 | Stage 1 binding | Hardcoded in `IntensityModelSources.cs`, not in phases.yaml |
+| Stage 1 upgrade path | Defer Membury 4a (would ship the ~3-5% oracle headroom but doubles Phase 3 scope; revisit after 3f has ~4 weeks of clean verify) |
 | Stage 2 algorithm | NGBoost-LogNormal, LogScore (CRPS-Score not implemented in ngboost 0.5 for LogNormal) |
 | Feature set (initial) | Lean 15-feat (7 NWP precip + 4 spread + 4 calendar) — same that fit best in the bake-off |
 | Quantile alphas for derived output | `[0.025, 0.1, 0.5, 0.9, 0.975]` (config, can change without retrain) |
 | Exceedance thresholds (mm) | `[0.1, 1.0, 5.0, 10.0]` (config) |
+| Python + ngboost pinning | REQUIRED — pin both in WP requirements.txt before train_3f.py ships. Pickle stability across library minors is the same kind of trap that bit 4a on 2026-05-09 ([[reference_dbarts_serialize_caveat]]) |
+| Site v1 scope | SHIP ALL WIDGETS at once — PIT histogram + 80% coverage + exceedance reliability + headline + intensity ribbon + CRPS rolling. Reusable widgets that future distributional phases will reuse |
+| Validation gate | RELAXED — skill metrics visible from day 1 with a sample-size caveat in the UI (departs from the original 2-week-hide rule because UI labelling makes "n=5 cycles" honest enough) |
+| Cloudflare chain | Split predict-and-render.yml into predict + render-site so 3f can sandwich between (same-cycle freshness on the site) |
 | Sky on rollout to Bonehill | Defer — Phase B/C/D pattern was Membury-only first, prove it, then add |
 
 ## Empirical baselines to beat (from 2026-05-22/23 bake-off)
@@ -52,9 +58,17 @@ Aggregate test CRPS, mean over 3 Membury stations, leads 24/48/72h:
 | equal-weight NWP-mean (deterministic) | 0.1675 | 0.1894 | 0.2041 |
 
 Oracle (perfect stage-1) ceiling: CRPS 0.0913 / 0.0965 / 0.1007 — i.e.
-~23-29% headroom theoretically exists from a better stage 1, of which we'd
-realistically capture ~3-5% via 3c/3e/4a. Not worth shipping until we have
-a Membury 4a (which currently doesn't exist).
+~23-29% headroom theoretically exists from a better stage 1. Realistic
+Membury upgrade paths post-cleanup-Phase-2:
+  * Membury **4a** — BART per-cell, would ship the bulk of the headroom
+    (~3-5%). Not yet built (4a is Bonehill-only today). DEFERRED per the
+    2026-05-26 Phase 3 decisions memory — revisit after 3f has ~4 weeks
+    of clean verify.
+  * Membury **3o** — REJECTED at the 2026-05-25 stage-1 bake-off
+    (Membury terrain pool too homogeneous, +0.36% CRPS vs 3a).
+  * Membury **3c** stays as a reference (within 0.4% CRPS of 3a, so
+    swapping it in or out is noise-level).
+3e was the legacy MLP and is retired (cleanup Phase 1, 2026-05-25).
 
 ## 1. C# side (WeatherBlend)
 
@@ -234,8 +248,8 @@ automatically.
 ## 3. Cloudflare orchestration
 
 Predict 3a is NOT cron'd directly. Per
-`cloudflare/scheduler-worker/wrangler.toml` + `src/index.ts`, the actual
-chain is:
+`cloudflare/scheduler-worker/wrangler.toml` + `src/index.ts`, the
+pre-Phase-3 chain is:
 
 ```
 HH:45   collect       (Cloudflare cron)
@@ -243,20 +257,43 @@ HH:45   collect       (Cloudflare cron)
 
 HH+1:05 s3-collect    (Cloudflare cron)
    └─ on completion ─► predict-and-render              (Hop D)
-                       (contains the .NET predict-3a as part of predict-all)
+                       (fused .NET predict-all + 4b synthesise +
+                        render-site + deploy)
 ```
 
-So 3f, depending on 3a's emitted predictions, chains off
-`predict-and-render`:
+For 3f to land on the **same cycle's render** (rather than the next
+cycle, which is the default 4a/5a behaviour), the fused
+`predict-and-render` is split into separate `predict` + `render-site`
+workflows so 3f can be sandwiched between them. Decision logged
+2026-05-26 — same-cycle freshness is worth the extra ~3 min of chain
+latency because 3f IS the headline on the rainfall_amount predictions
+card (median mm/h + 80% interval + exceedance probabilities), unlike
+4a which is primarily a skill-metric phase. Resulting chain:
 
 ```
-predict-and-render ─(success)─► predict-3f             (new Hop E)
+HH+1:05 s3-collect    (Cloudflare cron)
+   └─ on completion ─► predict   (WB targets, push to R2)   (Hop D)
+              │
+              └─ on completion ─► predict-3f (WP, fresh 3o) (Hop E)
+                            │
+                            └─ on completion ─► render-site (Hop F)
+                                              (read R2, render, deploy)
 ```
 
-Add to `handleWorkflowRun` in `scheduler-worker/src/index.ts`. Failure of
-`predict-and-render` → 3f skips this cycle, previous cycle's 3f stays
-current; predict_3f.py logs a structured error if 3a's parquet for the
-current cycle is missing.
+Add a new Hop E + reshape Hop D + add Hop F to `handleWorkflowRun` in
+`scheduler-worker/src/index.ts`. Note the existing `predict.yml` and
+`render-site.yml` workflows still exist in `.github/workflows/` as
+manual-dispatch-only (their bodies were merged into
+predict-and-render.yml; see that file's header comment). The split
+brings them back as production workflows.
+
+Failure modes:
+- `predict` fails → 3f skips, predict-and-render-style failure (cycle
+  emits no fresh WB predictions; previous cycle's render stays live).
+- `predict-3f` fails → render still chains (Hop E success is OPTIONAL
+  for Hop F); site renders with stale 3f rows from R2.
+- `render-site` fails → published site stays at the previous deploy
+  (Cloudflare Pages keeps the last successful deploy live).
 
 This also matches the established discipline:
 [[reference_scheduling_cloudflare_only]] — all crons + chains in
@@ -291,18 +328,27 @@ phase) will reuse them.
 
 ## 5. Order of work (estimate: ~2 weeks solo)
 
+0. **Predict + render workflow split** (Phase 3 prereq). Revive
+   `predict.yml` + `render-site.yml` as production workflows;
+   collapse predict-and-render.yml's responsibilities into them;
+   update Cloudflare scheduler-worker chain. **~half a day.**
 1. **C# side** — `IntensityModelSources.cs`, `rainfall_amount` target in
    phases.yaml + blender config, any missing `ModelArtifact` helpers.
    **~1 day.**
 2. **`train_3f.py` + R2 sync + retrain-python.yml matrix entry**.
+   Pin Python + ngboost versions in `requirements.txt` first.
    **~2 days**, mostly mirroring `train_4a.py`.
-3. **`predict_3f.py` + Cloudflare worker chain hop**.
-   **~2 days**, mostly mirroring `predict_4a.py`.
+3. **`predict_3f.py` + Cloudflare worker Hop E**.
+   **~2 days**, mostly mirroring `predict_4a.py`. Chain hop now lands
+   between `predict` (Hop D) and `render-site` (Hop F).
 4. **`verify_3f.py` + verify-history schema extension**.
    **~1-2 days.**
-5. **Site components** (predictions card + skill page widgets).
-   **~3-5 days** — the bigger calendar chunk because PIT + coverage are
-   new chart types.
+5. **Site components** (predictions card + skill page widgets,
+   sample-size caveat pattern). All widgets in v1 (per the
+   2026-05-26 decision): headline strip + intensity ribbon + CRPS
+   rolling + PIT histogram + 80% coverage + exceedance reliability.
+   **~3-5 days** — the bigger calendar chunk because PIT + coverage
+   are new chart types.
 
 ## 6. Validation gates before going live
 
@@ -311,10 +357,14 @@ phase) will reuse them.
 2. After step 3: run predict_3f against a recent live cycle, sanity-check
    the predictive bands look reasonable on a known wet event and a known
    dry day.
-3. After step 4: let verify run for 2 weeks of live cycles before showing
-   skill metrics on the public site. Confirm PIT histogram is flat-ish
-   and 80% interval coverage lands in [0.75, 0.85].
-4. Only then enable the site components for public traffic.
+3. After step 4: verify runs from day 1. Skill widgets (CRPS / PIT /
+   coverage / reliability) are visible immediately with a sample-size
+   caveat in the UI ("n=N cycles — stabilises after ~14 days") rather
+   than hidden behind a 2-week gate. Once N ≥ 14 days, the caveat
+   self-clears and the widgets read as proper skill metrics. Watch the
+   first 2 weeks of PIT + coverage in case the bake-off CRPS doesn't
+   translate to calibrated live output — PIT bumps at 0/1 are the
+   clearest signal of under/over-spread.
 
 ## 7. Reference artefacts from the 2026-05-22/23 exploration
 
