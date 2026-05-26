@@ -100,6 +100,7 @@ public class PrecipRichFeatureBuilderTests
             rainfallPath: missingPath,
             locationName: "Bonehill Rocks, Dartmoor",
             stationName: "Bellever, Dartmoor",
+            minValidTime: null,
             ct: CancellationToken.None);
 
         act.Should().Throw<InvalidOperationException>()
