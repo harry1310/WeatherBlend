@@ -83,7 +83,7 @@ Raw S3. Tier P1 throughout. Per-station model — each (Bellever / Bovey / Hexwo
 
 P1 history: lifted from temp T2 with IFS *required* rather than optional — empirical bake-off at 24h showed 3-NWP-required gives a tighter blender for the precip task. JMA + GEM not yet wired into 3d (the empirical exact-runtime experiments stuck with the 4 long-range S3 sources; widening would require additional collectors).
 
-### Phase 3b / 3g — _dry-window blenders_, see [docs/DESIGN.md](DESIGN.md)
+### Phase 3b / 3p — _dry-window blenders_, see [docs/DESIGN.md](DESIGN.md)
 
 Different target (binary "dry block ≥ N hours in 09–18 local") so feature space differs; not tabulated here.
 

@@ -8,9 +8,8 @@ namespace WeatherBlend.Train.PrecipIntensity;
 /// "NGBoost-LogNormal over Phase 3a's hourly P(wet)", gated by 3a's
 /// marginal at predict time to mix the dry/wet branches of the
 /// LogNormal-conditional distribution. It is NOT a tunable and is
-/// deliberately NOT resolved from any mutable manifest field — the
-/// same discipline the deleted-2026-05-25 <c>DryWindowMcSources</c>
-/// established for the retired 3g/3j/3n/3s family.
+/// deliberately NOT resolved from any mutable manifest field —
+/// changing the stage-1 source changes what the model fundamentally is.
 ///
 /// Changing an entry here changes what the model fundamentally is, so
 /// this map is the single, hard-coded source of truth. The train path

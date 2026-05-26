@@ -136,15 +136,13 @@ public static partial class SitePages
                 anyRendered = true;
 
                 // Per-phase column policy. Each phase contributes the columns
-                // its model actually generates — sharing one mega-table forced
-                // 3b rows to display an empty MC column and 3g rows to display
-                // a "Model agreement" that's the 3b ensemble's, not 3g's.
+                // its model actually generates — sharing one mega-table forces
+                // some phases to display empty cells, so we gate per phase.
                 //   3b — LightGBM marginal blender. Carries cross-NWP
                 //        agreement (the BSS-weighted vote of its component
                 //        models) and a conformal calibrator τ on the marginal.
-                //   (Former 3g/3j/3n/3s MC challenger paths retired 2026-05-25
-                //   in model-cleanup Phase 1; the MC band + start-hour curve
-                //   columns stay in the helper for cleanup Phase 2's 3p.)
+                //   3p — Gaussian copula MC over 3o; carries the MC band +
+                //        start-hour curve columns.
                 bool showAgreement  = phase.Key == DryWindowPhases.Phase3b.Key;
                 bool showMcBand     = false;
                 // Keys off the phase's own curve version, so any future iid-MC
@@ -174,13 +172,11 @@ public static partial class SitePages
                             // render as integer percentages — same scale as the Home
                             // P(wet) chip, less cognitive load than a 0..1 fraction.
                             //
-                            // 3g rows that joined a Bayesian CI carry an 80% epistemic
-                            // band on the headline (EpistemicProbDryWindowQ10/Q90).
-                            // Render it as a small "(LO–HI%)" suffix below the headline
-                            // so a fragile 75% (band 60-85%) and a confident 75%
-                            // (band 73-77%) read distinctly. Null on non-3g phases and
-                            // 3g cells where no Bayesian CI was found — those cells
-                            // keep the original headline-only layout.
+                            // Optional epistemic band suffix: phases that
+                            // populate EpistemicProbDryWindowQ10/Q90 get a
+                            // small "(LO–HI%)" line under the headline. No
+                            // active phase populates these today; left in
+                            // place for future producers.
                             var color = ProbabilityColor(d.ProbHasDryWindow);
                             string bandSuffix = "";
                             if (d.EpistemicProbDryWindowQ10.HasValue && d.EpistemicProbDryWindowQ90.HasValue)
@@ -359,9 +355,10 @@ public static partial class SitePages
                     </figure>
                     """);
 
-                // Start-hour curve panel — only the iid-MC phases (3g/3s) have
-                // one. Plots the within-day shape the "Best start" column reads
-                // its argmax from, so the reader sees the whole curve, not just
+                // Start-hour curve panel — only MC phases produce one
+                // (declared via DryWindowPhase.StartHourCurveVersion). Plots
+                // the within-day shape the "Best start" column reads its
+                // argmax from, so the reader sees the whole curve, not just
                 // the peak. Returns "" when this phase has no curve on disk.
                 if (showBestStart)
                     content.Append(RenderStartHourCurveChart(phase, currentStation, window, cutoff, curvesByCell));

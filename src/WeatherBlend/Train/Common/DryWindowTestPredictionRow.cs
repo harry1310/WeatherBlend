@@ -8,10 +8,9 @@ namespace WeatherBlend.Train.Common;
 /// granularity (day cell × window).
 ///
 /// Consumed by bake-off scripts that need to compare 3b (direct LightGBM
-/// dry-window) against MC-based estimators (3g + variants) on the same
-/// (station, window, lead, target_date) cells. The MC scripts read 3a's
-/// hourly TestPredictionRow, group by target_date, MC-sample, and inner-
-/// join here.
+/// dry-window) against MC-based estimators on the same (station, window,
+/// lead, target_date) cells. The MC scripts read 3a's (or 3o's) hourly
+/// TestPredictionRow, group by target_date, MC-sample, and inner-join here.
 ///
 /// Saved at <c>data/models/dry_window/{station}/window_{N}h/{version}/test_predictions.parquet</c>.
 /// </summary>

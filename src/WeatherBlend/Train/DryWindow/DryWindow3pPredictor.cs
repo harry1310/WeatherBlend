@@ -7,21 +7,20 @@ namespace WeatherBlend.Train.DryWindow;
 /// <summary>
 /// Phase 3p — Gaussian copula Monte Carlo over Phase 3o's hourly P(wet) marginals.
 ///
-/// Built 2026-05-25 as the cleanup-Phase-2 dry-window challenger; structurally
-/// the same as the retired 3j (deleted in cleanup Phase 1) but with two
-/// deliberate changes the Phase 2 bake-off settled on:
-///   * Marginal source: Phase 3o (3c-oro, 4-station Bonehill pool with rich +
-///     9 terrain features) instead of Phase 3a. Source change shaves ~6%
-///     aggregate Brier on its own (per project_phase2_dry_window_bakeoff_2026-05-25).
-///   * Σ scope: a SINGLE empirical correlation matrix per station, fit on
-///     train-split observed daytime wet/dry binary sequences. The retired 3j
-///     fit one Σ per (station, lead); pooling across leads gives ~3× more
-///     train sequences and produces a tighter, less-overfit estimate without
-///     changing the algorithm (the structure being estimated — daytime-shape
-///     autocorrelation in OBSERVED labels — is lead-independent by construction:
-///     truth doesn't move with the forecast horizon).
+/// Stage 1: Phase 3o supplies daytime hourly P(wet) marginals q_h. 3o is the
+/// 3c-oro 4-station Bonehill pool (rich features + 9 terrain features), so
+/// these marginals carry the orographic-uplift signal absent from the lean
+/// 3a baseline.
 ///
-/// Sampling (identical to 3j):
+/// Stage 2: a Gaussian copula joins those marginals into correlated daytime
+/// wet/dry sequences. The copula uses a SINGLE empirical correlation matrix
+/// Σ per station, fit on train-split observed daytime wet/dry binary
+/// sequences. Pooling across leads is correct because the structure being
+/// estimated — daytime-shape autocorrelation in OBSERVED labels — is
+/// lead-independent by construction: truth doesn't move with the forecast
+/// horizon.
+///
+/// Sampling per draw:
 ///   1. Draw ε ∈ R⁹, ε_h ~ iid N(0,1) (Box-Muller).
 ///   2. Z = L · ε where L L^T = Σ (Cholesky), so Z ~ N(0, Σ).
 ///   3. U_h = Φ(Z_h), so U_h ~ Uniform(0,1) marginally with the rank-
@@ -32,12 +31,10 @@ namespace WeatherBlend.Train.DryWindow;
 ///
 /// Cross-window monotonicity P(L=3) ≥ P(L=4) ≥ P(L=6) is guaranteed by
 /// computing all windows from one shared correlated-Bernoulli sequence per
-/// sample — same structural guarantee as 3g.
+/// sample.
 ///
-/// Bake-off result: 0.1064 aggregate Brier on the 9 (station, lead) Bonehill
-/// cells vs 3g's 0.1265 (−15.9%). Composition: ~6% from source swap
-/// (3a→3o), ~11% from algorithm swap (iid→copula). The Phase 2 MC bake-off
-/// validated this exact recipe on post-JMA-backfill data.
+/// Bake-off Brier 0.1064 aggregate across 9 (station, lead) Bonehill cells
+/// on post-JMA-backfill data (see project_phase2_dry_window_bakeoff_2026-05-25).
 /// </summary>
 public static class DryWindow3pPredictor
 {
@@ -49,10 +46,9 @@ public static class DryWindow3pPredictor
     /// over is provenance-stamped on the bundle, not silently re-resolved.</summary>
     public const string Precip3oVersionKey = "precip_3o_version";
 
-    /// <summary>Default MC sample count. 20,000 mirrors the retired 3j —
-    /// the copula path is slightly noisier per sample than iid (one Φ
-    /// evaluation + a 9-dim matrix-vector product per draw) so we trade
-    /// a small predict-time hit for tighter Brier-estimate noise.</summary>
+    /// <summary>Default MC sample count. 20,000 trades a small predict-time
+    /// hit for low MC noise on the Brier estimate; the copula path runs one
+    /// Φ evaluation + a 9-dim matrix-vector product per draw.</summary>
     public const int DefaultMcSamples = 20_000;
 
     /// <summary>
@@ -126,14 +122,14 @@ public static class DryWindow3pPredictor
         => ProbDryWindow(qHourly, choleskyL, new[] { windowLength }, rng, nSamples)[windowLength];
 
     /// <summary>
-    /// Summary of the per-MC-sample longest-dry-run distribution. Mirrors the
-    /// retired 3g's aleatoric-uncertainty fields on <see cref="Models.DryWindowPredictionRow"/>
-    /// — site uses this as a confidence signal (narrow P10–P90 band → headline
-    /// P(dry-window) is robust; wide band → fragile). 3p has no fitted conformal
-    /// calibrator (3p is parameter-free MC over a separate model, so the
-    /// "fit on val slice" pattern 3b uses doesn't carry over without a 3o val
-    /// replay tree), so the MC band is the only signal we can ship without a
-    /// retrain dependency on 3o.
+    /// Summary of the per-MC-sample longest-dry-run distribution, written into
+    /// the McMean/P10/P50/P90LongestDryRunHours fields on
+    /// <see cref="Models.DryWindowPredictionRow"/>. Site uses this as a
+    /// confidence signal: narrow P10–P90 band → headline P(dry-window) is
+    /// robust across MC realisations; wide band → fragile. 3p has no fitted
+    /// conformal calibrator (the "fit on val slice" pattern 3b uses doesn't
+    /// carry over to MC-over-a-separate-model without a 3o val replay tree),
+    /// so the MC band is the only confidence signal shipped on 3p rows.
     /// </summary>
     public readonly record struct DryWindowMcStats(
         double ProbWindow,
@@ -308,10 +304,10 @@ public static class DryWindow3pPredictor
 
     /// <summary>
     /// Load the single per-station Σ from a 3p bundle's <c>correlation.json</c>
-    /// and return its Cholesky factor L. Phase 3p uses ONE Σ per station —
+    /// and return its Cholesky factor L. Phase 3p uses ONE Σ per station:
     /// the daytime-shape autocorrelation in observed labels is lead-independent
     /// by construction (truth doesn't move with forecast horizon), so pooling
-    /// across leads gives a tighter estimate than the retired 3j's per-lead Σ.
+    /// the per-lead truth sequences gives a tighter Σ estimate.
     ///
     /// Expected JSON shape:
     /// <code>
@@ -367,10 +363,10 @@ public static class DryWindow3pPredictor
 
     /// <summary>
     /// Read (ValidTimeUtc → ProbWet) from the live 3o prediction parquet for
-    /// one anchor cycle + station. Same path shape as the retired 3g's 3a
-    /// lookup — 3o writes one parquet per (station, model_version, anchor_date)
-    /// using the same per-station bundle (per-station orographic features
-    /// differ even though the model weights are pooled).
+    /// one anchor cycle + station. 3o writes one parquet per
+    /// (station, model_version, anchor_date) using the same per-station
+    /// bundle (per-station orographic features differ even though the model
+    /// weights are pooled).
     /// </summary>
     public static Dictionary<DateTime, double> LoadLivePredictionsHourly(
         string predictionsRoot, string stationSlug, string precip3oVersion, DateTime anchorDate)
@@ -423,8 +419,8 @@ public static class DryWindow3pPredictor
         return dict;
     }
 
-    /// <summary>Local copy of the Box-Muller sampler. Keeping it private to
-    /// this predictor matches the retired 3j's self-contained shape.</summary>
+    /// <summary>Local Box-Muller sampler, private to this predictor so 3p
+    /// stays self-contained.</summary>
     private sealed class BoxMullerSampler
     {
         private double _cached;

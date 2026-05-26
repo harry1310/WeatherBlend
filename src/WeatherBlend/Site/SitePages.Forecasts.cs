@@ -844,8 +844,7 @@ public static partial class SitePages
     /// genuinely uncertain forecast, not a confident '70% chance dry'."
     ///
     /// Skipped silently when the agreement column is missing on every row
-    /// (older parquets pre-dating PrecipPredictionRow.PrecipAgreementWet01,
-    /// or 3g-only outputs where the per-NWP features aren't computed).
+    /// (older parquets pre-dating PrecipPredictionRow.PrecipAgreementWet01).
     /// </summary>
     private static string RenderPrecipHourlyConfidenceTable(
         IReadOnlyList<PrecipForecastPoint> latestPerValid,

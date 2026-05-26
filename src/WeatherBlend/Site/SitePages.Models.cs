@@ -39,7 +39,7 @@ public static partial class SitePages
                 "Per-station P(wet ≥ 0.1 mm/h). 3a (lean) + 3c (rich). Brier, lower better."),
             "dry_window" => ("dry-window",
                 "Dry-window models",
-                "Per-(station, window) P(N-hour dry block in 09–18 local). 3b LightGBM + 3g MC. Brier, lower better."),
+                "Per-(station, window) P(N-hour dry block in 09–18 local). 3b LightGBM + 3p copula MC. Brier, lower better."),
             _ => throw new ArgumentException($"Unknown target '{target}'.", nameof(target)),
         };
 
@@ -717,9 +717,7 @@ public static partial class SitePages
             // added to the precipitation list.
             ("precipitation", "3d") => "Exact-runtime P(wet) classifier. Trains on raw S3 cycles (GFS + IFS oper + AIFS required, MO Global + UKV optional) instead of Open-Meteo offset_day, with rigorous (RunTime, ValidTime, Lead) provenance per row. UKV pulled per-V-hour with target-lead-aware tuples.",
             ("dry_window", "3b")   => "53-feature LightGBM per-(station, window).",
-            ("dry_window", "3g")   => "Parameter-free MC over 3a hourly P(wet). Monotonic by construction.",
-            ("dry_window", "3j")   => "Gaussian copula MC over 3a hourly P(wet) with a per-(station, lead) 9×9 Σ fit on observed daytime binary sequences. Captures within-day wet/dry autocorrelation that 3g's iid sampler misses.",
-            ("dry_window", "3n")   => "Regime-conditioned copula MC. Two Σs per (station, lead): Σ_settled (train days where NWPs agreed on hourly wet/dry) and Σ_unsettled (disagreement days). Per-day live NWP agreement picks which Σ to apply.",
+            ("dry_window", "3p")   => "Gaussian copula MC over Phase 3o's hourly P(wet) marginals. Single empirical Σ per station, fit on train-split observed daytime wet/dry binary sequences. Captures within-day wet/dry autocorrelation.",
             _ => $"Phase {phase} blender.",
         };
     }

@@ -136,28 +136,21 @@ targets:
 
   dry_window:
     phases:
-      # 3g / 3j / 3n / 3s retired 2026-05-25 in model-cleanup Phase 1
-      # (see project_model_cleanup_plan_2026-05-25.md). The Phase 2 MC
-      # bake-off settled the dry-window champion question — 3p
-      # (Gaussian copula MC over 3c-oro = 3o) supersedes all four MC
-      # variants at -15.9% Brier vs 3g. 3p ships in cleanup Phase 2
-      # as challenger; 3b remains champion until the user promotes 3p
-      # after a few weeks of clean verify data.
-      # Dry-window is Bonehill-only — Membury has no dry-window truth /
-      # blenders trained yet.
+      # 3b LightGBM champion; 3p Gaussian copula MC challenger.
+      # 3b remains champion until the user promotes 3p after enough
+      # clean verify data lands. Bonehill-only — Membury has no
+      # dry-window truth / blenders trained yet.
       - id: "3b"
         role: champion
         impl: dotnet
         locations: ["bonehill_rocks"]
         minValidTime: "2024-01-01"
-      # 3p (Gaussian copula MC over 3o hourly P(wet) marginals) added
-      # 2026-05-25 in cleanup Phase 2. Single empirical Σ per station
-      # from train-split observed_wet sequences — NOT per-(station, lead)
-      # like the retired 3j (Σ structure is daytime-shape and lead-
-      # independent for observed labels; pooling across leads gives
-      # tighter Σ estimate). Bake-off Brier 0.1064 aggregate vs 3g's
-      # 0.1265 (−15.9%) on post-JMA-backfill data; see project_phase2_
-      # dry_window_bakeoff_2026-05-25.md.
+      # 3p — Gaussian copula MC over 3o hourly P(wet) marginals.
+      # Single empirical Σ per station from train-split observed_wet
+      # daytime sequences (lead-independent — truth doesn't move with
+      # forecast horizon, so pooling across leads gives a tighter Σ).
+      # Bake-off Brier 0.1064 aggregate on post-JMA-backfill data; see
+      # project_phase2_dry_window_bakeoff_2026-05-25.md.
       - id: "3p"
         role: challenger
         impl: dotnet

@@ -133,7 +133,7 @@ public static partial class SitePages
 
     /// <summary>
     /// Skill — Dry window. Per-station predicted-vs-observed tables for the
-    /// dry-window blenders (3b champion + 3g challenger). Was previously the
+    /// dry-window blenders (3b champion + active challengers). Was previously the
     /// last section of the Rain skill page; lifted to its own page in the
     /// 2026-05-04 site rework so each variable's skill content has a focused
     /// home. Uses the same per-station sub-nav (station list union of precip

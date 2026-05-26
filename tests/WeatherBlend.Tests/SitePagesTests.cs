@@ -1838,10 +1838,9 @@ public class SitePagesTests
     {
         // Regression for the 2026-05-26 "3p dashes" bug. 3p ships no fitted
         // conformal calibrator (3p is a parameter-free Gaussian copula MC
-        // over Phase 3o; the val-replay tree that 3j/3n used would need
-        // PrecipReplay to support rich/oro phases, which it doesn't). The
-        // site previously rendered an em-dash in the Confidence column for
-        // every 3p row.
+        // over Phase 3o; there's no val-slice predictor that can replay
+        // deterministically over a separate model). The site previously
+        // rendered an em-dash in the Confidence column for every 3p row.
         //
         // Fix: when ConformalSetTag is empty, derive the chip from
         // ProbHasDryWindow proximity to 0.5 (heuristic, no coverage
@@ -2248,10 +2247,10 @@ public class SitePagesTests
 
         tempHtml.IndexOf("v_lean").Should().BeLessThan(tempHtml.IndexOf("v_rich"));
         rainHtml.IndexOf("v_lean_p").Should().BeLessThan(rainHtml.IndexOf("v_rich_p"));
-        // Dry-window: 3b + 3g are the allowlisted phases (2026-05-04, see
-        // ActivePhasePolicy). A retired-phase summary ("3d-shape", here as
-        // "v_retired") is filtered out entirely so v_lean_dw renders alone.
-        // Pin both: 3b lean renders, the retired phase doesn't.
+        // Dry-window: the active phases come from ActivePhasePolicy. A
+        // retired-phase summary ("3d-shape", here as "v_retired") is
+        // filtered out entirely so v_lean_dw renders alone. Pin both:
+        // 3b lean renders, the retired phase doesn't.
         dryHtml.Should().Contain("v_lean_dw");
         dryHtml.Should().NotContain("v_retired");
     }

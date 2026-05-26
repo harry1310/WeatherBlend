@@ -40,15 +40,17 @@ public static partial class SitePages
                   <strong>Dry-window probability</strong> per UTC day — P(∃ contiguous N-hour
                   dry block in 09:00–18:00 local time) for N ∈ &#123;3, 4, 6&#125; hours at
                   leads 24 / 48 / 72 h, per station. <em>Phase 3b</em> (53-feature LightGBM
-                  champion) and <em>Phase 3g</em> (parameter-free Monte Carlo over Phase 3a's
-                  hourly P(wet) marginals — 10,000 Bernoulli draws per row) ship side-by-side.
-                  3g guarantees cross-window monotonicity P(N=3) ≥ P(N=4) ≥ P(N=6) by construction
-                  (single MC pass, three indicators read off the same Bernoulli sequence).
+                  champion) and <em>Phase 3p</em> (Gaussian copula Monte Carlo over Phase 3o's
+                  hourly P(wet) marginals — 20,000 draws per row through a single empirical Σ
+                  per station fit on train-split observed daytime wet/dry sequences) ship
+                  side-by-side. The copula sampler captures within-day wet/dry autocorrelation
+                  that an iid sampler misses, and reads three indicators off the same MC pass
+                  so cross-window monotonicity P(N=3) ≥ P(N=4) ≥ P(N=6) holds by construction.
                 </li>
                 <li>
                   <strong>Start-hour curve</strong> — for each (station, window, lead, day),
                   P(an N-hour dry block runs from each candidate start hour within the daytime
-                  window). Derived from the same 3g MC pass as the dry-window prob — each hour
+                  window). Derived from the same 3p MC pass as the dry-window prob — each hour
                   is its own marginal probability (overlapping windows, so the curve need not
                   sum to the daily "any block" figure). Sits alongside each window's
                   dry-window cards.

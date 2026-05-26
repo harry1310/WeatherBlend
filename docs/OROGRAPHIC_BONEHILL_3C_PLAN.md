@@ -363,8 +363,8 @@ gauge-verified line — its skill is inferred from the gauge bake-off.
   follow-up if v1 wins.
 - **Not dry-window**: dry-window is a windows-of-dry-hours question;
   orographic uplift is rainfall-enhancing, not dry-window-extending.
-  Indirect benefit through 3a → 3g/3s marginals if those phases switch
-  to a pooled source, but a separate plan.
+  Indirect benefit through 3a/3o marginals feeding MC dry-window
+  phases, but a separate plan.
 
 ## Future expansion (out of scope for v1)
 
@@ -392,6 +392,6 @@ gauge-verified line — its skill is inferred from the gauge bake-off.
   `WB/src/WeatherBlend/Train/PrecipRichFeatureBuilder.cs`.
 - Existing per-station predict:
   `WB/src/WeatherBlend/Commands/PrecipPredictCommand.cs`.
-- Bake-off discipline: same pattern as 3a vs 3c, 3b vs 3g, etc.
+- Bake-off discipline: same pattern as 3a vs 3c, 3b vs 3p, etc.
 - Princetown drop note: `config.yaml:48-52`; archived models under
   `data/models/dry_window/ea_princetown/`.

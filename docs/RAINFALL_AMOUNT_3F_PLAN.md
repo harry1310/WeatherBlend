@@ -19,10 +19,9 @@ where π comes from 3a and (μ_log, σ_log) come from NGBoost.
 
 Identity is fixed: **3f IS "NGBoost-LogNormal over Phase 3a"**. The source
 binding is hardcoded (see `IntensityModelSources.cs` below), not a config
-flip — same discipline that the deleted-2026-05-25 `DryWindowMcSources`
-established for the retired 3g/3j/3n/3s family. If we ever want
-NGBoost-over-3c or NGBoost-over-4a, that's a new phase id, not a
-reconfigured 3f.
+flip — changing the stage-1 source changes what the model fundamentally
+is. If we ever want NGBoost-over-3c or NGBoost-over-4a, that's a new
+phase id, not a reconfigured 3f.
 
 ## Decisions already taken
 

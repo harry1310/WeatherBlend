@@ -172,5 +172,3 @@ runs:
           fi
         done
 
-    # Start-hour predict step retired 2026-05-25 in model-cleanup Phase 1
-    # alongside the 3g/3s curves it depended on.

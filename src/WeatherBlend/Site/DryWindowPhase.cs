@@ -47,14 +47,11 @@ public static class DryWindowPhases
         ChampionVsChallengerLabel: "Phase 3b (champion)",
         Color: "#90a4ae");
 
-    // Phase 3g / 3j / 3n / 3s display records retired 2026-05-25 in
-    // model-cleanup Phase 1. Cleanup Phase 2 reintroduces 3p (Gaussian
-    // copula MC over 3o = 3c-oro) as the dry-window challenger.
     public static readonly DryWindowPhase Phase3p = new(
         Key: "3p",
         LongTitle: "Phase 3p — Gaussian copula MC over Phase 3o hourly P(wet)",
         ShortTitle: "Phase 3p (copula MC/3o)",
-        Description: "Gaussian copula MC over the rich+orographic Phase 3o's hourly P(wet) marginals. Single empirical Σ per station, fit on train-split observed daytime wet/dry binary sequences (not per-lead — daytime-shape autocorrelation is lead-independent for truth). Bake-off Brier 0.1064 vs current 3g 0.1265 (−15.9%); composition: ~6% from source swap (3a→3o), ~11% from algorithm swap (iid→copula). Cleanup Phase 2 dry-window challenger.",
+        Description: "Gaussian copula MC over the rich+orographic Phase 3o's hourly P(wet) marginals. Single empirical Σ per station, fit on train-split observed daytime wet/dry binary sequences (daytime-shape autocorrelation is lead-independent for truth, so per-lead Σs pool into one). Captures within-day wet/dry autocorrelation that an iid sampler misses. Bake-off Brier 0.1064 aggregate on the 9 (station, lead) Bonehill cells.",
         ChampionVsChallengerLabel: "Phase 3p (copula MC/3o)",
         Color: "#7e57c2");
 
@@ -80,8 +77,6 @@ public static class DryWindowPhases
     /// <see cref="DryWindowPhase"/> record are skipped (with the assumption
     /// that anyone adding a phase to the policy will also add its display
     /// metadata here in the same change).
-    ///
-    /// As of 2026-05-13 the policy lists "3b" + "3g" + "3j".
     /// </summary>
     public static IReadOnlyList<DryWindowPhase> All =>
         ActivePhasePolicy.ByTarget["dry_window"]

@@ -101,9 +101,8 @@ public sealed class TempTrainCommand : TrainCommandBase
         var fs = (featureSet ?? "lean").ToLowerInvariant();
         if (fs is not ("lean" or "rich" or "oro" or "exact" or "copula-mc"))
         {
-            _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich | oro | exact | copula-mc. " +
-                "(3g/3j/3n/3s and mlp variants retired 2026-05-25 in model-cleanup Phase 1; " +
-                "copula-mc is the cleanup-Phase-2 Phase 3p binding.)", featureSet);
+            _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich | oro | exact | copula-mc " +
+                "(copula-mc is the Phase 3p binding).", featureSet);
             return 2;
         }
         // "exact" = Phase 2d (temperature) or Phase 3d (precipitation) — same
@@ -184,9 +183,7 @@ public sealed class TempTrainCommand : TrainCommandBase
                                    leads, station, fs, tier, includeUkv,
                                    exactLeads, cycles, location, ct),
             // dry-window: lean / rich / default → Phase 3b (53 features);
-            // copula-mc → Phase 3p (Gaussian copula MC over 3o, cleanup
-            // Phase 2). 3g / 3j / 3n / 3s and the legacy 3f MLP bake-off
-            // branches were retired in cleanup Phase 1.
+            // copula-mc → Phase 3p (Gaussian copula MC over 3o).
             "dry-window"    => fs == "copula-mc"
                                    ? await Dispatch3pAsync(_dryWindow, location, ct)
                                    : await _dryWindow.RunAsync(

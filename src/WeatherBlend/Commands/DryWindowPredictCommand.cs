@@ -109,8 +109,9 @@ public sealed class DryWindowPredictCommand
             }
             var (stationSlug, windowHours) = parsed.Value;
 
-            // Active versions for this composite — 3b champion plus 3g challenger.
-            // When the user pins --model-version we honour it and skip the manifest list.
+            // Active versions for this composite — 3b champion plus any
+            // active challengers (e.g. 3p). When the user pins --model-version
+            // we honour it and skip the manifest list.
             var activeVersions = string.Equals(modelVersion, "current", StringComparison.OrdinalIgnoreCase)
                 ? ModelArtifact.ResolveStationActive(modelsRoot, "dry_window", compositeKey)
                 : new[] { modelVersion };
@@ -154,10 +155,9 @@ public sealed class DryWindowPredictCommand
         // Two-layer phase gating (introduced 2026-05-26). See
         // PrecipPredictCommand.RunStationAsync for the architecture note —
         // identical pattern.
-        //   L1: phases.yaml membership (catches retired-phase orphans like
-        //       3g/3j/3n/3s still living in the on-R2 manifest's Active
-        //       list because PromoteStationVersion only replaces same-phase
-        //       entries).
+        //   L1: phases.yaml membership (catches retired-phase orphans
+        //       still living in the on-R2 manifest's Active list because
+        //       PromoteStationVersion only replaces same-phase entries).
         //   L2: HandledDryWindowPhases set (catches phases active in
         //       phases.yaml but served by a different predict path — none
         //       today for dry_window, but the layer is symmetric with
@@ -199,10 +199,6 @@ public sealed class DryWindowPredictCommand
         _log.LogInformation("{Key}: version {V} (phase {P}), window {W}h",
             compositeKey, metadata.Version, metadata.Phase, windowHours);
 
-        // Phases 3g / 3j / 3n / 3s retired 2026-05-25 in model-cleanup
-        // Phase 1 — predict dispatch removed. Surviving R2 bundles with
-        // those phase tags are filtered out by phases.yaml gating.
-        //
         // Phase 3p — Gaussian copula MC over Phase 3o's hourly P(wet).
         // No LightGBM artefacts and no climatology by design (line ~448
         // emits ClimatologyProbHasDryWindow=0.0). Dispatch before the

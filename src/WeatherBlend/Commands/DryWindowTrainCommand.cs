@@ -71,11 +71,9 @@ public sealed class DryWindowTrainCommand
         var stations = ResolveStations(stationArg);
         if (stations is null) return 2;
 
-        // 3g / 3j / 3n / 3s and the local 3f MLP bake-off branches were
-        // removed 2026-05-25 in model-cleanup Phase 1 (see
-        // project_model_cleanup_plan_2026-05-25.md). Phase 3b remains the
-        // dry-window champion until cleanup Phase 2 productionises 3p
-        // (Gaussian copula MC over 3o).
+        // Phase 3b is the only LightGBM dry-window blender trained here.
+        // 3p (Gaussian copula MC over 3o) is a separate predict-time-only
+        // path with no LightGBM fit step.
         var phase = DryWindowFeatureBuilder.Phase3b;
 
         var windows = ParseWindows(windowArg);
@@ -140,7 +138,7 @@ public sealed class DryWindowTrainCommand
                 // (station, window) — written once at the bottom of the
                 // window loop. Sibling of TempTrainCommand.testPredictionRows
                 // but on the day-level dry-window schema. Consumed by dry-
-                // window bake-offs (e.g. 3b vs 3g vs MC-over-calibrated-3a).
+                // window bake-offs.
                 var testPredictionRows = new List<DryWindowTestPredictionRow>();
 
                 // Per-phase training-data cutoff (2026-05-26 — see PhaseRegistry).
@@ -317,9 +315,8 @@ public sealed class DryWindowTrainCommand
                 // station, window, lead, p_dry_window, observed_dry_window).
                 // Consumed by dry-window bake-off scripts that need to
                 // inner-join 3b's direct prediction against MC-based
-                // alternatives (3g + variants) on the same test cells.
-                // p_dry_window is the SHIPPING probability — matches what
-                // the site renders.
+                // alternatives on the same test cells. p_dry_window is the
+                // SHIPPING probability — matches what the site renders.
                 if (testPredictionRows.Count > 0)
                 {
                     var testPredPath = Path.Combine(versionDir, "test_predictions.parquet");
@@ -382,8 +379,8 @@ public sealed class DryWindowTrainCommand
                     continue;
                 }
                 // Promote the new 3b version: replace any prior 3b entry in
-                // Active with this one. Any OTHER active phases (3g/3j/3n/3s
-                // today) survive untouched.
+                // Active with this one. Other active phases (e.g. 3p) survive
+                // untouched — PromoteStationVersion is phase-scoped.
                 ModelArtifact.PromoteStationVersion(
                     modelsRoot, "dry_window", compositeKey, versionName,
                     newPhase: DryWindowFeatureBuilder.Phase3b);
@@ -422,7 +419,7 @@ public sealed class DryWindowTrainCommand
     //     (truth's daytime-shape autocorrelation is lead-independent by
     //     construction — pooling across leads gives tighter Σ).
     //
-    // Bundle layout — same as the retired 3j with one Σ instead of three:
+    // Bundle layout:
     //   data/models/dry_window/{station_slug}/window_{N}h/v..._phase3p/
     //     training_metadata.json     (Phase=3p, references the 3o champion in Hyperparameters)
     //     correlation.json           ({"Sigma": [[...]]} — ONE 9×9 per station, not per-lead)
@@ -612,7 +609,7 @@ public sealed class DryWindowTrainCommand
                     DeviationsFromBrief = new List<string>
                     {
                         "Phase 3p — parameter-free Gaussian copula MC over Phase 3o's hourly P(wet) marginals. No LightGBM, no learned weights; predict reads 3o's live prediction parquet at inference time and runs MC.",
-                        "Single empirical Σ per station from train-split observed_wet sequences (not per-(station, lead) like the retired 3j). Σ structure is lead-independent for observed labels; pooling gives a tighter estimate.",
+                        "Single empirical Σ per station from train-split observed_wet daytime sequences. Σ structure is lead-independent (truth doesn't move with forecast horizon); pooling per-lead truth sequences gives a tighter estimate.",
                         $"3o champion bound at training time: {v3o}. Re-run dry-window train --feature-set copula-mc to rebind to a newer 3o champion.",
                         "Cross-window monotonicity P(N=3) ≥ P(N=4) ≥ P(N=6) is guaranteed by computing all windows from a SINGLE shared correlated-Bernoulli sequence per MC sample.",
                         "Brier numbers are blank in training_metadata — verify scores live predictions vs EA truth as cycles produce 3p rows.",

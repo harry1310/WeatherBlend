@@ -17,11 +17,10 @@ without re-deriving the design.
 
 ## Models in scope (every deployed prediction line)
 
-- **.NET LightGBM** — temp 2b / 2c / 2d, precip 3a / 3c / 3d, dry-window 3b
+- **.NET LightGBM** — temp 2b / 2c / 2d, precip 3a / 3c / 3d / 3o, dry-window 3b
 - **.NET Element blenders** — wind, humidity, shortwave-radiation, cloud-cover (predicted via `predict-and-render.yml`'s `predict-all` composite, trained via `dotnet run -- train --target {element_target}`)
-- **.NET parameter-free** — dry-window 3g (no actual training; **skip**)
-- **Python BART (rpy2)** — precip 4a (already on the new train/predict split architecture; just needs the cron added)
-- **Python Bayesian (PyMC + nutpie)** — precip 5a
+- **.NET parameter-free** — dry-window 3p (Gaussian copula MC over 3o; predict-time only)
+- **Python BART (rpy2)** — precip 4a (already on the new train/predict split architecture)
 
 ## Phase 1 — Pre-train sanity gates (~2-2.5 days)
 

@@ -330,9 +330,9 @@ ORDER BY TruthStation, ModelVersion, LeadHours, ValidTimeUtc";
             _cfg.Locations.Select(l => "'" + l.Name.Replace("'", "''") + "'"));
         if (string.IsNullOrEmpty(locationInListDw)) locationInListDw = "''";
 
-        // McMean/P10/P50/P90LongestDryRunHours: persisted only by Phase 3g
-        // since 2026-05-03. Older parquets lack the columns; union_by_name
-        // already on the read silently fills them as NULL for those rows.
+        // McMean/P10/P50/P90LongestDryRunHours: persisted only by MC phases
+        // (3p today). Older parquets lack the columns; union_by_name on the
+        // read silently fills them as NULL for those rows.
         var sql = $@"
 SELECT LocationName, TruthStation, WindowHours, ModelVersion,
        PredictionMadeAtUtc, TargetDateUtc, LeadHours,

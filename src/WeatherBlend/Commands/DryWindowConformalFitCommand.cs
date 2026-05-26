@@ -11,16 +11,14 @@ namespace WeatherBlend.Commands;
 
 /// <summary>
 /// One-shot back-fit of conformal calibrators for every Active dry-window
-/// version (3b champions + 3g challengers). For each (station, window,
-/// lead, version) cell:
+/// version. For each (station, window, lead, version) cell:
 ///   1. Rebuild the chronological train/val/test split with the same
 ///      DryWindowFeatureBuilder + DryWindowDataset.Split rules used at
-///      training / 3g-scoring time. Same val rows the model "would have
-///      seen" if conformal had been part of the original training step.
-///   2. Get per-row P(wet) on the val slice from the appropriate predictor:
-///        * 3b: load model.zip, run inference, optionally apply isotonic.
-///        * 3g: replay the same MC the 3g version was trained against
-///              (requires the 3a champion bound at metadata.precip_3a_version).
+///      training time. Same val rows the model "would have seen" if
+///      conformal had been part of the original training step.
+///   2. Get per-row P(wet) on the val slice — 3b loads model.zip, runs
+///      inference, optionally applies isotonic. 3p has no conformal fit
+///      path (MC over a separate model has no val-slice predictor).
 ///   3. Fit ConformalCalibrator on (val_pred, val_label) at α = 0.10
 ///      (90% coverage), persist to versionDir/conformal_calibrator_{L}h.json.
 ///
@@ -138,10 +136,9 @@ public sealed class DryWindowConformalFitCommand
             }
             var ds = DryWindowDataset.Split(rows);
 
-            // Get per-val P(wet) for this version. 3g/3j/3n/3s scoring
-            // paths were retired 2026-05-25 in model-cleanup Phase 1; the
-            // only conformal fit path that survives is 3b's LightGBM
-            // + optional isotonic calibrator.
+            // Get per-val P(wet) for this version. Only 3b has a conformal
+            // fit path (LightGBM + optional isotonic); MC challengers have
+            // no val-slice predictor that can replay deterministically.
             var (probs, labels) = Score3bOnVal(versionDir, spec, lead, ds, stationName);
 
             if (probs.Count < 30)

@@ -75,39 +75,24 @@ public sealed class DryWindowPredictionRow
     /// <summary>SHA-256 hex of the 53 feature floats in schema order.</summary>
     public required string FeatureVectorHash { get; init; }
 
-    // ---- 3g aleatoric uncertainty (nullable; populated only by Phase 3g) ----
+    // ---- MC aleatoric uncertainty (nullable; populated only by MC phases) ----
     //
-    // Summary of the per-MC-sample longest-dry-run distribution under
-    // independence with 3a's per-hour q. ProbHasDryWindow above is the
-    // headline P(longest >= windowHours); these four fields characterise
-    // the spread of the underlying continuous quantity (longest dry run
-    // in hours), which is what 3g actually computes during the same MC
-    // pass. Useful as a confidence signal: narrow P10–P90 band → headline
-    // robust; wide band → headline fragile. Null on 3b/3c rows since
-    // those phases don't run MC and the field has no analogue.
+    // Summary of the per-MC-sample longest-dry-run distribution.
+    // ProbHasDryWindow above is the headline P(longest >= windowHours);
+    // these four fields characterise the spread of the underlying continuous
+    // quantity (longest dry run in hours) computed during the same MC pass.
+    // Useful as a confidence signal: narrow P10–P90 band → headline robust;
+    // wide band → headline fragile. Null on non-MC phases (3b).
 
     public double? McMeanLongestDryRunHours { get; init; }
     public double? McP10LongestDryRunHours { get; init; }
     public double? McP50LongestDryRunHours { get; init; }
     public double? McP90LongestDryRunHours { get; init; }
 
-    // ---- Phase 3a-uncertainty: epistemic envelope on ProbHasDryWindow
-    // (nullable; populated only on 3g rows where a Bayesian CI parquet
-    // for this (station, target_date, lead) cell was found at predict time).
-    //
-    // 3g's MC pass treated 3a's per-hour q as exact and reported the spread
-    // of the *longest dry run* under independent Bernoullis (the McP10/50/90
-    // fields above — aleatoric: "given my q is right, how does the day
-    // play out?"). The fields below captured the orthogonal "what if my q
-    // is off?" — epistemic perturbation by Bayesian CI80 width. The 3g
-    // predictor that emitted them was retired 2026-05-25 in model-cleanup
-    // Phase 1; columns stay so historic R2 parquets still deserialise.
-    //
-    // EpistemicProbDryWindowMean ≈ ProbHasDryWindow modulo MC noise — same
-    // headline. EpistemicProbDryWindowQ10/Q90 give the 80% band; site can
-    // render as e.g. "75% (band 60-85%)" so wide bands flag low-confidence
-    // days. EpistemicSigmaUsed is for reproducibility and debugging.
-    // Null on non-3g phases and on 3g rows where no Bayesian CI was joined.
+    // ---- Optional epistemic envelope on ProbHasDryWindow ----
+    // Columns stay so historic R2 parquets still deserialise. No active
+    // phase populates these today (the 5a → MC join that fed them is
+    // retired); left in place for future producers.
 
     public double? EpistemicProbDryWindowMean { get; init; }
     public double? EpistemicProbDryWindowQ10  { get; init; }

@@ -44,7 +44,7 @@ public class PhaseRegistryTests
               - id: "3b"
                 role: champion
                 impl: dotnet
-              - id: "3g"
+              - id: "3p"
                 role: challenger
                 impl: dotnet
         """;
@@ -127,7 +127,7 @@ public class PhaseRegistryTests
         var dotnetIds = reg.PhasesForImpl(PhaseImpl.Dotnet)
             .Select(t => t.Phase.Id)
             .ToArray();
-        dotnetIds.Should().BeEquivalentTo(new[] { "2b", "2c", "2d", "3a", "3c", "3d", "3b", "3g" });
+        dotnetIds.Should().BeEquivalentTo(new[] { "2b", "2c", "2d", "3a", "3c", "3d", "3b", "3p" });
     }
 
     [Fact]

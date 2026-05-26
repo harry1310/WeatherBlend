@@ -125,9 +125,8 @@ public sealed class RenderSiteCommand
             ConformalSetTag:             r.ConformalSetTag)).ToList();
         _log.LogInformation("Loaded {N} dry-window prediction rows (all locations).", dryWindowAllLocs.Count);
 
-        // Start-hour predictions retired 2026-05-25 (model-cleanup Phase 1)
-        // alongside their producers (3g + 3s). Site renders the chart as
-        // absent when the list is empty — same behavior as a fresh deploy.
+        // Start-hour predictions not produced by any active phase. Site
+        // renders the chart as absent when the list is empty.
         IReadOnlyList<SitePages.StartHourForecastPoint> startHourAllLocs =
             Array.Empty<SitePages.StartHourForecastPoint>();
 
@@ -1088,15 +1087,15 @@ ORDER BY LocationName, LeadHours, ValidTimeUtc";
                 {
                     var cal = ModelArtifact.TryLoadLeadConformalCalibrator(versionDir, lead);
                     if (cal is null) continue;
-                    // Same versionName is shared across (station, window)
-                    // composites for 3b/3g — but conformal artefacts live
-                    // under each composite's version dir so the τ values
-                    // genuinely differ per (station, window). We key only on
-                    // (version, lead) here because the dry-window page already
-                    // resolved (station, window) before reading this dict. If
-                    // two composites collide on (version, lead) we keep the
-                    // first; in practice 3b/3g use suffixed version names per
-                    // composite + the suffixes only appear once per composite.
+                    // Same versionName can be shared across (station, window)
+                    // composites — but conformal artefacts live under each
+                    // composite's version dir so the τ values genuinely differ
+                    // per (station, window). We key only on (version, lead)
+                    // here because the dry-window page already resolved
+                    // (station, window) before reading this dict. If two
+                    // composites collide on (version, lead) we keep the first;
+                    // in practice version names are suffixed per composite so
+                    // suffixes only appear once per composite.
                     dict.TryAdd((versionName, lead), cal.Tau);
                 }
             }

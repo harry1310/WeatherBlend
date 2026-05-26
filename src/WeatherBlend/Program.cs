@@ -187,9 +187,6 @@ public static class Program
                 services.AddTransient<DryWindowTrainCommand>();
                 services.AddTransient<DryWindowPredictCommand>();
                 services.AddTransient<DryWindowVerifyCommand>();
-                // DryWindowRhoBakeoffCommand + StartHourPredictCommand +
-                // StartHourVerifyCommand were retired 2026-05-25 in
-                // model-cleanup Phase 1 alongside the 3g/3s producers.
                 services.AddTransient<ElementTrainCommand>();
                 services.AddTransient<ElementPredictCommand>();
                 services.AddTransient<ElementVerifyCommand>();
@@ -961,14 +958,6 @@ public static class Program
         // It diagnosed UKMO inclusion vs exclusion on a shared UKMO-present test set; the
         // resulting per-element decisions are now baked into config.yaml's blenders section.
 
-        // The `start-hour-bakeoff` command was removed 2026-05-04 alongside
-        // StartHourCurveDerivation. The bake-off was Phase-1 scaffolding for
-        // a never-run "current vs option C vs option B" comparison; option C
-        // (3g-style MC over 3a hourly q) shipped directly as production in
-        // StartHourPredictCommand v2 so "current" no longer exists and the
-        // framework would have nothing to compare against. Rebuild a fresh
-        // harness if/when option B (Bayesian copula) gets built.
-
         // ---- dry-window-conformal-fit (one-shot back-fit of conformal calibrators) ----
         var conformalAlphaOpt = new Option<double>(
             name: "--alpha",
@@ -976,7 +965,7 @@ public static class Program
             getDefaultValue: () => 0.10);
         var dryWindowConformalFit = new Command(
             "dry-window-conformal-fit",
-            "Back-fit conformal calibrators on the val slice for every Active dry-window version (3b + 3g)")
+            "Back-fit conformal calibrators on the val slice for every Active dry-window version (3b)")
         {
             conformalAlphaOpt,
         };
@@ -986,9 +975,6 @@ public static class Program
             Environment.ExitCode = await cmd.RunAsync(alpha, CancellationToken.None);
         }, conformalAlphaOpt);
         root.AddCommand(dryWindowConformalFit);
-
-        // dry-window-rho-bakeoff retired 2026-05-25 in model-cleanup Phase 1
-        // alongside the 3g/3j/3n MC machinery it depended on.
 
         // ---- precip-conformal-fit (sibling of dry-window-conformal-fit) ----
         var precipConformalAlphaOpt = new Option<double>(
@@ -1007,10 +993,6 @@ public static class Program
             Environment.ExitCode = await cmd.RunAsync(alpha, CancellationToken.None);
         }, precipConformalAlphaOpt);
         root.AddCommand(precipConformalFit);
-
-        // dry-window-ablate (Phase 3d 3b-vs-3d-shape diagnostic) was retired
-        // 2026-05-04 alongside the 3d-shape training path. 3b vs 3g comparison
-        // is covered by the standard verify command's per-phase grouping.
 
         var globOpt = new Option<string>("--glob", "Parquet glob across models for one run") { IsRequired = true };
         var compare = new Command("compare", "Cross-model agreement summary for a run") { globOpt };

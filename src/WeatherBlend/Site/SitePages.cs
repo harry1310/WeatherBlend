@@ -268,11 +268,11 @@ public static partial class SitePages
         /// Per-(version, lead) conformal threshold τ for the active dry-window
         /// blenders. Surfaced in the dry-window table's conformal cell so the
         /// reader can see the actual numbers (P + τ) behind a "confident wet
-        /// day" / "confident dry day" tag rather than the tag alone. Two
-        /// independently-fit values per (station, window, lead) — one for 3b's
-        /// LightGBM probability, one for 3g's MC probability — so the tag
-        /// arithmetic is fully transparent. Empty when conformal artefacts
-        /// haven't been fit yet.
+        /// day" / "confident dry day" tag rather than the tag alone. One value
+        /// per (version, lead) — 3b's LightGBM probability is the only phase
+        /// with a fitted conformal τ today; MC phases have no val-slice
+        /// predictor that can replay deterministically. Empty when conformal
+        /// artefacts haven't been fit yet.
         /// </summary>
         public IReadOnlyDictionary<(string Version, int LeadHours), double> DryWindowConformalTau { get; init; }
             = new Dictionary<(string, int), double>();
@@ -704,22 +704,17 @@ public static partial class SitePages
         double ProbHasDryWindow,
         double ClimatologyProbHasDryWindow,
         double? AgreementHasDryWindow,
-        // Phase 3g aleatoric uncertainty (null on 3b/3c rows). Summary of
-        // the per-MC-sample longest-dry-run distribution; narrow P10–P90 →
-        // headline P(any block) is robust across MC realisations under
-        // independence; wide → fragile. Defaulted to null so existing
-        // positional construction sites compile unchanged.
+        // MC aleatoric uncertainty (null on non-MC rows like 3b). Summary
+        // of the per-MC-sample longest-dry-run distribution; narrow P10–P90
+        // → headline P(any block) is robust across MC realisations under
+        // the chosen copula; wide → fragile. Populated by 3p; defaulted to
+        // null so existing positional construction sites compile unchanged.
         double? McMeanLongestDryRunHours = null,
         double? McP10LongestDryRunHours = null,
         double? McP50LongestDryRunHours = null,
         double? McP90LongestDryRunHours = null,
-        // Phase 3a-uncertainty epistemic envelope. Populated only on 3g
-        // rows where a Bayesian CI parquet for this (station, target_date,
-        // lead) cell was joined at predict time; null on every other phase
-        // and on 3g cells without Bayesian coverage. The Q10/Q90 give an
-        // 80% epistemic band on ProbHasDryWindow — wide band ⇒ headline
-        // is fragile to 3a's hourly q being off by σ; narrow ⇒ the
-        // headline is robust.
+        // Optional epistemic envelope from a Bayesian CI join. No active
+        // phase populates these today; left in place for future producers.
         double? EpistemicProbDryWindowMean = null,
         double? EpistemicProbDryWindowQ10  = null,
         double? EpistemicProbDryWindowQ90  = null,
