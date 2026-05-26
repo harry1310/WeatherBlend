@@ -367,6 +367,17 @@ public static partial class SitePages
         // the loop reads this cache — it's identical across stations so any
         // one entry will do.
         var latestPerValidByStation = new Dictionary<string, IReadOnlyList<PrecipForecastPoint>>(StringComparer.Ordinal);
+        // Champion-phase-scoped peer of latestPerValid. The freshness tiebreak
+        // candidate pool is restricted to rows whose phase matches the
+        // precipitation champion (3a) — 4a/4b/5a/3e re-predict more often and
+        // were silently winning the all-phase tiebreak in latestPerValid,
+        // killing the daily + hourly conformal tables (their rows have no
+        // ConformalSetTag). Daily summary + hourly P(wet) tables read off
+        // THIS list so chips populate consistently for every champion-phase
+        // hour. Chart series stays on latestPerValid so the multi-phase
+        // line overlay is unaffected. (2026-05-26 site review.)
+        var championLatestPerValidByStation = new Dictionary<string, IReadOnlyList<PrecipForecastPoint>>(StringComparer.Ordinal);
+        var championPrecipPhase = ActivePhasePolicy.ChampionPhase("precipitation");
 
         // Pre-compute the latest-per-(station, valid) lists up front so we
         // can derive the page-wide X axis window before rendering any chart.
@@ -382,13 +393,21 @@ public static partial class SitePages
         // a single consistent forward edge across the tab.
         foreach (var station in stations)
         {
-            var latestPerValid = precipForLocation
+            var stationLeadRows = precipForLocation
                 .Where(r => r.Station == station && r.LeadHours == lead)
+                .ToList();
+            latestPerValidByStation[station] = stationLeadRows
                 .GroupBy(r => r.ValidTimeUtc)
                 .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
                 .OrderBy(r => r.ValidTimeUtc)
                 .ToList();
-            latestPerValidByStation[station] = latestPerValid;
+            championLatestPerValidByStation[station] = stationLeadRows
+                .Where(r => input.PhaseByVersion.TryGetValue(r.Version, out var ph)
+                            && string.Equals(ph, championPrecipPhase, StringComparison.Ordinal))
+                .GroupBy(r => r.ValidTimeUtc)
+                .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
+                .OrderBy(r => r.ValidTimeUtc)
+                .ToList();
         }
         var pageXMin = input.GeneratedAtUtc.AddDays(-RainChartHistoryDays).ToOADate();
         var pageXMaxValid = latestPerValidByStation.Values
@@ -494,28 +513,26 @@ public static partial class SitePages
             // reuse for both tables.
             var visibleStart = DateTime.FromOADate(pageXMin);
             var visibleEnd = DateTime.FromOADate(pageXMax);
-            var visiblePerValid = latestPerValid
+
+            // Both tables now read off championLatestPerValid (champion-phase
+            // tiebreak) instead of the all-phase latestPerValid → champion-phase
+            // filter two-step. See the comment above championLatestPerValidByStation
+            // for the rationale; the previous two-step left non-3a rows in the
+            // tiebreak then filtered them out, killing whole calendar days from
+            // the daily table and most hours from the hourly table.
+            var championLatestPerValid = championLatestPerValidByStation[station];
+            var championVisiblePerValid = championLatestPerValid
                 .Where(r => r.ValidTimeUtc >= visibleStart && r.ValidTimeUtc <= visibleEnd)
                 .ToList();
-
-            // Daily-summary table is conceptually a CHAMPION-model overview
-            // (its conformal columns count rows the calibrator tagged
-            // confident-wet / ambiguous / confident-dry, and only the
-            // champion + LightGBM challengers have conformal calibrators —
-            // 4a/4b/5a don't). Filtering visiblePerValid to the champion
-            // phase keeps the wet/amb/dry counts honest: without this
-            // filter, the random tie-break on (station, valid_time) picks
-            // freshest row at random across all phases, and hours that
-            // landed on 4a/4b/5a rows had no ConformalSetTag and silently
-            // dropped into "untagged" → 0/0/0 days on the site.
-            // (Caught 2026-05-26 — site review.)
-            var championPrecipPhase = ActivePhasePolicy.ChampionPhase("precipitation");
-            var championPerValid = visiblePerValid
-                .Where(r => input.PhaseByVersion.TryGetValue(r.Version, out var ph)
-                            && string.Equals(ph, championPrecipPhase, StringComparison.Ordinal))
+            // Hourly table is now today+future only — the prior history window
+            // (back to xMin = now − 7d) ran 150+ rows and the historical chunk
+            // is already on the chart above. (2026-05-26 user direction.)
+            var hourlyCutoff = input.GeneratedAtUtc.Date;
+            var championHourlyPerValid = championVisiblePerValid
+                .Where(r => r.ValidTimeUtc >= hourlyCutoff)
                 .ToList();
-            s.Append(RenderPrecipDailySummaryTable(championPerValid));
-            s.Append(RenderPrecipHourlyConfidenceTable(visiblePerValid, station, input.PrecipConformalTau));
+            s.Append(RenderPrecipDailySummaryTable(championVisiblePerValid));
+            s.Append(RenderPrecipHourlyConfidenceTable(championHourlyPerValid, station, input.PrecipConformalTau));
             s.Append(RenderPhase4aPanel(input, station, lead, pageXMin, pageXMax));
             s.Append(RenderBayesianCiPanel(input, station, lead, pageXMin, pageXMax));
         }
@@ -878,12 +895,14 @@ public static partial class SitePages
                   <td><time datetime="{day.Key:yyyy-MM-dd}">{day.Key:ddd dd MMM}</time></td>
                   <td class="num" style="color: {meanColor}; font-weight: 600">{(meanP * 100).ToString("0", Ci)}%</td>
                   <td class="num">{(driestR.ProbWet * 100).ToString("0", Ci)}% <small>at {driestR.ValidTimeUtc:HH'Z'}</small></td>
-                  <td class="num">{dayRows.Count}</td>
                   {conformalCells}
                 </tr>
                 """);
         }
 
+        // n_h ("hours in the day with a prediction") removed 2026-05-26 — the
+        // conf wet/amb/dry counts to the right already convey row count, and
+        // a bare hour count adds noise without information.
         var conformalHeader = anyConformal
             ? """
               <th class="num" title="Hours the calibrator says are confidently wet at the 90% set">conf wet h</th>
@@ -906,7 +925,6 @@ public static partial class SitePages
                       <th>Date (UTC)</th>
                       <th class="num">Mean P(wet)</th>
                       <th class="num" title="Lowest forecast P(wet) of the day — the best 'go now' hour">Driest hour</th>
-                      <th class="num">n_h</th>
                       {conformalHeader}
                     </tr>
                   </thead>
@@ -943,22 +961,20 @@ public static partial class SitePages
         var anyConformal = latestPerValid.Any(r => !string.IsNullOrEmpty(r.ConformalSetTag));
         foreach (var r in latestPerValid)
         {
-            // Agreement is in [0, 1] = fraction of NWPs voting wet that hour.
-            // Confidence (= "unanimity") is high when agreement is near 0 or 1.
-            // Map to {high, medium, low} so the chip reads at a glance.
-            var (label, cls) = ConfidenceFromAgreement(r.AgreementWet01);
+            // "NWPs wet" cell is the underlying agreement value (% of NWPs
+            // forecasting wet for this hour). The standalone "Confidence" chip
+            // column derived from this was dropped 2026-05-26 — the % column
+            // already exposes the same information, and the chip column was
+            // confusing alongside the Conformal one.
             var agreementCell = r.AgreementWet01.HasValue
                 ? (r.AgreementWet01.Value * 100).ToString("0", Ci) + "%"
                 : "—";
             // P(wet) cell colour-graded green-to-red by value — same
             // PrecipProbColor scale used on the home page summary line and
             // every other P(wet) chip on the site, so a 70% wet hour reads
-            // the same colour wherever it appears. Confidence is already
-            // surfaced in its own column to the right (NWPs wet + the
-            // confidence chip), so the cell can lose the dual-encoding
-            // (purple-by-confidence) and just colour-grade by P(wet).
+            // the same colour wherever it appears.
             var pwetStyle = $"color: {PrecipProbColor(r.ProbWet)}; font-weight: 600";
-            // Second confidence chip from the conformal calibrator (precip-
+            // Conformal chip from the conformal calibrator (precip-
             // conformal-fit). Only rendered when at least one row in this
             // (station, lead) batch has a tag — keeps the column off legacy
             // forecasts that pre-date the calibrator. τ shown alongside the
@@ -979,7 +995,6 @@ public static partial class SitePages
                   <td><time datetime="{r.ValidTimeUtc:yyyy-MM-ddTHH:mm}Z">{r.ValidTimeUtc:MM-dd HH'Z'}</time></td>
                   <td class="num" style="{pwetStyle}">{(r.ProbWet * 100).ToString("0", Ci)}%</td>
                   <td class="num">{agreementCell}</td>
-                  <td><span class="conf conf-{cls}">{label}</span></td>
                   {conformalTd}
                 </tr>
                 """);
@@ -998,7 +1013,6 @@ public static partial class SitePages
                       <th>Valid time</th>
                       <th class="num">P(wet)</th>
                       <th class="num">NWPs wet</th>
-                      <th>Confidence</th>
                       {conformalTh}
                     </tr>
                   </thead>
@@ -1023,25 +1037,4 @@ public static partial class SitePages
         "Ambiguous" => "<span class=\"conf conf-low\">ambiguous</span>",
         _           => "<span class=\"conf conf-unknown\">—</span>",
     };
-
-    /// <summary>
-    /// Bucket per-NWP wet-vote agreement into a 3-tier confidence label.
-    /// Unanimity = 2 * |agreement - 0.5| — distance from the 0.5 split,
-    /// so 0% wet (all dry) and 100% wet (all wet) both score 1.0
-    /// (everyone unanimous), 50% wet scores 0 (worst split).
-    /// ≥0.6 → high, ≥0.2 → medium, rest → low.
-    /// Returns (label-text, css-class). Null agreement → "—" / "unknown"
-    /// so the renderer degrades gracefully on legacy rows.
-    /// </summary>
-    private static (string Label, string Cls) ConfidenceFromAgreement(double? agreement)
-    {
-        if (!agreement.HasValue) return ("—", "unknown");
-        var unanimity = 2.0 * Math.Abs(agreement.Value - 0.5);
-        return unanimity switch
-        {
-            >= 0.6 => ("high", "high"),
-            >= 0.2 => ("medium", "medium"),
-            _      => ("low", "low"),
-        };
-    }
 }

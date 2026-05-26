@@ -1736,6 +1736,104 @@ public class SitePagesTests
 
 
     [Fact]
+    public void RenderForecastsRain_daily_and_hourly_tables_scope_to_champion_phase_and_drop_past_rows()
+    {
+        // Regression for the 2026-05-26 "Rain pages conformal tables are a mess"
+        // findings:
+        //   1) Daily P(wet) summary table had only one date (May 19) because
+        //      the all-phase latestPerValid tiebreak let 4a/4b/5a/3e rows win
+        //      the freshness race for most hours, then the champion-phase
+        //      filter dropped them — collapsing whole dates out of the daily
+        //      grouping.
+        //   2) Hourly P(wet) table conformal cells were "—" for the same
+        //      rows (non-3a phases ship no ConformalSetTag).
+        //   3) Hourly table spanned ~7d back to ~6d forward; user wants
+        //      today+future only.
+        //   4) The "Confidence" chip column (derived from NWP wet-vote
+        //      unanimity) was redundant alongside the adjacent "NWPs wet" %
+        //      column and confusable with the calibrated Conformal chip.
+        //
+        // Setup: build rows where 4a has the freshest PredictedAtUtc but no
+        // ConformalSetTag, 3a is older but tagged. The fix scopes both
+        // tables to champion-phase rows before the freshness pick, so 3a
+        // survives.
+        var generatedAt = new DateTime(2026, 5, 26, 12, 0, 0, DateTimeKind.Utc);
+        var todayHour    = generatedAt.AddHours(2);                    // 14:00Z today — should appear in hourly
+        var tomorrowHour = generatedAt.AddDays(1).AddHours(6);          // 18:00Z tomorrow — should appear
+        var pastHour     = generatedAt.AddDays(-2).AddHours(12);        // 2 days ago — should NOT appear in hourly,
+                                                                       // but date should still appear in daily
+
+        SitePages.PrecipForecastPoint Row(string version, DateTime predictedAt, DateTime valid, double pwet, string? conformalTag)
+            => new(
+                Station: "ea_bellever_dartmoor",
+                Version: version,
+                PredictedAtUtc: predictedAt,
+                ValidTimeUtc: valid,
+                LeadHours: 24,
+                ProbWet: pwet,
+                ClimatologyPWet: 0.30,
+                PrecipGfs: null, PrecipEcmwf: null, PrecipIcon: null,
+                PrecipMf: null, PrecipUkmo: null, PrecipGem: null,
+                PrecipAifs: null, PrecipJma: null,
+                AgreementWet01: 0.5,
+                ConformalSetTag: conformalTag);
+
+        var preds = new[]
+        {
+            // 4a wins freshness for today's hour pre-fix, but no calibrator tag.
+            Row("v-3a", generatedAt.AddHours(-12), todayHour, 0.85, "Wet"),
+            Row("v-4a", generatedAt.AddHours(-1),  todayHour, 0.82, null),
+            // 4a wins freshness for tomorrow's hour pre-fix.
+            Row("v-3a", generatedAt.AddHours(-12), tomorrowHour, 0.30, "Ambiguous"),
+            Row("v-4a", generatedAt.AddHours(-1),  tomorrowHour, 0.32, null),
+            // Past-day rows so daily aggregation has a second date — only the
+            // 3a side should reach the daily; the hourly table now excludes
+            // the past entirely.
+            Row("v-3a", generatedAt.AddDays(-2).AddHours(-12), pastHour, 0.20, "Dry"),
+        };
+
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            WindowStartUtc = generatedAt.AddDays(-30),
+            PrecipPredictions = preds,
+            PrecipCurrentByStation = new Dictionary<string, string> { ["ea_bellever_dartmoor"] = "v-3a" },
+            PhaseByVersion = new Dictionary<string, string>
+            {
+                ["v-3a"] = "3a",
+                ["v-4a"] = "4a",
+            },
+        };
+
+        var html = SitePages.RenderForecastsRain(input, lead: 24);
+
+        // Daily summary: both dates surface (champion-phase tiebreak keeps
+        // 3a rows alive for both today and the past day).
+        html.Should().Contain($"{todayHour:ddd dd MMM}")
+            .And.Contain($"{pastHour:ddd dd MMM}");
+        // The 3a Conformal tag counted into the daily conf cells — Bug 1's
+        // fix means today's date is present at all (it used to disappear).
+        // We don't pin exact counts because daily groups also include
+        // ClimatologyPWet-only rows etc.
+
+        // n_h column header dropped 2026-05-26 — count is implicit in the
+        // conformal vote cells.
+        html.Should().NotContain(">n_h<");
+
+        // "Confidence" column header dropped — only "Conformal" remains as
+        // a confidence column. Match against the column header markup so the
+        // ">Confidence" check doesn't also fire on e.g. "Confidence band" on
+        // the 4a panel.
+        html.Should().NotContain("<th>Confidence</th>");
+
+        // Hourly table: today's 3a-tagged row appears (used to show "—" because
+        // 4a won the tiebreak); past row is gone (today+future filter).
+        html.Should().Contain($"{todayHour:MM-dd HH'Z'}")
+            .And.Contain("confident wet")
+            .And.NotContain($"{pastHour:MM-dd HH'Z'}");
+    }
+
+    [Fact]
     public void RenderDryWindow_renders_heuristic_confidence_chip_and_band_for_3p_rows_without_conformal_tag()
     {
         // Regression for the 2026-05-26 "3p dashes" bug. 3p ships no fitted
