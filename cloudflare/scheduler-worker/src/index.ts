@@ -51,17 +51,22 @@ const WORKFLOW_FOR_CRON: Record<string, Dispatch[]> = {
   // completion chains predict-4a + predict-5a (handleWorkflowRun Hop C).
   "45 2,8,14,20 * * *": [{ workflow: "collect.yml" }],
   // s3-collect.yml — raw S3 exact-runtime cycles for the 2d/3d blenders.
-  // Its completion chains predict-and-render (handleWorkflowRun Hop D).
+  // Its completion chains predict.yml (handleWorkflowRun Hop D), and
+  // predict's completion chains render-site.yml (Hop F). The
+  // predict + render split landed 2026-05-26 as a Phase 3 prereq so
+  // predict-3f (WeatherProbabilistic) can sandwich between them and
+  // ship 3f data same-cycle. predict-and-render.yml is retained as a
+  // fallback (revert path).
   //
-  // predict-4a, predict-5a and predict-and-render are no longer cron'd —
-  // they hang off the two completions above. That frees a cron
+  // predict-4a, predict-5a, predict, and render-site are no longer
+  // cron'd — they hang off the two completions above. That frees crons
   // (Cloudflare free tier caps at 5) and makes the dependency order
   // explicit instead of leaning on fixed-offset timing:
   //   collect ─(success)─► predict-4a + predict-5a
-  //   s3-collect ─────────► predict-and-render
+  //   s3-collect ─────────► predict ─────────────────► render-site
   // s3-collect sits at :05 (not :00) so the collect→4a/5a chain — which
   // starts when collect finishes ~HH:50 — gets a clear ~15 min run-room
-  // before predict-and-render is chained off s3-collect.
+  // before predict is chained off s3-collect.
   "5 3,9,15,21 * * *": [{ workflow: "s3-collect.yml" }],
   // Noon UTC: ERA5 refresh + Open-Meteo previous_runs refresh. Both pull
   // rolling 14-day windows past Open-Meteo's publish window so neither
@@ -274,18 +279,27 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
   // ---- Completion-driven workflow chains ------------------------------
   // The worker chains workflows off each other's workflow_run completion
   // so a dependent job runs as soon as — and only after — its input is
-  // ready, instead of racing a fixed-offset cron. Five hops:
+  // ready, instead of racing a fixed-offset cron. Six hops:
   //   A  previous-runs-refresh ─(success, Sunday)─► retrain-python
   //   B  retrain-python        ─(any completion)──► retrain-blenders
   //   C  collect               ─(success)─────────► predict-4a, predict-5a
-  //   D  s3-collect            ─(any completion)──► predict-and-render
+  //   D  s3-collect            ─(any completion)──► predict           ← NEW (was → predict-and-render)
   //   E  verify                ─(success)─────────► render-site
+  //   F  predict               ─(any completion)──► render-site       ← NEW (added 2026-05-26)
   // A+B are the weekly retrain — serial so retrain-blenders' 4b mint
-  // reads this cycle's fresh 4a rather than racing it. C+D are the
-  // 6-hourly predict path. E redraws the site after the twice-weekly
-  // verify run. Every hop dispatches via workflow_dispatch — the same
-  // path the cron uses, so no GitHub App permission beyond the
-  // actions:write the worker already relies on.
+  // reads this cycle's fresh 4a rather than racing it. C+D+F are the
+  // 6-hourly predict path; D+F replaced the fused predict-and-render
+  // workflow with split predict + render so the future predict-3f
+  // (Phase 3, in WeatherProbabilistic) can sandwich between them and
+  // ship same-cycle 3f data to the site rather than the one-cycle lag
+  // that fused predict-and-render gave (same lag 4a accepts today).
+  // E still redraws the site after the twice-weekly verify run.
+  // predict-and-render.yml is RETAINED in the repo as a fallback —
+  // if D+F break, point Hop D back at predict-and-render.yml and
+  // disable Hop F as a one-line revert.
+  // Every hop dispatches via workflow_dispatch — the same path the
+  // cron uses, so no GitHub App permission beyond the actions:write
+  // the worker already relies on.
 
   // Hop A — refresh → python. Gated on a successful refresh (no retrain
   // on stale data) AND on it being a Sunday: previous-runs-refresh runs
@@ -335,20 +349,29 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
     }
   }
 
-  // Hop D — s3-collect → predict-and-render. The raw S3 exact-runtime
-  // cycles s3-collect lands feed the 2d/3d predictors that run inside
-  // predict-and-render. Chaining guarantees the render starts only after
-  // s3-collect finishes — the weatherblend-data concurrency lock already
-  // enforced that, but the chain makes the dependency explicit and frees
-  // a cron. Fires on ANY completion: a failed s3-collect should still
-  // re-render the site off the most recent exact-runtime data rather
-  // than leave it stale.
+  // Hop D — s3-collect → predict. The raw S3 exact-runtime cycles
+  // s3-collect lands feed the 2d/3d predictors that run inside predict.
+  // Chaining guarantees predict starts only after s3-collect finishes
+  // — the weatherblend-data concurrency lock already enforced that, but
+  // the chain makes the dependency explicit and frees a cron.
+  //
+  // Flipped 2026-05-26 from dispatching predict-and-render.yml (the
+  // fused predict + render workflow) to predict.yml (predict-only).
+  // The render step now lives in render-site.yml and is chained off
+  // predict's completion (Hop F below). This split is the Phase 3
+  // prereq — lets predict-3f sandwich between predict (Hop D) and
+  // render-site (Hop F) for same-cycle 3f data on the site.
+  // predict-and-render.yml is retained in the repo as a fallback.
+  //
+  // Fires on ANY completion: a failed s3-collect should still try to
+  // predict + render off the most recent exact-runtime data rather
+  // than leave the site stale.
   if ((wfRun.path ?? "").endsWith("/s3-collect.yml")) {
     try {
-      await dispatchWorkflow(env, "predict-and-render.yml", "harry1310/WeatherBlend");
-      console.log(`predict chain: s3-collect ${conclusion} → dispatched predict-and-render`);
+      await dispatchWorkflow(env, "predict.yml", "harry1310/WeatherBlend");
+      console.log(`predict chain: s3-collect ${conclusion} → dispatched predict`);
     } catch (e) {
-      console.error(`predict chain: failed to dispatch predict-and-render: ${e}`);
+      console.error(`predict chain: failed to dispatch predict: ${e}`);
     }
   }
 
@@ -365,6 +388,30 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
       console.log("render chain: verify success → dispatched render-site");
     } catch (e) {
       console.error(`render chain: failed to dispatch render-site: ${e}`);
+    }
+  }
+
+  // Hop F — predict → render-site. Renders the site as soon as
+  // predict.yml lands fresh predictions on R2. Added 2026-05-26 to
+  // close the chain that Hop D's split opened: D dispatches predict
+  // (no render), so F has to fire render once predict's done.
+  //
+  // Fires on ANY completion: a failed predict still re-renders the
+  // site off the most recent successful predictions on R2 rather than
+  // leaving it stale (same defensive choice as Hop D's any-completion
+  // gate). If render needs to skip on predict failure in future, this
+  // is the line to gate.
+  //
+  // When predict-3f.yml ships in Phase 3 step 3 (WeatherProbabilistic
+  // side), Hop F gets a sibling Hop F.1: predict success → predict-3f.
+  // Then this Hop F flips to gate on predict-3f instead of predict so
+  // 3f data is on R2 before render reads.
+  if ((wfRun.path ?? "").endsWith("/predict.yml")) {
+    try {
+      await dispatchWorkflow(env, "render-site.yml", "harry1310/WeatherBlend");
+      console.log(`render chain: predict ${conclusion} → dispatched render-site`);
+    } catch (e) {
+      console.error(`render chain: failed to dispatch render-site after predict: ${e}`);
     }
   }
 
