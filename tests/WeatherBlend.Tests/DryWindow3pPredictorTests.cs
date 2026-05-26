@@ -103,4 +103,144 @@ public class DryWindow3pPredictorTests
 
         act.Should().Throw<ArgumentException>().WithMessage("*do not match*");
     }
+
+    // ---- ProbDryWindowWithStartHours (curve emitted as MC byproduct) -------
+    //
+    // The start-hour overload runs the same MC pass that produces the daily
+    // stats AND tallies, per draw, which candidate start hour windows came
+    // out entirely dry. The chart on the dry-window page consumes the curve,
+    // so the tests below pin three invariants the renderer relies on:
+    //
+    //   1. ProbWindow matches the stats overload for the same seed (the chart
+    //      and the headline must come from one MC pass — no drift).
+    //   2. Curve shape: length = n - windowLength + 1, every value in [0, 1].
+    //   3. Headline ≥ max(curve) AND headline ≤ sum(curve) under any draws —
+    //      mathematical invariants that any correct implementation must
+    //      satisfy (the headline is the union over candidate-start events,
+    //      bounded below by any single event's marginal and above by the sum
+    //      of marginals via overlap).
+
+    [Fact]
+    public void ProbDryWindowWithStartHours_returns_same_ProbWindow_as_stats_overload_for_same_seed()
+    {
+        // Regression: the chart's daily aggregate and the dry-window page's
+        // headline must agree to the bit because they come from the same MC
+        // pass. Anything that changes the per-sample draw count or order
+        // would silently desynchronise the two.
+        var q = new[] { 0.1, 0.3, 0.5, 0.7, 0.2, 0.1, 0.4, 0.6, 0.2 };
+        var L = IdentityCholesky(q.Length);
+
+        var rng1 = new Random(42);
+        var stats = DryWindow3pPredictor.ProbDryWindowWithStats(q, L, windowLength: 3, rng1, nSamples: 5000);
+
+        var rng2 = new Random(42);
+        var (statsCurve, _) = DryWindow3pPredictor.ProbDryWindowWithStartHours(q, L, windowLength: 3, rng2, nSamples: 5000);
+
+        statsCurve.ProbWindow.Should().Be(stats.ProbWindow);
+        statsCurve.MeanLongestDryRunHours.Should().Be(stats.MeanLongestDryRunHours);
+        statsCurve.P10LongestDryRunHours.Should().Be(stats.P10LongestDryRunHours);
+        statsCurve.P50LongestDryRunHours.Should().Be(stats.P50LongestDryRunHours);
+        statsCurve.P90LongestDryRunHours.Should().Be(stats.P90LongestDryRunHours);
+    }
+
+    [Fact]
+    public void ProbDryWindowWithStartHours_curve_has_expected_shape()
+    {
+        var q = new[] { 0.2, 0.3, 0.4, 0.5, 0.4, 0.3, 0.2, 0.1, 0.1 };
+        var L = IdentityCholesky(q.Length);
+
+        var (_, curve) = DryWindow3pPredictor.ProbDryWindowWithStartHours(
+            q, L, windowLength: 3, new Random(7), nSamples: 5000);
+
+        curve.Length.Should().Be(q.Length - 3 + 1, "one row per candidate start hour");
+        curve.Should().AllSatisfy(p => p.Should().BeInRange(0.0, 1.0));
+    }
+
+    [Fact]
+    public void ProbDryWindowWithStartHours_headline_satisfies_union_bounds()
+    {
+        // Mathematical invariants any correct implementation must satisfy:
+        //   max(per-start P) ≤ P(any block exists) ≤ Σ(per-start P)
+        // The headline IS the union of the candidate-start dry events on
+        // each MC draw, so it must dominate any individual marginal and be
+        // dominated by their sum (which double-counts overlaps).
+        var q = new[] { 0.2, 0.3, 0.4, 0.5, 0.4, 0.3, 0.2, 0.1, 0.1 };
+        var L = IdentityCholesky(q.Length);
+
+        var (stats, curve) = DryWindow3pPredictor.ProbDryWindowWithStartHours(
+            q, L, windowLength: 3, new Random(11), nSamples: 5000);
+
+        var maxStart = curve.Max();
+        var sumStart = curve.Sum();
+        stats.ProbWindow.Should().BeGreaterThanOrEqualTo(maxStart, "headline ≥ any individual start's marginal");
+        stats.ProbWindow.Should().BeLessThanOrEqualTo(sumStart + 1e-9, "headline ≤ sum of marginals (overlaps double-counted in the sum)");
+    }
+
+    [Fact]
+    public void ProbDryWindowWithStartHours_almost_all_dry_q_gives_high_marginals_at_every_start()
+    {
+        // Every hour P(wet)=0.01: every candidate window is almost always
+        // dry, so the curve should be saturated near 1 at every start.
+        var q = Enumerable.Repeat(0.01, 9).ToArray();
+        var L = IdentityCholesky(q.Length);
+
+        var (_, curve) = DryWindow3pPredictor.ProbDryWindowWithStartHours(
+            q, L, windowLength: 3, new Random(31), nSamples: 5000);
+
+        curve.Should().AllSatisfy(p => p.Should().BeGreaterThan(0.95,
+            "every 3-hour window in an almost-always-dry day should be dry on nearly every sample"));
+    }
+
+    [Fact]
+    public void ProbDryWindowWithStartHours_almost_all_wet_q_gives_near_zero_marginals_at_every_start()
+    {
+        var q = Enumerable.Repeat(0.95, 9).ToArray();
+        var L = IdentityCholesky(q.Length);
+
+        var (_, curve) = DryWindow3pPredictor.ProbDryWindowWithStartHours(
+            q, L, windowLength: 3, new Random(53), nSamples: 5000);
+
+        curve.Should().AllSatisfy(p => p.Should().BeLessThan(0.05,
+            "every 3-hour window in an almost-always-wet day should be dry on essentially no sample"));
+    }
+
+    [Fact]
+    public void ProbDryWindowWithStartHours_empty_inputs_return_empty_curve()
+    {
+        var L = IdentityCholesky(0);
+
+        var (stats, curve) = DryWindow3pPredictor.ProbDryWindowWithStartHours(
+            Array.Empty<double>(), L, windowLength: 3, new Random(0), nSamples: 100);
+
+        curve.Should().BeEmpty();
+        stats.ProbWindow.Should().Be(0.0);
+    }
+
+    [Fact]
+    public void ProbDryWindowWithStartHours_window_longer_than_day_returns_empty_curve()
+    {
+        // Window=10 against a 9-hour day: no candidate start hour exists.
+        // The renderer treats an empty curve as "no chart", which is what
+        // we want (a chart with zero series would be visual noise).
+        var q = Enumerable.Repeat(0.3, 9).ToArray();
+        var L = IdentityCholesky(q.Length);
+
+        var (stats, curve) = DryWindow3pPredictor.ProbDryWindowWithStartHours(
+            q, L, windowLength: 10, new Random(0), nSamples: 100);
+
+        curve.Should().BeEmpty();
+        stats.ProbWindow.Should().Be(0.0);
+    }
+
+    [Fact]
+    public void ProbDryWindowWithStartHours_throws_on_dimension_mismatch()
+    {
+        var q = new[] { 0.3, 0.4, 0.5 };
+        var L = IdentityCholesky(4);  // wrong size on purpose
+
+        var act = () => DryWindow3pPredictor.ProbDryWindowWithStartHours(
+            q, L, windowLength: 2, new Random(0), nSamples: 100);
+
+        act.Should().Throw<ArgumentException>().WithMessage("*do not match*");
+    }
 }
