@@ -317,19 +317,31 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
     }
   }
 
-  // Hop B — python → blenders. Fires on ANY retrain-python completion
-  // (success or failure): the non-4b blender phases are independent of
-  // 4a, so a failed retrain-python must not skip the .NET sweep — 4b
-  // just mints from the prior 4a. NOTE: this also chains a *manual*
-  // retrain-python run into retrain-blenders — an accepted trade-off for
-  // dispatching via workflow_dispatch (no repository_dispatch App perm).
-  if ((wfRun.path ?? "").endsWith("/retrain-python.yml")) {
+  // Hop B — python → blenders. Sunday-gated to match Hop A: the auto-
+  // retrain chain (Hop A → retrain-python → here → retrain-blenders)
+  // only fires once a week, and Hop B must NOT side-effect into
+  // retrain-blenders when retrain-python is dispatched manually
+  // (e.g. `gh workflow run retrain-python.yml -f phases=3f` during
+  // weekday debugging). Pre-2026-05-26 this was any-day any-completion
+  // and chained a retrain-blenders run off every manual dispatch — 5
+  // wasted runs during the 3f stand-up alone.
+  //
+  // Any-completion still: on Sundays a partial-failure retrain-python
+  // must NOT skip the .NET sweep — 4b mints from prior 4a, and the
+  // non-4b blenders are independent of 4a anyway.
+  const isSunday = new Date().getUTCDay() === 0;
+  if ((wfRun.path ?? "").endsWith("/retrain-python.yml") && isSunday) {
     try {
       await dispatchWorkflow(env, "retrain-blenders.yml", "harry1310/WeatherBlend", { force: "true" });
-      console.log(`retrain chain: retrain-python ${conclusion} → dispatched retrain-blenders`);
+      console.log(`retrain chain: retrain-python ${conclusion} → dispatched retrain-blenders (Sunday)`);
     } catch (e) {
       console.error(`retrain chain: failed to dispatch retrain-blenders: ${e}`);
     }
+  } else if ((wfRun.path ?? "").endsWith("/retrain-python.yml")) {
+    console.log(
+      `retrain chain: retrain-python ${conclusion} on non-Sunday — skipped retrain-blenders dispatch ` +
+      `(manual retrain-python runs do not chain; the Sunday auto-retrain does).`
+    );
   }
 
   // Hop C — collect → 4a/5a predict. predict-4a and predict-5a (both in
