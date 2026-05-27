@@ -210,6 +210,44 @@ public sealed class MetOfficeConfig
 
     /// <summary>Human-readable area the geohash resolves to (e.g. "Devon"). Informational.</summary>
     public string? ObsArea { get; set; }
+
+    /// <summary>
+    /// Optional supplemental observation geohashes to collect alongside the
+    /// primary <see cref="ObsGeohash"/> on every cycle. Used to capture
+    /// physically-distinct station observations (e.g. Dunkeswell hilltop
+    /// at <c>gcj9q6</c>) as additional truth signals for cross-validation
+    /// and bake-offs against the primary site truth.
+    ///
+    /// Each entry is pulled with the same DataHub Land Observations API
+    /// and stored under <c>{MetOfficeObsPath}/location={Label}/geohash={Geohash}/</c>
+    /// so consumers can read by either geohash or label.
+    ///
+    /// Empty list (default) means no supplemental pulls — behaviour
+    /// identical to the pre-2026-05-27 single-geohash flow.
+    /// </summary>
+    public List<SupplementalObsGeohash> SupplementalObsGeohashes { get; set; } = new();
+}
+
+/// <summary>
+/// One supplemental observation source: a DataHub Land Observations
+/// geohash to collect alongside the primary
+/// <see cref="MetOfficeConfig.ObsGeohash"/>. The <see cref="Label"/> is
+/// written into the <c>LocationName</c> column on stored rows so
+/// downstream queries can distinguish supplemental sources from the
+/// primary site without inspecting the geohash.
+/// </summary>
+public sealed class SupplementalObsGeohash
+{
+    /// <summary>DataHub geohash (e.g. "gcj9q6" for Dunkeswell).</summary>
+    public string Geohash { get; set; } = "";
+
+    /// <summary>Human-readable area returned by /nearest (e.g. "Devon"). Informational.</summary>
+    public string Area { get; set; } = "";
+
+    /// <summary>Friendly label for storage + logs (e.g. "dunkeswell_aerodrome").
+    /// Becomes the <c>LocationName</c> column value on stored rows and the
+    /// <c>location=</c> hive partition under <c>MetOfficeObsPath</c>.</summary>
+    public string Label { get; set; } = "";
 }
 
 public sealed class HttpConfig

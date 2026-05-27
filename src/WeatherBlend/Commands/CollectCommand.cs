@@ -212,6 +212,49 @@ public sealed class CollectCommand
             _log.LogError(ex, "  Met Office Obs: FAILED");
         }
 
+        // Supplemental obs geohashes — physically distinct stations
+        // collected as additional truth signals for bake-offs / cross-validation.
+        // Each pulled in its own try/catch so a single bad geohash doesn't kill
+        // the rest of the cycle, mirroring the primary obs error policy above.
+        // Skipped silently when the API key is absent.
+        if (mo.SupplementalObsGeohashes is { Count: > 0 })
+        {
+            var obsKey = MetOfficeSecrets.TryLoad(mo.ObsKeyEnvVar, mo.ObsKeyFile);
+            if (string.IsNullOrWhiteSpace(obsKey))
+            {
+                _log.LogInformation("  Met Office Obs (supplemental): no API key; skipping {N} entries",
+                    mo.SupplementalObsGeohashes.Count);
+            }
+            else
+            {
+                foreach (var sup in mo.SupplementalObsGeohashes)
+                {
+                    if (string.IsNullOrWhiteSpace(sup.Geohash) || string.IsNullOrWhiteSpace(sup.Label))
+                    {
+                        _log.LogWarning("  Met Office Obs (supplemental): entry missing geohash or label; skipping");
+                        continue;
+                    }
+                    try
+                    {
+                        // LocationName on stored rows becomes the friendly label
+                        // (e.g. "dunkeswell_aerodrome") so SQL queries can scope
+                        // by source without having to know geohashes by heart.
+                        var rows = await _metOfficeObs.FetchAsync(
+                            sup.Label, sup.Geohash, sup.Area, obsKey, ct);
+                        await ParquetWriter.WriteMetOfficeObservationsAsync(_cfg.Storage.MetOfficeObsPath, rows, ct);
+                        _log.LogInformation("  Met Office Obs ({Label} @ {Gh}): wrote {Rows} rows",
+                            sup.Label, sup.Geohash, rows.Count);
+                    }
+                    catch (Exception ex)
+                    {
+                        errors++;
+                        _log.LogError(ex, "  Met Office Obs ({Label} @ {Gh}): FAILED",
+                            sup.Label, sup.Geohash);
+                    }
+                }
+            }
+        }
+
         // Met Office Global Det + UKV 2km AWS-archive collectors removed
         // 2026-04-29 — bake-off rejected as blender inputs and the Python
         // writer was poisoning the forecast-tree schema (see Program.cs

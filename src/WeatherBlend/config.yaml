@@ -238,6 +238,23 @@ metOffice:
   obsGeohash: "gcj0z3"
   obsArea: "Devon"
 
+  # Supplemental Land Observations geohashes — collected alongside the
+  # primary obsGeohash on every cycle, written to a sibling partition
+  # under met_office_obs/location={label}/geohash={geohash}/ so the rows
+  # can be distinguished from the primary site truth by either key.
+  #
+  # gcj9q6 = Dunkeswell Aerodrome (50.86, -3.24, 252 m). Added 2026-05-27
+  # after the wind truth bake-off showed Dunkeswell-trained models
+  # generalise best across truth sources for Bonehill wind — the hilltop
+  # exposure regime at 252 m is closer to the 393 m tor than the lowland
+  # Exeter Airport SYNOP at ~30 m. Live stream from DataHub bridges the
+  # ~annual lag in MIDAS Open releases (historical 2009-2024 lives in
+  # data/truth/midas/ from a separate CEDA backfill).
+  supplementalObsGeohashes:
+    - geohash: "gcj9q6"
+      area: "Devon"
+      label: "dunkeswell_aerodrome"
+
 # HTTP client settings.
 http:
   userAgent: "WeatherBlend-PoC/0.1 (contact: you@example.com)"
