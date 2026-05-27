@@ -36,7 +36,8 @@ public static partial class SitePages
                 "2b (lean) + 2c (rich). MAE °C, lower better."),
             "precipitation" => ("rain",
                 "Rain models",
-                "Per-station P(wet ≥ 0.1 mm/h). 3a (lean) + 3c (rich). Brier, lower better."),
+                "Per-station P(wet ≥ 0.1 mm/h) — 3a (lean) + 3c (rich), Brier, lower better. " +
+                "Plus per-station rainfall amount (mm/h) — 3f distributional, CRPS, lower better."),
             "dry_window" => ("dry-window",
                 "Dry-window models",
                 "Per-(station, window) P(N-hour dry block in 09–18 local). 3b LightGBM + 3p copula MC. Brier, lower better."),
@@ -72,10 +73,22 @@ public static partial class SitePages
         }
 
         // Filter to this target's composites only. Composite keys: "temperature",
-        // "precipitation/{station}", "dry_window/{station}/{N}h" — match by
-        // target prefix.
+        // "precipitation/{station}", "dry_window/{station}/{N}h",
+        // "rainfall_amount/{station}" — match by target prefix.
+        //
+        // The "precipitation" target page is the Rain Models page; it also
+        // surfaces rainfall_amount (3f) cards on the same page so a reader
+        // sees every rain-related model in one place — mirroring how the
+        // rain forecast tab already shows P(wet) + rainfall_amount together.
+        // rainfall_amount keeps its own composite + cards (different metric,
+        // different phase) — only the page they render on is shared.
+        var extraPrefixes = target == "precipitation"
+            ? new[] { "rainfall_amount/" }
+            : Array.Empty<string>();
         var targetSummaries = input.ModelSummaries
-            .Where(m => m.Composite == target || m.Composite.StartsWith(target + "/", StringComparison.Ordinal))
+            .Where(m => m.Composite == target
+                     || m.Composite.StartsWith(target + "/", StringComparison.Ordinal)
+                     || extraPrefixes.Any(p => m.Composite.StartsWith(p, StringComparison.Ordinal)))
             .Where(m => IsActivePhase(m.Composite, m.Phase))
             .ToList();
 
@@ -718,6 +731,7 @@ public static partial class SitePages
             ("precipitation", "3d") => "Exact-runtime P(wet) classifier. Trains on raw S3 cycles (GFS + IFS oper + AIFS required, MO Global + UKV optional) instead of Open-Meteo offset_day, with rigorous (RunTime, ValidTime, Lead) provenance per row. UKV pulled per-V-hour with target-lead-aware tuples.",
             ("dry_window", "3b")   => "53-feature LightGBM per-(station, window).",
             ("dry_window", "3p")   => "Gaussian copula MC over Phase 3o's hourly P(wet) marginals. Single empirical Σ per station, fit on train-split observed daytime wet/dry binary sequences. Captures within-day wet/dry autocorrelation.",
+            ("rainfall_amount", "3f") => "Two-stage distributional rainfall intensity (mm/h). Stage 1 = Phase 3a's P(wet); stage 2 = per-(station, lead) NGBoost-LogNormal fit on wet-hour rows (15-feature lean spec: 7 NWP precip + 4 spread + 4 calendar). Mixed predictive distribution F(x) = (1−π)·δ_0(x) + π·LogNormal(μ_log, σ_log)(x). CRPS is the headline skill metric — see Skill → Rain.",
             _ => $"Phase {phase} blender.",
         };
     }
@@ -738,6 +752,7 @@ public static partial class SitePages
             "temperature" => "Temperature",
             "precipitation" => "Precipitation",
             "dry_window" => "Dry window",
+            "rainfall_amount" => "Rainfall amount",
             _ => parts[0],
         };
         if (parts.Length == 1) return target;

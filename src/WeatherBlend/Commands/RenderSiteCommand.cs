@@ -205,8 +205,8 @@ public sealed class RenderSiteCommand
         // Top-level model summaries / feature spec rows surface ALL locations'
         // active versions on /specs.html. Per-loc Models page recomputes with
         // a tighter station filter so a demoted station can't appear.
-        var modelSummariesAll = LoadModelSummaries(predictionsAllLocs, precipAllLocs, dryWindowAllLocs, allStationSlugs);
-        var featureSpecRowsAll = LoadFeatureSpecRows(predictionsAllLocs, precipAllLocs, dryWindowAllLocs, allStationSlugs, modelSummariesAll);
+        var modelSummariesAll = LoadModelSummaries(predictionsAllLocs, precipAllLocs, dryWindowAllLocs, rainfallAmountAllLocs, allStationSlugs);
+        var featureSpecRowsAll = LoadFeatureSpecRows(predictionsAllLocs, precipAllLocs, dryWindowAllLocs, rainfallAmountAllLocs, allStationSlugs, modelSummariesAll);
         _log.LogInformation("Loaded {N} model summaries / {M} feature-spec rows (all locations).",
             modelSummariesAll.Count, featureSpecRowsAll.Count);
 
@@ -294,8 +294,8 @@ public sealed class RenderSiteCommand
             var rollingBrier = ComputeRollingBrier(precip, rainfall, phaseByVersion, precipRollingWindowDays);
 
             // Per-loc model summaries (scoped to loc's stations).
-            var locModelSummaries = LoadModelSummaries(predictions, precip, dryWindow, locStationSlugs);
-            var locFeatureSpecRows = LoadFeatureSpecRows(predictions, precip, dryWindow, locStationSlugs, locModelSummaries);
+            var locModelSummaries = LoadModelSummaries(predictions, precip, dryWindow, rainfallAmount, locStationSlugs);
+            var locFeatureSpecRows = LoadFeatureSpecRows(predictions, precip, dryWindow, rainfallAmount, locStationSlugs, locModelSummaries);
 
             var locInputs = new SitePages.SiteInputs
             {
@@ -508,6 +508,7 @@ public sealed class RenderSiteCommand
         IReadOnlyList<TempPredictionRow> predictions,
         IReadOnlyList<SitePages.PrecipForecastPoint> precip,
         IReadOnlyList<SitePages.DryWindowForecastPoint> dryWindow,
+        IReadOnlyList<RainfallAmountPredictionRow> rainfallAmount,
         IReadOnlySet<string> activeStationSlugs)
     {
         // Only load metadata for versions that actually emitted predictions in the
@@ -556,6 +557,23 @@ public sealed class RenderSiteCommand
             if (summary is not null) summaries.Add(summary);
         }
 
+        // Phase 3f rainfall_amount — per-station versioning under
+        // data/models/rainfall_amount/{station}/{version}/. metricLabel
+        // is "Test CRPS" because 3f's primary skill metric is mean CRPS
+        // (not Brier / MAE — those PerLeadStats fields land null on
+        // 3f bundles, per train_3f.py's DeviationsFromBrief note); the
+        // verify-history block inside each card pulls the live rolling
+        // CRPS from VerifyHistoryRow.BlendMetric (= mean CRPS for
+        // rainfall_amount rows) and renders alongside.
+        foreach (var (station, version) in rainfallAmount.Select(r => (r.TruthStation, r.ModelVersion)).Distinct())
+        {
+            if (activeStationSlugs.Count > 0 && !activeStationSlugs.Contains(station)) continue;
+            var dir = Path.Combine(modelsRoot, "rainfall_amount", station, version);
+            var composite = $"rainfall_amount/{station}";
+            var summary = TryLoadSummary(dir, composite, version, metricLabel: "Test CRPS");
+            if (summary is not null) summaries.Add(summary);
+        }
+
         return summaries;
     }
 
@@ -575,6 +593,7 @@ public sealed class RenderSiteCommand
         IReadOnlyList<TempPredictionRow> predictions,
         IReadOnlyList<SitePages.PrecipForecastPoint> precip,
         IReadOnlyList<SitePages.DryWindowForecastPoint> dryWindow,
+        IReadOnlyList<RainfallAmountPredictionRow> rainfallAmount,
         IReadOnlySet<string> activeStationSlugs,
         IReadOnlyList<SitePages.ModelSummary> summaries)
     {
@@ -604,6 +623,9 @@ public sealed class RenderSiteCommand
                 _ when composite.StartsWith("dry_window/", StringComparison.Ordinal) =>
                     // dry_window/{station}/{N}h
                     BuildDryWindowDir(modelsRoot, composite, version),
+                _ when composite.StartsWith("rainfall_amount/", StringComparison.Ordinal) =>
+                    Path.Combine(modelsRoot, "rainfall_amount",
+                        composite["rainfall_amount/".Length..], version),
                 _ => null,
             };
             if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return;
@@ -664,6 +686,12 @@ public sealed class RenderSiteCommand
             Add($"dry_window/{station}/{window}h", version);
         }
 
+        foreach (var (station, version) in rainfallAmount.Select(r => (r.TruthStation, r.ModelVersion)).Distinct())
+        {
+            if (activeStationSlugs.Count > 0 && !activeStationSlugs.Contains(station)) continue;
+            Add($"rainfall_amount/{station}", version);
+        }
+
         return rows;
     }
 
@@ -711,9 +739,15 @@ public sealed class RenderSiteCommand
                         // branch (SitePages.Models.cs:216-218).
                         BestSingleValMae:   kv.Value.BestSingleValMae  ?? double.NaN,
                         BestSingleTestMae:  kv.Value.BestSingleTestMae ?? double.NaN,
-                        BlendTestScore:     kv.Value.BlendTestMae,
-                        BlendTestRmse:      kv.Value.BlendTestRmse,
-                        BlendTestBias:      kv.Value.BlendTestBias,
+                        // Same null → NaN coercion as BestSingleVal/TestMae
+                        // — 3f's distributional bundles write JSON null for
+                        // these (mean CRPS is the headline; point MAE has
+                        // no meaning on a mixed mass-at-zero distribution).
+                        // Renderers test double.IsNaN and render "—" for
+                        // the missing branch.
+                        BlendTestScore:     kv.Value.BlendTestMae  ?? double.NaN,
+                        BlendTestRmse:      kv.Value.BlendTestRmse ?? double.NaN,
+                        BlendTestBias:      kv.Value.BlendTestBias ?? double.NaN,
                         TestRows:           kv.Value.TestRows,
                         TestCalendarMonths: kv.Value.TestCalendarMonths));
 

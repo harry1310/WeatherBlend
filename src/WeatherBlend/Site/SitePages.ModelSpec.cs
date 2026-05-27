@@ -69,9 +69,10 @@ public static partial class SitePages
         // temperature MAE-blenders with per-station precip Brier-blenders.
         foreach (var (targetKey, targetLabel) in new[]
         {
-            ("temperature",   "Temperature"),
-            ("precipitation", "Precipitation"),
-            ("dry_window",    "Dry-window"),
+            ("temperature",     "Temperature"),
+            ("precipitation",   "Precipitation"),
+            ("dry_window",      "Dry-window"),
+            ("rainfall_amount", "Rainfall amount"),
         })
         {
             var targetRows = live
