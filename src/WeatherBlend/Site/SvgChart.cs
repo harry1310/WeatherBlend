@@ -67,7 +67,29 @@ public sealed record LineChartSpec
 
     /// <summary>Optional X-axis upper bound (OADate). Pair of <see cref="XMin"/>.</summary>
     public double? XMax { get; init; }
+
+    /// <summary>
+    /// Filled bands between pairs of series — used for distributional
+    /// uncertainty visualisations (e.g. rainfall_amount P10–P90 ribbon
+    /// around the P50 line). Each entry names a low series + a high
+    /// series by <see cref="LineSeries.Name"/>; the renderer composes
+    /// a closed polygon by walking the low's points forward then the
+    /// high's points backward, filled with <c>Color</c> and stroked
+    /// transparent. Ribbons render BEHIND the line series so the lines
+    /// stay readable on top.
+    ///
+    /// Both series must exist in <see cref="Series"/> and share the
+    /// same X values in the same order — typical distributional output
+    /// where every quantile comes from one shared time grid.
+    /// </summary>
+    public IReadOnlyList<RibbonSpec> Ribbons { get; init; }
+        = Array.Empty<RibbonSpec>();
 }
+
+/// <summary>One filled band between two named series on a
+/// <see cref="LineChartSpec"/>. See <see cref="LineChartSpec.Ribbons"/>
+/// for the rendering contract.</summary>
+public sealed record RibbonSpec(string LowSeriesName, string HighSeriesName, string Color);
 
 public static class LineChartRenderer
 {
@@ -132,6 +154,31 @@ public static class LineChartRenderer
         // Axis labels
         sb.Append(Ci, $"<text x=\"{spec.Width / 2}\" y=\"{spec.Height - 6}\" text-anchor=\"middle\" class=\"chart-axis-label\">{Escape(spec.XLabel)}</text>");
         sb.Append(Ci, $"<text x=\"14\" y=\"{spec.PadTop + plotH / 2}\" text-anchor=\"middle\" class=\"chart-axis-label\" transform=\"rotate(-90, 14, {spec.PadTop + plotH / 2})\">{Escape(spec.YLabel)}</text>");
+
+        // Ribbons — render filled polygons BEFORE the line series so the
+        // lines sit on top. Each ribbon walks its low series forward then
+        // the high series backward to form a closed polygon. Both series
+        // must exist + share the same X grid; otherwise the ribbon is
+        // skipped silently rather than throwing — partial-data renders
+        // shouldn't crash the whole chart.
+        if (spec.Ribbons.Count > 0)
+        {
+            var byName = spec.Series.ToDictionary(s => s.Name, s => s);
+            foreach (var ribbon in spec.Ribbons)
+            {
+                if (!byName.TryGetValue(ribbon.LowSeriesName, out var low) ||
+                    !byName.TryGetValue(ribbon.HighSeriesName, out var high))
+                    continue;
+                if (low.Points.Count == 0 || low.Points.Count != high.Points.Count)
+                    continue;
+                var sbPoly = new StringBuilder();
+                foreach (var p in low.Points)
+                    sbPoly.Append(Ci, $"{ScaleX(p.X):0.#},{ScaleY(p.Y):0.#} ");
+                for (int i = high.Points.Count - 1; i >= 0; i--)
+                    sbPoly.Append(Ci, $"{ScaleX(high.Points[i].X):0.#},{ScaleY(high.Points[i].Y):0.#} ");
+                sb.Append(Ci, $"<polygon points=\"{sbPoly.ToString().TrimEnd()}\" fill=\"{ribbon.Color}\" stroke=\"none\" class=\"chart-ribbon\" />");
+            }
+        }
 
         // Series — polylines, plus point markers on sparse series only. Dense
         // series (e.g. hourly truth over 30 days) get just the line; the dots

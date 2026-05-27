@@ -293,6 +293,80 @@ public class SvgChartTests
     }
 
     [Fact]
+    public void Render_emits_polygon_for_ribbon_between_named_series()
+    {
+        // Distributional fan: P10–P90 around a P50 line. The static SVG
+        // path is used by rainfall_amount + dry_window today; the Ribbons
+        // field must produce a closed polygon connecting the two series
+        // so the band fills the gap between them.
+        var p10 = new (double, double)[] { (45_000, 0.1), (45_001, 0.2), (45_002, 0.3) };
+        var p50 = new (double, double)[] { (45_000, 0.5), (45_001, 0.6), (45_002, 0.7) };
+        var p90 = new (double, double)[] { (45_000, 0.9), (45_001, 1.0), (45_002, 1.1) };
+        var spec = new LineChartSpec
+        {
+            Title = "ribbon", XLabel = "x", YLabel = "y",
+            Series = new[]
+            {
+                new LineSeries("P10", "#90caf9", p10),
+                new LineSeries("P50", "#1565c0", p50),
+                new LineSeries("P90", "#90caf9", p90),
+            },
+            Ribbons = new[] { new RibbonSpec("P10", "P90", "rgba(33, 150, 243, 0.22)") },
+        };
+
+        var svg = LineChartRenderer.Render(spec);
+
+        svg.Should().Contain("<polygon");
+        svg.Should().Contain("rgba(33, 150, 243, 0.22)");
+        svg.Should().Contain("class=\"chart-ribbon\"");
+    }
+
+    [Fact]
+    public void Render_skips_ribbon_when_either_series_name_is_missing()
+    {
+        // Typo-protected — a ribbon referencing a non-existent series
+        // name renders nothing rather than crashing.
+        var spec = new LineChartSpec
+        {
+            Title = "ribbon-missing", XLabel = "x", YLabel = "y",
+            Series = new[]
+            {
+                new LineSeries("P50", "#1565c0",
+                    new (double, double)[] { (1, 0.5), (2, 0.6) }),
+            },
+            Ribbons = new[] { new RibbonSpec("P10", "P90", "rgba(0,0,0,0.1)") },
+        };
+
+        var svg = LineChartRenderer.Render(spec);
+
+        svg.Should().NotContain("<polygon");
+    }
+
+    [Fact]
+    public void Render_skips_ribbon_when_series_have_different_point_counts()
+    {
+        // The polygon-walk requires same-length series — otherwise the
+        // ribbon-edge correspondence is undefined. Render skips silently
+        // rather than mis-rendering a malformed ribbon.
+        var spec = new LineChartSpec
+        {
+            Title = "ribbon-mismatch", XLabel = "x", YLabel = "y",
+            Series = new[]
+            {
+                new LineSeries("P10", "#90caf9",
+                    new (double, double)[] { (1, 0.1), (2, 0.2), (3, 0.3) }),
+                new LineSeries("P90", "#90caf9",
+                    new (double, double)[] { (1, 0.9), (2, 1.0) }),
+            },
+            Ribbons = new[] { new RibbonSpec("P10", "P90", "rgba(0,0,0,0.1)") },
+        };
+
+        var svg = LineChartRenderer.Render(spec);
+
+        svg.Should().NotContain("<polygon");
+    }
+
+    [Fact]
     public void RenderChartJs_packs_every_dataset_with_color_and_discrete_flag()
     {
         var spec = new LineChartSpec
