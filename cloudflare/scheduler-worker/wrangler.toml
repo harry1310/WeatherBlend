@@ -63,6 +63,19 @@ crons = [
   "5 3,9,15,21 * * *",
   "0 12 * * *",
   "30 9 * * MON,THU",
+  # Watchdog — hourly at HH:00. Scans every cron above, computes
+  # whether a slot was expected in (HH-1:00, HH:00], and verifies the
+  # GH workflow actually ran. Re-dispatches anything missing.
+  # Recovers from dropped Cloudflare cron ticks (free-tier delivery is
+  # best-effort; the 2026-05-27 15:05Z s3-collect miss motivated this).
+  # Handled by handleWatchdog in src/index.ts; intentionally NOT in
+  # WORKFLOW_FOR_CRON because it dispatches conditionally per cron in
+  # the registry, not a single workflow.
+  #
+  # NOTE: Cloudflare free tier caps a Worker at 5 cron triggers — this
+  # is the 5th. Adding any further cron requires moving to paid or
+  # consolidating an existing schedule.
+  "0 * * * *",
 ]
 
 # Variables (non-secret). GH_REPO is intentionally a plain var rather than a

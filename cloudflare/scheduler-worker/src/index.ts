@@ -37,6 +37,8 @@
  * to pass `train_after_refresh` to previous-runs-refresh — see the
  * Sunday branch in scheduled() below.
  */
+import { lastFireInWindow } from "./cron";
+
 type Dispatch = { workflow: string; repo?: string; inputs?: Record<string, string> };
 
 /** Each cron can dispatch ONE OR MORE workflows. Multi-workflow tick lets
@@ -80,6 +82,16 @@ const WORKFLOW_FOR_CRON: Record<string, Dispatch[]> = {
   "30 9 * * MON,THU":   [{ workflow: "verify.yml" }],
 };
 
+/** Watchdog cron — fires hourly at HH:00. For each registered cron in
+ * WORKFLOW_FOR_CRON, it computes whether a slot was expected in the
+ * preceding hour and verifies the GH workflow actually ran. Recovers
+ * from dropped Cloudflare cron ticks (free tier delivery is best-
+ * effort, not guaranteed — single-tick misses happen occasionally;
+ * see the 2026-05-27 15:05Z s3-collect miss for the motivating
+ * incident). NOT included in WORKFLOW_FOR_CRON because it dispatches
+ * via handleWatchdog, not via the generic dispatch path. */
+const WATCHDOG_CRON = "0 * * * *";
+
 export interface Env {
   GH_APP_ID: string;
   GH_APP_INSTALLATION_ID: string;
@@ -97,6 +109,15 @@ export interface Env {
 
 export default {
   async scheduled(event: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
+    // Watchdog tick — separate code path because it doesn't map to a
+    // single workflow dispatch. Scans every registered cron, checks
+    // whether the preceding hour's slots actually fired on GH, and
+    // dispatches anything that's missing.
+    if (event.cron === WATCHDOG_CRON) {
+      await runWatchdog(env, event.scheduledTime, /*lookbackMin*/ 60, /*dryRun*/ false);
+      return;
+    }
+
     const targets = WORKFLOW_FOR_CRON[event.cron];
     if (!targets || targets.length === 0) {
       // Unknown cron string means wrangler.toml and this file have drifted
@@ -172,8 +193,27 @@ export default {
     if (url.pathname === "/github-webhook" && request.method === "POST") {
       return await handleWebhook(request, env);
     }
+    // Manual watchdog trigger. `?dry-run=1` logs what it WOULD dispatch
+    // without firing — useful for verifying the parser + GH lookups
+    // before the scheduled tick. `?lookback-minutes=N` lets the caller
+    // simulate a wider missed-tick window than the default 60 min (e.g.
+    // run with 360 to recover all slots from the last 6 hours after the
+    // worker's been down).
+    if (url.pathname === "/watchdog" && request.method === "POST") {
+      const dryRun = url.searchParams.get("dry-run") === "1";
+      const lookbackMin = parseInt(url.searchParams.get("lookback-minutes") ?? "60", 10);
+      const now = Date.now();
+      try {
+        const summary = await runWatchdog(env, now, lookbackMin, dryRun);
+        return new Response(summary + "\n", { status: 200 });
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : String(e);
+        return new Response(`error: ${message}\n`, { status: 500 });
+      }
+    }
     return new Response(
       `weatherblend-scheduler — POST /dispatch?workflow=<filename> to fire manually.\n` +
+      `POST /watchdog[?dry-run=1][&lookback-minutes=N] to run the cron-miss watchdog manually.\n` +
       `POST /github-webhook for GitHub workflow_run events (HMAC-signed).\n` +
       `Known workflows: ${[...knownWorkflows.keys()].join(", ")}\n`,
       { status: 200 },
@@ -724,6 +764,180 @@ function bytesToHex(bytes: Uint8Array): string {
 }
 
 // ---- workflow dispatch ----------------------------------------------------
+
+// ============================================================================
+// Watchdog — recover from dropped Cloudflare cron ticks
+// ============================================================================
+
+/** Tolerance applied to the "did this fire?" check. Cloudflare can
+ * deliver a cron tick a few seconds late; the GH workflow_dispatch
+ * round-trip adds another second or two; we don't want a 5-second
+ * lag flagged as a miss. 60 s = generous enough that a clean run
+ * always passes, tight enough that a truly missed slot doesn't sneak
+ * past on the next watchdog tick (slots are 6 hours apart at worst).
+ */
+const WATCHDOG_TOLERANCE_MS = 60_000;
+
+/** One missed-slot detection. The watchdog gathers these across all
+ * registered crons, then dispatches the missing workflows in parallel
+ * and surfaces an aggregate error if any redispatch fails. */
+interface MissedSlot {
+  expr: string;
+  expectedFireMs: number;
+  dispatch: Dispatch;
+  repo: string;
+  lastRunCreatedAtMs: number | null;
+  reason: "no-runs" | "latest-too-old" | "latest-in-progress-but-pre-slot";
+}
+
+/** Safety margin between the current time and the upper end of the
+ * lookback window. Avoids a race against schedules that fire at the
+ * same minute as the watchdog (notably `0 12 * * *` noon refresh vs
+ * the watchdog at 12:00Z, and any future cron sharing the HH:00
+ * minute). With 5 min, a slot at HH:00 is only checked by the
+ * (HH+1):00 watchdog tick — by which time the original cron's GH
+ * dispatch has had a full hour to register a run.
+ *
+ * Slots at HH:55 would fall in the gap between two consecutive
+ * watchdog ticks' windows, but no cron in WORKFLOW_FOR_CRON fires at
+ * :55 (minutes in use: :00 / :05 / :30 / :45). Revisit if a new
+ * schedule lands on :50-:59.
+ */
+const WATCHDOG_SAFETY_MARGIN_MS = 5 * 60_000;
+
+async function runWatchdog(
+  env: Env,
+  scheduledTime: number,
+  lookbackMin: number,
+  dryRun: boolean,
+): Promise<string> {
+  // Look back lookbackMin minutes ending 5 min before now. The 5-min
+  // safety margin keeps us from racing against any cron that fires at
+  // the same minute as the watchdog: by the time we check a slot, it's
+  // had at least 5 minutes of GH-API propagation time.
+  //
+  // The manual /watchdog endpoint accepts a wider lookback for catch-up
+  // scenarios after a worker outage (e.g. ?lookback-minutes=360 covers
+  // 6 hours of slots).
+  const beforeMs = scheduledTime - WATCHDOG_SAFETY_MARGIN_MS;
+  const lookbackMs = beforeMs - lookbackMin * 60_000;
+  const missed: MissedSlot[] = [];
+  // GH App token mint is expensive (key import + JWT sign + HTTP
+  // exchange); reuse one token across every workflow lookup this tick.
+  // Same token also feeds the redispatch path below.
+  let installationToken: string | null = null;
+  const getToken = async (): Promise<string> => {
+    if (installationToken) return installationToken;
+    const jwt = await mintAppJwt(env.GH_APP_ID, env.GH_APP_PRIVATE_KEY);
+    installationToken = await exchangeForInstallationToken(jwt, env.GH_APP_INSTALLATION_ID);
+    return installationToken;
+  };
+
+  for (const [expr, dispatches] of Object.entries(WORKFLOW_FOR_CRON)) {
+    const expected = lastFireInWindow(expr, lookbackMs, beforeMs);
+    if (expected === null) continue;   // no slot for this cron in the window
+
+    for (const dispatch of dispatches) {
+      const repo = dispatch.repo ?? env.GH_REPO;
+      const latest = await ghLatestWorkflowDispatchRun(await getToken(), repo, dispatch.workflow);
+
+      // A run is considered "covers this slot" when its created_at is
+      // at or after (expected - tolerance). Tolerance handles small
+      // dispatch-latency jitter so a healthy run isn't flagged.
+      if (latest !== null) {
+        const latestMs = latest.createdAtMs;
+        if (latestMs >= expected - WATCHDOG_TOLERANCE_MS) continue;  // healthy
+      }
+
+      missed.push({
+        expr,
+        expectedFireMs: expected,
+        dispatch,
+        repo,
+        lastRunCreatedAtMs: latest?.createdAtMs ?? null,
+        reason: latest === null ? "no-runs" : "latest-too-old",
+      });
+    }
+  }
+
+  const window = `(${new Date(lookbackMs).toISOString()}, ${new Date(beforeMs).toISOString()}]`;
+  if (missed.length === 0) {
+    const ok = `watchdog: all ${Object.keys(WORKFLOW_FOR_CRON).length} cron schedules covered for window ${window}.`;
+    console.log(ok);
+    return ok;
+  }
+
+  // Log every miss before dispatching so the diagnostic survives even
+  // if a redispatch itself fails. Format mirrors scheduled()'s log
+  // line so tail-grep'ing on "missed tick" finds them.
+  const lines: string[] = [];
+  for (const m of missed) {
+    const latest = m.lastRunCreatedAtMs === null
+      ? "no prior runs"
+      : `latest=${new Date(m.lastRunCreatedAtMs).toISOString()}`;
+    const verb = dryRun ? "would redispatch" : "redispatching";
+    const line =
+      `watchdog: missed tick cron='${m.expr}' → ${m.repo}/${m.dispatch.workflow} ` +
+      `expected=${new Date(m.expectedFireMs).toISOString()} ${latest} (${m.reason}); ${verb}`;
+    console.log(line);
+    lines.push(line);
+  }
+
+  if (dryRun) {
+    return `watchdog: dry-run found ${missed.length} missed slot(s) in ${window}\n` + lines.join("\n");
+  }
+
+  const results = await Promise.allSettled(
+    missed.map((m) => dispatchWorkflow(env, m.dispatch.workflow, m.repo, m.dispatch.inputs)),
+  );
+  const failures = results
+    .map((r, i) => ({ r, m: missed[i] }))
+    .filter((x) => x.r.status === "rejected");
+  if (failures.length > 0) {
+    const messages = failures.map(
+      (f) => `${f.m.repo}/${f.m.dispatch.workflow}: ${(f.r as PromiseRejectedResult).reason}`,
+    );
+    throw new Error(`watchdog redispatches failed: ${messages.join("; ")}`);
+  }
+  return `watchdog: redispatched ${missed.length} missed slot(s) in ${window}\n` + lines.join("\n");
+}
+
+/** Most-recent workflow_dispatch-event run for a workflow, regardless
+ * of conclusion. Returns null when the workflow has never been
+ * dispatched (fresh install) — caller treats that as a miss IFF the
+ * window had an expected slot.
+ *
+ * Only counts event=workflow_dispatch runs: push / pull_request /
+ * workflow_run runs are irrelevant for the cron-coverage check and
+ * including them would falsely satisfy a missed cron slot whenever
+ * someone pushed a code change near the slot time. */
+async function ghLatestWorkflowDispatchRun(
+  installationToken: string,
+  repo: string,
+  workflowFile: string,
+): Promise<{ createdAtMs: number; status: string; conclusion: string | null } | null> {
+  const url = `https://api.github.com/repos/${repo}/actions/workflows/${workflowFile}/runs` +
+    `?event=workflow_dispatch&per_page=1`;
+  const response = await fetch(url, {
+    headers: {
+      "Authorization": `Bearer ${installationToken}`,
+      "Accept": "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "weatherblend-scheduler",
+    },
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`workflow runs lookup failed for ${repo}/${workflowFile}: ${response.status} — ${body}`);
+  }
+  const data = (await response.json()) as {
+    workflow_runs?: { created_at: string; status: string; conclusion: string | null }[];
+  };
+  const runs = data.workflow_runs ?? [];
+  if (runs.length === 0) return null;
+  const r = runs[0];
+  return { createdAtMs: Date.parse(r.created_at), status: r.status, conclusion: r.conclusion };
+}
 
 async function dispatchWorkflow(
   env: Env,
