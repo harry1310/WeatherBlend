@@ -174,7 +174,7 @@ public static partial class SitePages
             var tiles = new StringBuilder();
             int popoverId = 0;
             foreach (var p in dayPreds)
-                tiles.Append(RenderHourTile(p, feelsLikeByValid, pwetByValid, lowCloudByValid, popoverId++));
+                tiles.Append(RenderHourTile(p, feelsLikeByValid, pwetByValid, lowCloudByValid, input.WindGustByValidMs, popoverId++));
             tilesHtml = string.Create(Ci, $"<div class=\"forecast-grid\">{tiles}</div>");
         }
 
@@ -344,6 +344,7 @@ public static partial class SitePages
         IReadOnlyDictionary<DateTime, FeelsLikeForecastPoint> feelsLikeByValid,
         IReadOnlyDictionary<DateTime, PrecipForecastPoint> pwetByValid,
         IReadOnlyDictionary<DateTime, LowCloudSignal> lowCloudByValid,
+        IReadOnlyDictionary<DateTime, double> windGustByValidMs,
         int popoverId)
     {
         // Low-cloud / mist warning — fires when EITHER signal hits its
@@ -398,9 +399,22 @@ public static partial class SitePages
                 if (fl.RelativeHumidityPct is double rh)
                     rows.Append(Ci, $"<tr><td>Humidity</td><td class=\"num\">{rh:0} %</td></tr>");
                 if (fl.WindSpeed10mMs is double ws)
+                {
                     // Stored as m/s; display as km/h (× 3.6) since the
-                    // overview audience reads km/h natively.
-                    rows.Append(Ci, $"<tr><td>Wind 10 m</td><td class=\"num\">{ws * 3.6:0.0} km/h</td></tr>");
+                    // overview audience reads km/h natively. Gust appended
+                    // inline when materially above wind (gust km/h > wind
+                    // km/h + 1) so calm-wind rows don't sprout a redundant
+                    // "Wind 4, gust 4" suffix.
+                    var windKmh = ws * 3.6;
+                    string gustSuffix = "";
+                    if (windGustByValidMs.TryGetValue(p.ValidTimeUtc, out var gustMs))
+                    {
+                        var gustKmh = gustMs * 3.6;
+                        if (gustKmh > windKmh + 1.0)
+                            gustSuffix = string.Create(Ci, $" · gust {gustKmh:0.0} km/h");
+                    }
+                    rows.Append(Ci, $"<tr><td>Wind 10 m</td><td class=\"num\">{windKmh:0.0} km/h{gustSuffix}</td></tr>");
+                }
                 if (fl.ShortwaveDownWm2 is double sw)
                     rows.Append(Ci, $"<tr><td>Shortwave down</td><td class=\"num\">{sw:0} W/m²</td></tr>");
                 if (fl.CloudCoverPct is double cc)

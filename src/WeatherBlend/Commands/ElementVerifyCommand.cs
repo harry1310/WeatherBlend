@@ -169,6 +169,7 @@ public sealed class ElementVerifyCommand
         "humidity"            => "RelativeHumidity2m",
         "shortwave-radiation" => "ShortwaveRadiation",
         "cloud-cover"         => "CloudCover",
+        "wind-gust"           => "WindGusts10m",
         _ => throw new ArgumentException($"No ERA5 truth column mapped for element '{target.CliName}'."),
     };
 

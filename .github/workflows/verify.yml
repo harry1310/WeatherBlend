@@ -226,12 +226,13 @@ jobs:
           done
           echo "exit=$fail" >> "$GITHUB_OUTPUT"
 
-      - name: Verify element blenders (wind / humidity / shortwave-radiation / cloud-cover, all configured locations)
+      - name: Verify element blenders (wind / humidity / shortwave-radiation / cloud-cover / wind-gust, all configured locations)
         # One verify step per (location, element). Independent exit codes —
         # drift on any element surfaces in the job summary. Empty windows
         # (no predictions yet — typical for Membury element blenders that
         # aren't trained yet) exit 0. Phase C commit 3c: location list from
         # `list-locations` — single source of truth, `_cfg.Locations`.
+        # wind-gust added 2026-05-27.
         id: verify_elements_run
         run: |
           AS_OF="${{ github.event.inputs.as_of }}"
@@ -241,7 +242,7 @@ jobs:
           drift=0
           fail=0
           for loc in $LOCS; do
-            for tgt in wind humidity shortwave-radiation cloud-cover; do
+            for tgt in wind humidity shortwave-radiation cloud-cover wind-gust; do
               ARGS="--target $tgt --location $loc"
               if [ -n "$AS_OF" ]; then ARGS="$ARGS --as-of $AS_OF"; fi
               if [ -n "$WINDOW" ]; then ARGS="$ARGS --window-days $WINDOW"; fi

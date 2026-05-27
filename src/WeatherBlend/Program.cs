@@ -11,6 +11,7 @@ using WeatherBlend.Config;
 using WeatherBlend.Storage;
 using WeatherBlend.Train.Element;
 using WeatherBlend.Train.Element.Cloud;
+using WeatherBlend.Train.Element.Gust;
 using WeatherBlend.Train.Element.Humidity;
 using WeatherBlend.Train.Element.Radiation;
 using WeatherBlend.Train.Element.Wind;
@@ -230,6 +231,7 @@ public static class Program
                 services.AddTransient<IElementBlender, HumidityBlender>();
                 services.AddTransient<IElementBlender, RadiationBlender>();
                 services.AddTransient<IElementBlender, CloudBlender>();
+                services.AddTransient<IElementBlender, WindGustBlender>();
             })
             .Build();
 

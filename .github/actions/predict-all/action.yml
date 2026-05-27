@@ -122,19 +122,19 @@ runs:
           fi
         done
 
-    - name: Predict element blenders (wind / humidity / shortwave-radiation / cloud-cover, all configured locations)
+    - name: Predict element blenders (wind / humidity / shortwave-radiation / cloud-cover / wind-gust, all configured locations)
       shell: bash
       # Per-(location, element) lean blenders. Radiation is currently expected
       # to return 3 because live forecasts don't include SW columns (known
       # live-collector gap). Humidity + cloud may return partial coverage at
-      # 48/72h when MF is missing. Membury element blenders aren't trained
-      # yet so this returns 2 cleanly per element until those bundles ship.
-      # Soft-skip 2/3/4.
+      # 48/72h when MF is missing. wind-gust added 2026-05-27 (4 OM NWPs with
+      # gust). Membury element blenders aren't trained yet so this returns 2
+      # cleanly per element until those bundles ship. Soft-skip 2/3/4.
       run: |
         FOR_DATE="${{ inputs.for_date }}"
         LOCS=$(dotnet run --project src/WeatherBlend --no-build -c Release -- list-locations)
         for loc in $LOCS; do
-          for tgt in wind humidity shortwave-radiation cloud-cover; do
+          for tgt in wind humidity shortwave-radiation cloud-cover wind-gust; do
             echo "::group::predict $tgt ($loc)"
             code=0
             if [ -n "$FOR_DATE" ]; then

@@ -7,6 +7,7 @@ using WeatherBlend.Train.Common;
 using WeatherBlend.Train.Element;
 using WeatherBlend.Train.Element.Cloud;
 using WeatherBlend.Train.Element.Common;
+using WeatherBlend.Train.Element.Gust;
 using WeatherBlend.Train.Element.Humidity;
 using WeatherBlend.Train.Element.Radiation;
 using WeatherBlend.Train.Element.Wind;
@@ -118,6 +119,9 @@ public sealed class ElementPredictCommand
                     _log, location.Name, _cfg.Storage.ForecastsPath,
                     versionDir, metadata.Version, anchor, predictionMadeAt, DefaultLeads, ct),
                 "cloud-cover" => CloudPredictPipeline.PredictForCycle(
+                    _log, location.Name, _cfg.Storage.ForecastsPath,
+                    versionDir, metadata.Version, anchor, predictionMadeAt, DefaultLeads, ct),
+                "wind-gust" => WindGustPredictPipeline.PredictForCycle(
                     _log, location.Name, _cfg.Storage.ForecastsPath,
                     versionDir, metadata.Version, anchor, predictionMadeAt, DefaultLeads, ct),
                 _ => throw new InvalidOperationException($"Unknown element target {target.CliName}"),

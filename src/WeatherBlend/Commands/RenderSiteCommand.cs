@@ -111,6 +111,9 @@ public sealed class RenderSiteCommand
         var feelsLikeAllLocs = QueryFeelsLikePredictions(windowStart, predictionEnd, ct);
         _log.LogInformation("Loaded {N} feels-like prediction rows (all locations).", feelsLikeAllLocs.Count);
 
+        var windGustAllLocs = QueryWindGustByValidTime(windowStart, predictionEnd, ct);
+        _log.LogInformation("Loaded {N} wind-gust prediction rows (all locations).", windGustAllLocs.Count);
+
         var dryWindowRows = _predictions.GetDryWindowPredictions(cells: null, windowStart, predictionEnd, ct);
         var dryWindowAllLocs = dryWindowRows.Select(r => new SitePages.DryWindowForecastPoint(
             Station:                     r.TruthStation,
@@ -267,6 +270,12 @@ public sealed class RenderSiteCommand
                 .Where(d => locStationSlugs.Count == 0 || locStationSlugs.Contains(d.Station))
                 .ToList();
             var feelsLike = feelsLikeAllLocs.Where(f => IsThisLoc(f.LocationName)).ToList();
+            // Wind-gust: per-location dict, latest PredictedAtUtc per ValidTime
+            // already collapsed by the SQL window function. Empty dict when the
+            // wind_gust tree is unsynced — UTCI pop-out falls back to wind-only.
+            var windGustByValid = windGustAllLocs
+                .Where(g => IsThisLoc(g.LocationName))
+                .ToDictionary(g => g.ValidTimeUtc, g => g.GustMs);
             var startHour = startHourAllLocs.Where(s => IsThisLoc(s.LocationName)).ToList();
             var metOfficeSpot = metOfficeSpotAllLocs.Where(m => IsThisLoc(m.LocationName)).ToList();
             var nwpPop = nwpPopAllLocs.Where(p => IsThisLoc(p.LocationName)).ToList();
@@ -333,6 +342,7 @@ public sealed class RenderSiteCommand
                 ModelSummaries = locModelSummaries,
                 FeatureSpecRows = locFeatureSpecRows,
                 FeelsLikePredictions = feelsLike,
+                WindGustByValidMs = windGustByValid,
                 StartHourPredictions = startHour,
                 MetOfficeSpotForecasts = metOfficeSpot,
                 NwpPrecipProbabilities = nwpPop,
@@ -1010,6 +1020,49 @@ ORDER BY LocationName, LeadHours, ValidTimeUtc";
             CloudCoverPct:       r.IsDBNull(11) ? null : (double?)r.GetDouble(11),
             LocationName:        r.GetString(12)),
             _log, "Feels-like predictions tree empty — chip will be absent on home cards.", ct);
+    }
+
+    /// <summary>
+    /// Pulls wind-gust blender predictions (m/s) for every configured
+    /// location in the rendering window, collapsed to one row per
+    /// (LocationName, ValidTimeUtc) at the latest <c>PredictionMadeAtUtc</c>.
+    /// Surfaced inline on the UTCI pop-out next to the 10 m wind row when
+    /// gust is materially above wind (gust km/h &gt; wind km/h + 1).
+    /// </summary>
+    private IReadOnlyList<(string LocationName, DateTime ValidTimeUtc, double GustMs)>
+        QueryWindGustByValidTime(DateTime start, DateTime end, CancellationToken ct)
+    {
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath,
+                                                   "wind_gust", "**", "*.parquet"));
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        if (!ParquetReader.HasColumn(conn, glob, "BlendValue"))
+        {
+            _log.LogInformation("Wind-gust predictions tree empty — pop-out gust suffix absent until predict runs.");
+            return Array.Empty<(string, DateTime, double)>();
+        }
+        var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
+        var sql = $@"
+WITH ranked AS (
+    SELECT LocationName, ValidTimeUtc, BlendValue,
+           ROW_NUMBER() OVER (PARTITION BY LocationName, ValidTimeUtc
+                              ORDER BY PredictionMadeAtUtc DESC) AS rn
+    FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+    WHERE Element = 'wind-gust'
+      AND LocationName IN ({locFilter})
+      AND BlendValue IS NOT NULL
+      AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
+      AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+)
+SELECT LocationName, ValidTimeUtc, BlendValue
+FROM ranked
+WHERE rn = 1
+ORDER BY LocationName, ValidTimeUtc";
+        return ParquetReader.Query(conn, sql, r => (
+            LocationName: r.GetString(0),
+            ValidTimeUtc: r.GetDateTime(1),
+            GustMs:       r.GetDouble(2)),
+            _log, "Wind-gust predictions tree empty — pop-out gust suffix absent until predict runs.", ct);
     }
 
     /// <summary>

@@ -461,6 +461,15 @@ public static partial class SitePages
             = Array.Empty<FeelsLikeForecastPoint>();
 
         /// <summary>
+        /// Wind-gust blender predictions per valid_time (m/s). Surfaced inline
+        /// on the UTCI pop-out next to the 10 m wind row when gust is materially
+        /// above wind. Empty when the wind-gust prediction tree hasn't been
+        /// synced yet — the row falls back to wind-only rendering.
+        /// </summary>
+        public IReadOnlyDictionary<DateTime, double> WindGustByValidMs { get; init; }
+            = new Dictionary<DateTime, double>();
+
+        /// <summary>
         /// Per-(station, window, lead, target_date) start-hour curve points —
         /// one row per candidate start hour. Latest <c>PredictedAtUtc</c> per
         /// (Station, WindowHours, LeadHours, TargetDateUtc, StartHourUtc) wins

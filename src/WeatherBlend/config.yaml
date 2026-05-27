@@ -434,6 +434,21 @@ blenders:
           requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless]
           optionalModels: [ecmwf_aifs025_single]
 
+    # Wind gust (2026-05-27): only 4 production NWPs publish gust on
+    # Open-Meteo Previous Runs (audited). GFS / ICON / GEM required; UKMO
+    # optional — UKMO gust starts 2024-09 (same UkmoCleanWindowStart used
+    # by the wind blender). ECMWF / MF / JMA / AIFS publish no gust on
+    # Previous Runs and are excluded entirely. AIFS gust isn't included
+    # even as optional because Open-Meteo AIFS has 0 gust rows
+    # (90,923 rows across 2025-2026, every one null). Archive NWPs that
+    # could add ~6.5% MAE (gfs_ncep + MO Global + MO UKV) are parked as
+    # a broader cross-blender question — see
+    # project_gust_production_scope_2026-05-27.md.
+    - target: wind_gust
+      featureSet: default
+      requiredModels: [gfs_seamless, icon_seamless, gem_seamless]
+      optionalModels: [ukmo_seamless]
+
 # Dry-window blender — local-time daytime allowed-window. Both labels (truth)
 # and per-NWP feature aggregates (longest dry run, has-dry-window indicator,
 # wet hour count, precip sum, envelope covariates, shape features) restrict

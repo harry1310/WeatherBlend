@@ -393,6 +393,18 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target cloud-cover
 
+      - name: Train element wind-gust
+        # 4-NWP production-scope gust blender (gfs/icon/gem required + ukmo
+        # optional). 10-feature minimal variant (per-NWP gust + ratio + ratio
+        # mean/std). ERA5 WindGusts10m as truth. Bake-off 2026-05-27 MAE 1.04.
+        # Phase id is wind_gust_lgb in phases.yaml so the gate matches.
+        id: train_wind_gust
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_wind_gust_lgb == 'true'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target wind-gust
+
       - name: Mint Phase 4b bundle (4a + 3o mean)
         # Reads the latest 4a + 3o bundles already pulled from R2 at job
         # start. Bundle re-mint is one-cycle-behind on 4a updates (4a is
