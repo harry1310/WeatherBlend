@@ -343,6 +343,18 @@ public static partial class SitePages
         public required IReadOnlyList<DryWindowForecastPoint> DryWindowPredictions { get; init; }
 
         /// <summary>
+        /// Phase 3f rainfall_amount mixed-distribution predictions across all
+        /// rainfall stations active for 3f. Each row carries the full mixed
+        /// distribution (Pi + μ_log + σ_log + derived quantile fan +
+        /// exceedance probabilities) for one (valid_time, lead). The
+        /// rainfall_amount card on the rain tab consumes this directly. Empty
+        /// list when 3f isn't trained for this location yet (Bonehill today)
+        /// or when the predictions tree hasn't been synced from R2.
+        /// </summary>
+        public IReadOnlyList<RainfallAmountPredictionRow> RainfallAmountPredictions { get; init; }
+            = Array.Empty<RainfallAmountPredictionRow>();
+
+        /// <summary>
         /// training_metadata.Phase per ModelVersion that appears in Predictions. Used by
         /// the forecast-vs-truth page to bucket lines into "2b lean" vs "2c rich" groups.
         /// Missing entries (older versions, missing metadata) are treated as an empty phase

@@ -80,6 +80,31 @@ public static partial class SitePages
 
         body.Append(RenderPrecipSection(input, lead, active));
 
+        // Phase 3f rainfall_amount cards — one per active rainfall station at
+        // this location, mounted only when 3f has predictions on this cycle.
+        // Membury-only today per phases.yaml; the loop renders nothing for
+        // Bonehill until Membury 4a→3f Bonehill rollout (deferred per plan §0).
+        var ramRows = input.RainfallAmountPredictions
+            .Where(r => r.LeadHours == lead).ToList();
+        if (ramRows.Count > 0 && Leads.ForecastsTempRain.Contains(lead))
+        {
+            // 3f's trained lead set is {24,48,72,96,120}; +12h has no 3f rows
+            // by design (lead is exact-runtime-only). Skip silently for those.
+            var stations = ramRows.Select(r => r.TruthStation).Distinct()
+                .OrderBy(s => s, StringComparer.Ordinal).ToList();
+            foreach (var slug in stations)
+            {
+                var html = RenderRainfallAmountSection(input, slug, lead);
+                if (string.IsNullOrEmpty(html)) continue;
+                body.Append(Ci, $"""
+                      <hgroup>
+                        <h3>{Escape(PrettyStation(slug))} — rainfall amount</h3>
+                      </hgroup>
+                    """);
+                body.Append(html);
+            }
+        }
+
         body.Append("</section>");
         return WrapPage(input, $"Rain forecast +{lead}h", "rain", body.ToString());
     }

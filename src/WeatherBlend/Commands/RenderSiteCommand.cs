@@ -75,6 +75,14 @@ public sealed class RenderSiteCommand
         // Pass null for the station/cell filter — render scans the whole subtree
         // unlike verify, which limits to its requested stations.
         var precipRows = _predictions.GetPrecipitationPredictions(stations: null, windowStart, predictionEnd, ct);
+
+        // Phase 3f rainfall_amount predictions — same window as P(wet), scoped
+        // per-loc below. Empty list when the rainfall_amount tree hasn't been
+        // synced from R2 or no location has 3f trained yet (Membury-only today).
+        var rainfallAmountAllLocs = _predictions.GetRainfallAmountPredictions(
+            stations: null, windowStart, predictionEnd, ct);
+        _log.LogInformation("Loaded {N} rainfall_amount prediction rows (all locations).",
+            rainfallAmountAllLocs.Count);
         var precipAllLocs = precipRows.Select(r => new SitePages.PrecipForecastPoint(
             Station:         r.TruthStation,
             Version:         r.ModelVersion,
@@ -250,6 +258,11 @@ public sealed class RenderSiteCommand
             var precip = precipAllLocs
                 .Where(p => locStationSlugs.Count == 0 || locStationSlugs.Contains(p.Station))
                 .ToList();
+            // Rainfall_amount rows carry both LocationName + TruthStation; scope
+            // by location since 3f is per-location-active per phases.yaml.
+            var rainfallAmount = rainfallAmountAllLocs
+                .Where(r => IsThisLoc(r.LocationName))
+                .ToList();
             var dryWindow = dryWindowAllLocs
                 .Where(d => locStationSlugs.Count == 0 || locStationSlugs.Contains(d.Station))
                 .ToList();
@@ -305,6 +318,7 @@ public sealed class RenderSiteCommand
                 RollingBrier = rollingBrier,
                 PrecipPredictions = precip,
                 DryWindowPredictions = dryWindow,
+                RainfallAmountPredictions = rainfallAmount,
                 DryWindowConformalTau = dryWindowConformalTau,
                 PrecipConformalTau = precipConformalTau,
                 DryWindowDaytime = _cfg.DryWindow.BuildDaytimeWindow(),
