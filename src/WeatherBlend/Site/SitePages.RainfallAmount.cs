@@ -113,16 +113,30 @@ public static partial class SitePages
     }
 
     /// <summary>
-    /// Hourly intensity chart — P50 line, P10–P90 ribbon, P2.5–P97.5
-    /// outer ribbon. The ribbons reuse the LineChartSpec.Ribbons field
-    /// added 2026-05-27 alongside this card; future distributional
-    /// phases (Bonehill 3f later, 4a's predictive distribution) can
-    /// reuse the same primitive.
+    /// Hourly intensity chart — "Median" line (MedianMmPerHr — π·exp(μ_log)),
+    /// P10–P90 ribbon, P2.5–P97.5 outer ribbon. The ribbons reuse the
+    /// LineChartSpec.Ribbons field added 2026-05-27 alongside this card;
+    /// future distributional phases can reuse the same primitive.
+    ///
+    /// Central line is MedianMmPerHr — not P50MmPerHr — because P50 of
+    /// the mixed mass-at-zero + LogNormal distribution is identically 0
+    /// whenever P(wet) ≤ 50% (i.e. the dry-mass already covers the 50th
+    /// percentile). MedianMmPerHr = π · exp(μ_log) is the schema's
+    /// "preferred for headline display" value (RainfallAmountPredictionRow.cs
+    /// line 95-97) and is the same number the headline strip above the
+    /// chart shows for the wettest hour.
+    ///
+    /// The ribbon edges remain MIXED quantiles (P10MmPerHr etc.) — they
+    /// genuinely sit at 0 for most hours, which is the truthful "10% of
+    /// the time, no rain" reading. Switching to conditional-given-wet
+    /// quantiles would change the chart's semantics without an
+    /// in-frame label explaining the conditioning; better to keep the
+    /// flat-zero floor honest than to silently swap meanings.
     /// </summary>
     private static string RenderRainfallAmountRibbon(
         IReadOnlyList<RainfallAmountPredictionRow> rows, int lead)
     {
-        var p50 = rows.Select(r => (r.ValidTimeUtc.ToOADate(), r.P50MmPerHr)).ToList();
+        var median = rows.Select(r => (r.ValidTimeUtc.ToOADate(), r.MedianMmPerHr)).ToList();
         var p10 = rows.Select(r => (r.ValidTimeUtc.ToOADate(), r.P10MmPerHr)).ToList();
         var p90 = rows.Select(r => (r.ValidTimeUtc.ToOADate(), r.P90MmPerHr)).ToList();
         var p2  = rows.Select(r => (r.ValidTimeUtc.ToOADate(), r.P2_5MmPerHr)).ToList();
@@ -138,11 +152,11 @@ public static partial class SitePages
             FormatY = v => v.ToString("0.0", Ci),
             Series = new[]
             {
-                new LineSeries("P2.5",  "#bbdefb", p2),
-                new LineSeries("P10",   "#90caf9", p10),
-                new LineSeries("P50",   "#1565c0", p50),
-                new LineSeries("P90",   "#90caf9", p90),
-                new LineSeries("P97.5", "#bbdefb", p97),
+                new LineSeries("P2.5",   "#bbdefb", p2),
+                new LineSeries("P10",    "#90caf9", p10),
+                new LineSeries("Median", "#1565c0", median),
+                new LineSeries("P90",    "#90caf9", p90),
+                new LineSeries("P97.5",  "#bbdefb", p97),
             },
             Ribbons = new[]
             {
@@ -151,7 +165,11 @@ public static partial class SitePages
                 new RibbonSpec("P10",  "P90",   "rgba(33, 150, 243, 0.22)"),
             },
         };
-        return $"<figure>{LineChartRenderer.Render(spec)}</figure>";
+        // Chart.js rendering (not the static SVG) — gives tooltips,
+        // hover-anywhere read-out, and the zoom/pan that the rest of the
+        // forecast pages use. Ribbons are now supported on this path too
+        // (see SvgChart.RenderChartJs's fillTo + fillColor wire).
+        return $"<figure>{LineChartRenderer.RenderChartJs(spec)}</figure>";
     }
 
     /// <summary>

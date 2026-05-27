@@ -254,7 +254,12 @@ public static class LineChartRenderer
         var xKind = ProbeXKind(spec.FormatX);
         var (yDec, ySuffix, yTrim) = ProbeYFormat(spec.FormatY);
 
-        var datasets = new List<object>();
+        // Build datasets and remember each kept series's name → final index
+        // (index AFTER filtering empties / non-finite-only series). The
+        // ribbon resolver below needs this mapping to point Chart.js's
+        // `fill: <index>` at the correct partner dataset.
+        var datasets = new List<Dictionary<string, object?>>();
+        var indexByName = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var s in spec.Series)
         {
             if (s.Points.Count == 0) continue;
@@ -270,14 +275,29 @@ public static class LineChartRenderer
                 .Select(p => new[] { p.X, p.Y })
                 .ToArray();
             if (pts.Length == 0) continue;
-            datasets.Add(new
+            indexByName[s.Name] = datasets.Count;
+            datasets.Add(new Dictionary<string, object?>
             {
-                label = s.Name,
-                color = s.Color,
-                discrete = s.PointsOnly,
-                dashed = s.Dashed,
-                points = pts,
+                ["label"] = s.Name,
+                ["color"] = s.Color,
+                ["discrete"] = s.PointsOnly,
+                ["dashed"] = s.Dashed,
+                ["points"] = pts,
             });
+        }
+
+        // Ribbons → Chart.js `fill: <index>` + `backgroundColor`. The LOW
+        // dataset of each ribbon gets a fillTo pointer to its HIGH partner;
+        // Chart.js fills the area between them. Silently skip any ribbon
+        // whose endpoint dataset got dropped above (empty series) so a
+        // partial-data render doesn't crash. Same skip rule the static SVG
+        // renderer uses.
+        foreach (var ribbon in spec.Ribbons)
+        {
+            if (!indexByName.TryGetValue(ribbon.LowSeriesName, out var lowIdx)) continue;
+            if (!indexByName.TryGetValue(ribbon.HighSeriesName, out var highIdx)) continue;
+            datasets[lowIdx]["fillTo"] = highIdx;
+            datasets[lowIdx]["fillColor"] = ribbon.Color;
         }
 
         // Annotation plugin payload — only emitted when non-empty so charts that

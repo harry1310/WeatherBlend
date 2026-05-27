@@ -1072,7 +1072,18 @@ public static partial class SitePages
               label: ds.label,
               data: ds.points.map(p => ({ x: oaToMs(p[0]), y: p[1] })),
               borderColor: ds.color,
-              backgroundColor: ds.color,
+              // Ribbon fill (added 2026-05-27 for the rainfall_amount 3f
+              // chart): when the server-side LineChartSpec.Ribbons names
+              // this series as the low partner of a ribbon, `ds.fillTo`
+              // is the dataset INDEX of its high partner and `ds.fillColor`
+              // is the band's rgba colour. Chart.js draws a filled area
+              // between the two datasets in `fillColor`. The series's
+              // line stroke stays in `borderColor`. Other charts (no
+              // ribbons) leave both undefined → backgroundColor stays
+              // ds.color and fill stays false, matching pre-ribbon
+              // behaviour exactly.
+              backgroundColor: ds.fillColor || ds.color,
+              fill: ds.fillTo != null ? ds.fillTo : false,
               borderWidth: 1.75,
               // Dashed series — used to overlay a challenger-phase line on top
               // of its champion in the same colour so the eye reads them as

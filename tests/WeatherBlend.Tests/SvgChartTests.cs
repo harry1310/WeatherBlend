@@ -343,6 +343,66 @@ public class SvgChartTests
     }
 
     [Fact]
+    public void RenderChartJs_threads_ribbons_through_fillTo_and_fillColor()
+    {
+        // Chart.js path consumes Ribbons too (added 2026-05-27 so the
+        // rainfall_amount 3f card could get tooltips + zoom by switching
+        // off the static SVG render). The low dataset of each ribbon must
+        // carry fillTo (index of the high dataset) + fillColor (the rgba
+        // band fill) so the JS bootstrap can apply Chart.js's `fill:`.
+        var spec = new LineChartSpec
+        {
+            Title = "ribbon-cjs", XLabel = "x", YLabel = "y",
+            Series = new[]
+            {
+                new LineSeries("P10",    "#90caf9",
+                    new (double, double)[] { (1, 0.1), (2, 0.2) }),
+                new LineSeries("Median", "#1565c0",
+                    new (double, double)[] { (1, 0.5), (2, 0.6) }),
+                new LineSeries("P90",    "#90caf9",
+                    new (double, double)[] { (1, 0.9), (2, 1.0) }),
+            },
+            Ribbons = new[] { new RibbonSpec("P10", "P90", "rgba(33, 150, 243, 0.22)") },
+        };
+
+        var html = LineChartRenderer.RenderChartJs(spec);
+        var cfg = ExtractCjsConfig(html);
+
+        var ds = cfg.GetProperty("datasets");
+        // Median dataset (index 1) has no fill — only the ribbon's low partner does.
+        ds[1].TryGetProperty("fillTo", out _).Should().BeFalse();
+        // P10 (index 0) fills toward P90 (index 2) with the ribbon colour.
+        ds[0].GetProperty("fillTo").GetInt32().Should().Be(2);
+        ds[0].GetProperty("fillColor").GetString().Should().Be("rgba(33, 150, 243, 0.22)");
+    }
+
+    [Fact]
+    public void RenderChartJs_skips_ribbon_when_low_dataset_was_filtered_out()
+    {
+        // A series with zero finite points is dropped from the datasets
+        // array; a ribbon referencing it must skip silently rather than
+        // pointing fill at a stale index that no longer exists.
+        var spec = new LineChartSpec
+        {
+            Title = "ribbon-cjs-skip", XLabel = "x", YLabel = "y",
+            Series = new[]
+            {
+                new LineSeries("P10", "#90caf9", Array.Empty<(double, double)>()),
+                new LineSeries("P90", "#90caf9",
+                    new (double, double)[] { (1, 0.9), (2, 1.0) }),
+            },
+            Ribbons = new[] { new RibbonSpec("P10", "P90", "rgba(0,0,0,0.1)") },
+        };
+
+        var html = LineChartRenderer.RenderChartJs(spec);
+        var cfg = ExtractCjsConfig(html);
+
+        var ds = cfg.GetProperty("datasets");
+        ds.GetArrayLength().Should().Be(1);
+        ds[0].TryGetProperty("fillTo", out _).Should().BeFalse();
+    }
+
+    [Fact]
     public void Render_skips_ribbon_when_series_have_different_point_counts()
     {
         // The polygon-walk requires same-length series — otherwise the
