@@ -2623,6 +2623,221 @@ public class SitePagesTests
         };
     }
 
+    [Fact]
+    public void RenderModels_precipitation_includes_rainfall_amount_cards()
+    {
+        // Rain Models page surfaces BOTH P(wet) blenders (3a/3c) AND
+        // rainfall amount blenders (3f) on the same page — mirrors the
+        // rain forecast tab which already shows both side-by-side.
+        var perLead3a = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            [24] = new(24, "gfs", 0.20, 0.18, 0.150, 0.21, 0.0, 400, 6),
+        };
+        var perLead3f = new Dictionary<int, SitePages.PerLeadMetric>
+        {
+            // 3f's PerLead has nulls for Brier/MAE — synthesised as NaN
+            // in TryLoadSummary. Same shape here.
+            [24] = new(24, "ngboost_lognormal", double.NaN, double.NaN, double.NaN, double.NaN, double.NaN, 400, 6),
+        };
+        var precip3a = new SitePages.ModelSummary(
+            Composite: "precipitation/ea_chards_snowdon_hill",
+            Version: "v2026-05-26_102758",
+            Phase: "3a", DataSource: "open_meteo",
+            TrainedAtUtc: new DateTime(2026, 5, 26, 10, 27, 58, DateTimeKind.Utc),
+            MetricLabel: "Test Brier", PerLead: perLead3a);
+        var rainAmt3f = new SitePages.ModelSummary(
+            Composite: "rainfall_amount/ea_chards_snowdon_hill",
+            Version: "v2026-05-26_102409_phase3f",
+            Phase: "3f", DataSource: "open_meteo+ea_rainfall+ngboost",
+            TrainedAtUtc: new DateTime(2026, 5, 26, 10, 24, 9, DateTimeKind.Utc),
+            MetricLabel: "Test CRPS", PerLead: perLead3f);
+
+        var input = MakeEmptyForecastInput() with
+        {
+            ModelSummaries = new[] { precip3a, rainAmt3f },
+        };
+
+        var html = SitePages.RenderModels(input, "precipitation");
+
+        // Both the precipitation card AND the rainfall amount card render
+        // on the Rain Models page.
+        html.Should().Contain("Precipitation — Chards Snowdon Hill");
+        html.Should().Contain("Rainfall amount — Chards Snowdon Hill");
+        // Per-phase description for 3f is wired (PhaseDescription map).
+        html.Should().Contain("Two-stage distributional rainfall intensity");
+        // Intro line mentions both targets.
+        html.Should().Contain("3f distributional");
+    }
+
+    [Fact]
+    public void RenderModels_temperature_does_not_include_rainfall_amount_cards()
+    {
+        // Sanity: extending the precipitation filter to also pull
+        // rainfall_amount must NOT bleed into the temperature page.
+        var rainAmt3f = new SitePages.ModelSummary(
+            Composite: "rainfall_amount/ea_chards_snowdon_hill",
+            Version: "v2026-05-26_102409_phase3f", Phase: "3f",
+            DataSource: "ngboost",
+            TrainedAtUtc: new DateTime(2026, 5, 26, 10, 24, 9, DateTimeKind.Utc),
+            MetricLabel: "Test CRPS",
+            PerLead: new Dictionary<int, SitePages.PerLeadMetric>
+            {
+                [24] = new(24, "ngboost", double.NaN, double.NaN, double.NaN, double.NaN, double.NaN, 400, 6),
+            });
+
+        var input = MakeEmptyForecastInput() with
+        {
+            ModelSummaries = new[] { rainAmt3f },
+        };
+
+        var html = SitePages.RenderModels(input, "temperature");
+
+        html.Should().NotContain("Rainfall amount");
+    }
+
+    [Fact]
+    public void RenderModelSpec_groups_rainfall_amount_into_its_own_table()
+    {
+        // FeatureSpecRows for 3f flow through LoadFeatureSpecRows into
+        // SiteInputs; the spec page must show them under a "Rainfall
+        // amount" heading, not silently drop them.
+        var specRow = new SitePages.FeatureSpecRow(
+            Composite: "rainfall_amount/ea_chards_snowdon_hill",
+            Phase: "3f",
+            Version: "v2026-05-26_102409_phase3f",
+            TrainedAtUtc: new DateTime(2026, 5, 26, 10, 24, 9, DateTimeKind.Utc),
+            LeadHours: 24,
+            FeatureSet: "phase3f-ngboost-lognormal",
+            RequiredModels: Array.Empty<string>(),
+            OptionalModels: new[] { "gfs_seamless", "ecmwf_ifs025" },
+            FeatureNames: new[]
+            {
+                "precip_gfs", "precip_ecmwf", "precip_mean", "precip_std",
+                "hour_sin", "hour_cos", "doy_sin", "doy_cos",
+            },
+            DataSource: "open_meteo_previous_runs+ea_rainfall",
+            Tier: "3f-lean",
+            UkvStrategy: null);
+
+        var input = MakeEmptyForecastInput() with
+        {
+            FeatureSpecRows = new[] { specRow },
+        };
+
+        var html = SitePages.RenderModelsSpec(input);
+
+        // Spec page groups by target prefix; rainfall_amount gets its own h3.
+        html.Should().Contain("<h3>Rainfall amount</h3>");
+        // The row itself renders Composite + Phase + Lead with the
+        // PrettyComposite / Phase / +Nh labels.
+        html.Should().Contain("Rainfall amount — Chards Snowdon Hill");
+        html.Should().Contain(">3f<");
+        html.Should().Contain("+24h");
+    }
+
+    [Fact]
+    public void RenderRainSkill_renders_rainfall_amount_block_when_verify_history_present()
+    {
+        // Phase 3f distributional skill widgets only mount when verify
+        // history rows exist for the target+station. Synthetic history
+        // for ea_bellever_dartmoor at lead 24h → block should render
+        // CRPS rolling, Coverage rolling, PIT histogram, Exceedance Brier.
+        var input = MakePrecipInput(new[] { ("v_3a", "3a") });
+        var historyRow = new WeatherBlend.Models.VerifyHistoryRow
+        {
+            Station = Station,
+            ModelVersion = "v2026-05-26_102409_phase3f",
+            Phase = "3f",
+            LeadHours = 24,
+            N = 168,
+            BlendMetric = 0.118,
+            DriftFlag = false,
+            Coverage80 = 0.81,
+            PitMean = 0.49,
+            PitBins = new List<int> { 18, 16, 17, 15, 17, 18, 16, 17, 17, 17 },
+            ExceedanceBriers = new Dictionary<string, double>
+            {
+                ["0.1"] = 0.062, ["1"] = 0.041, ["5"] = 0.012, ["10"] = 0.004,
+            },
+        };
+        var historyFile = new WeatherBlend.Models.VerifyHistoryFile
+        {
+            Target = "rainfall_amount",
+            AsOfUtc = new DateTime(2026, 5, 27, 0, 0, 0, DateTimeKind.Utc),
+            WindowDays = 7, LatencyDays = 5,
+            MetricLabel = "CRPS",
+            Rows = new() { historyRow },
+        };
+        input = input with { VerifyHistory = new[] { historyFile } };
+
+        var html = SitePages.RenderRainSkill(input);
+
+        html.Should().Contain("Rainfall amount (3f)");
+        html.Should().Contain("Rolling CRPS");
+        html.Should().Contain("Rolling 80% coverage");
+        html.Should().Contain("PIT histogram");
+        html.Should().Contain("Exceedance Brier");
+        // Single asOf week → sample-size caveat should fire.
+        html.Should().Contain("skill-caveat");
+        html.Should().Contain("verify week so far");
+    }
+
+    [Fact]
+    public void RenderRainSkill_omits_rainfall_amount_block_when_no_verify_history()
+    {
+        // No rainfall_amount rows in verify history → silently skip the
+        // block. Bonehill / any station without 3f shouldn't see an
+        // empty "Phase 3f" header.
+        var input = MakePrecipInput(new[] { ("v_3a", "3a") });
+
+        var html = SitePages.RenderRainSkill(input);
+
+        html.Should().NotContain("Rainfall amount (3f)");
+        html.Should().NotContain("PIT histogram");
+    }
+
+    [Fact]
+    public void RenderRainfallAmountSkillBlock_clears_caveat_after_two_asOf_weeks()
+    {
+        // Caveat self-clears once ≥2 distinct asOf weeks are present —
+        // matches the plan's "stabilises after ~14 days" rule.
+        var input = MakePrecipInput(new[] { ("v_3a", "3a") });
+        WeatherBlend.Models.VerifyHistoryRow Row(int lead, double crps) => new()
+        {
+            Station = Station,
+            ModelVersion = "v2026-05-26_102409_phase3f",
+            Phase = "3f", LeadHours = lead, N = 168,
+            BlendMetric = crps, DriftFlag = false,
+            Coverage80 = 0.80, PitMean = 0.50,
+            PitBins = new List<int> { 17, 17, 17, 17, 17, 16, 17, 17, 17, 16 },
+            ExceedanceBriers = new Dictionary<string, double> { ["0.1"] = 0.06 },
+        };
+        var files = new[]
+        {
+            new WeatherBlend.Models.VerifyHistoryFile
+            {
+                Target = "rainfall_amount",
+                AsOfUtc = new DateTime(2026, 5, 20, 0, 0, 0, DateTimeKind.Utc),
+                WindowDays = 7, LatencyDays = 5, MetricLabel = "CRPS",
+                Rows = new() { Row(24, 0.12) },
+            },
+            new WeatherBlend.Models.VerifyHistoryFile
+            {
+                Target = "rainfall_amount",
+                AsOfUtc = new DateTime(2026, 5, 27, 0, 0, 0, DateTimeKind.Utc),
+                WindowDays = 7, LatencyDays = 5, MetricLabel = "CRPS",
+                Rows = new() { Row(24, 0.11) },
+            },
+        };
+        input = input with { VerifyHistory = files };
+
+        var html = SitePages.RenderRainSkill(input);
+
+        html.Should().Contain("Rainfall amount (3f)");
+        html.Should().NotContain("skill-caveat",
+            "two distinct asOf weeks crosses the stabilisation threshold");
+    }
+
     private static SitePages.SiteInputs MakePrecipInput((string Version, string Phase)[] versions)
     {
         var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);

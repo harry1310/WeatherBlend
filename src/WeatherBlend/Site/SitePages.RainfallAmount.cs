@@ -61,30 +61,53 @@ public static partial class SitePages
     }
 
     /// <summary>
-    /// "Median X mm/h • 80% interval A–B • Z% chance of any rain". One
-    /// line summarising the day — uses the median (not the mean) for the
-    /// point estimate because LogNormal mean is skew-sensitive at high
-    /// σ_log; median is what a human reads as "typical". Aggregates
-    /// across the lead's 24 hourly rows by taking:
-    ///   * sum-mm reading from per-hour medians (≈ daily expected mm,
-    ///     conservative — sum-of-medians ≤ median-of-sum on skewed dists)
-    ///   * P10 / P90 of the per-hour P(wet ≥ 0.1mm)-weighted mean for the
-    ///     "80% interval" rough bound. Honest caveat: this is a
-    ///     coarse summary; the chart below shows the true per-hour band.
-    ///   * max per-hour PExceed0_1 as "chance of any rain in window".
+    /// "Total median X mm • Wettest hour: Y mm/h (Z%) • W% chance of any rain".
+    /// One line summarising the day. Two reasons we don't surface a
+    /// "daily 80% interval" here:
+    ///   * Quantile of a sum ≠ sum of quantiles, so naive Σ P10 / Σ P90
+    ///     across hours actually produces an interval below the median
+    ///     (each per-hour P10 sits below the median, so the sum stays
+    ///     below the sum-of-medians). The honest fix is Monte Carlo
+    ///     convolution of the per-hour distributions, deferred.
+    ///   * The chart below already shows the per-hour 80% band — the
+    ///     useful uncertainty signal is "which hour" plus "how much
+    ///     spread on that hour", not a daily-integral interval.
+    /// So the headline picks the wettest expected hour and shows its
+    /// (median, P90, P&ge;1mm) directly — the at-a-glance number a
+    /// reader uses to plan ("rain expected around 14Z, ~2 mm/h, 60%
+    /// chance of meaningful rain").
     /// </summary>
     private static string RenderRainfallAmountHeadline(IReadOnlyList<RainfallAmountPredictionRow> rows)
     {
         var dailyMedianMm = rows.Sum(r => r.MedianMmPerHr);
-        var dailyP10Mm    = rows.Sum(r => r.P10MmPerHr);
-        var dailyP90Mm    = rows.Sum(r => r.P90MmPerHr);
+        var wettest = rows.OrderByDescending(r => r.MedianMmPerHr).First();
         var chanceAnyRain = rows.Max(r => r.PExceed0_1);
+        // Dry-day variant: when the wettest hour's median is sub-threshold
+        // (< 0.1mm/h, the WET_THRESHOLD_MM convention), the "wettest hour
+        // = 0.0 mm/h" clause reads as nonsense. Surface the peak chance-
+        // of-rain probability instead so the headline is honest about
+        // what the model IS predicting (low intensity everywhere) rather
+        // than picking an arbitrary "wettest" hour.
+        const double WetThresholdMmHr = 0.1;
+        if (wettest.MedianMmPerHr < WetThresholdMmHr)
+        {
+            return $"""
+                <p class="rainfall-headline">
+                  <strong>Dry day expected.</strong>
+                  Peak chance of any rain: {(chanceAnyRain * 100).ToString("0", Ci)}%
+                  at <time datetime="{wettest.ValidTimeUtc:yyyy-MM-ddTHH:mm}Z">{wettest.ValidTimeUtc:HH'Z'}</time>.
+                  <br><small>Hour-by-hour distribution below.</small>
+                </p>
+                """;
+        }
         return $"""
             <p class="rainfall-headline">
-              <strong>Median {dailyMedianMm.ToString("0.0", Ci)} mm</strong> over the day
-              · 80% interval {dailyP10Mm.ToString("0.0", Ci)}&ndash;{dailyP90Mm.ToString("0.0", Ci)} mm
-              · {(chanceAnyRain * 100).ToString("0", Ci)}% chance of any rain (peak hour)
-              <br><small>One-line summary; see the chart for the hour-by-hour distribution.</small>
+              <strong>{dailyMedianMm.ToString("0.0", Ci)} mm total</strong> (sum of hourly medians)
+              · wettest hour <time datetime="{wettest.ValidTimeUtc:yyyy-MM-ddTHH:mm}Z">{wettest.ValidTimeUtc:HH'Z'}</time>:
+                {wettest.MedianMmPerHr.ToString("0.0", Ci)} mm/h
+                (80% band {wettest.P10MmPerHr.ToString("0.0", Ci)}&ndash;{wettest.P90MmPerHr.ToString("0.0", Ci)})
+              · {(chanceAnyRain * 100).ToString("0", Ci)}% chance of any rain in the peak hour
+              <br><small>Hour-by-hour distribution below.</small>
             </p>
             """;
     }
@@ -179,4 +202,253 @@ public static partial class SitePages
       : p >= 0.30 ? "#ef6c00"
       : p >= 0.15 ? "#f9a825"
       :             "#2e7d32";
+
+    // -----------------------------------------------------------------
+    // SKILL WIDGETS (plan §4.2)
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// Render the rainfall_amount skill block on the rain skill page —
+    /// four widgets per the plan: CRPS rolling time-series, coverage
+    /// rolling time-series, PIT histogram (most-recent aggregated),
+    /// per-threshold Brier scores (most-recent aggregated).
+    ///
+    /// Data source is <see cref="SiteInputs.VerifyHistory"/> filtered to
+    /// <c>Target == "rainfall_amount"</c>. The verify sidecars carry the
+    /// rainfall_amount distributional metrics (BlendMetric = CRPS,
+    /// Coverage80, PitBins, ExceedanceBriers) per (asOf, station, lead),
+    /// so the rolling charts are simply asOfUtc on the X axis.
+    ///
+    /// Sample-size caveat — when fewer than 14 days of verify history
+    /// have accumulated for a (station, lead) pair, the block renders a
+    /// "n=N cycles — stabilises after ~14 days" note above the chart so
+    /// the reader doesn't over-interpret early numbers. Caveat
+    /// self-clears once n ≥ 14.
+    /// </summary>
+    internal static string RenderRainfallAmountSkillBlock(SiteInputs input, string? currentStation)
+    {
+        if (currentStation is null)
+            return "<p class=\"skill-line\"><em>Select a station to see rainfall amount skill.</em></p>";
+
+        // Flatten verify history → individual rows for this target + station.
+        var rows = input.VerifyHistory
+            .Where(f => string.Equals(f.Target, "rainfall_amount", StringComparison.Ordinal))
+            .SelectMany(f => f.Rows.Select(r => (File: f, Row: r)))
+            .Where(t => string.Equals(t.Row.Station, currentStation, StringComparison.Ordinal))
+            .ToList();
+        if (rows.Count == 0)
+            return "<p class=\"skill-line\"><em>No rainfall amount verify history yet — Phase 3f isn't active for this station, or no asOf weeks have aged into truth.</em></p>";
+
+        var leads = rows.Select(t => t.Row.LeadHours).Distinct().OrderBy(l => l).ToList();
+
+        var content = new StringBuilder();
+        content.Append(Ci, $"""
+            <p class="skill-line">
+              Phase 3f distributional skill — {Escape(PrettyStation(currentStation))}.
+              CRPS (lower better) is the primary skill metric. Coverage
+              should sit at 0.80 for a well-calibrated 80% interval; PIT
+              should be flat. Exceedance Brier is per-threshold P(rain ≥
+              T) — same units as P(wet) Brier above. Sample size shown
+              per row.
+            </p>
+            """);
+
+        // ---- CRPS rolling time-series (one line per lead) ----
+        content.Append("<h4>Rolling CRPS</h4>");
+        content.Append(RenderRollingTimeSeries(
+            rows, leads,
+            "CRPS — " + PrettyStation(currentStation),
+            "CRPS",
+            r => r.BlendMetric,
+            input.GeneratedAtUtc));
+
+        // ---- Coverage rolling time-series (one line per lead) ----
+        content.Append("<h4>Rolling 80% coverage</h4>");
+        content.Append("<p class=\"skill-line\"><small>Target = 0.80. Below = under-spread (intervals too narrow); above = over-spread.</small></p>");
+        content.Append(RenderRollingTimeSeries(
+            rows, leads,
+            "80% coverage — " + PrettyStation(currentStation),
+            "Coverage",
+            r => r.Coverage80,
+            input.GeneratedAtUtc,
+            referenceLineY: 0.80));
+
+        // ---- PIT histogram (most-recent aggregated across leads) ----
+        var latestPerLead = leads
+            .Select(l => rows.Where(t => t.Row.LeadHours == l)
+                .OrderByDescending(t => t.File.AsOfUtc).FirstOrDefault())
+            .Where(t => t.Row is not null)
+            .ToList();
+        content.Append("<h4>PIT histogram <small>(most recent verify week, all leads pooled)</small></h4>");
+        content.Append(RenderPitHistogram(latestPerLead));
+
+        // ---- Exceedance Brier table (latest per lead) ----
+        content.Append("<h4>Exceedance Brier <small>(latest verify week, per lead)</small></h4>");
+        content.Append(RenderExceedanceBrierTable(latestPerLead));
+
+        // ---- Sample-size caveat (plan §6 — "stabilises after ~14 days") ----
+        // Plan reads "n=N cycles — stabilises after ~14 days of VERIFY
+        // HISTORY", so the gate is wall-clock weeks of asOf dates
+        // accumulated, not pair count within one week. Verify runs
+        // weekly → 14 days ≈ 2 distinct asOf weeks before the
+        // rolling-chart shape is meaningful.
+        var asOfDates = rows.Select(t => t.File.AsOfUtc.Date).Distinct().ToList();
+        if (asOfDates.Count < 2)
+        {
+            var sinceFirst = (input.GeneratedAtUtc.Date - asOfDates.Min()).Days;
+            content.Append(Ci, $"""
+                <aside class="skill-caveat">
+                  <strong>{asOfDates.Count} verify week so far</strong>
+                  (first {sinceFirst} day{(sinceFirst == 1 ? "" : "s")} ago) —
+                  skill metrics stabilise after ~14 days of verify history. Treat
+                  the headline numbers with caution until then.
+                </aside>
+                """);
+        }
+
+        return content.ToString();
+    }
+
+    /// <summary>
+    /// Generic rolling-metric chart for a single value per
+    /// VerifyHistoryRow. One line per lead; X = AsOfUtc, Y = the
+    /// metric. Returns empty-state HTML when every selector yields no
+    /// finite values.
+    /// </summary>
+    private static string RenderRollingTimeSeries(
+        IReadOnlyList<(VerifyHistoryFile File, VerifyHistoryRow Row)> rows,
+        IReadOnlyList<int> leads,
+        string title,
+        string yLabel,
+        Func<VerifyHistoryRow, double?> selector,
+        DateTime nowUtc,
+        double? referenceLineY = null)
+    {
+        var series = new List<LineSeries>();
+        var palette = new[] { "#1565c0", "#388e3c", "#f57c00", "#8e24aa", "#00838f" };
+        for (int i = 0; i < leads.Count; i++)
+        {
+            var lead = leads[i];
+            var pts = rows
+                .Where(t => t.Row.LeadHours == lead)
+                .OrderBy(t => t.File.AsOfUtc)
+                .Select(t => (X: t.File.AsOfUtc.ToOADate(), Y: selector(t.Row)))
+                .Where(p => p.Y.HasValue && double.IsFinite(p.Y.Value))
+                .Select(p => (p.X, p.Y!.Value))
+                .ToList();
+            if (pts.Count > 0)
+                series.Add(new LineSeries($"+{lead}h", palette[i % palette.Length], pts));
+        }
+        if (series.Count == 0)
+            return "<p class=\"skill-line\"><em>No verify points yet at any lead.</em></p>";
+
+        var spec = new LineChartSpec
+        {
+            Title = title,
+            XLabel = "Verify week (UTC)",
+            YLabel = yLabel,
+            Series = series,
+            FormatX = v => DateTime.FromOADate(v).ToString("MM-dd", Ci),
+            FormatY = v => v.ToString("0.000", Ci),
+            TodayLineX = nowUtc.ToOADate(),
+        };
+        var html = LineChartRenderer.RenderChartJs(spec);
+        // Hint the reader where the target line should sit. The renderer
+        // doesn't have a horizontal-reference primitive yet; the prose
+        // line above the chart already calls out "Target = 0.80" so we
+        // skip drawing it inline.
+        _ = referenceLineY;
+        return $"<figure>{html}</figure>";
+    }
+
+    /// <summary>
+    /// Inline-SVG bar histogram for the 10 PIT bins. Aggregates across
+    /// every lead row in <paramref name="rows"/> by summing per-bin
+    /// counts, then renders as 10 equal-width bars. A perfectly
+    /// calibrated forecast is flat at <c>N/10</c>; bumps at 0 / 1 flag
+    /// under-spread, tilt flags mean bias.
+    /// </summary>
+    private static string RenderPitHistogram(
+        IReadOnlyList<(VerifyHistoryFile File, VerifyHistoryRow Row)> rows)
+    {
+        var bins = new int[10];
+        var totalN = 0;
+        foreach (var (_, r) in rows)
+        {
+            if (r.PitBins is null || r.PitBins.Count != 10) continue;
+            for (int i = 0; i < 10; i++) bins[i] += r.PitBins[i];
+            totalN += r.N;
+        }
+        if (totalN == 0)
+            return "<p class=\"skill-line\"><em>No PIT samples yet.</em></p>";
+
+        const int W = 480, H = 180, padL = 40, padR = 16, padT = 24, padB = 28;
+        var plotW = W - padL - padR;
+        var plotH = H - padT - padB;
+        var barW = plotW / 10.0;
+        var maxBin = Math.Max(1, bins.Max());
+        var expected = totalN / 10.0;
+
+        var sb = new StringBuilder();
+        sb.Append(Ci, $"<figure><svg viewBox=\"0 0 {W} {H}\" xmlns=\"http://www.w3.org/2000/svg\" class=\"chart pit-hist\" role=\"img\" aria-label=\"PIT histogram\">");
+        sb.Append(Ci, $"<text x=\"{W / 2}\" y=\"16\" text-anchor=\"middle\" class=\"chart-title\">PIT histogram — N = {totalN}</text>");
+        // Bars.
+        for (int i = 0; i < 10; i++)
+        {
+            var h = plotH * bins[i] / maxBin;
+            var x = padL + i * barW;
+            var y = padT + plotH - h;
+            sb.Append(Ci, $"<rect x=\"{x:0.#}\" y=\"{y:0.#}\" width=\"{barW - 2:0.#}\" height=\"{h:0.#}\" fill=\"#1565c0\" />");
+            // Bin label below each bar — "0.0", "0.1", ... "0.9".
+            sb.Append(Ci, $"<text x=\"{x + barW / 2:0.#}\" y=\"{padT + plotH + 14}\" text-anchor=\"middle\" class=\"chart-tick\">{(i / 10.0).ToString("0.0", Ci)}</text>");
+        }
+        // Expected-flat reference line.
+        var refY = padT + plotH - plotH * expected / maxBin;
+        sb.Append(Ci, $"<line x1=\"{padL}\" y1=\"{refY:0.#}\" x2=\"{padL + plotW}\" y2=\"{refY:0.#}\" stroke=\"#c62828\" stroke-dasharray=\"4 3\" stroke-width=\"1\" />");
+        // Frame.
+        sb.Append(Ci, $"<rect x=\"{padL}\" y=\"{padT}\" width=\"{plotW}\" height=\"{plotH}\" class=\"chart-frame\" />");
+        sb.Append("</svg></figure>");
+        sb.Append("<p class=\"skill-line\"><small>Red dashed line = perfectly flat (N / 10 per bin). Bumps at 0.0 / 0.9 flag under-spread; tilt flags mean bias.</small></p>");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Per-threshold Brier table. One row per lead in
+    /// <paramref name="rows"/>; one column per threshold key found in
+    /// any row's <see cref="VerifyHistoryRow.ExceedanceBriers"/>. Lower
+    /// Brier = better calibration of the exceedance probability at that
+    /// threshold.
+    /// </summary>
+    private static string RenderExceedanceBrierTable(
+        IReadOnlyList<(VerifyHistoryFile File, VerifyHistoryRow Row)> rows)
+    {
+        var allThresholds = rows
+            .Where(t => t.Row.ExceedanceBriers is not null)
+            .SelectMany(t => t.Row.ExceedanceBriers!.Keys)
+            .Distinct()
+            .OrderBy(k => double.TryParse(k, NumberStyles.Float, Ci, out var d) ? d : double.MaxValue)
+            .ToList();
+        if (allThresholds.Count == 0)
+            return "<p class=\"skill-line\"><em>No exceedance Brier scores in the latest verify week.</em></p>";
+
+        var sb = new StringBuilder();
+        sb.Append("<table class=\"skill-table\"><thead><tr><th>Lead</th>");
+        foreach (var t in allThresholds)
+            sb.Append(Ci, $"<th class=\"num\" title=\"P(rain ≥ {Escape(t)} mm/h)\">≥ {Escape(t)} mm</th>");
+        sb.Append("<th class=\"num\">N</th></tr></thead><tbody>");
+        foreach (var (_, r) in rows.OrderBy(t => t.Row.LeadHours))
+        {
+            sb.Append(Ci, $"<tr><td>+{r.LeadHours}h</td>");
+            foreach (var t in allThresholds)
+            {
+                var v = (r.ExceedanceBriers is not null && r.ExceedanceBriers.TryGetValue(t, out var b))
+                    ? b.ToString("0.000", Ci)
+                    : "—";
+                sb.Append(Ci, $"<td class=\"num\">{v}</td>");
+            }
+            sb.Append(Ci, $"<td class=\"num\">{r.N}</td></tr>");
+        }
+        sb.Append("</tbody></table>");
+        return sb.ToString();
+    }
 }

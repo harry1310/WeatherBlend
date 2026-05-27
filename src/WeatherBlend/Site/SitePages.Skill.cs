@@ -220,6 +220,19 @@ public static partial class SitePages
         content.Append("<hr/><h3>Rolling Brier (P(wet))</h3>");
         content.Append(RenderRollingBrierBlock(input, currentStation));
 
+        // Phase 3f distributional skill — silently empty for stations that
+        // don't have rainfall_amount verify history yet (everywhere except
+        // Membury today). Renders the CRPS / coverage / PIT / exceedance
+        // Brier widgets when rows exist.
+        var rainfallAmountHasRows = input.VerifyHistory.Any(f =>
+            string.Equals(f.Target, "rainfall_amount", StringComparison.Ordinal) &&
+            f.Rows.Any(r => string.Equals(r.Station, currentStation, StringComparison.Ordinal)));
+        if (rainfallAmountHasRows)
+        {
+            content.Append("<hr/><h3>Rainfall amount (3f) — distributional skill</h3>");
+            content.Append(RenderRainfallAmountSkillBlock(input, currentStation));
+        }
+
         content.Append("</section>");
         return WrapPage(input, "Skill — rain", "skill", content.ToString());
     }
