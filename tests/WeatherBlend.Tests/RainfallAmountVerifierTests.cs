@@ -172,7 +172,7 @@ public class RainfallAmountVerifierTests
             LocationName = "membury_devon", DataSource = "test",
             TrainedAtUtc = DateTime.UtcNow,
             Hyperparameters = new Dictionary<string, object>(),
-            TestMae = new Dictionary<string, double>(),
+            TestMae = new Dictionary<string, double?>(),
             PerLead = new Dictionary<string, ModelArtifact.PerLeadStats>
             {
                 ["24"] = new()

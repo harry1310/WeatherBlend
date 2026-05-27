@@ -168,7 +168,13 @@ public static class ModelArtifact
         public DateTime TrainedAtUtc { get; set; }
 
         public Dictionary<string, object> Hyperparameters { get; set; } = new();
-        public Dictionary<string, double> TestMae { get; set; } = new();
+        // Nullable values because the constituent BlendTestMae /
+        // BlendTestRmse / BlendTestBias fields are now nullable for 3f's
+        // distributional bundles (which write JSON null for point-forecast
+        // metrics they don't compute). TestMae itself is currently
+        // write-only — no consumer reads it — so the null-value tolerance
+        // is purely a serialisation convenience.
+        public Dictionary<string, double?> TestMae { get; set; } = new();
         public List<string> DeviationsFromBrief { get; set; } = new();
 
         /// <summary>One entry per lead ("24","48","72").</summary>
@@ -206,10 +212,18 @@ public static class ModelArtifact
         /// </summary>
         public double? BestSingleTestMae { get; set; }
 
-        /// <summary>Blend MAE on the held-out test set.</summary>
-        public double BlendTestMae { get; set; }
-        public double BlendTestRmse { get; set; }
-        public double BlendTestBias { get; set; }
+        /// <summary>Blend MAE on the held-out test set. Nullable because
+        /// distributional phases (Phase 3f rainfall_amount) don't have a
+        /// single point-forecast MAE — their primary skill metric is
+        /// mean CRPS (computed by verify, not stamped here). train_3f.py
+        /// writes JSON null for this field; deserialising into a
+        /// non-nullable double crashed every 3f bundle's Models / Specs
+        /// load until this was nullable. Existing point-forecast phases
+        /// (2b / 2c / 2d / 3a / 3c / 3d / 3b) keep writing a finite
+        /// value; null only appears on distributional rows.</summary>
+        public double? BlendTestMae { get; set; }
+        public double? BlendTestRmse { get; set; }
+        public double? BlendTestBias { get; set; }
 
         /// <summary>
         /// Dry-window only (0.0 elsewhere or on legacy artefacts predating

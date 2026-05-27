@@ -63,7 +63,7 @@ public class ModelArtifactTests : IDisposable
                 ["learningRate"] = 0.05,
                 ["numberOfLeaves"] = 31,
             },
-            TestMae = new Dictionary<string, double>
+            TestMae = new Dictionary<string, double?>
             {
                 ["lead_24h_blend"] = 1.234,
                 ["lead_48h_blend"] = 1.511,
