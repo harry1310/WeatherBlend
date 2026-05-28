@@ -237,5 +237,85 @@ public class WindSpeedLgbSmokeTests
             r.BlendValue.Should().BeGreaterOrEqualTo(0.0,
                 "wind speed magnitude is non-negative");
         });
+
+        // ---- Slice 3.C: wind_blend live composition ----
+        //
+        // Fabricate a fake wind_mvn predictions parquet (in production this
+        // lands via WeatherProbabilistic's predict_wind_mvn.py). Path
+        // matches WP's output layout: predictions/wind_direction/{loc}/
+        // model_version={v}_wind_mvn/date={d}/predictions.parquet.
+        // Shape matches WindDirectionPredictionRow (the C#-side consumer
+        // schema). Cells join wind_speed_lgb's by (ValidTimeUtc, LeadHours).
+        var mvnVersion = "v_smoke_wind_mvn";
+        var mvnDir = Path.Combine(
+            scope.PredictionsPath, "wind_direction", locationName,
+            $"model_version={mvnVersion}", $"date={todayUtc:yyyy-MM-dd}");
+        Directory.CreateDirectory(mvnDir);
+        var mvnPath = Path.Combine(mvnDir, "predictions.parquet");
+        var mvnRows = predRows.Select(lgb => new WeatherBlend.Models.WindDirectionPredictionRow
+        {
+            LocationName = locationName,
+            ModelVersion = mvnVersion,
+            PredictionMadeAtUtc = lgb.PredictionMadeAtUtc,
+            ValidTimeUtc = lgb.ValidTimeUtc,
+            LeadHours = lgb.LeadHours,
+            // Bivariate-normal params: u = +1, v = -2 → speed = sqrt(5) ≈ 2.24,
+            // direction = atan2(-1, 2)·180/π ≈ 333° (NNW). Constant cells
+            // suffice for the smoke — the blend math just needs a finite
+            // BlendSpeedMagnitude per matched (V, L).
+            MuU = 1.0, MuV = -2.0,
+            SigmaU = 0.5, SigmaV = 0.7, Rho = 0.1,
+            BlendDirection = 333.4,
+            BlendDirectionCi95Lo = 310.0, BlendDirectionCi95Hi = 357.0,
+            BlendSpeedMagnitude = Math.Sqrt(1.0 * 1.0 + 2.0 * 2.0),
+            BlendSpeedCi95Lo = 1.5, BlendSpeedCi95Hi = 3.2,
+        }).ToList();
+        await Parquet.Serialization.ParquetSerializer.SerializeAsync(mvnRows, mvnPath);
+        File.Exists(mvnPath).Should().BeTrue("fake wind_mvn parquet should land for the blend to read");
+
+        // Run the live blend command.
+        var blendCmd = new WindBlendPredictCommand(
+            new XunitLogger<WindBlendPredictCommand>(_output), scope.Config);
+        var blendRc = await blendCmd.RunAsync(forDate: null, ct: default);
+        blendRc.Should().Be(0,
+            "wind_blend predict should succeed when both wind_speed_lgb and wind_mvn parquets are present");
+
+        // Output lands at predictions/wind/model_version=v_wind_blend_live/date={today}/.
+        var blendDir = Path.Combine(
+            scope.PredictionsPath, "wind",
+            $"model_version={WindBlendPredictCommand.VersionTag}",
+            $"date={todayUtc:yyyy-MM-dd}");
+        Directory.Exists(blendDir).Should().BeTrue($"blend should land at {blendDir}");
+        var blendParquet = Path.Combine(blendDir, "predictions.parquet");
+        File.Exists(blendParquet).Should().BeTrue($"blend should emit predictions.parquet at {blendParquet}");
+
+        var blendRows = await Parquet.Serialization.ParquetSerializer
+            .DeserializeAsync<WeatherBlend.Models.ElementPredictionRow>(blendParquet);
+        blendRows.Should().NotBeEmpty("blend should write at least one row per matched (lead, valid)");
+        blendRows.Count.Should().Be(predRows.Count,
+            "blend should match every wind_speed_lgb cell (mvn fake covers them all 1:1)");
+        blendRows.Should().AllSatisfy(r =>
+        {
+            r.Element.Should().Be("wind", "blend is under the wind physical target");
+            r.LocationName.Should().Be(locationName);
+            r.ModelVersion.Should().Be(WindBlendPredictCommand.VersionTag,
+                "blend output stamps the fixed v_wind_blend_live tag (no MANIFEST mint yet)");
+            r.LeadHours.Should().BeOneOf(24, 48, 72);
+            r.BlendValue.Should().BeGreaterOrEqualTo(0.0, "wind speed magnitude is non-negative");
+            r.BlendValue.Should().BeLessThan(100.0, "wind speed in m/s must be physically plausible");
+        });
+
+        // Verify the sigmoid actually mixed the two — at any matched cell the
+        // blended speed is bounded between min(lgb, mvn) and max(lgb, mvn).
+        var lgbByKey = predRows.ToDictionary(r => (r.ValidTimeUtc, r.LeadHours), r => r.BlendValue);
+        const double mvnSpd = 2.2360679775;  // sqrt(5), matches the synthetic fake above
+        blendRows.Should().AllSatisfy(r =>
+        {
+            var lgbSpd = lgbByKey[(r.ValidTimeUtc, r.LeadHours)];
+            var lo = Math.Min(lgbSpd, mvnSpd);
+            var hi = Math.Max(lgbSpd, mvnSpd);
+            r.BlendValue.Should().BeInRange(lo - 1e-6, hi + 1e-6,
+                "convex combination of two values must land between them");
+        });
     }
 }

@@ -41,6 +41,28 @@ runs:
         dotnet run --project src/WeatherBlend --no-build -c Release -- phase4b-predict || code=$?
         if [ "$code" != "0" ] && [ "$code" != "3" ]; then exit "$code"; fi
 
+    - name: Synthesise wind_blend (sigmoid composition of wind_speed_lgb + wind_mvn)
+      # Phase 3 Slice C of WIND_BLENDER_PLAN. Reads:
+      #   - WB's wind_speed_lgb live parquet
+      #     (predictions/wind/model_version=*_wind_speed_lgb/date=...)
+      #   - WP's wind_mvn live parquet
+      #     (predictions/wind_direction/{loc}/model_version=*_wind_mvn/date=...)
+      # and writes the blended speed at
+      #   predictions/wind/model_version=v_wind_blend_live/date=...
+      #
+      # Same exit-code shape as phase4b-predict:
+      #   0 — at least one location blended successfully.
+      #   2 — no locations configured — FATAL.
+      #   3 — every location fell through (either lgb or mvn parquet
+      #       missing). Expected before the first Sunday wind_mvn retrain
+      #       lands a bundle on R2 (then predict-wind-direction starts
+      #       producing parquets that this step can consume).
+      shell: bash
+      run: |
+        code=0
+        dotnet run --project src/WeatherBlend --no-build -c Release -- wind-blend-predict || code=$?
+        if [ "$code" != "0" ] && [ "$code" != "3" ]; then exit "$code"; fi
+
     - name: Push predictions to R2
       # copy (not sync) — additive only, never deletes remote files. Forecasts
       # are no longer modified here (the collect workflow owns that subtree).

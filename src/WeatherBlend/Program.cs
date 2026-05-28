@@ -172,6 +172,7 @@ public static class Program
                 services.AddTransient<PrecipReplayCommand>();
                 services.AddTransient<Phase4bPredictCommand>();
                 services.AddTransient<Phase4bMintCommand>();
+                services.AddTransient<WindBlendPredictCommand>();
                 // PrecipCalibrateCommand (Phase 3a_isotonic PAV calibration) +
                 // DryWindowCalibrateCommand (Phase 3d-calibrated) removed
                 // 2026-04-29 — bake-off found PAV didn't move test Brier on
@@ -793,6 +794,28 @@ public static class Program
             ctx.ExitCode = await cmd.RunAsync(forDate, ctx.GetCancellationToken());
         });
         root.AddCommand(phase4bPredict);
+
+        // ---- wind-blend-predict — sigmoid blend of wind_speed_lgb + wind_mvn ----
+        // Phase 3 Slice C: composes WB-side wind_speed_lgb (Dunkeswell LGB)
+        // with WP-side wind_mvn (PyTorch MLP) speed magnitude into a final
+        // wind speed. No bundle/MANIFEST yet — fixed model_version tag
+        // `v_wind_blend_live` for v1; bundle integration is a follow-up.
+        var windBlendForDateOpt = new Option<DateOnly?>(
+            name: "--for-date",
+            description: "Anchor date YYYY-MM-DD (UTC). Omit = today (the live cycle).");
+        var windBlendPredict = new Command(
+            "wind-blend-predict",
+            "Synthesise wind_blend predictions (sigmoid composition of wind_speed_lgb + wind_mvn) for the current cycle.")
+        {
+            windBlendForDateOpt,
+        };
+        windBlendPredict.SetHandler(async (ctx) =>
+        {
+            var forDate = ctx.ParseResult.GetValueForOption(windBlendForDateOpt);
+            var cmd = host.Services.GetRequiredService<WindBlendPredictCommand>();
+            ctx.ExitCode = await cmd.RunAsync(forDate, ctx.GetCancellationToken());
+        });
+        root.AddCommand(windBlendPredict);
 
         // ---- phase4b-mint — refresh the 4b bundle after a 4a/3o retrain ----
         var phase4bMint = new Command(
