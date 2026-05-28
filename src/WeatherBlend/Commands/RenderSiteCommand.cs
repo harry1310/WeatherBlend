@@ -114,6 +114,13 @@ public sealed class RenderSiteCommand
         var windGustAllLocs = QueryWindGustByValidTime(windowStart, predictionEnd, ct);
         _log.LogInformation("Loaded {N} wind-gust prediction rows (all locations).", windGustAllLocs.Count);
 
+        var windAllLocs = QueryWindPredictions(windowStart, predictionEnd, ct);
+        _log.LogInformation("Loaded {N} wind prediction rows ({M} versions, all locations).",
+            windAllLocs.Count, windAllLocs.Select(p => p.Version).Distinct().Count());
+
+        var windDirAllLocs = QueryWindDirectionPredictions(windowStart, predictionEnd, ct);
+        _log.LogInformation("Loaded {N} wind_mvn direction prediction rows (all locations).", windDirAllLocs.Count);
+
         var dryWindowRows = _predictions.GetDryWindowPredictions(cells: null, windowStart, predictionEnd, ct);
         var dryWindowAllLocs = dryWindowRows.Select(r => new SitePages.DryWindowForecastPoint(
             Station:                     r.TruthStation,
@@ -276,6 +283,8 @@ public sealed class RenderSiteCommand
             var windGustByValid = windGustAllLocs
                 .Where(g => IsThisLoc(g.LocationName))
                 .ToDictionary(g => g.ValidTimeUtc, g => g.GustMs);
+            var windPredictions = windAllLocs.Where(w => IsThisLoc(w.LocationName)).ToList();
+            var windDirectionPredictions = windDirAllLocs.Where(w => IsThisLoc(w.LocationName)).ToList();
             var startHour = startHourAllLocs.Where(s => IsThisLoc(s.LocationName)).ToList();
             var metOfficeSpot = metOfficeSpotAllLocs.Where(m => IsThisLoc(m.LocationName)).ToList();
             var nwpPop = nwpPopAllLocs.Where(p => IsThisLoc(p.LocationName)).ToList();
@@ -343,6 +352,8 @@ public sealed class RenderSiteCommand
                 FeatureSpecRows = locFeatureSpecRows,
                 FeelsLikePredictions = feelsLike,
                 WindGustByValidMs = windGustByValid,
+                WindPredictions = windPredictions,
+                WindDirectionPredictions = windDirectionPredictions,
                 StartHourPredictions = startHour,
                 MetOfficeSpotForecasts = metOfficeSpot,
                 NwpPrecipProbabilities = nwpPop,
@@ -412,12 +423,10 @@ public sealed class RenderSiteCommand
 
         if (loc.HasTab("wind"))
         {
-            // Single page (no per-lead variants like temp/rain) — the wind
-            // tab renders a full forecast horizon strip + the model strip
-            // in one view. Direction (wind_mvn) and challenger speeds
-            // (wind_speed_lgb / wind_blend) gracefully empty-state until
-            // their predict trees exist on R2.
-            await Write("forecasts-wind.html", SitePages.RenderForecastsWind(locInputs));
+            // Per-lead pages, one per trained wind lead (24 / 48 / 72 h).
+            // Mirrors temp/rain so the lead sub-nav reads consistently.
+            foreach (var lead in Leads.Short)
+                await Write($"forecasts-wind-{lead}h.html", SitePages.RenderForecastsWind(locInputs, lead));
         }
 
         if (loc.HasTab("dry_window"))
@@ -1082,6 +1091,114 @@ ORDER BY LocationName, ValidTimeUtc";
             ValidTimeUtc: r.GetDateTime(1),
             GustMs:       r.GetDouble(2)),
             _log, "Wind-gust predictions tree empty — pop-out gust suffix absent until predict runs.", ct);
+    }
+
+    /// <summary>Pulls every wind <see cref="WeatherBlend.Models.ElementPredictionRow"/>
+    /// in the rendering window (champion <c>wind</c> phase + challenger
+    /// <c>wind_speed_lgb</c> / <c>wind_blend</c> phases). One row per
+    /// (Version, ValidTime), collapsed to freshest <c>PredictionMadeAtUtc</c>
+    /// by SQL window function. Per-NWP columns are carried through nullable
+    /// so the page can render the per-NWP overlay without a second read.</summary>
+    private IReadOnlyList<SitePages.WindForecastPoint> QueryWindPredictions(
+        DateTime start, DateTime end, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath,
+                                                   "wind", "**", "*.parquet"));
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        if (!ParquetReader.HasColumn(conn, glob, "BlendValue"))
+        {
+            _log.LogInformation("Wind predictions tree empty — per-lead wind page will empty-state until predict runs.");
+            return Array.Empty<SitePages.WindForecastPoint>();
+        }
+        var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
+        var sql = $@"
+WITH ranked AS (
+    SELECT LocationName, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
+           BlendValue, ModelGfs, ModelEcmwf, ModelIcon, ModelMf, ModelUkmo, ModelGem, ModelAifs,
+           ROW_NUMBER() OVER (PARTITION BY LocationName, ModelVersion, LeadHours, ValidTimeUtc
+                              ORDER BY PredictionMadeAtUtc DESC) AS rn
+    FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+    WHERE Element = 'wind'
+      AND LocationName IN ({locFilter})
+      AND BlendValue IS NOT NULL
+      AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
+      AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+)
+SELECT LocationName, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
+       BlendValue, ModelGfs, ModelEcmwf, ModelIcon, ModelMf, ModelUkmo, ModelGem, ModelAifs
+FROM ranked
+WHERE rn = 1
+ORDER BY LocationName, ModelVersion, LeadHours, ValidTimeUtc";
+        return ParquetReader.Query(conn, sql, r => new SitePages.WindForecastPoint(
+            Version:        r.GetString(1),
+            PredictedAtUtc: r.GetDateTime(2),
+            ValidTimeUtc:   r.GetDateTime(3),
+            LeadHours:      r.GetInt32(4),
+            SpeedMs:        r.GetDouble(5),
+            Gfs:            r.IsDBNull(6)  ? null : (double?)r.GetDouble(6),
+            Ecmwf:          r.IsDBNull(7)  ? null : (double?)r.GetDouble(7),
+            Icon:           r.IsDBNull(8)  ? null : (double?)r.GetDouble(8),
+            Mf:             r.IsDBNull(9)  ? null : (double?)r.GetDouble(9),
+            Ukmo:           r.IsDBNull(10) ? null : (double?)r.GetDouble(10),
+            Gem:            r.IsDBNull(11) ? null : (double?)r.GetDouble(11),
+            Aifs:           r.IsDBNull(12) ? null : (double?)r.GetDouble(12),
+            LocationName:   r.GetString(0)),
+            _log, "Wind predictions tree empty.", ct);
+    }
+
+    /// <summary>Pulls every <c>wind_mvn</c> direction prediction row in the
+    /// rendering window. WP's predict-wind-direction.yml writes them to
+    /// <c>data/predictions/wind_direction/{location}/model_version=*_wind_mvn/date=*/predictions.parquet</c>
+    /// — note the location segment in the path differs from the WB element
+    /// predictions tree.</summary>
+    private IReadOnlyList<SitePages.WindDirectionForecastPoint> QueryWindDirectionPredictions(
+        DateTime start, DateTime end, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath,
+                                                   "wind_direction", "**", "*.parquet"));
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        if (!ParquetReader.HasColumn(conn, glob, "BlendDirection"))
+        {
+            _log.LogInformation("wind_mvn (wind_direction) predictions tree empty — direction circles + speed CI ribbon will empty-state until predict-wind-direction runs.");
+            return Array.Empty<SitePages.WindDirectionForecastPoint>();
+        }
+        var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
+        var sql = $@"
+WITH ranked AS (
+    SELECT LocationName, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
+           BlendDirection, BlendDirectionCi95Lo, BlendDirectionCi95Hi,
+           BlendSpeedMagnitude, BlendSpeedCi95Lo, BlendSpeedCi95Hi,
+           ROW_NUMBER() OVER (PARTITION BY LocationName, ModelVersion, LeadHours, ValidTimeUtc
+                              ORDER BY PredictionMadeAtUtc DESC) AS rn
+    FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+    WHERE LocationName IN ({locFilter})
+      AND BlendDirection IS NOT NULL
+      AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
+      AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+)
+SELECT LocationName, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
+       BlendDirection, BlendDirectionCi95Lo, BlendDirectionCi95Hi,
+       BlendSpeedMagnitude, BlendSpeedCi95Lo, BlendSpeedCi95Hi
+FROM ranked
+WHERE rn = 1
+ORDER BY LocationName, LeadHours, ValidTimeUtc";
+        return ParquetReader.Query(conn, sql, r => new SitePages.WindDirectionForecastPoint(
+            Version:             r.GetString(1),
+            PredictedAtUtc:      r.GetDateTime(2),
+            ValidTimeUtc:        r.GetDateTime(3),
+            LeadHours:           r.GetInt32(4),
+            DirectionDeg:        r.GetDouble(5),
+            DirectionCi95LoDeg:  r.GetDouble(6),
+            DirectionCi95HiDeg:  r.GetDouble(7),
+            SpeedMs:             r.GetDouble(8),
+            SpeedCi95LoMs:       r.GetDouble(9),
+            SpeedCi95HiMs:       r.GetDouble(10),
+            LocationName:        r.GetString(0)),
+            _log, "wind_mvn predictions tree empty.", ct);
     }
 
     /// <summary>

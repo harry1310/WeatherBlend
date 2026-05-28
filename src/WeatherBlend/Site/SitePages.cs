@@ -514,6 +514,25 @@ public static partial class SitePages
         public IReadOnlyList<NwpTemperatureForecastPoint> NwpTemperatures { get; init; }
             = Array.Empty<NwpTemperatureForecastPoint>();
 
+        /// <summary>Per-phase wind speed predictions for this location at every
+        /// trained lead (24 / 48 / 72 h). One row per (Version, ValidTime); each
+        /// row carries the blender output + per-NWP individual model speeds so
+        /// the wind forecast page can render both the multi-phase top chart and
+        /// the per-NWP overlay below it from the same source. Empty list when
+        /// no <c>wind</c> element predictions have landed (fresh deploy).
+        /// </summary>
+        public IReadOnlyList<WindForecastPoint> WindPredictions { get; init; }
+            = Array.Empty<WindForecastPoint>();
+
+        /// <summary>Wind direction predictions (Phase 2 <c>wind_mvn</c>) for
+        /// this location at every trained lead. Powers the per-lead wind
+        /// page's speed CI ribbon (BlendSpeedCi95Lo/Hi) and the per-hour
+        /// direction circles (BlendDirection + Ci95Lo/Hi). Empty until the
+        /// WP predict-wind-direction workflow has pushed parquets to R2 +
+        /// sync-render-inputs has pulled them locally.</summary>
+        public IReadOnlyList<WindDirectionForecastPoint> WindDirectionPredictions { get; init; }
+            = Array.Empty<WindDirectionForecastPoint>();
+
         /// <summary>
         /// Structured weekly verify history loaded from
         /// <c>data/reports/verify_*.json</c>. One entry per (target, asOf)
@@ -827,6 +846,48 @@ public static partial class SitePages
         /// keeps compiling.</summary>
         string LocationName = "");
 
+    /// <summary>One row from a <c>wind</c> element prediction parquet
+    /// (champion <c>wind</c> phase + challenger <c>wind_speed_lgb</c> /
+    /// <c>wind_blend</c> phases all live under the same Element). Powers
+    /// the per-lead wind forecast page's speed chart (multi-phase top line
+    /// + per-NWP overlay).
+    ///
+    /// SpeedMs / per-NWP values keep the storage unit (m/s); the renderer
+    /// converts to mph at draw time so the unit knob stays in one place.
+    /// </summary>
+    public sealed record WindForecastPoint(
+        string Version,
+        DateTime PredictedAtUtc,
+        DateTime ValidTimeUtc,
+        int LeadHours,
+        double SpeedMs,
+        double? Gfs,
+        double? Ecmwf,
+        double? Icon,
+        double? Mf,
+        double? Ukmo,
+        double? Gem,
+        double? Aifs,
+        string LocationName);
+
+    /// <summary>One row from a wind_direction (<c>wind_mvn</c>) parquet.
+    /// Powers the per-lead wind page's speed CI ribbon (CI lo/hi
+    /// columns) and the per-hour direction circles (BlendDirection +
+    /// dir CI lo/hi).
+    /// </summary>
+    public sealed record WindDirectionForecastPoint(
+        string Version,
+        DateTime PredictedAtUtc,
+        DateTime ValidTimeUtc,
+        int LeadHours,
+        double DirectionDeg,
+        double DirectionCi95LoDeg,
+        double DirectionCi95HiDeg,
+        double SpeedMs,
+        double SpeedCi95LoMs,
+        double SpeedCi95HiMs,
+        string LocationName);
+
     public static string Stylesheet() => """
         :root { --brand: #7c4dff; --pwet: #0288d1; }
         body > main { padding-top: 1rem; padding-bottom: 3rem; }
@@ -860,6 +921,17 @@ public static partial class SitePages
            2026-05-07 after a low-tile-count day stretched one tile to
            full row width. */
         .forecast-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.75rem; }
+        /* Per-lead wind page direction-circle row. One cell per UTC hour
+           in [HomeFirstVisibleHourUtc, HomeLastVisibleHourUtcExclusive); each
+           cell stacks hour label / SVG circle / speed text. Wraps on narrow
+           viewports — minmax(64px, 1fr) keeps the cells readable. */
+        .wind-dir-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: 0.4rem; margin: 0.5rem 0 1rem; }
+        .wind-dir-cell { display: flex; flex-direction: column; align-items: center; }
+        .wind-dir-hour { font-size: 0.75rem; color: var(--pico-muted-color); }
+        .wind-dir-speed { font-size: 0.8rem; }
+        .wind-dir-svg { display: block; }
+        .wind-dir-empty { opacity: 0.6; }
+        .wind-day-label { margin-top: 0.5rem; margin-bottom: 0.25rem; }
         /* Flex layout so the footer pins to the cell's lower edge regardless of
            whether the feels-like chip is present — cards with shorter content
            (e.g. 96/120h leads with no feels-like row) used to float the footer
@@ -965,9 +1037,14 @@ public static partial class SitePages
           border-radius: 4px;
           box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
           padding: 0.3rem 0.5rem;
-          min-width: 12rem;
+          min-width: 14rem;
         }
         .utci-pop-table td { padding: 0.1rem 0.25rem; border: 0; }
+        /* Keep "Wind 10 m | XX mph · gust YY mph" on a single line — the
+           "· gust …" suffix was tipping that cell to two rows on tiles
+           with a tight column width. nowrap on the value column lets the
+           table widen as needed (min-width above absorbs the extra). */
+        .utci-pop-table td.num { white-space: nowrap; }
 
         nav.lead-nav { margin: 0 0 1.25rem; padding: 0; }
         nav.lead-nav ul { display: flex; gap: 0.75rem; list-style: none; padding: 0; margin: 0; }
@@ -1329,7 +1406,7 @@ public static partial class SitePages
             "overview"     => ("index.html",                "Overview",     "overview"),
             "temperature"  => ("forecasts-temp-24h.html",   "Temperature",  "temperature"),
             "rain"         => ("forecasts-rain-24h.html",   "Rain",         "rain"),
-            "wind"         => ("forecasts-wind.html",       "Wind",         "wind"),
+            "wind"         => ("forecasts-wind-24h.html",   "Wind",         "wind"),
             "dry_window"   => ("forecasts-dry-window.html", "Dry window",   "dry-window"),
             "skill"        => (skillHref,                   "Skill",        "skill"),
             "models"       => (modelsHref,                  "Models",       "models"),
