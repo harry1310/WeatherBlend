@@ -19,9 +19,9 @@ namespace WeatherBlend.Commands;
 /// Phase 3d: exact-runtime occurrence blender (P1/P2 tier), lead-12 champion.
 /// Phase 3o: rich + orographic features pooled across 4 Bonehill stations.
 ///
-/// Split out of TempTrainCommand on 2026-05-19 (code-quality refactor P1) so a
+/// Split out of TrainCommand on 2026-05-19 (code-quality refactor P1) so a
 /// precipitation phase is no longer navigated inside a file named "Temp". The
-/// cross-target dispatch + argument validation stays in TempTrainCommand.RunAsync,
+/// cross-target dispatch + argument validation stays in TrainCommand.RunAsync,
 /// which calls RunAsync below once the target resolves to precipitation.
 /// </summary>
 public sealed class PrecipTrainCommand : TrainCommandBase
@@ -55,7 +55,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
     /// Dispatches a precipitation train run to the phase implied by
     /// <paramref name="featureSet"/>: lean -> 3a, rich -> 3c, oro -> 3o,
     /// exact -> 3d. Feature-set validity for the precipitation target is
-    /// checked by the caller (TempTrainCommand.RunAsync) before dispatch.
+    /// checked by the caller (TrainCommand.RunAsync) before dispatch.
     /// </summary>
     public async Task<int> RunAsync(
         int[] leads, string? station, string featureSet,
@@ -683,7 +683,13 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         }
 
         // Resolve the 4 Bonehill stations + their oro records in canonical order.
-        var oroRoot = Path.Combine("data", "static", "orographic");
+        // Path is derived from cfg.Storage.ForecastsPath's parent (the
+        // canonical "data tree root"; production has forecastsPath="data/forecasts"
+        // so parent="data") rather than CWD-relative — keeps the resolution
+        // self-contained so parallel test runs don't collide on the
+        // process-global Environment.CurrentDirectory.
+        var oroRoot = Path.Combine(
+            Path.GetDirectoryName(_cfg.Storage.ForecastsPath)!, "static", "orographic");
         var oroBySlug = OroStaticFeatures.LoadAll(oroRoot);
         var pool = new List<(string Name, string Slug, OroStaticFeatures Oro, int Index)>();
         foreach (var (name, idx) in BonehillStationOrder3o.Select((n, i) => (n, i)))

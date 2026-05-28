@@ -120,7 +120,7 @@ public sealed class PrecipConformalFitCommand
     /// <summary>
     /// Fit conformal calibrators for every lead of one specific (station,
     /// version) cell. Used by the train-time auto-refit hook (called from
-    /// TempTrainCommand right after PromoteStationVersionAs*) so a fresh
+    /// TrainCommand right after PromoteStationVersionAs*) so a fresh
     /// champion or challenger never ships without a calibrator.
     ///
     /// Returns (fitted, skipped) counts per-lead so callers can log a single
@@ -215,8 +215,12 @@ public sealed class PrecipConformalFitCommand
                 // train-time station index. Index is stamped on the
                 // bundle's training_metadata.Hyperparameters so we
                 // recover the exact (oro, index) pair the train run
-                // used, not a re-derived guess.
-                var oroRoot = Path.Combine("data", "static", "orographic");
+                // used, not a re-derived guess. Path derived from
+                // ForecastsPath's parent (config-driven, not CWD-relative)
+                // so parallel tests don't collide on process-global CWD.
+                var oroRoot = Path.Combine(
+                    Path.GetDirectoryName(_cfg.Storage.ForecastsPath)!,
+                    "static", "orographic");
                 var oroBySlug = WeatherBlend.Train.Oro.OroStaticFeatures.LoadAll(oroRoot);
                 if (!oroBySlug.TryGetValue(stationSlug, out var oro))
                 {

@@ -10,20 +10,30 @@ using WeatherBlend.Train.Exact12h;
 namespace WeatherBlend.Commands;
 
 /// <summary>
-/// Trains the temperature blenders (Phase 2b/2c/2d — one LightGBM model per
-/// lead, regressed against ERA5 reanalysis) and acts as the cross-target
-/// dispatcher for the <c>train</c> CLI command.
+/// Cross-target dispatcher for the <c>train</c> CLI command. Validates the
+/// shared arguments (target, leads, feature-set) and routes to the per-target
+/// trainer:
+/// <list type="bullet">
+///   <item>temperature → in-class Phase 2b/2c/2d handlers below</item>
+///   <item>precipitation → <see cref="PrecipTrainCommand"/></item>
+///   <item>dry-window → <see cref="DryWindowTrainCommand"/></item>
+///   <item>wind / humidity / shortwave-radiation / cloud-cover / wind-gust /
+///         wind-speed-lgb → <see cref="ElementTrainCommand"/></item>
+/// </list>
 ///
-/// <see cref="RunAsync(string,string,string?,string?,string,string?,bool?,int[]?,int[]?,string?,CancellationToken)"/>
-/// validates the shared arguments (target, leads, feature-set) and then routes:
-/// temperature stays here; precipitation goes to <see cref="PrecipTrainCommand"/>;
-/// dry-window to <see cref="DryWindowTrainCommand"/>; the per-variable element
-/// blenders to <see cref="ElementTrainCommand"/>.
+/// Renamed from <c>TempTrainCommand</c> on 2026-05-28 — the original name
+/// reflected the temperature-only origin but the class has been the
+/// cross-target dispatcher since the precipitation + dry-window + element
+/// trainers were split out. The temperature-specific Phase 2b/2c/2d
+/// handlers live in this file (RunPhase2bAsync / RunPhase2cAsync /
+/// RunPhase2dAsync) and could be extracted into a TempTrainHandler in a
+/// future cleanup, but the dispatcher role is the load-bearing public
+/// surface.
 ///
-/// Lead 120h applies to temperature + precipitation only — dry-window and Element
-/// blenders stay capped at 72h pending a separate scoping decision.
+/// Lead 120h applies to temperature + precipitation only — dry-window and
+/// Element blenders stay capped at 72h pending a separate scoping decision.
 /// </summary>
-public sealed class TempTrainCommand : TrainCommandBase
+public sealed class TrainCommand : TrainCommandBase
 {
     private readonly DryWindowTrainCommand _dryWindow;
     private readonly ElementTrainCommand _element;
@@ -36,8 +46,8 @@ public sealed class TempTrainCommand : TrainCommandBase
     // own train commands set DefaultLeads = Leads.Short).
     private static readonly int[] DefaultLeads = Leads.Full;
 
-    public TempTrainCommand(
-        ILogger<TempTrainCommand> log,
+    public TrainCommand(
+        ILogger<TrainCommand> log,
         AppConfig cfg,
         DryWindowTrainCommand dryWindow,
         ElementTrainCommand element,
@@ -79,11 +89,14 @@ public sealed class TempTrainCommand : TrainCommandBase
         // 2b/3a comparison without code changes.
         var t = target.ToLowerInvariant();
         var elementTarget = ElementTargets.TryFromCli(t);
-        var validTargets = new[]
-        {
-            "temperature", "precipitation", "dry-window",
-            "wind", "humidity", "shortwave-radiation", "cloud-cover",
-        };
+        // Non-element targets stay hard-coded; element targets are derived
+        // from ElementTargets.All so adding a new element blender doesn't
+        // require remembering to update this whitelist (which is exactly
+        // how wind-gust silently failed under continue-on-error from
+        // 2026-05-27 until this bug fix).
+        var validTargets = new[] { "temperature", "precipitation", "dry-window" }
+            .Concat(ElementTargets.All.Select(e => e.CliName))
+            .ToArray();
         if (!validTargets.Contains(t))
         {
             _log.LogError("target must be one of [{Targets}] (got '{Target}')",

@@ -11,7 +11,7 @@ namespace WeatherBlend.Tests.Smoke;
 
 /// <summary>
 /// End-to-end smoke for the three temperature phases served by
-/// <see cref="TempTrainCommand"/>/<see cref="TempPredictCommand"/>:
+/// <see cref="TrainCommand"/>/<see cref="TempPredictCommand"/>:
 /// 2b (lean champion), 2c (rich challenger) and 2d (exact-runtime,
 /// Bonehill-only). 2d uses a different forecast tree (raw S3 exact
 /// cycles, RunTimeSource='exact') and is covered in a separate test.
@@ -53,7 +53,7 @@ public class TempPredictSmokeTests
             scope.ForecastsPath, locationName, predictAnchor.AddHours(1), nDays: 6,
             runTimeSource: "reported");
 
-        // TempTrainCommand depends on DryWindow + Element + Precip
+        // TrainCommand depends on DryWindow + Element + Precip
         // commands (it's the cross-target dispatcher). For target=
         // temperature the temp dispatch arm never touches the others,
         // but the constructor is non-nullable, so wire them up with
@@ -72,11 +72,11 @@ public class TempPredictSmokeTests
             new XunitLogger<ElementTrainCommand>(_output),
             Array.Empty<IElementBlender>());
 
-        var trainCmd = new TempTrainCommand(
-            new XunitLogger<TempTrainCommand>(_output),
+        var trainCmd = new TrainCommand(
+            new XunitLogger<TrainCommand>(_output),
             scope.Config, dryWindow, element, precip);
 
-        // TempTrainCommand dispatches on target + feature-set; lead "all"
+        // TrainCommand dispatches on target + feature-set; lead "all"
         // runs every default lead.
         var trainRc = await trainCmd.RunAsync(
             target: "temperature",
@@ -207,8 +207,8 @@ public class TempPredictSmokeTests
             new XunitLogger<ElementTrainCommand>(_output),
             Array.Empty<IElementBlender>());
 
-        var trainCmd = new TempTrainCommand(
-            new XunitLogger<TempTrainCommand>(_output),
+        var trainCmd = new TrainCommand(
+            new XunitLogger<TrainCommand>(_output),
             scope.Config, dryWindow, element, precip);
 
         // featureSet="exact" + lead "all" runs every default exact lead

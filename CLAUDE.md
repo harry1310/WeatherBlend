@@ -128,7 +128,7 @@ mint reads this cycle's fresh 4a rather than racing it. Both retrain
 hops dispatch via `workflow_dispatch` with `force=true`. Manual override:
 `gh workflow run retrain-python.yml -f force=true` (or `retrain-blenders.yml`).
 
-**Pre-train sanity gate (RetrainGuard).** Each trainer (TempTrainCommand,
+**Pre-train sanity gate (RetrainGuard).** Each trainer (TrainCommand,
 DryWindowTrainCommand, ElementTrainerHarness on the .NET side; train_4a.py
 on the Python side) computes a `training_summary.json` post-fit and
 compares against the previous run's

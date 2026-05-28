@@ -136,7 +136,7 @@ public sealed class DryWindowTrainCommand
 
                 // Buffer per-row test predictions across all leads for this
                 // (station, window) — written once at the bottom of the
-                // window loop. Sibling of TempTrainCommand.testPredictionRows
+                // window loop. Sibling of TrainCommand.testPredictionRows
                 // but on the day-level dry-window schema. Consumed by dry-
                 // window bake-offs.
                 var testPredictionRows = new List<DryWindowTestPredictionRow>();
