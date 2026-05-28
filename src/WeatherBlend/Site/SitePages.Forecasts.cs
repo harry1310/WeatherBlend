@@ -74,36 +74,17 @@ public static partial class SitePages
         body.Append(Ci, $"""
               <hgroup>
                 <h2>Rain +{lead}h</h2>
-                <p>Per-station P(wet ≥ 0.1 mm/h) — 3a solid, 3c lighter — plus per-NWP precip rate (one chart, point forecast).</p>
+                <p>NWP precipitation probability up top; per-station blended P(wet) + rainfall amount in the middle; per-NWP precip rate at the bottom.</p>
               </hgroup>
             """);
 
+        // RenderPrecipSection now handles the whole rain stack end-to-end
+        // (NWP PoP top, per-station P(wet) + 3f rainfall amount block,
+        // NWP precip rate bottom). The 3f loop that used to live here
+        // moved INSIDE the per-station block in RenderPrecipSection so
+        // each station's full story (P(wet) + amount) reads as one
+        // contiguous unit — Harry's request 2026-05-28.
         body.Append(RenderPrecipSection(input, lead, active));
-
-        // Phase 3f rainfall_amount cards — one per active rainfall station at
-        // this location, mounted only when 3f has predictions on this cycle.
-        // Membury-only today per phases.yaml; the loop renders nothing for
-        // Bonehill until Membury 4a→3f Bonehill rollout (deferred per plan §0).
-        var ramRows = input.RainfallAmountPredictions
-            .Where(r => r.LeadHours == lead).ToList();
-        if (ramRows.Count > 0 && Leads.ForecastsTempRain.Contains(lead))
-        {
-            // 3f's trained lead set is {24,48,72,96,120}; +12h has no 3f rows
-            // by design (lead is exact-runtime-only). Skip silently for those.
-            var stations = ramRows.Select(r => r.TruthStation).Distinct()
-                .OrderBy(s => s, StringComparer.Ordinal).ToList();
-            foreach (var slug in stations)
-            {
-                var html = RenderRainfallAmountSection(input, slug, lead);
-                if (string.IsNullOrEmpty(html)) continue;
-                body.Append(Ci, $"""
-                      <hgroup>
-                        <h3>{Escape(PrettyStation(slug))} — rainfall amount</h3>
-                      </hgroup>
-                    """);
-                body.Append(html);
-            }
-        }
 
         body.Append("</section>");
         return WrapPage(input, $"Rain forecast +{lead}h", "rain", body.ToString());
@@ -347,7 +328,6 @@ public static partial class SitePages
     private static string RenderPrecipSection(SiteInputs input, int lead, LocationDescriptor? activeLocation)
     {
         var s = new StringBuilder();
-        s.Append("<h3>Precipitation — P(wet ≥ 0.1 mm/h)</h3>");
 
         // Drop rows where the prediction's NWP source location doesn't match
         // the station's home location. See BuildStationHomeLocation /
@@ -446,6 +426,60 @@ public static partial class SitePages
         if (pageXMaxValid < input.GeneratedAtUtc) pageXMaxValid = input.GeneratedAtUtc;
         var pageXMax = pageXMaxValid.ToOADate();
 
+        // activeLocDisplay must be available BEFORE the NWP PoP block (now
+        // at the top) and again for the NWP precip rate block (still at the
+        // bottom). Re-derived once here.
+        var activeLocDisplay = activeLocation?.DisplayName
+            ?? PrimaryLocation(input.Locations)?.DisplayName
+            ?? "primary";
+
+        // ---- NWP precipitation probability — TOP of the page -----------
+        // Moved here from below the per-station loop on 2026-05-28 (Harry's
+        // restructure ask: NWP overview first, then per-station detail,
+        // then NWP rate at the bottom). PoP values are identical across
+        // rainfall stations (point forecast at the location's grid cell)
+        // so one chart per page reads as the right scope. Only ~4 of 8
+        // NWPs publish PoP — others drop out of the legend silently.
+        if (input.NwpPrecipProbabilities.Count > 0)
+        {
+            var popSeries = new List<LineSeries>();
+            var popPalette = nwpSpecs
+                .ToDictionary(np => np.Label, np => np.Color, StringComparer.Ordinal);
+            foreach (var grp in input.NwpPrecipProbabilities
+                .GroupBy(p => p.Model)
+                .OrderBy(g => g.Key, StringComparer.Ordinal))
+            {
+                var label = Nwp.DisplayLabel(grp.Key);
+                if (!popPalette.TryGetValue(label, out var colour)) colour = "#999";
+                var pts = grp
+                    .OrderBy(p => p.ValidTimeUtc)
+                    .Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.ProbabilityPercent / 100.0))
+                    .ToList();
+                // " PoP" suffix differentiates from the blender's "P(wet)"
+                // series label down in the per-station charts and from
+                // the precip-rate chart at the bottom.
+                if (pts.Count > 0)
+                    popSeries.Add(new LineSeries($"{label} PoP", colour, pts));
+            }
+            if (popSeries.Count > 0)
+            {
+                s.Append(Ci, $"<h3>NWP precipitation probability — point forecast at {Escape(activeLocDisplay)}</h3>");
+                s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
+                {
+                    Title = $"NWP PoP — {activeLocDisplay} — +{lead}h",
+                    XLabel = "Valid time (UTC)",
+                    YLabel = "Probability",
+                    Series = popSeries,
+                    Height = 220,
+                    FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
+                    FormatY = v => v.ToString("0.00", Ci),
+                    TodayLineX = input.GeneratedAtUtc.ToOADate(),
+                    XMin = pageXMin,
+                    XMax = pageXMax,
+                }));
+            }
+        }
+
         foreach (var station in stations)
         {
             // Pool across blender versions before picking freshest per ValidTime.
@@ -462,7 +496,12 @@ public static partial class SitePages
             // pageXMax computed above).
             var latestPerValid = latestPerValidByStation[station];
 
-            s.Append(Ci, $"<h4>{Escape(PrettyStation(station))}</h4>");
+            // Per-station h3: each station's full rain story (P(wet) chart
+            // + tables + 4a + 3f rainfall amount) reads as one contiguous
+            // section. Promoted from h4 → h3 on 2026-05-28 since the
+            // parent "Precipitation" h3 wrapper was removed when NWP PoP
+            // moved to the top of the page.
+            s.Append(Ci, $"<h3>{Escape(PrettyStation(station))}</h3>");
 
             if (latestPerValid.Count == 0)
             {
@@ -558,65 +597,14 @@ public static partial class SitePages
             s.Append(RenderPrecipDailySummaryTable(championVisiblePerValid));
             s.Append(RenderPrecipHourlyConfidenceTable(championHourlyPerValid, station, input.PrecipConformalTau));
             s.Append(RenderPhase4aPanel(input, station, lead, pageXMin, pageXMax));
-        }
 
-        // Page-level NWP precipitation_probability (PoP) chart — moved
-        // out of the per-station main P(wet) chart on 2026-05-12. PoP
-        // values are identical across rainfall stations (they're a point
-        // forecast at the location's NWP grid cell) so it makes sense
-        // to render once per page rather than per station. Sits above
-        // the mm/h chart so the eye reads "is rain likely?" then "how
-        // hard?" top-to-bottom. Only ~4 of 8 NWPs publish PoP — others
-        // drop out of the legend silently.
-        // input.NwpPrecipProbabilities / NwpPrecipRates are already scoped to
-        // this page's location by RenderSiteCommand (single-location SiteInputs
-        // invariant) — iterate directly.
-        var activeLocDisplay = activeLocation?.DisplayName
-            ?? PrimaryLocation(input.Locations)?.DisplayName
-            ?? "primary";
-
-        if (input.NwpPrecipProbabilities.Count > 0)
-        {
-            var popSeries = new List<LineSeries>();
-            var popPalette = nwpSpecs
-                .ToDictionary(np => np.Label, np => np.Color, StringComparer.Ordinal);
-            foreach (var grp in input.NwpPrecipProbabilities
-                .GroupBy(p => p.Model)
-                .OrderBy(g => g.Key, StringComparer.Ordinal))
-            {
-                var label = Nwp.DisplayLabel(grp.Key);
-                if (!popPalette.TryGetValue(label, out var colour)) colour = "#999";
-                var pts = grp
-                    .OrderBy(p => p.ValidTimeUtc)
-                    .Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.ProbabilityPercent / 100.0))
-                    .ToList();
-                // Suffix " PoP" so the NWP lines on the rain chart don't
-                // collide with the blender's "P(wet)" series label or the
-                // (label-only) NWP precip-rate chart further down — eyeballing
-                // the chart legend should immediately tell the reader this is
-                // an NWP probability of precip, not the blender's output or
-                // a mm/h rate. Lost in a 2026-05-12 refactor when the chart
-                // moved out of the per-station loop; restored 2026-05-15.
-                if (pts.Count > 0)
-                    popSeries.Add(new LineSeries($"{label} PoP", colour, pts));
-            }
-            if (popSeries.Count > 0)
-            {
-                s.Append(Ci, $"<h4>NWP precipitation probability — point forecast at {Escape(activeLocDisplay)}</h4>");
-                s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
-                {
-                    Title = $"NWP PoP — {activeLocDisplay} — +{lead}h",
-                    XLabel = "Valid time (UTC)",
-                    YLabel = "Probability",
-                    Series = popSeries,
-                    Height = 220,
-                    FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
-                    FormatY = v => v.ToString("0.00", Ci),
-                    TodayLineX = input.GeneratedAtUtc.ToOADate(),
-                    XMin = pageXMin,
-                    XMax = pageXMax,
-                }));
-            }
+            // Phase 3f rainfall amount card for THIS station, at this lead.
+            // Returns "" when no 3f rows match (e.g. +12h, or Bonehill until
+            // 3f rolls out there). Inlined into the per-station section
+            // 2026-05-28 so each station's complete rain story reads as one
+            // unit (P(wet) chart + tables + 4a + 3f), rather than the old
+            // shape that grouped by metric across stations.
+            s.Append(RenderRainfallAmountSection(input, station, lead));
         }
 
         // Per-NWP precip rate (mm/h) — point forecast at Bonehill, hoisted
@@ -646,7 +634,7 @@ public static partial class SitePages
             }
             if (nwpSeries.Count > 0)
             {
-                s.Append(Ci, $"<h4>NWP precip rate (mm/h) — point forecast at {Escape(activeLocDisplay)}</h4>");
+                s.Append(Ci, $"<h3>NWP precip rate (mm/h) — point forecast at {Escape(activeLocDisplay)}</h3>");
                 s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
                 {
                     Title = $"NWP precip rate — {activeLocDisplay} — +{lead}h",

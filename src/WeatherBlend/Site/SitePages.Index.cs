@@ -400,20 +400,20 @@ public static partial class SitePages
                     rows.Append(Ci, $"<tr><td>Humidity</td><td class=\"num\">{rh:0} %</td></tr>");
                 if (fl.WindSpeed10mMs is double ws)
                 {
-                    // Stored as m/s; display as km/h (× 3.6) since the
-                    // overview audience reads km/h natively. Gust appended
-                    // inline when materially above wind (gust km/h > wind
-                    // km/h + 1) so calm-wind rows don't sprout a redundant
-                    // "Wind 4, gust 4" suffix.
-                    var windKmh = ws * 3.6;
+                    // Stored as m/s; display as mph (× 2.23694) — site-wide
+                    // unit decision 2026-05-28. Gust appended inline when
+                    // materially above wind (gust mph > wind mph + 1) so
+                    // calm-wind rows don't sprout a redundant
+                    // "Wind 3, gust 3" suffix.
+                    var windMph = ws * 2.23694;
                     string gustSuffix = "";
                     if (windGustByValidMs.TryGetValue(p.ValidTimeUtc, out var gustMs))
                     {
-                        var gustKmh = gustMs * 3.6;
-                        if (gustKmh > windKmh + 1.0)
-                            gustSuffix = string.Create(Ci, $" · gust {gustKmh:0.0} km/h");
+                        var gustMph = gustMs * 2.23694;
+                        if (gustMph > windMph + 1.0)
+                            gustSuffix = string.Create(Ci, $" · gust {gustMph:0.0} mph");
                     }
-                    rows.Append(Ci, $"<tr><td>Wind 10 m</td><td class=\"num\">{windKmh:0.0} km/h{gustSuffix}</td></tr>");
+                    rows.Append(Ci, $"<tr><td>Wind 10 m</td><td class=\"num\">{windMph:0.0} mph{gustSuffix}</td></tr>");
                 }
                 if (fl.ShortwaveDownWm2 is double sw)
                     rows.Append(Ci, $"<tr><td>Shortwave down</td><td class=\"num\">{sw:0} W/m²</td></tr>");

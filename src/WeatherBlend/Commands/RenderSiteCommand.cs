@@ -410,6 +410,16 @@ public sealed class RenderSiteCommand
                 await Write($"forecasts-rain-{lead}h.html", SitePages.RenderForecastsRain(locInputs, lead));
         }
 
+        if (loc.HasTab("wind"))
+        {
+            // Single page (no per-lead variants like temp/rain) — the wind
+            // tab renders a full forecast horizon strip + the model strip
+            // in one view. Direction (wind_mvn) and challenger speeds
+            // (wind_speed_lgb / wind_blend) gracefully empty-state until
+            // their predict trees exist on R2.
+            await Write("forecasts-wind.html", SitePages.RenderForecastsWind(locInputs));
+        }
+
         if (loc.HasTab("dry_window"))
         {
             var activeSet = locInputs.ActiveStationSlugs;
@@ -453,6 +463,15 @@ public sealed class RenderSiteCommand
                     await Write($"skill-dry-window-{slug}.html",
                         SitePages.RenderDryWindowSkill(locInputs, slug));
                 }
+            }
+
+            if (loc.HasTab("wind"))
+            {
+                // Single page for now — no station axis (wind is a single-
+                // location quantity, like temperature). Per-phase rolling MAE
+                // lines arrive once verify scores wind_speed_lgb / wind_blend
+                // against Dunkeswell SYNOP truth post-Sunday-retrain.
+                await Write("skill-wind.html", SitePages.RenderWindSkill(locInputs));
             }
         }
 
@@ -1027,7 +1046,7 @@ ORDER BY LocationName, LeadHours, ValidTimeUtc";
     /// location in the rendering window, collapsed to one row per
     /// (LocationName, ValidTimeUtc) at the latest <c>PredictionMadeAtUtc</c>.
     /// Surfaced inline on the UTCI pop-out next to the 10 m wind row when
-    /// gust is materially above wind (gust km/h &gt; wind km/h + 1).
+    /// gust is materially above wind (gust mph &gt; wind mph + 1).
     /// </summary>
     private IReadOnlyList<(string LocationName, DateTime ValidTimeUtc, double GustMs)>
         QueryWindGustByValidTime(DateTime start, DateTime end, CancellationToken ct)

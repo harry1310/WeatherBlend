@@ -1329,6 +1329,7 @@ public static partial class SitePages
             "overview"     => ("index.html",                "Overview",     "overview"),
             "temperature"  => ("forecasts-temp-24h.html",   "Temperature",  "temperature"),
             "rain"         => ("forecasts-rain-24h.html",   "Rain",         "rain"),
+            "wind"         => ("forecasts-wind.html",       "Wind",         "wind"),
             "dry_window"   => ("forecasts-dry-window.html", "Dry window",   "dry-window"),
             "skill"        => (skillHref,                   "Skill",        "skill"),
             "models"       => (modelsHref,                  "Models",       "models"),

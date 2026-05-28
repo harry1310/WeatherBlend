@@ -117,6 +117,7 @@ public static partial class SitePages
         {
             ("temp",       "skill-temperature.html", "Temperature", "temperature"),
             ("rain",       "skill-rainfall.html",    "Rain",        "rain"),
+            ("wind",       "skill-wind.html",        "Wind",        "wind"),
             ("dry-window", "skill-dry-window.html",  "Dry window",  "dry_window"),
         };
         var s = new StringBuilder();
@@ -129,6 +130,88 @@ public static partial class SitePages
         }
         s.Append("</ul></nav>");
         return s.ToString();
+    }
+
+    /// <summary>
+    /// Skill — Wind. Rolling MAE for blended wind speed (Dunkeswell SYNOP truth)
+    /// + circular MAE for wind direction (Dunkeswell SYNOP truth) once those
+    /// verify trees exist. Today's MVP renders the structure with empty-state
+    /// placeholders — verify data for the new wind_speed_lgb / wind_blend /
+    /// wind_mvn phases accumulates from the first Sunday retrain after
+    /// 2026-05-31. Layout decisions in
+    /// <c>project_wind_tab_design_2026-05-28</c>.
+    /// </summary>
+    public static string RenderWindSkill(SiteInputs input)
+    {
+        var content = new StringBuilder();
+        content.Append("<section>");
+        content.Append(RenderSkillSubNav("wind", input.RenderingFor));
+        content.Append("""
+              <hgroup>
+                <h2>Skill — wind</h2>
+                <p>Rolling MAE for blended wind speed and circular MAE for direction —
+                   both scored against Dunkeswell SYNOP truth (MIDAS Open station 01383).</p>
+              </hgroup>
+            """);
+
+        content.Append("<h3>Speed MAE (rolling, Dunkeswell truth)</h3>");
+        content.Append(RenderWindSpeedSkillBlock(input));
+
+        content.Append("<hr/><h3>Direction MAE (circular, rolling, Dunkeswell truth)</h3>");
+        content.Append(RenderWindDirectionSkillBlock(input));
+
+        content.Append("<hr/><h3>CI calibration (wind_mvn)</h3>");
+        content.Append(RenderWindCalibrationBlock(input));
+
+        content.Append("</section>");
+        return WrapPage(input, "Skill — wind", "skill", content.ToString());
+    }
+
+    /// <summary>Rolling MAE chart for wind speed — one line per active
+    /// phase (wind champion + wind_speed_lgb + wind_blend) + a baseline
+    /// for NWP-mean. Empty-state until the verify pipeline accumulates
+    /// MAE rows for these phases (first cycles post-Sunday-retrain).</summary>
+    private static string RenderWindSpeedSkillBlock(SiteInputs input)
+    {
+        // TODO when verify rows for wind speed accumulate: build per-phase
+        // LineSeries from input.RollingMae (extend to carry "wind_speed"
+        // target rows), render via LineChartRenderer.RenderChartJs. Same
+        // shape as RenderRollingMaeBlock for temperature. For now the
+        // empty-state is the contract: structure exists, lines arrive
+        // when data lands.
+        return RenderEmptyChart(
+            "Wind speed MAE (mph) — rolling 30-day",
+            "Verify rows accumulating. First Sunday retrain after 2026-05-31 will populate wind_speed_lgb and wind_blend lines; " +
+            "the existing wind (ERA5 champion) line lands as soon as verify scores it against Dunkeswell SYNOP truth.");
+    }
+
+    /// <summary>Rolling circular MAE chart for wind direction —
+    /// wind_mvn (champion-eventual) vs NWP-mean baseline.</summary>
+    private static string RenderWindDirectionSkillBlock(SiteInputs input)
+    {
+        return RenderEmptyChart(
+            "Wind direction MAE (°) — rolling 30-day, circular",
+            "Direction verification arrives once wind_mvn predictions land on R2 " +
+            "(first Sunday retrain after 2026-05-31). Circular MAE is min(|err|, 360 - |err|) " +
+            "averaged over the rolling window.");
+    }
+
+    /// <summary>α' calibration coverage for wind_mvn — direction Ci95 +
+    /// speed Ci95 should both hover near 0.95 if the per-lead α' grid-fit
+    /// on val generalised. Surfaces calibration drift before MAE does.</summary>
+    private static string RenderWindCalibrationBlock(SiteInputs input)
+    {
+        return """
+            <div class="chart-empty-box">
+              <p>
+                Coverage metrics will appear here once wind_mvn predictions
+                are scored against Dunkeswell truth. Targets: direction
+                Ci95 coverage ≈ 0.95, speed Ci95 coverage ≈ 0.95.
+                Anything &lt; 0.90 or &gt; 0.99 sustained over a week
+                triggers a calibration re-fit.
+              </p>
+            </div>
+            """;
     }
 
     /// <summary>
