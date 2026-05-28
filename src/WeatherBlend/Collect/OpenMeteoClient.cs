@@ -41,6 +41,24 @@ public sealed class OpenMeteoClient
         { "gem_seamless", "cmc_gem_gdps" },
     };
 
+    /// <summary>
+    /// Maximum acceptable age (hours) of a model's <c>last_run_initialisation_time</c>
+    /// before the live collector skips the fetch. Every blender NWP we consume
+    /// updates at most every 12 hours (GEM is the slowest); 24h covers a full
+    /// cadence with margin so a single missed cycle doesn't trip this. Beyond
+    /// 24h indicates the upstream (CMC, NCEP, …) or Open-Meteo's ingestion has
+    /// stalled — silently overwriting the previous partition with newer
+    /// ValidTimes would just hide the outage, so we skip and warn.
+    ///
+    /// Reason this matters: <see cref="Storage.ParquetWriter.WriteForecastsAsync"/>
+    /// partitions by <c>date={RunTimeUtc.Date}</c>, so if every fresh fetch
+    /// gets the SAME stale RunTime, each write clobbers the original
+    /// <c>date={staleDate}/run={staleHour}.parquet</c> with rows whose
+    /// ValidTimes have rolled forward — mild partition corruption + the live
+    /// outage stays invisible. See the 2026-05-27 GEM incident.
+    /// </summary>
+    public const int MaxReportedRunAgeHours = 24;
+
     private readonly HttpClient _http;
     private readonly ILogger<OpenMeteoClient> _log;
 
@@ -58,6 +76,22 @@ public sealed class OpenMeteoClient
         CancellationToken ct)
     {
         var reported = await GetReportedCycleAsync(modelId, ct);
+        if (reported.HasValue)
+        {
+            var ageHours = (DateTime.UtcNow - reported.Value).TotalHours;
+            if (ageHours > MaxReportedRunAgeHours)
+            {
+                _log.LogWarning(
+                    "Live collect skipped: {Model} last_run_initialisation_time is {Age:F1}h old " +
+                    "(reported {Reported:yyyy-MM-dd HH:mm}Z, threshold {Threshold}h). " +
+                    "Either Open-Meteo's ingestion of the upstream source has stalled or the " +
+                    "upstream centre hasn't published. Skipping the fetch avoids overwriting the " +
+                    "previous date={{ReportedDate}}/run={{ReportedHour}}.parquet partition with " +
+                    "rows whose ValidTimes have rolled forward. previous-runs collect is unaffected.",
+                    modelId, ageHours, reported.Value, MaxReportedRunAgeHours);
+                return new List<ForecastRow>();
+            }
+        }
         return await FetchAsync(LiveBase, location, modelId, variables,
             forecastDays, null, null, reported, ct);
     }
