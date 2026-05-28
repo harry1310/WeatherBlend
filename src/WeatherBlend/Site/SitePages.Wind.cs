@@ -34,9 +34,10 @@ public static partial class SitePages
         body.Append(Ci, $"""
               <hgroup>
                 <h2>Wind +{lead}h</h2>
-                <p>Blender speed forecasts on top (with the wind_mvn 95% CI band shaded);
-                   raw NWP inputs below. Per-hour direction circles at the bottom show
-                   the latest day this lead predicts.</p>
+                <p>Blender speed forecasts on top (with the wind_mvn 80% credible
+                   band shaded); raw NWP inputs below. Per-hour direction circles
+                   at the bottom show the latest day this lead predicts; the wedge
+                   span is the wind_mvn 80% direction CI.</p>
               </hgroup>
             """);
 
@@ -153,25 +154,35 @@ public static partial class SitePages
                 rows.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.SpeedMs * MsToMph)).ToList()));
         }
 
-        // wind_mvn: speed magnitude line + CI95 ribbon. The ribbon's low +
+        // wind_mvn: speed magnitude line + CI80 ribbon. The ribbon's low +
         // high series both need to be in Series so the renderer can match
         // them by name. Boundary lines stay in the legend (mirrors the
         // rainfall_amount P10/P90 pattern in SitePages.RainfallAmount.cs)
         // — light grey so the eye reads the ribbon as the "envelope"
         // rather than two competing lines, while still leaving them as
         // identifiable reference values.
+        //
+        // Defaults to CI80 (10/90 percentiles) — locked 2026-05-28 after
+        // CI95 read as "very very wide" against the 30-day-trained MVN.
+        // Falls back to CI95 when the parquet predates the CI80 columns
+        // (pre-2026-05-28 wind_mvn runs).
         if (mvnAtLead.Count > 0)
         {
+            // Per-row low/high in m/s. Each row picks CI80 when present,
+            // CI95 otherwise — mixed parquets fall back gracefully.
+            (double, double) CiPair(WindDirectionForecastPoint r)
+                => (r.SpeedCi80LoMs ?? r.SpeedCi95LoMs,
+                    r.SpeedCi80HiMs ?? r.SpeedCi95HiMs);
             blendSeries.Add(new LineSeries("MVN speed", "#1976d2",
                 mvnAtLead.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.SpeedMs * MsToMph)).ToList()));
-            blendSeries.Add(new LineSeries("MVN CI95 low", "#bbdefb",
-                mvnAtLead.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.SpeedCi95LoMs * MsToMph)).ToList()));
-            blendSeries.Add(new LineSeries("MVN CI95 high", "#bbdefb",
-                mvnAtLead.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.SpeedCi95HiMs * MsToMph)).ToList()));
+            blendSeries.Add(new LineSeries("MVN CI80 low", "#bbdefb",
+                mvnAtLead.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: CiPair(r).Item1 * MsToMph)).ToList()));
+            blendSeries.Add(new LineSeries("MVN CI80 high", "#bbdefb",
+                mvnAtLead.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: CiPair(r).Item2 * MsToMph)).ToList()));
         }
 
         var ribbons = mvnAtLead.Count > 0
-            ? new[] { new RibbonSpec("MVN CI95 low", "MVN CI95 high", "rgba(25, 118, 210, 0.18)") }
+            ? new[] { new RibbonSpec("MVN CI80 low", "MVN CI80 high", "rgba(25, 118, 210, 0.18)") }
             : Array.Empty<RibbonSpec>();
 
         // wind_gust_lgb gust line — pulled from input.WindGustByValidMs
@@ -325,13 +336,17 @@ public static partial class SitePages
     /// <summary>One wind-direction circle. Convention: meteorological
     /// <c>BlendDirection</c> ("from") is converted to "to" (the arrow
     /// points the way the wind is blowing) by adding 180°. The wedge fill
-    /// spans the CI95 range mapped to "to" space too. ≥270° spread or
-    /// sub-2 mph speed renders the VARIABLE indicator instead.</summary>
+    /// spans the CI80 range (falls back to CI95 on pre-2026-05-28
+    /// parquets that don't carry CI80 columns) mapped to "to" space.
+    /// ≥270° wedge spread or sub-2 mph speed renders VARIABLE instead.
+    /// Threshold stays at 270° on whatever band is drawn — at CI80 a
+    /// 270° spread already means the MVN's 80% credible arc covers 3/4
+    /// of the circle, so direction is meaningless either way.</summary>
     private static string RenderWindDirectionCircle(WindDirectionForecastPoint p)
     {
         var speedMph = p.SpeedMs * MsToMph;
-        var lo = p.DirectionCi95LoDeg;
-        var hi = p.DirectionCi95HiDeg;
+        var lo = p.DirectionCi80LoDeg ?? p.DirectionCi95LoDeg;
+        var hi = p.DirectionCi80HiDeg ?? p.DirectionCi95HiDeg;
         // Wrap-around CI: if hi < lo, the interval crosses 360 → unwrap.
         var span = (hi - lo + 360.0) % 360.0;
         if (span >= 270.0 || speedMph < 2.0) return RenderVariableWindGlyph();

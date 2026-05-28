@@ -52,6 +52,13 @@ public sealed class WindDirectionPredictionRow
     public required double BlendDirectionCi95Lo { get; init; }
     public required double BlendDirectionCi95Hi { get; init; }
 
+    /// <summary>80% credible interval bounds for direction (degrees).
+    /// Same MC samples as the CI95 pair, just tighter percentiles
+    /// (10/90 of the highest-density arc). Added 2026-05-28; nullable
+    /// so parquets written before that date deserialize cleanly.</summary>
+    public double? BlendDirectionCi80Lo { get; init; }
+    public double? BlendDirectionCi80Hi { get; init; }
+
     /// <summary>Speed magnitude from the MVN parameters,
     /// sqrt(μ_u² + μ_v²) (m/s). NOT used as the canonical wind_speed —
     /// wind_blend in predict-tail composes this with wind_speed_lgb via
@@ -61,6 +68,14 @@ public sealed class WindDirectionPredictionRow
     /// via per-lead α'_spd scaling of σ_u, σ_v before MC.</summary>
     public required double BlendSpeedCi95Lo { get; init; }
     public required double BlendSpeedCi95Hi { get; init; }
+
+    /// <summary>80% credible interval bounds for speed (m/s). Same MC
+    /// samples as the CI95 pair, percentiles 10/90 instead of 2.5/97.5.
+    /// The wind page's chart ribbon defaults to this band — 95% was
+    /// visually overwhelming given the bundle's σ on 30-day training.
+    /// Nullable for back-compat with pre-2026-05-28 parquets.</summary>
+    public double? BlendSpeedCi80Lo { get; init; }
+    public double? BlendSpeedCi80Hi { get; init; }
 
     public DateTime? RunTimeUtcGfs   { get; init; }
     public DateTime? RunTimeUtcEcmwf { get; init; }

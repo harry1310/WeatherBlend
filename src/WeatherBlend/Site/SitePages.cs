@@ -886,7 +886,16 @@ public static partial class SitePages
         double SpeedMs,
         double SpeedCi95LoMs,
         double SpeedCi95HiMs,
-        string LocationName);
+        string LocationName,
+        // CI80 fields added 2026-05-28. Nullable so older parquets that
+        // only carry CI95 (anything written before this revision) still
+        // deserialize; the renderer falls back to CI95 when these are
+        // null. Same MC samples drive both bands — 10/90 percentiles for
+        // CI80, 2.5/97.5 for CI95.
+        double? DirectionCi80LoDeg = null,
+        double? DirectionCi80HiDeg = null,
+        double? SpeedCi80LoMs = null,
+        double? SpeedCi80HiMs = null);
 
     public static string Stylesheet() => """
         :root { --brand: #7c4dff; --pwet: #0288d1; }

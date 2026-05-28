@@ -1166,12 +1166,21 @@ ORDER BY LocationName, ModelVersion, LeadHours, ValidTimeUtc";
             _log.LogInformation("wind_mvn (wind_direction) predictions tree empty — direction circles + speed CI ribbon will empty-state until predict-wind-direction runs.");
             return Array.Empty<SitePages.WindDirectionForecastPoint>();
         }
+        // CI80 columns added 2026-05-28; parquets predating that revision
+        // don't carry them. Probe before SELECTing so the query stays
+        // backwards-compatible — older parquets return null and the
+        // renderer falls back to CI95.
+        var hasCi80 = ParquetReader.HasColumn(conn, glob, "BlendSpeedCi80Lo");
         var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
+        var ci80Cols = hasCi80
+            ? ", BlendDirectionCi80Lo, BlendDirectionCi80Hi, BlendSpeedCi80Lo, BlendSpeedCi80Hi"
+            : ", NULL::DOUBLE AS BlendDirectionCi80Lo, NULL::DOUBLE AS BlendDirectionCi80Hi, NULL::DOUBLE AS BlendSpeedCi80Lo, NULL::DOUBLE AS BlendSpeedCi80Hi";
         var sql = $@"
 WITH ranked AS (
     SELECT LocationName, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
            BlendDirection, BlendDirectionCi95Lo, BlendDirectionCi95Hi,
-           BlendSpeedMagnitude, BlendSpeedCi95Lo, BlendSpeedCi95Hi,
+           BlendSpeedMagnitude, BlendSpeedCi95Lo, BlendSpeedCi95Hi
+           {ci80Cols},
            ROW_NUMBER() OVER (PARTITION BY LocationName, ModelVersion, LeadHours, ValidTimeUtc
                               ORDER BY PredictionMadeAtUtc DESC) AS rn
     FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
@@ -1182,7 +1191,8 @@ WITH ranked AS (
 )
 SELECT LocationName, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
        BlendDirection, BlendDirectionCi95Lo, BlendDirectionCi95Hi,
-       BlendSpeedMagnitude, BlendSpeedCi95Lo, BlendSpeedCi95Hi
+       BlendSpeedMagnitude, BlendSpeedCi95Lo, BlendSpeedCi95Hi,
+       BlendDirectionCi80Lo, BlendDirectionCi80Hi, BlendSpeedCi80Lo, BlendSpeedCi80Hi
 FROM ranked
 WHERE rn = 1
 ORDER BY LocationName, LeadHours, ValidTimeUtc";
@@ -1197,7 +1207,11 @@ ORDER BY LocationName, LeadHours, ValidTimeUtc";
             SpeedMs:             r.GetDouble(8),
             SpeedCi95LoMs:       r.GetDouble(9),
             SpeedCi95HiMs:       r.GetDouble(10),
-            LocationName:        r.GetString(0)),
+            LocationName:        r.GetString(0),
+            DirectionCi80LoDeg:  r.IsDBNull(11) ? null : (double?)r.GetDouble(11),
+            DirectionCi80HiDeg:  r.IsDBNull(12) ? null : (double?)r.GetDouble(12),
+            SpeedCi80LoMs:       r.IsDBNull(13) ? null : (double?)r.GetDouble(13),
+            SpeedCi80HiMs:       r.IsDBNull(14) ? null : (double?)r.GetDouble(14)),
             _log, "wind_mvn predictions tree empty.", ct);
     }
 
