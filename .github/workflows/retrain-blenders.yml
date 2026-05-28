@@ -222,6 +222,23 @@ jobs:
           mkdir -p data/models
           rclone copy "r2:${R2_BUCKET}/data/models" data/models \
             --fast-list --transfers 16 --checkers 32 || true
+          # MIDAS Open Dunkeswell SYNOP truth — wind_speed_lgb only.
+          # Same pull retrain-python.yml does for wind_mvn (the two
+          # phases consume the same MIDAS station 01383 BADC-CSV files);
+          # scoped behind run_wind_speed_lgb so other phases' jobs don't
+          # pay the ~9 MB pull. Filename glob matches both production
+          # and smoke-fixture files. The first retrain run that didn't
+          # pull MIDAS produced "Loaded 0 rows" inside
+          # WindSpeedLgbFeatureBuilder — the in-memory MIDAS dict was
+          # empty so every forecast-pivot row dropped at the inner join.
+          if [ "${{ steps.phases.outputs.run_wind_speed_lgb }}" = "true" ]; then
+            mkdir -p data/truth/midas/raw
+            rclone copy "r2:${R2_BUCKET}/data/truth/midas/raw" \
+              data/truth/midas/raw \
+              --include 'midas-open*_01383_*.csv' \
+              --fast-list --transfers 4 --checkers 8 \
+              || echo "::error::Dunkeswell MIDAS not on R2 — train wind-speed-lgb will fail with 0-row load."
+          fi
 
       - name: Build
         if: steps.gate.outputs.proceed == 'true'
