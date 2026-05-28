@@ -422,19 +422,30 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
     );
   }
 
-  // Hop C — collect → 4a predict. predict-4a (WeatherProbabilistic)
-  // consumes the Open-Meteo forecasts collect.yml just pushed to R2;
-  // chaining off collect's completion runs it on fresh data the moment
-  // it lands instead of racing a fixed cron. Gated on success — a
-  // failed collect leaves stale data, so skip and wait for the next
-  // cycle. Path check uses the leading slash so `s3-collect.yml`
-  // (Hop D) doesn't also match here.
+  // Hop C — collect → 4a predict + wind_mvn predict. Both predict-4a
+  // and predict-wind-direction (WeatherProbabilistic) consume the
+  // Open-Meteo forecasts collect.yml just pushed to R2; they have no
+  // dependency on each other so they fire in parallel. predict-4a runs
+  // BART per-cell precip; predict-wind-direction runs the MLP MVN for
+  // wind direction + speed CIs. Phase 2 of WIND_BLENDER_PLAN added the
+  // wind-direction dispatch here (2026-05-28). Both gated on
+  // collect success — a failed collect leaves stale data.
+  // Path check uses the leading slash so `s3-collect.yml` (Hop D)
+  // doesn't also match here.
   if ((wfRun.path ?? "").endsWith("/collect.yml") && conclusion === "success") {
-    try {
-      await dispatchWorkflow(env, "predict-4a.yml", "harry1310/WeatherProbabilistic");
-      console.log("predict chain: collect success → dispatched predict-4a.yml");
-    } catch (e) {
-      console.error(`predict chain: failed to dispatch predict-4a.yml: ${e}`);
+    const results = await Promise.allSettled([
+      dispatchWorkflow(env, "predict-4a.yml",
+                        "harry1310/WeatherProbabilistic"),
+      dispatchWorkflow(env, "predict-wind-direction.yml",
+                        "harry1310/WeatherProbabilistic"),
+    ]);
+    for (const [idx, wf] of (["predict-4a.yml", "predict-wind-direction.yml"] as const).entries()) {
+      const r = results[idx];
+      if (r.status === "fulfilled") {
+        console.log(`predict chain: collect success → dispatched ${wf}`);
+      } else {
+        console.error(`predict chain: failed to dispatch ${wf}: ${r.reason}`);
+      }
     }
   }
 

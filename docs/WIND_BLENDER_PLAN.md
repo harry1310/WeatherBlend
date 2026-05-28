@@ -35,16 +35,24 @@ where dense, ERA5 only where unavoidable.
   (collection started 2026-04-24). Revisit when DataHub gust accumulates
   ~6-12 months.
 
-### wind_mvn architecture
+### wind_mvn architecture — as locked 2026-05-27
+
+The original plan said "45 features (same as wind_speed_lgb today)" — both
+counts were contaminated by the same archive-NWP bake-off scope. Production
+scope is identical to the wind_speed_lgb lock-in (6 production NWPs:
+gfs / ecmwf_ifs025 / icon / gem / ukmo / jma; no HARMONIE; AIFS excluded
+until 2025+ data accumulates) and the same `lean+ORO+spread` feature set
+(29 features). One feature builder feeds both models — no architectural
+divergence between the LGB speed model and the MLP direction model.
 
 ```
-Input  : 45 features (same as wind_speed_lgb today)
-         14 per-NWP wind_speed
-         14 per-NWP wind_direction
+Input  : 29 features (production scope, matches wind_speed_lgb)
+         6 per-NWP wind_speed
+         6 per-NWP wind_direction
          5 ORO_LEAN (oro_wind_sin/cos/upwind_gain/uplift/uplift_x_q)
          12 SPREAD (mean+std × 6 vars: wsp, gust, t, td, p, cc)
 
-Trunk  : Linear(45 → 64) → GELU → Dropout(0.10)
+Trunk  : Linear(29 → 64) → GELU → Dropout(0.10)
          Linear(64 → 64) → GELU → Dropout(0.10)
 Heads  : mu_head    → 2 outputs (μ_u, μ_v)
          scale_head → 2 outputs (raw → clamp(-3, 3) → exp → σ_u, σ_v)
@@ -57,8 +65,24 @@ Loss   : Bivariate normal negative log-likelihood
 
 Optimiser: AdamW lr=1e-3 wd=1e-4, CosineAnnealingLR T_max=200 eta_min=1e-5,
            batch=256, grad-clip 5.0, early-stop on val NLL patience=30 epochs.
-Train preprocessing: median-impute NaNs from train, standardise via train mu/sd.
+Train preprocessing: median-impute NaNs from train, drop columns that are
+            all-NaN in train (gust columns for ECMWF/JMA — neither publishes
+            gust on Open-Meteo Previous Runs), standardise via train mu/sd.
 ```
+
+**Bake-off result (production scope, 2026-05-27):** direction MAE **18.196°**
+on 1,163 Dunkeswell SYNOP test rows (−18.7% vs NWP-mean 22.371°). Speed MAE
+0.9918 m/s (worse than the dedicated LGB speed model — see WindSpeedBlend
+section for blend evaluation). CI95 direction coverage 89.9%, speed 89.3%
+— both undercovered, calibrated via the α' scalars below.
+
+**Rich-variant tested + rejected**: 61-feature rich+oro (gust + thermo +
+calendar on top of lean+ORO+spread) collapsed back to NWP-mean direction
+MAE (22.4°) with CI widths ballooning to 100°. The small MLP overfits at
+this data scale; the LGB winner found the same pattern less dramatically.
+Stay at 29.
+
+**Reproducibility:** `scripts/wind_mvn_production_scope_bakeoff.py`.
 
 ### wind_mvn bundle layout (per location, per lead)
 
@@ -268,59 +292,99 @@ sweeps; adding wind_mvn / wind_gust_lgb is content, not structure.
 
 ## Bake-off results being locked in (all on 2024 Bonehill, 70/15/15 chrono split)
 
-### Speed point (Dunkeswell SYNOP truth, 1,195 test rows)
+The numbers below the dividers are the **production-scope re-bake-offs done
+2026-05-27**, replacing the original contaminated 14-NWP numbers. The
+original contaminated numbers are preserved at the bottom of this section
+for historical context — they are NOT what ships. The take-aways
+(LGB winner, MLP winner, sigmoid blend) are unchanged; absolute MAEs are
+slightly larger because we no longer have access to gfs_ncep / MO Global /
+MO UKV / IFS oper / HARMONIE in the feature set.
+
+### Speed point — production scope (Dunkeswell truth, 1,163 test rows)
+
+NWPs: **6 production** (gfs / ecmwf_ifs025 / icon / gem / ukmo / jma). No
+HARMONIE, no archive. Bake-off: `scripts/wind_speed_production_scope_bakeoff.py`.
 
 | Model | MAE | RMSE |
 |---|---|---|
-| Best single NWP (gem_seamless) | 1.094 | — |
-| NWP-mean speed | 1.236 | — |
-| `wind_speed_lgb` (LightGBM speed-only) | **0.942** | 1.221 |
-| `wind_mvn` magnitude | 1.084 | 1.443 |
-| **`WindSpeedBlend`** (sigmoid combo, center=2.50, scale=3.00) | **0.9345** | 1.205 |
+| NWP-mean speed | 1.1454 | — |
+| Best single NWP (gem_seamless) | 1.1018 | — |
+| `wind_speed_lgb` (LightGBM, `lean+ORO+spread`, 29 feats) | **0.9591** | 1.236 |
+| `wind_mvn` magnitude (MLP) | 0.9918 | — |
+| **`WindSpeedBlend`** (sigmoid, center=2.50, scale=3.00) | **0.9282** | — |
 
-Slice breakdown for blend:
-- Low (≤2 m/s, n=144): 0.705 m/s MAE (-24% vs `wind_speed_lgb` alone)
-- Mid (2-8 m/s, n=873): 0.878 (+4% vs alone — acceptable)
-- High (>8 m/s, n=178): 1.398 (-2.5% vs alone)
+Slice breakdown for the blend on production scope
+(`scripts/wind_speed_blend_production_scope_bakeoff.py`):
+- Low (≤2 m/s, n=139): 0.8019 (-13% vs LGB; pure MLP would be 0.7291 = -21%)
+- Mid (2-8 m/s, n=846): 0.8311 (+1.7% vs LGB — acceptable, sigmoid still
+  weights LGB heavily in this band)
+- High (>8 m/s, n=178): 1.4887 (-0.7% vs LGB)
 
-### Direction point (Dunkeswell SYNOP truth)
+Bootstrap 95% CI on aggregate (sigmoid − LGB) per-row |error| delta:
+**[-0.0177, +0.0060] m/s** — straddles zero, so the aggregate win is not
+statistically conclusive at this n. The low-wind slice gain is genuine and
+that's what motivates shipping the blend.
+
+Tested + rejected blends (all val-fit, all lost on test):
+- Hard switch on LGB threshold (val-fit t=8.00): +5.50% vs LGB
+- Linear ramp (val-fit 5.0→10.0): +2.66% vs LGB
+- Per-decile lookup (10 bins fit on val): +0.87% vs LGB
+
+Val-fitting consistently overfits to "use MLP almost always" because val
+favours MLP overall; the plan's *fixed* sigmoid is more robust at this
+data scale.
+
+### Direction point — production scope (Dunkeswell truth, 1,163 test rows)
 
 | Model | MAE (circular degrees) |
 |---|---|
-| NWP-mean direction | 22.02° |
-| Best single NWP (gfs_ncep, n=598) | 22.27° |
-| `wind_mvn` atan2(-μ_u, -μ_v) | **18.60°** (-14.4% vs NWP-mean) |
+| NWP-mean direction | 22.371° |
+| `wind_mvn` atan2(-μ_u, -μ_v), `lean+ORO+spread` (29 feats) | **18.196°** (-18.7%) |
 
-### Direction CI (95% nominal)
+`rich + oro` variant (61 features incl. per-NWP gust+thermo+cal) collapsed
+back to 22.4° — the MLP overfits at this data + feature scale. Stay at 29.
 
-- Uncalibrated direction CI coverage: 0.928 (target 0.95)
-- Calibrated coverage with α'_dir = 0.967 from val: **0.951** ✓ (achieved 0.95 target)
-- Average direction CI width after calibration: 99.3°
+### Direction CI (95% nominal) — to be re-fit at production scope
 
-In high-NWP-disagreement slice (top decile, n=120): direction MAE 50.58°
-(both `wind_mvn` and `wind_speed_lgb` slice-equivalent), direction CI
-covers 0.900 of truths at width 242° — model widens correctly when NWPs
-disagree.
+Plan retains the **α'_dir grid-fit on val** calibration recipe. Production
+α' may differ from the contaminated bake-off's 0.967; production-scope
+uncalibrated CI95 coverage measured 0.899. The `train_wind_mvn.py` writes
+α'_dir to `calibration.json` after fitting on val.
 
-### Speed CI (95% nominal)
+### Speed CI (95% nominal) — to be re-fit at production scope
 
-- `wind_mvn` MC samples + α'_spd = 0.967 from val: coverage 0.921,
-  average width 4.49 m/s
-- Variance-inflation alternatives (quantile LightGBM, c-scale) all lose
-  on aggregate. Stick with MC + α' calibration.
+Same — α'_spd refit on val per-bundle. Uncalibrated coverage 0.893,
+width 3.96 m/s. Variance-inflation alternatives still rejected.
 
-### Gust (ERA5 truth, 1,285 test rows)
+### Gust — production scope (ERA5 truth, 1,251 test rows)
+
+Already shipped 2026-05-27. See `scripts/gust_4nwp_variants_bakeoff.py`:
 
 | Model | MAE | vs NWP-mean |
 |---|---|---|
-| NWP-mean gust | 1.264 | — |
-| Best single NWP (ecmwf_ifs_oper, n=198) | 1.039 | — |
-| LightGBM gust + 5 ORO (rich, 47 feats) | 1.040 | -17.7% |
-| LightGBM gust + ratio (47+12=59 feats) | 1.012 | -19.9% |
-| **LightGBM gust + ratio (minimal, 22 feats)** | **0.981** | **-22.4%** |
+| NWP-mean gust | 1.2764 | — |
+| **`wind_gust_lgb` (4 NWPs, 10 feats — minimal gust+ratio+spread)** | **1.0418** | **-18.4%** |
 
-The 22-feature minimal model beats the 59-feature variant by -3.1%.
-Adding wsp/wdir/ORO/SPREAD beyond gust+ratio dilutes signal.
+ORO HURTS at 4-NWP scope here (rich+oro = 1.0535). 6 variants tested, the
+minimal 10-feat ties the 24-feat richest variant within noise.
+
+### Original (contaminated) bake-off numbers — historical only
+
+The original Phase-design numbers below used the raw forecast tree
+(`{fc.Model.nunique()} NWPs`, evaluated to 10-14 NWPs depending on
+variable coverage) and included gfs_ncep / met_office_global /
+met_office_ukv / ecmwf_ifs_oper / KNMI HARMONIE / DMI HARMONIE — none
+of which feed the production element blender. They are preserved for
+context only; **do not cite them as ship targets**.
+
+- Speed point: `wind_speed_lgb` 0.942, blend 0.9345, blend low slice
+  -23.9%, blend mid slice +4%, blend high slice -2.5%.
+- Direction point: `wind_mvn` 18.60°, NWP-mean 22.02°.
+- Direction CI: uncalibrated 0.928, calibrated 0.951 at α'_dir=0.967,
+  width 99.3°.
+- Speed CI: 0.921 coverage at α'_spd=0.967, width 4.49 m/s.
+- Gust: 22-feat minimal 0.981 MAE, -22.4% vs NWP-mean (the "22 features"
+  count came from the contaminated 14-NWP pivot; production-scope is 10).
 
 ## Implementation order
 

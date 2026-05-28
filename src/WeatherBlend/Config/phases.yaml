@@ -168,6 +168,21 @@ targets:
         role: champion
         impl: dotnet
         locations: ["bonehill_rocks"]
+      # Phase 2/3 of WIND_BLENDER_PLAN, 2026-05-27 production-scope lock.
+      # Both ship as CHALLENGERS to the existing ERA5-truth element
+      # blender above. wind_speed_lgb is a separate LightGBM trained on
+      # Dunkeswell SYNOP truth (see WB-side WindSpeedLgbBlender). wind_blend
+      # is the sigmoid composition of wind_speed_lgb + wind_mvn speed
+      # magnitude — no training, minted by WindBlendMintCommand in
+      # predict-tail (same flow as 4b minting from 4a + 3o).
+      - id: "wind_speed_lgb"
+        role: challenger
+        impl: dotnet
+        locations: ["bonehill_rocks"]
+      - id: "wind_blend"
+        role: challenger
+        impl: dotnet
+        locations: ["bonehill_rocks"]
   humidity:
     phases:
       - id: "humidity"
@@ -199,3 +214,18 @@ targets:
         role: champion
         impl: dotnet
         locations: ["bonehill_rocks"]
+
+  # Wind direction (Phase 2 of WIND_BLENDER_PLAN, locked 2026-05-27).
+  # Single phase: a PyTorch MLP bivariate-normal trained in WP on
+  # Dunkeswell SYNOP (u, v) truth — predicts μ_u, μ_v, σ_u, σ_v, ρ over
+  # the wind vector. Direction comes from atan2(-μ_u, -μ_v); the same
+  # bundle's speed magnitude feeds the wind_blend composition under
+  # the `wind` target below. Bonehill-only — Membury Dunkeswell paired
+  # rows not yet validated (plan open-item #4).
+  wind_direction:
+    phases:
+      - id: "wind_mvn"
+        role: champion
+        impl: python
+        locations: ["bonehill_rocks"]
+

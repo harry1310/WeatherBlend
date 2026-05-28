@@ -1,5 +1,32 @@
 # WeatherBlend
 
+## NEVER GUESS — investigate, or ask
+
+When answering "where does X run", "what does Y consume", "what's the predict /
+retrain chain order", or any other question about how the system is wired
+together: **read the code first.** Do not infer from filenames. Do not assume
+based on naming patterns. Do not extend "this is how 3f works" to "this is
+how wind_mvn must work" without checking.
+
+Authoritative sources for common questions:
+
+| Question | Read this first |
+|---|---|
+| Predict/retrain chain order, what fires what | `cloudflare/scheduler-worker/src/index.ts` (the `handleWorkflowRun` hops are the single source of truth; comments in `wrangler.toml` are a useful index but the code is canonical) |
+| What a workflow actually does | `.github/workflows/<name>.yml` and its composite actions in `.github/actions/` |
+| What features a Python predictor consumes | The relevant `scripts/predict_*.py` and `scripts/_shared.py` MODELS_LEAN / similar lists |
+| Which Python script Cloudflare dispatches | `WORKFLOW_FOR_CRON` in the worker, plus the workflow_run hops below it |
+| What `collect` collects | `src/WeatherBlend/Commands/CollectCommand.cs` |
+| What `s3-collect` collects | `src/WeatherBlend/Commands/S3CollectCommand.cs` |
+| Active phase set + their roles | `src/WeatherBlend/Config/phases.yaml` (loaded via `PhaseRegistry`) |
+
+If you cannot quickly check a fact you need, **ask** rather than infer. "I'd
+need to read X before answering — want me to?" is the right move. Inventing
+a plausible answer and shipping it as fact has burnt trust at least twice
+(2026-05-07 feels-like sparsity, 2026-05-27 wind-chain incident). Don't do it.
+
+## Project
+
 PoC for blending ~6 free NWP models against ERA5 reanalysis (training truth)
 and METAR observations (verification truth) to produce a better single-location
 forecast than any single model. Target site: **Bonehill Rocks, Dartmoor**
