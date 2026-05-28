@@ -51,8 +51,23 @@ public static class ElementTargets
         Units: "m/s",
         PhaseTag: "wind_gust_lgb");
 
+    // Phase 3 of WIND_BLENDER_PLAN — same physical target as Wind (10m wind
+    // speed) but trained on Dunkeswell SYNOP obs instead of ERA5. Sibling
+    // PhaseTag under ModelDirName='wind' so the bundle lives alongside the
+    // ERA5-truth `wind` champion in data/models/wind/{location}/v{ts}/ and
+    // both end up promoted into the same Stations.{loc}.Active list with
+    // distinct phase suffixes. The two coexist for now; future Phase 3.B
+    // wires a parallel predict pipeline that consumes _wind_speed_lgb
+    // bundles for the WindBlend mint step.
+    public static readonly ElementTarget WindSpeedLgb = new(
+        CliName: "wind-speed-lgb",
+        ModelDirName: "wind",
+        Display: "10 m wind speed (Dunkeswell-truth LGB)",
+        Units: "m/s",
+        PhaseTag: "wind_speed_lgb");
+
     public static readonly IReadOnlyList<ElementTarget> All =
-        new[] { Wind, Humidity, ShortwaveRadiation, CloudCover, WindGust };
+        new[] { Wind, Humidity, ShortwaveRadiation, CloudCover, WindGust, WindSpeedLgb };
 
     public static ElementTarget? TryFromCli(string cliName)
         => All.FirstOrDefault(t => string.Equals(t.CliName, cliName, StringComparison.OrdinalIgnoreCase));

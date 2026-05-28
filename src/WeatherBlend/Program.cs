@@ -164,7 +164,7 @@ public static class Program
                 services.AddTransient<EcmwfBackfillCommand>();
                 services.AddTransient<StatusCommand>();
                 services.AddTransient<PrecipTrainCommand>();
-                services.AddTransient<TempTrainCommand>();
+                services.AddTransient<TrainCommand>();
                 services.AddTransient<InspectCommand>();
                 services.AddTransient<CompareCommand>();
                 services.AddTransient<TempPredictCommand>();
@@ -232,6 +232,7 @@ public static class Program
                 services.AddTransient<IElementBlender, RadiationBlender>();
                 services.AddTransient<IElementBlender, CloudBlender>();
                 services.AddTransient<IElementBlender, WindGustBlender>();
+                services.AddTransient<IElementBlender, WindSpeedLgbBlender>();
             })
             .Build();
 
@@ -693,7 +694,7 @@ public static class Program
             int[]? cycles = string.IsNullOrWhiteSpace(cyclesStr) ? null
                 : cyclesStr.Split(',').Select(s => int.Parse(s.Trim(), System.Globalization.CultureInfo.InvariantCulture)).ToArray();
             var locationOverride = ctx.ParseResult.GetValueForOption(trainLocationOpt);
-            var cmd = host.Services.GetRequiredService<TempTrainCommand>();
+            var cmd = host.Services.GetRequiredService<TrainCommand>();
             ctx.ExitCode = await cmd.RunAsync(target, lead, station, window, featureSet, tier, includeUkv, exactLeads, cycles, locationOverride, ctx.GetCancellationToken());
         });
         root.AddCommand(train);

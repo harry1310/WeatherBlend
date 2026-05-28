@@ -405,6 +405,19 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target wind-gust
 
+      - name: Train element wind-speed-lgb
+        # Phase 3 of WIND_BLENDER_PLAN — LightGBM trained on Dunkeswell SYNOP
+        # truth (MIDAS Open 01383), 29-feature lean+ORO+spread set.
+        # Sibling phase to `wind` under the same ModelDirName, so bundles
+        # coexist under data/models/wind/{location}/v..._wind_speed_lgb/.
+        # Phase id is wind_speed_lgb in phases.yaml so the gate matches.
+        id: train_wind_speed_lgb
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_wind_speed_lgb == 'true'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target wind-speed-lgb
+
       - name: Mint Phase 4b bundle (4a + 3o mean)
         # Reads the latest 4a + 3o bundles already pulled from R2 at job
         # start. Bundle re-mint is one-cycle-behind on 4a updates (4a is
@@ -440,6 +453,8 @@ jobs:
             [humidity]="${{ steps.train_humidity.outcome }}"
             [radiation]="${{ steps.train_radiation.outcome }}"
             [cloud]="${{ steps.train_cloud.outcome }}"
+            [wind_gust_lgb]="${{ steps.train_wind_gust.outcome }}"
+            [wind_speed_lgb]="${{ steps.train_wind_speed_lgb.outcome }}"
           )
           failed=()
           succeeded=()

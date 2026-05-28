@@ -34,7 +34,18 @@ public static class ElementTrainerHarness
         // Load-bearing since P3: it is also the element manifest's station
         // key — bundles live under data/models/{target}/{LocationName}/v{ts}/.
         // Element blenders pass _cfg.Location.Name; required, no default.
-        string LocationName);
+        string LocationName,
+        // Optional suffix appended to the version dir name (yields
+        // v{ts}_{VersionSuffix}/). Use this when multiple sibling phases
+        // share the same ModelDirName (e.g. WindSpeedLgb under "wind" coexists
+        // with the existing Wind phase, both stamped under data/models/wind/).
+        // Defaults to the ElementTarget.PhaseTag when the PhaseTag differs
+        // from the ModelDirName so sibling-phase dirs are visibly distinct;
+        // single-phase targets (wind, humidity, shortwave_radiation,
+        // cloud_cover where PhaseTag == ModelDirName) keep the legacy
+        // unsuffixed layout. Override with null to force unsuffixed even
+        // when PhaseTag differs.
+        string? VersionSuffix = null);
 
     public static async Task<int> RunAsync(
         ILogger log,
@@ -49,9 +60,16 @@ public static class ElementTrainerHarness
                 $"Element blender ({inputs.Target.CliName}) has no LocationName — it is the " +
                 "manifest station key and the per-location bundle directory; cannot train without it.");
         // Station-keyed (location-keyed) layout: every target's bundles live
-        // under data/models/{target}/{location}/v{ts}/. No flat layout exists.
+        // under data/models/{target}/{location}/v{ts}[_suffix]/. The suffix
+        // is auto-derived from PhaseTag when a sibling phase shares the
+        // ModelDirName (wind_speed_lgb under "wind" coexists with the existing
+        // Wind phase) so the two dirs are visibly distinct on disk.
+        var resolvedSuffix = inputs.VersionSuffix
+            ?? (string.Equals(inputs.Target.ModelDirName, inputs.Target.PhaseTag, StringComparison.OrdinalIgnoreCase)
+                ? null
+                : inputs.Target.PhaseTag);
         var versionDir = ModelArtifact.BuildStationVersionDir(
-            modelsRoot, inputs.Target.ModelDirName, inputs.LocationName, now);
+            modelsRoot, inputs.Target.ModelDirName, inputs.LocationName, now, resolvedSuffix);
         var versionName = Path.GetFileName(versionDir);
 
         log.LogInformation(

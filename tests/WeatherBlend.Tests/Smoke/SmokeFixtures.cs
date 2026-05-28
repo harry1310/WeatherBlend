@@ -580,6 +580,14 @@ internal static class SmokeFixtures
             for (int h = 0; h < 24; h++)
             {
                 var idx = d * 24 + h;
+                // ShortwaveRadiation: diurnal sine clamped to ≥0 (no
+                // negative solar; nights are 0). Matches the forecast
+                // fixture's amplitude (~300 W/m² peak) so the radiation
+                // blender's join finds a learnable signal. Direct +
+                // diffuse populated for symmetry though the radiation
+                // builder only reads the totals on the truth side.
+                var swSolar = Math.Max(0.0,
+                    300.0 * Math.Sin(2 * Math.PI * h / 24.0 - Math.PI / 2.0) + Gauss(rng, 0, 25));
                 rows.Add(new Era5Row
                 {
                     LocationName = locationName,
@@ -590,13 +598,85 @@ internal static class SmokeFixtures
                     Precipitation = Math.Max(0.0, Gauss(rng, 0.1, 0.3)),
                     CloudCover = Clamp(50.0 + Gauss(rng, 0, 25), 0.0, 100.0),
                     WindSpeed10m = Math.Max(0.0, 8.0 + Gauss(rng, 0, 3)),
+                    WindGusts10m = Math.Max(0.0, 12.0 + Gauss(rng, 0, 4)),
                     SurfacePressure = 1013.0 + Gauss(rng, 0, 6),
+                    ShortwaveRadiation = swSolar,
+                    DirectRadiation = swSolar * 0.6,
+                    DiffuseRadiation = swSolar * 0.4,
                 });
             }
             var dir = Path.Combine(era5Path, $"location={locationName}", $"date={dayStart:yyyy-MM-dd}");
             Directory.CreateDirectory(dir);
             await ParquetSerializer.SerializeAsync(rows, Path.Combine(dir, "data.parquet"));
         }
+    }
+
+    // -------------------------------------------------------------------
+    // Dunkeswell SYNOP truth (MIDAS Open BADC-CSV) — wind_speed_lgb smoke
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Write a synthetic Dunkeswell SYNOP BADC-CSV under
+    /// <c>{midasRoot}/midas-open*_01383_*_{startUtc.Year}.csv</c>. Matches
+    /// the file-name pattern the production <c>WindSpeedLgbFeatureBuilder</c>
+    /// and the <c>rclone --include</c> filter in <c>retrain-python.yml</c>
+    /// both expect, and the BADC <c>data</c> / <c>end data</c> fence format
+    /// <see cref="WeatherBlend.Train.Truth.MidasOpenLoader"/> parses.
+    /// </summary>
+    /// <remarks>
+    /// Only the four columns the wind blender's truth loader reads
+    /// (<c>ob_time</c>, <c>met_domain_name</c>, <c>wind_speed</c> in knots,
+    /// <c>wind_direction</c> in degrees) are emitted. Every other MIDAS
+    /// column is omitted — the loader splits on the header line so
+    /// missing columns are fine. Signal correlates with the forecast
+    /// fixture's per-hour wind speed (8 m/s ± 3) so the LGB has something
+    /// to fit.
+    ///
+    /// Single file per call — produces a window of <paramref name="nDays"/>
+    /// hourly rows starting at <paramref name="startUtc"/>. The file name
+    /// embeds <c>startUtc.Year</c> so the loader's glob (which keys on
+    /// year) picks it up. Multi-year coverage = call multiple times with
+    /// different startUtcs.
+    /// </remarks>
+    public static async Task WriteDunkeswellMidasAsync(
+        string midasRoot,
+        DateTime startUtc,
+        int nDays,
+        int rngSeed = 73)
+    {
+        Directory.CreateDirectory(midasRoot);
+        var rng = new Random(rngSeed);
+        var totalHours = nDays * 24;
+        // Truth signal: 8 m/s baseline + diurnal + noise. Convert to knots
+        // for the MIDAS file (1 m/s ≈ 1.9438 kt; loader multiplies by
+        // KtToMs = 0.514444 to round-trip).
+        const double MsToKt = 1.0 / 0.514444;
+        const string preamble =
+            "Conventions,G,BADC-CSV,1\n" +
+            "observation_station,G,dunkeswell-aerodrome\n" +
+            "midas_station_id,G,01383\n";
+
+        var lines = new List<string>(totalHours + 8);
+        lines.Add(preamble.TrimEnd('\n'));
+        lines.Add("data");
+        lines.Add("ob_time,met_domain_name,wind_speed,wind_direction");
+        for (int h = 0; h < totalHours; h++)
+        {
+            var ob = startUtc.AddHours(h);
+            var wspMs = Math.Max(0.5, 8.0 + Gauss(rng, 0, 2.5));
+            var wsp = wspMs * MsToKt;
+            var wdir = ((360.0 * (double)h / totalHours) + Gauss(rng, 0, 8)) % 360.0;
+            if (wdir < 0) wdir += 360.0;
+            lines.Add(
+                $"{ob:yyyy-MM-dd HH:mm:ss},SYNOP,{wsp.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}," +
+                $"{wdir.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}");
+        }
+        lines.Add("end data");
+        // File-name pattern matches production MIDAS Open downloads and
+        // the rclone include filter — the loader's directory scan globs
+        // `midas-open*_{stationId}_*_{year}.csv`.
+        var fname = $"midas-open_uk-hourly-weather-obs_dv-smoke_devon_01383_dunkeswell-aerodrome_qcv-1_{startUtc.Year}.csv";
+        await File.WriteAllLinesAsync(Path.Combine(midasRoot, fname), lines);
     }
 
     // -------------------------------------------------------------------
