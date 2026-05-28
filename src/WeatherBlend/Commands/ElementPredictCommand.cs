@@ -34,6 +34,28 @@ public sealed class ElementPredictCommand
 
     private static readonly int[] DefaultLeads = Leads.Short;
 
+    /// <summary>
+    /// Phases this command serves. Anything else in a MANIFEST.Active list
+    /// under one of the element ModelDirName trees is silently skipped —
+    /// the version was promoted by some other minter (e.g.
+    /// <see cref="WindBlendPredictCommand"/> for <c>wind_blend</c>) and
+    /// has its own dedicated CLI route. Mirrors
+    /// <c>PrecipPredictCommand.HandledPrecipPhases</c> (L2 gate, see the
+    /// comment block there for the project-wide 2-layer gate rationale).
+    ///
+    /// Adding a new phase requires:
+    ///   1. Update phases.yaml (the L1 gate)
+    ///   2. Add the phase tag here
+    ///   3. Add a switch case in the dispatch below pointing at the
+    ///      pipeline that owns the row build.
+    /// </summary>
+    private static readonly HashSet<string> HandledElementPhases =
+        new(StringComparer.Ordinal)
+        {
+            "wind", "humidity", "shortwave_radiation", "cloud_cover",
+            "wind_gust_lgb", "wind_speed_lgb",
+        };
+
     public ElementPredictCommand(ILogger<ElementPredictCommand> log, AppConfig cfg)
     {
         _log = log;
@@ -104,27 +126,48 @@ public sealed class ElementPredictCommand
             }
 
             var phase = (metadata.Phase ?? "").ToLowerInvariant();
+            if (!HandledElementPhases.Contains(phase))
+            {
+                _log.LogInformation(
+                    "Version {V} has phase={Phase}, not in HandledElementPhases — silently skipping " +
+                    "(another command owns its predict path; e.g. wind_blend → WindBlendPredictCommand).",
+                    version, phase);
+                continue;
+            }
             _log.LogInformation("--- Version {V} (phase={Phase}) ---", version, phase);
 
-            // Dispatch by target — each pipeline owns its own SQL + ComposeRow.
-            List<ElementPredictionRow> predictions = target.CliName switch
+            // Dispatch by PHASE rather than target.CliName so sibling phases
+            // sharing a ModelDirName (e.g. `wind` ERA5-truth + `wind_speed_lgb`
+            // Dunkeswell-truth, both under data/models/wind/) route to their
+            // own pipeline. Phase is stamped on training_metadata.json by
+            // each trainer, so this lookup is exact: each Active version
+            // identifies its own predict path. Fallback to target.CliName
+            // covers legacy bundles where Phase wasn't populated.
+            List<ElementPredictionRow> predictions = (phase, target.CliName) switch
             {
-                "wind" => WindPredictPipeline.PredictForCycle(
+                ("wind_speed_lgb", _) => WindSpeedLgbPredictPipeline.PredictForCycle(
                     _log, location.Name, _cfg.Storage.ForecastsPath,
                     versionDir, metadata.Version, anchor, predictionMadeAt, DefaultLeads, ct),
-                "humidity" => HumidityPredictPipeline.PredictForCycle(
+                ("wind_gust_lgb", _) => WindGustPredictPipeline.PredictForCycle(
                     _log, location.Name, _cfg.Storage.ForecastsPath,
                     versionDir, metadata.Version, anchor, predictionMadeAt, DefaultLeads, ct),
-                "shortwave-radiation" => RadiationPredictPipeline.PredictForCycle(
+                (_, "wind") => WindPredictPipeline.PredictForCycle(
                     _log, location.Name, _cfg.Storage.ForecastsPath,
                     versionDir, metadata.Version, anchor, predictionMadeAt, DefaultLeads, ct),
-                "cloud-cover" => CloudPredictPipeline.PredictForCycle(
+                (_, "humidity") => HumidityPredictPipeline.PredictForCycle(
                     _log, location.Name, _cfg.Storage.ForecastsPath,
                     versionDir, metadata.Version, anchor, predictionMadeAt, DefaultLeads, ct),
-                "wind-gust" => WindGustPredictPipeline.PredictForCycle(
+                (_, "shortwave-radiation") => RadiationPredictPipeline.PredictForCycle(
                     _log, location.Name, _cfg.Storage.ForecastsPath,
                     versionDir, metadata.Version, anchor, predictionMadeAt, DefaultLeads, ct),
-                _ => throw new InvalidOperationException($"Unknown element target {target.CliName}"),
+                (_, "cloud-cover") => CloudPredictPipeline.PredictForCycle(
+                    _log, location.Name, _cfg.Storage.ForecastsPath,
+                    versionDir, metadata.Version, anchor, predictionMadeAt, DefaultLeads, ct),
+                (_, "wind-gust") => WindGustPredictPipeline.PredictForCycle(
+                    _log, location.Name, _cfg.Storage.ForecastsPath,
+                    versionDir, metadata.Version, anchor, predictionMadeAt, DefaultLeads, ct),
+                _ => throw new InvalidOperationException(
+                    $"Unknown element target/phase combination: target={target.CliName} phase={phase}"),
             };
 
             if (predictions.Count == 0)
