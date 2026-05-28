@@ -53,7 +53,8 @@ public sealed class Phase3cOroBakeoffCommand
 
     public async Task<int> RunAsync(CancellationToken ct)
     {
-        var oroRoot = Path.Combine("data", "static", "orographic");
+        var oroRoot = Path.Combine(
+            Path.GetDirectoryName(_cfg.Storage.ForecastsPath)!, "static", "orographic");
         var oroBySlug = OroStaticFeatures.LoadAll(oroRoot);
         _log.LogInformation("Loaded {N} orographic static records from {Path}",
             oroBySlug.Count, oroRoot);

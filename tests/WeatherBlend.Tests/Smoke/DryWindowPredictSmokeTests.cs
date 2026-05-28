@@ -198,8 +198,12 @@ public class DryWindowPredictSmokeTests
             runTimeSource: "reported",
             leads: new[] { 24, 48, 72 });
 
-        var origCwd = Environment.CurrentDirectory;
-        var oroRoot = Path.Combine(scope.Root, "data", "static", "orographic");
+        // Orographic JSONs at the config-derived path (production code
+        // resolves from ForecastsPath's parent; SmokeScope places that
+        // at {scope.Root}/static/orographic). No CWD mutation → parallel-safe.
+        var oroRoot = Path.Combine(
+            Path.GetDirectoryName(scope.Config.Storage.ForecastsPath)!,
+            "static", "orographic");
         Directory.CreateDirectory(oroRoot);
         foreach (var (_, friendly) in bonehillStations)
         {
@@ -207,9 +211,7 @@ public class DryWindowPredictSmokeTests
                 oroRoot, SmokeFixtures.EaSlug(friendly));
         }
 
-        try
         {
-            Environment.CurrentDirectory = scope.Root;
 
             var metadata = new ModelMetadataRepository(
                 new XunitLogger<ModelMetadataRepository>(_output), scope.Config);
@@ -287,10 +289,6 @@ public class DryWindowPredictSmokeTests
                 $"model_version={bundleName}",
                 $"date={predictAnchor:yyyy-MM-dd}", "predictions.parquet");
             File.Exists(predParquet).Should().BeTrue($"predict_3p should emit {predParquet}");
-        }
-        finally
-        {
-            Environment.CurrentDirectory = origCwd;
         }
     }
 #endif

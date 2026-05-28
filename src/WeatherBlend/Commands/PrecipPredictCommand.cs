@@ -594,9 +594,14 @@ public sealed class PrecipPredictCommand
             }
         }
 
-        // Load static orographic features for this station. Disk path matches
-        // the trainer's load — config-adjacent static JSON.
-        var oroPath = Path.Combine("data", "static", "orographic", $"{station}.json");
+        // Load static orographic features for this station. Disk path
+        // derived from cfg.Storage.ForecastsPath's parent — matches
+        // PrecipTrainCommand's resolution so train + predict read from
+        // the same place (and stays config-driven rather than CWD-relative
+        // so parallel test runs don't collide on the process-global CWD).
+        var oroPath = Path.Combine(
+            Path.GetDirectoryName(_cfg.Storage.ForecastsPath)!,
+            "static", "orographic", $"{station}.json");
         if (!File.Exists(oroPath))
         {
             _log.LogError("Station {Station}: orographic record missing at {Path} — cannot Phase 3o predict.",

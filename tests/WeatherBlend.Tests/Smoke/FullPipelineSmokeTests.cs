@@ -85,10 +85,14 @@ public class FullPipelineSmokeTests
                 scope.RainfallPath, locationName, friendly, truthStart, truthDays);
         }
 
-        // Orographic JSONs at the hardcoded relative path
-        // PrecipTrainCommand.RunPhase3oAsync reads.
-        var origCwd = Environment.CurrentDirectory;
-        var oroRoot = Path.Combine(scope.Root, "data", "static", "orographic");
+        // Orographic JSONs. Production code (PrecipTrainCommand etc.)
+        // resolves orography from ForecastsPath's parent — so for the
+        // SmokeScope storage layout that's {scope.Root}/static/orographic.
+        // No CWD mutation required → tests in this file run in parallel
+        // with the other CWD-swap-free smokes without contention.
+        var oroRoot = Path.Combine(
+            Path.GetDirectoryName(scope.Config.Storage.ForecastsPath)!,
+            "static", "orographic");
         Directory.CreateDirectory(oroRoot);
         foreach (var (_, friendly) in bonehillStations)
         {
@@ -96,9 +100,7 @@ public class FullPipelineSmokeTests
                 oroRoot, SmokeFixtures.EaSlug(friendly));
         }
 
-        try
         {
-            Environment.CurrentDirectory = scope.Root;
 
             // ---- Command graph ----
             var metadata = new ModelMetadataRepository(
@@ -238,10 +240,6 @@ public class FullPipelineSmokeTests
                 r.TruthStation.Should().Be(primarySlug);
                 r.ProbWet.Should().BeInRange(0.0, 1.0);
             });
-        }
-        finally
-        {
-            Environment.CurrentDirectory = origCwd;
         }
     }
 }

@@ -289,10 +289,13 @@ public class PrecipPredictSmokeTests
                 scope.RainfallPath, locationName, friendly, trainStart, trainDays);
         }
 
-        // Orographic JSONs at the hardcoded relative path. CWD swap so
-        // that "data/static/orographic" lands inside the scope root.
-        var origCwd = Environment.CurrentDirectory;
-        var oroRoot = Path.Combine(scope.Root, "data", "static", "orographic");
+        // Orographic JSONs. Production code (PrecipTrainCommand etc.)
+        // resolves orography from ForecastsPath's parent — so for the
+        // SmokeScope storage layout that's {scope.Root}/static/orographic.
+        // No CWD mutation required → parallel-safe.
+        var oroRoot = Path.Combine(
+            Path.GetDirectoryName(scope.Config.Storage.ForecastsPath)!,
+            "static", "orographic");
         Directory.CreateDirectory(oroRoot);
         foreach (var (_, friendly) in bonehillStations)
         {
@@ -300,9 +303,7 @@ public class PrecipPredictSmokeTests
             await SmokeFixtures.WriteOrographicStaticAsync(oroRoot, slug);
         }
 
-        try
         {
-            Environment.CurrentDirectory = scope.Root;
 
             var metadata = new ModelMetadataRepository(
                 new XunitLogger<ModelMetadataRepository>(_output), scope.Config);
@@ -351,10 +352,6 @@ public class PrecipPredictSmokeTests
                 $"model_version={bundleName}",
                 $"date={predictAnchor:yyyy-MM-dd}", "predictions.parquet");
             File.Exists(predParquet).Should().BeTrue($"predict_3o should emit {predParquet}");
-        }
-        finally
-        {
-            Environment.CurrentDirectory = origCwd;
         }
     }
 #endif

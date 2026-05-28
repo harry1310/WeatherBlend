@@ -51,7 +51,8 @@ public sealed class Phase3fStage1BakeoffCommand
         // Resolve Membury station configs + oro records
         var memburyLoc = _cfg.Locations.First(l => l.Name == "membury_devon");
         var stations = new List<(string Name, string Slug, OroStaticFeatures Oro, int Index)>();
-        var oroBySlug = OroStaticFeatures.LoadAll(Path.Combine("data", "static", "orographic"));
+        var oroBySlug = OroStaticFeatures.LoadAll(Path.Combine(
+            Path.GetDirectoryName(_cfg.Storage.ForecastsPath)!, "static", "orographic"));
         for (int i = 0; i < MemburyStations.Length; i++)
         {
             var name = MemburyStations[i];
