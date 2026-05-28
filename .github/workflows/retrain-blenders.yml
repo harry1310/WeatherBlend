@@ -97,36 +97,6 @@ jobs:
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-dotnet@v4
-        if: steps.gate.outputs.proceed == 'true'
-        with:
-          dotnet-version: "10.0.x"
-          dotnet-quality: preview
-
-      - name: Install rclone
-        if: steps.gate.outputs.proceed == 'true'
-        run: |
-          curl -fsSL https://rclone.org/install.sh | sudo bash
-          rclone version
-
-      - name: Configure rclone for R2
-        if: steps.gate.outputs.proceed == 'true'
-        env:
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-        run: |
-          mkdir -p ~/.config/rclone
-          cat > ~/.config/rclone/rclone.conf <<EOF
-          [r2]
-          type = s3
-          provider = Cloudflare
-          access_key_id = ${R2_ACCESS_KEY_ID}
-          secret_access_key = ${R2_SECRET_ACCESS_KEY}
-          endpoint = ${R2_ENDPOINT}
-          acl = private
-          EOF
-
       - name: Decide which phases to run
         # phases.yaml is the single source of truth for which models run for
         # which locations. For each impl=dotnet phase this reads the optional
@@ -172,6 +142,12 @@ jobs:
           done
 
           # run_<id> = requested AND admitted by this matrix location.
+          # Also accumulate the CSV of phases that actually run for this
+          # matrix job — the Pull step downstream feeds it to
+          # scripts/sync_train_data.sh so we pull exactly the data the
+          # running phases need (and not, say, MIDAS for a job that's
+          # only training 3a).
+          resolved=()
           for row in "${PHASE_ROWS[@]}"; do
             id="${row%%|*}"
             locs="${row#*|}"
@@ -187,61 +163,81 @@ jobs:
             if [ "$requested" = "true" ] && [ "$applies" = "true" ]; then run=true; fi
             echo "run_${id}=${run}" >> "$GITHUB_OUTPUT"
             echo "  ${id}: requested=${requested} applies(${MATRIX_LOCATION})=${applies} -> run_${id}=${run}"
+            if [ "$run" = "true" ]; then resolved+=("$id"); fi
           done
+          # Emit the resolved CSV for the Pull step. Empty when this matrix
+          # job has no work (every phase resolved to run=false) — Pull step
+          # treats that as a no-op rather than firing rclone for nothing.
+          resolved_csv=""
+          if [ "${#resolved[@]}" -gt 0 ]; then
+            resolved_csv=$(IFS=,; echo "${resolved[*]}")
+          fi
+          echo "phases_resolved_csv=${resolved_csv}" >> "$GITHUB_OUTPUT"
+          echo "Phases resolved for this matrix job: '${resolved_csv}'"
+
+      # ---- setup steps -----------------------------------------------------
+      # Moved AFTER "Decide which phases to run" so a matrix job with no
+      # work skips them entirely. setup-dotnet (~30 s) + Install rclone
+      # (~10 s) + Build (~60 s) all wasted on a no-op location; the
+      # phases step itself uses only the checked-out phases.yaml + the
+      # pre-installed yq/bash, so it doesn't depend on these.
+      # phases.yaml is checked out (no R2 fetch step here, unlike WP).
+
+      - uses: actions/setup-dotnet@v4
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.phases_resolved_csv != ''
+        with:
+          dotnet-version: "10.0.x"
+          dotnet-quality: preview
+
+      - name: Install rclone
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.phases_resolved_csv != ''
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          rclone version
+
+      - name: Configure rclone for R2
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.phases_resolved_csv != ''
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf <<EOF
+          [r2]
+          type = s3
+          provider = Cloudflare
+          access_key_id = ${R2_ACCESS_KEY_ID}
+          secret_access_key = ${R2_SECRET_ACCESS_KEY}
+          endpoint = ${R2_ENDPOINT}
+          acl = private
+          EOF
 
       - name: Pull data trees from R2
-        if: steps.gate.outputs.proceed == 'true'
+        # Delegates to scripts/sync_train_data.sh — single source of truth
+        # for which trees each phase needs. Same script the smoke tests
+        # call against a local fake-R2 dir, so a missing pull declaration
+        # surfaces at PR time rather than as a 0-row trainer error in CI.
+        # See the comment header in the script for the per-phase needs
+        # table.
+        #
+        # No-op when phases_resolved_csv is empty (every requested phase
+        # resolved to run=false for this matrix location).
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.phases_resolved_csv != ''
         env:
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_SOURCE: "r2:${{ secrets.R2_BUCKET }}"
+          # LOCAL_ROOT is the data tree root — the script writes
+          # forecasts/, truth/, models/, static/ under here. Workflow uses
+          # repo-relative "./data/" to match the production layout the
+          # trainers expect (e.g. ./data/forecasts/location=…/).
+          LOCAL_ROOT: "./data"
           MATRIX_LOCATION: ${{ matrix.location }}
+          RESOLVED_PHASES: ${{ steps.phases.outputs.phases_resolved_csv }}
         run: |
-          # Forecasts — the WHOLE per-location tree (every model= dir), not a
-          # hardcoded model list. The Open-Meteo seamless models feed the
-          # offset_day blenders; the raw S3 cycle models (gfs_ncep,
-          # ecmwf_ifs_oper, met_office_ukv, …) feed the exact-runtime 2d/3d
-          # blenders. A hardcoded 8-model list silently starved 2d/3d of
-          # input (0 rows) on the first CI retrain — pull everything instead.
-          # This matrix job trains one location, so pull only its tree.
-          mkdir -p "data/forecasts/location=$MATRIX_LOCATION"
-          rclone copy "r2:${R2_BUCKET}/data/forecasts/location=$MATRIX_LOCATION" \
-            "data/forecasts/location=$MATRIX_LOCATION" \
-            --fast-list --transfers 16 --checkers 32 || true
-          # ERA5 truth (training) — this location.
-          mkdir -p "data/truth/era5/location=$MATRIX_LOCATION"
-          rclone copy "r2:${R2_BUCKET}/data/truth/era5/location=$MATRIX_LOCATION" \
-            "data/truth/era5/location=$MATRIX_LOCATION" \
-            --fast-list --transfers 16 --checkers 32 || true
-          # METAR truth (verify) + EA rainfall truth (precip + dry-window).
-          mkdir -p data/truth/metar
-          rclone copy "r2:${R2_BUCKET}/data/truth/metar" data/truth/metar \
-            --fast-list --transfers 16 --checkers 32 || true
-          mkdir -p data/truth/rainfall
-          rclone copy "r2:${R2_BUCKET}/data/truth/rainfall" data/truth/rainfall \
-            --fast-list --transfers 16 --checkers 32 || true
-          # Existing models tree (RetrainGuard reads previous summaries).
-          mkdir -p data/models
-          rclone copy "r2:${R2_BUCKET}/data/models" data/models \
-            --fast-list --transfers 16 --checkers 32 || true
-          # MIDAS Open Dunkeswell SYNOP truth — wind_speed_lgb only.
-          # Same pull retrain-python.yml does for wind_mvn (the two
-          # phases consume the same MIDAS station 01383 BADC-CSV files);
-          # scoped behind run_wind_speed_lgb so other phases' jobs don't
-          # pay the ~9 MB pull. Filename glob matches both production
-          # and smoke-fixture files. The first retrain run that didn't
-          # pull MIDAS produced "Loaded 0 rows" inside
-          # WindSpeedLgbFeatureBuilder — the in-memory MIDAS dict was
-          # empty so every forecast-pivot row dropped at the inner join.
-          if [ "${{ steps.phases.outputs.run_wind_speed_lgb }}" = "true" ]; then
-            mkdir -p data/truth/midas/raw
-            rclone copy "r2:${R2_BUCKET}/data/truth/midas/raw" \
-              data/truth/midas/raw \
-              --include 'midas-open*_01383_*.csv' \
-              --fast-list --transfers 4 --checkers 8 \
-              || echo "::error::Dunkeswell MIDAS not on R2 — train wind-speed-lgb will fail with 0-row load."
-          fi
+          bash scripts/sync_train_data.sh "$MATRIX_LOCATION" "$RESOLVED_PHASES"
 
       - name: Build
-        if: steps.gate.outputs.proceed == 'true'
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.phases_resolved_csv != ''
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo
 
       # ---- per-phase train steps ----------------------------------------

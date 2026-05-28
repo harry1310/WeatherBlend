@@ -55,11 +55,21 @@ public class ElementWindSmokeTests
             // a station list to satisfy AppConfig binding.
             rainfallStations: new[] { ("smoke-bonehill", "Bellever Dartmoor") });
 
+        // Write fixtures to a fake-R2 dir + invoke scripts/sync_train_data.sh
+        // (same script the production workflow uses) to copy them into the
+        // trainer's read paths. Missing pull declaration in the script's
+        // per-phase needs table = smoke fails at PR time.
+        var fakeR2 = Path.Combine(scope.Root, "fake-r2");
         await SmokeFixtures.WriteForecastTreeAsync(
-            scope.ForecastsPath, locationName, trainStart, trainDays,
+            Path.Combine(fakeR2, "data", "forecasts"),
+            locationName, trainStart, trainDays,
             runTimeSource: "offset_day");
         await SmokeFixtures.WriteEra5TruthAsync(
-            scope.Era5Path, locationName, trainStart, trainDays);
+            Path.Combine(fakeR2, "data", "truth", "era5"),
+            locationName, trainStart, trainDays);
+        SmokeFixtures.RunSyncTrainData(
+            location: locationName, phases: "wind",
+            r2Source: fakeR2, localRoot: scope.Root);
 
         // DI wiring — ElementTrainCommand needs the wind blender registered
         // for the target='wind' dispatch to find it. Other blenders aren't

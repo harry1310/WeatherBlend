@@ -41,14 +41,24 @@ public class TempPredictSmokeTests
             locationName,
             rainfallStations: new[] { ($"smoke-{locationName}", stationFriendly) });
 
-        // Temperature trains against ERA5 (gapless truth); no rainfall
-        // needed unless the feature set joins precip persistence.
+        // Train-side fixtures go via the production sync script: write to
+        // fake-R2, invoke sync_train_data.sh, files land at the trainer's
+        // read paths under scope.Root. Predict-side ('reported') rows
+        // are written directly — predict-time data flow is a different
+        // path in production (predict.yml/sync-render-inputs) so the
+        // train-script contract doesn't cover it.
+        var fakeR2 = Path.Combine(scope.Root, "fake-r2");
         await SmokeFixtures.WriteForecastTreeAsync(
-            scope.ForecastsPath, locationName, trainStart, trainDays,
-            runTimeSource: "offset_day");
+            Path.Combine(fakeR2, "data", "forecasts"),
+            locationName, trainStart, trainDays, runTimeSource: "offset_day");
         await SmokeFixtures.WriteEra5TruthAsync(
-            scope.Era5Path, locationName, trainStart, trainDays);
-        // Predict-side: 'reported' rows past the anchor.
+            Path.Combine(fakeR2, "data", "truth", "era5"),
+            locationName, trainStart, trainDays);
+        // 2b/2c/2d all share the same trees (forecasts + era5 + models).
+        SmokeFixtures.RunSyncTrainData(
+            location: locationName, phases: "2b,2c,2d",
+            r2Source: fakeR2, localRoot: scope.Root);
+        // Predict-side: 'reported' rows past the anchor, direct to scope.
         await SmokeFixtures.WriteForecastTreeAsync(
             scope.ForecastsPath, locationName, predictAnchor.AddHours(1), nDays: 6,
             runTimeSource: "reported");
@@ -181,15 +191,23 @@ public class TempPredictSmokeTests
             locationName,
             rainfallStations: new[] { ($"smoke-{locationName}", stationFriendly) });
 
-        // Train-side exact-runtime tree.
+        // Train-side exact-runtime tree → fake-R2, then sync. Phase 2d
+        // shares the same data needs as 2b/2c (forecasts + era5 + models).
+        var fakeR2 = Path.Combine(scope.Root, "fake-r2");
         await SmokeFixtures.WriteExactRuntimeForecastTreeAsync(
-            scope.ForecastsPath, locationName, trainStart, trainDays);
+            Path.Combine(fakeR2, "data", "forecasts"),
+            locationName, trainStart, trainDays);
         await SmokeFixtures.WriteEra5TruthAsync(
-            scope.Era5Path, locationName, trainStart, trainDays);
+            Path.Combine(fakeR2, "data", "truth", "era5"),
+            locationName, trainStart, trainDays);
+        SmokeFixtures.RunSyncTrainData(
+            location: locationName, phases: "2d",
+            r2Source: fakeR2, localRoot: scope.Root);
 
         // Predict-side: exact-runtime live forecasts past anchor for the
         // valid grid the predict command reads (lead 12/24, valid hours
-        // {0,6,12,18}).
+        // {0,6,12,18}). Direct to scope (predict pulls are a separate
+        // production path, not covered by sync_train_data.sh).
         await SmokeFixtures.WriteExactRuntimeForecastTreeAsync(
             scope.ForecastsPath, locationName, predictAnchor, nDays: 5);
 

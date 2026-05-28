@@ -105,8 +105,13 @@ internal static class SmokeFixtures
         {
             ForecastsPath    = Path.Combine(root, "forecasts"),
             ObservationsPath = Path.Combine(root, "obs"),
-            Era5Path         = Path.Combine(root, "era5"),
-            RainfallPath     = Path.Combine(root, "rainfall"),
+            // truth/ prefix matches production config.yaml (era5Path:
+            // "data/truth/era5", rainfallPath: "data/truth/rainfall").
+            // Without the prefix the sync_train_data.sh deposits trees
+            // at root/truth/era5 but the trainers read root/era5, and
+            // DuckDB errors with "No files found that match the pattern".
+            Era5Path         = Path.Combine(root, "truth", "era5"),
+            RainfallPath     = Path.Combine(root, "truth", "rainfall"),
             PredictionsPath  = Path.Combine(root, "predictions"),
             ReportsPath      = Path.Combine(root, "reports"),
             MetOfficeObsPath = Path.Combine(root, "mo_obs"),
@@ -735,6 +740,106 @@ internal static class SmokeFixtures
 
     public static string EaSlug(string friendlyName)
         => "ea_" + string.Join("_", friendlyName.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries));
+
+    // -------------------------------------------------------------------
+    // sync_train_data.sh invocation — shared with the workflows
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Invokes <c>scripts/sync_train_data.sh</c> against a local fake-R2
+    /// directory, materialising the data trees the requested phases need
+    /// under <paramref name="localRoot"/>. This is the load-bearing
+    /// shared-code call: production workflows and smoke tests both go
+    /// through this script, so a missing per-phase pull declaration in
+    /// the script fails the smoke at PR time rather than silently
+    /// producing a "0 rows" trainer error in CI (2026-05-28 incident).
+    ///
+    /// Throws on non-zero exit so the smoke fails with the script's
+    /// own ::error:: annotations preserved.
+    /// </summary>
+    public static void RunSyncTrainData(
+        string location, string phases, string r2Source, string localRoot)
+    {
+        var scriptPath = LocateSyncScript();
+        var bashExe = LocateBash();
+        var psi = new System.Diagnostics.ProcessStartInfo
+        {
+            // Use bash explicitly — works on Windows via Git Bash + on
+            // ubuntu-latest natively. Passing the script as an arg
+            // (rather than #!/usr/bin/env bash shebang execution) avoids
+            // file-permission quirks on Windows.
+            FileName = bashExe,
+            Arguments = $"\"{scriptPath}\" {location} {phases}",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            WorkingDirectory = localRoot,
+        };
+        psi.Environment["R2_SOURCE"] = r2Source;
+        psi.Environment["LOCAL_ROOT"] = localRoot;
+        using var p = System.Diagnostics.Process.Start(psi)
+            ?? throw new InvalidOperationException(
+                $"Failed to start bash for sync_train_data.sh (bash={bashExe})");
+        var stdout = p.StandardOutput.ReadToEnd();
+        var stderr = p.StandardError.ReadToEnd();
+        p.WaitForExit();
+        if (p.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"sync_train_data.sh exit {p.ExitCode}. " +
+                $"phases='{phases}' location='{location}' r2Source='{r2Source}' localRoot='{localRoot}'\n" +
+                $"--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}");
+        }
+    }
+
+    /// <summary>Walk up from <see cref="AppContext.BaseDirectory"/> until
+    /// we find <c>scripts/sync_train_data.sh</c>. The test runner's CWD
+    /// shape ({repo}/tests/WeatherBlend.Tests/bin/.../net10.0/) is
+    /// implementation-defined across xUnit versions, so ascent is more
+    /// robust than a hard-coded relative depth.</summary>
+    private static string LocateSyncScript()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            var candidate = Path.Combine(dir.FullName, "scripts", "sync_train_data.sh");
+            if (File.Exists(candidate)) return candidate;
+            dir = dir.Parent;
+        }
+        throw new FileNotFoundException(
+            "scripts/sync_train_data.sh not found by ascent from "
+            + AppContext.BaseDirectory);
+    }
+
+    /// <summary>Locate a bash executable. On ubuntu-latest the bare
+    /// <c>"bash"</c> resolves via PATH; on Windows the .NET test host
+    /// inherits a PATH that exposes Git's <c>cmd/</c> dir (which has
+    /// git.exe) but NOT <c>bin/</c> or <c>usr/bin/</c> (where Git Bash
+    /// lives), so <c>Process.Start("bash", …)</c> Win32Exceptions out.
+    /// Prefer a known absolute path on Windows; fall back to "bash" on
+    /// non-Windows. Honour <c>WB_BASH</c> as an explicit override for
+    /// odd Git installs.</summary>
+    private static string LocateBash()
+    {
+        var overridePath = Environment.GetEnvironmentVariable("WB_BASH");
+        if (!string.IsNullOrWhiteSpace(overridePath) && File.Exists(overridePath))
+            return overridePath;
+        if (!OperatingSystem.IsWindows())
+            return "bash";
+        foreach (var candidate in new[]
+        {
+            @"C:\Program Files\Git\bin\bash.exe",
+            @"C:\Program Files\Git\usr\bin\bash.exe",
+            @"C:\Program Files (x86)\Git\bin\bash.exe",
+        })
+        {
+            if (File.Exists(candidate)) return candidate;
+        }
+        // Last-ditch — PATH lookup. Will throw at Process.Start with a
+        // clearer message than the raw Win32Exception thanks to the
+        // wrapper above.
+        return "bash";
+    }
 }
 
 // -------------------------------------------------------------------

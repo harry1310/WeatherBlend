@@ -63,31 +63,39 @@ public class WindSpeedLgbSmokeTests
             locationName,
             rainfallStations: new[] { ("smoke-bonehill", "Bellever Dartmoor") });
 
-        // Forecast tree (offset_day rows). The SmokeFixtures default
-        // LeanModelIds set covers every NWP wind_speed_lgb's BlendersConfig
-        // entry references (5 required + UKMO optional).
+        // Write the synthetic fixtures to a FAKE R2 dir under the scope,
+        // then invoke scripts/sync_train_data.sh to copy them to the
+        // trainer's read paths — same script the workflow uses. This is
+        // the load-bearing change for the smoke contract: if a future
+        // phase is added to phases.yaml without updating the script's
+        // per-phase needs table, the script silently won't pull its data
+        // and the smoke fails with "0 rows" exactly like CI did
+        // 2026-05-28 when retrain-blenders.yml was missing the MIDAS
+        // pull for wind_speed_lgb. Smoke now exercises the workflow's
+        // pull logic end-to-end.
+        var fakeR2 = Path.Combine(scope.Root, "fake-r2");
         await SmokeFixtures.WriteForecastTreeAsync(
-            scope.ForecastsPath, locationName, trainStart, trainDays,
+            Path.Combine(fakeR2, "data", "forecasts"),
+            locationName, trainStart, trainDays,
             runTimeSource: "offset_day");
 
-        // Dunkeswell SYNOP truth (BADC-CSV). The loader parses files
-        // matching midas-open*_01383_*_{year}.csv under
-        // {scope.Root}/truth/midas/raw — Path.GetDirectoryName of
-        // ForecastsPath yields scope.Root, so the blender resolves
-        // midasRoot relative to that.
-        var midasRoot = Path.Combine(scope.Root, "truth", "midas", "raw");
         await SmokeFixtures.WriteDunkeswellMidasAsync(
-            midasRoot, startUtc: trainStart, nDays: trainDays);
+            Path.Combine(fakeR2, "data", "truth", "midas", "raw"),
+            startUtc: trainStart, nDays: trainDays);
 
-        // Orographic JSON — WindSpeedLgbBlender resolves the path
-        // relative to ForecastsPath's parent (config-driven, no CWD
-        // mutation). For SmokeScope's storage layout that means
-        // {scope.Root}/static/orographic/{location}.json.
-        var oroRoot = Path.Combine(
-            Path.GetDirectoryName(scope.Config.Storage.ForecastsPath)!,
-            "static", "orographic");
-        Directory.CreateDirectory(oroRoot);
-        await SmokeFixtures.WriteOrographicStaticAsync(oroRoot, locationName);
+        await SmokeFixtures.WriteOrographicStaticAsync(
+            Path.Combine(fakeR2, "data", "static", "orographic"),
+            locationName);
+
+        // Invoke the production sync script against the fake-R2 source.
+        // R2_SOURCE points at the fake dir; LOCAL_ROOT points at the
+        // scope root (so files land at {scope.Root}/forecasts/...,
+        // matching scope.Config.Storage.ForecastsPath).
+        SmokeFixtures.RunSyncTrainData(
+            location: locationName,
+            phases: "wind_speed_lgb",
+            r2Source: fakeR2,
+            localRoot: scope.Root);
 
         // No CurrentDirectory swap needed — both orography + MIDAS paths
         // resolve from cfg.Storage.ForecastsPath. This test runs in

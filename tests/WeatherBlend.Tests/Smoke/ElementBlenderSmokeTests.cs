@@ -110,11 +110,26 @@ public class ElementBlenderSmokeTests
             locationName,
             rainfallStations: new[] { ("smoke-bonehill", "Bellever Dartmoor") });
 
+        // Write fixtures to fake-R2 then invoke sync_train_data.sh to copy
+        // them into the trainer's read paths. Same script the production
+        // workflow uses — missing pull declaration in the script's case
+        // table fails the smoke at PR time.
+        //
+        // Phases CSV is the union of every phase any test in this fixture
+        // exercises; they all need the same trees (forecasts + era5 +
+        // models) so the union doesn't grow what gets pulled.
+        var fakeR2 = Path.Combine(scope.Root, "fake-r2");
         await SmokeFixtures.WriteForecastTreeAsync(
-            scope.ForecastsPath, locationName, trainStart, trainDays,
+            Path.Combine(fakeR2, "data", "forecasts"),
+            locationName, trainStart, trainDays,
             runTimeSource: "offset_day");
         await SmokeFixtures.WriteEra5TruthAsync(
-            scope.Era5Path, locationName, trainStart, trainDays);
+            Path.Combine(fakeR2, "data", "truth", "era5"),
+            locationName, trainStart, trainDays);
+        SmokeFixtures.RunSyncTrainData(
+            location: locationName,
+            phases: "humidity,shortwave_radiation,cloud_cover,wind_gust_lgb",
+            r2Source: fakeR2, localRoot: scope.Root);
 
         return new TestContext(env, scope);
     }

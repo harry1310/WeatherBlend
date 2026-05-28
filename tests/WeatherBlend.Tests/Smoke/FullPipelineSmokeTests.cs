@@ -73,32 +73,35 @@ public class FullPipelineSmokeTests
             locationName, rainfallStations: bonehillStations);
 
         // ---- Shared fixtures ----
+        // Train data (forecasts + rainfall + orographic) via the production
+        // sync script. Predict 'reported' forecast rows written direct
+        // (predict-time pulls are a separate production path).
+        var fakeR2 = Path.Combine(scope.Root, "fake-r2");
         await SmokeFixtures.WriteForecastTreeAsync(
-            scope.ForecastsPath, locationName, truthStart, forecastDays,
+            Path.Combine(fakeR2, "data", "forecasts"),
+            locationName, truthStart, forecastDays,
             runTimeSource: "offset_day", leads: leads);
-        await SmokeFixtures.WriteForecastTreeAsync(
-            scope.ForecastsPath, locationName, predictAnchor.AddHours(1), nDays: 4,
-            runTimeSource: "reported", leads: leads);
         foreach (var (_, friendly) in bonehillStations)
         {
             await SmokeFixtures.WriteRainfallTruthAsync(
-                scope.RainfallPath, locationName, friendly, truthStart, truthDays);
+                Path.Combine(fakeR2, "data", "truth", "rainfall"),
+                locationName, friendly, truthStart, truthDays);
         }
-
-        // Orographic JSONs. Production code (PrecipTrainCommand etc.)
-        // resolves orography from ForecastsPath's parent — so for the
-        // SmokeScope storage layout that's {scope.Root}/static/orographic.
-        // No CWD mutation required → tests in this file run in parallel
-        // with the other CWD-swap-free smokes without contention.
-        var oroRoot = Path.Combine(
-            Path.GetDirectoryName(scope.Config.Storage.ForecastsPath)!,
-            "static", "orographic");
-        Directory.CreateDirectory(oroRoot);
         foreach (var (_, friendly) in bonehillStations)
         {
             await SmokeFixtures.WriteOrographicStaticAsync(
-                oroRoot, SmokeFixtures.EaSlug(friendly));
+                Path.Combine(fakeR2, "data", "static", "orographic"),
+                SmokeFixtures.EaSlug(friendly));
         }
+        // Full chain trains 3o + 3p + 4b. Script's case table covers
+        // each phase's tree set; passing all three resolves the union.
+        SmokeFixtures.RunSyncTrainData(
+            location: locationName, phases: "3o,3p,4b",
+            r2Source: fakeR2, localRoot: scope.Root);
+
+        await SmokeFixtures.WriteForecastTreeAsync(
+            scope.ForecastsPath, locationName, predictAnchor.AddHours(1), nDays: 4,
+            runTimeSource: "reported", leads: leads);
 
         {
 

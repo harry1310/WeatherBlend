@@ -51,12 +51,20 @@ public class DryWindowPredictSmokeTests
 
         // 3b uses Leads.Short = {24, 48, 72} only; restrict the fixture
         // to those three so the parquet count is 3/5 of the 3a fixture.
+        // Train fixtures go via the production sync script (workflow + smoke
+        // share scripts/sync_train_data.sh); predict 'reported' rows direct.
         var leads = new[] { 24, 48, 72 };
+        var fakeR2 = Path.Combine(scope.Root, "fake-r2");
         await SmokeFixtures.WriteForecastTreeAsync(
-            scope.ForecastsPath, locationName, trainStart, trainDays,
+            Path.Combine(fakeR2, "data", "forecasts"),
+            locationName, trainStart, trainDays,
             runTimeSource: "offset_day", leads: leads);
         await SmokeFixtures.WriteRainfallTruthAsync(
-            scope.RainfallPath, locationName, stationFriendly, trainStart, trainDays);
+            Path.Combine(fakeR2, "data", "truth", "rainfall"),
+            locationName, stationFriendly, trainStart, trainDays);
+        SmokeFixtures.RunSyncTrainData(
+            location: locationName, phases: "3b",
+            r2Source: fakeR2, localRoot: scope.Root);
 
         await SmokeFixtures.WriteForecastTreeAsync(
             scope.ForecastsPath, locationName, predictAnchor.AddHours(1), nDays: 4,
@@ -184,32 +192,38 @@ public class DryWindowPredictSmokeTests
             locationName,
             rainfallStations: bonehillStations);
 
+        // 3p chains off 3o, so train fixtures cover both: forecasts +
+        // rainfall + orographic JSONs (3o needs orography for the rich
+        // feature set). All written to fake-R2 then synced via the
+        // production script.
+        var fakeR2 = Path.Combine(scope.Root, "fake-r2");
         await SmokeFixtures.WriteForecastTreeAsync(
-            scope.ForecastsPath, locationName, trainStart, forecastDays,
+            Path.Combine(fakeR2, "data", "forecasts"),
+            locationName, trainStart, forecastDays,
             runTimeSource: "offset_day",
             leads: new[] { 24, 48, 72 });
         foreach (var (_, friendly) in bonehillStations)
         {
             await SmokeFixtures.WriteRainfallTruthAsync(
-                scope.RainfallPath, locationName, friendly, truthStart, truthDays);
+                Path.Combine(fakeR2, "data", "truth", "rainfall"),
+                locationName, friendly, truthStart, truthDays);
         }
+        foreach (var (_, friendly) in bonehillStations)
+        {
+            await SmokeFixtures.WriteOrographicStaticAsync(
+                Path.Combine(fakeR2, "data", "static", "orographic"),
+                SmokeFixtures.EaSlug(friendly));
+        }
+        // 3p needs forecasts + rainfall + orographic + models — script's
+        // case table picks up all three trees for the 3p phase id.
+        SmokeFixtures.RunSyncTrainData(
+            location: locationName, phases: "3o,3p",
+            r2Source: fakeR2, localRoot: scope.Root);
+
         await SmokeFixtures.WriteForecastTreeAsync(
             scope.ForecastsPath, locationName, predictAnchor.AddHours(1), nDays: 4,
             runTimeSource: "reported",
             leads: new[] { 24, 48, 72 });
-
-        // Orographic JSONs at the config-derived path (production code
-        // resolves from ForecastsPath's parent; SmokeScope places that
-        // at {scope.Root}/static/orographic). No CWD mutation → parallel-safe.
-        var oroRoot = Path.Combine(
-            Path.GetDirectoryName(scope.Config.Storage.ForecastsPath)!,
-            "static", "orographic");
-        Directory.CreateDirectory(oroRoot);
-        foreach (var (_, friendly) in bonehillStations)
-        {
-            await SmokeFixtures.WriteOrographicStaticAsync(
-                oroRoot, SmokeFixtures.EaSlug(friendly));
-        }
 
         {
 

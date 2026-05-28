@@ -52,11 +52,19 @@ public class PrecipPredictSmokeTests
             locationName,
             rainfallStations: new[] { ($"smoke-{stationSlug}", stationFriendly) });
 
+        // Train fixtures via the production sync script (workflow + smoke
+        // share it); predict 'reported' rows direct. 3a + 3c share data
+        // needs (forecasts + rainfall + models).
+        var fakeR2 = Path.Combine(scope.Root, "fake-r2");
         await SmokeFixtures.WriteForecastTreeAsync(
-            scope.ForecastsPath, locationName, trainStart, trainDays,
-            runTimeSource: "offset_day");
+            Path.Combine(fakeR2, "data", "forecasts"),
+            locationName, trainStart, trainDays, runTimeSource: "offset_day");
         await SmokeFixtures.WriteRainfallTruthAsync(
-            scope.RainfallPath, locationName, stationFriendly, trainStart, trainDays);
+            Path.Combine(fakeR2, "data", "truth", "rainfall"),
+            locationName, stationFriendly, trainStart, trainDays);
+        SmokeFixtures.RunSyncTrainData(
+            location: locationName, phases: "3a,3c",
+            r2Source: fakeR2, localRoot: scope.Root);
         await SmokeFixtures.WriteForecastTreeAsync(
             scope.ForecastsPath, locationName, predictAnchor.AddHours(1), nDays: 6,
             runTimeSource: "reported");
@@ -173,10 +181,18 @@ public class PrecipPredictSmokeTests
             locationName,
             rainfallStations: new[] { ($"smoke-{stationSlug}", stationFriendly) });
 
+        // Exact-runtime fixtures via the production sync script. 3d shares
+        // forecasts + rainfall + models with 3a/3c.
+        var fakeR2_3d = Path.Combine(scope.Root, "fake-r2");
         await SmokeFixtures.WriteExactRuntimeForecastTreeAsync(
-            scope.ForecastsPath, locationName, trainStart, trainDays);
+            Path.Combine(fakeR2_3d, "data", "forecasts"),
+            locationName, trainStart, trainDays);
         await SmokeFixtures.WriteRainfallTruthAsync(
-            scope.RainfallPath, locationName, stationFriendly, trainStart, trainDays);
+            Path.Combine(fakeR2_3d, "data", "truth", "rainfall"),
+            locationName, stationFriendly, trainStart, trainDays);
+        SmokeFixtures.RunSyncTrainData(
+            location: locationName, phases: "3d",
+            r2Source: fakeR2_3d, localRoot: scope.Root);
         // Predict-side exact-runtime tree past anchor.
         await SmokeFixtures.WriteExactRuntimeForecastTreeAsync(
             scope.ForecastsPath, locationName, predictAnchor, nDays: 5);
@@ -274,34 +290,35 @@ public class PrecipPredictSmokeTests
             locationName,
             rainfallStations: bonehillStations);
 
-        // Forecast tree shared across all 4 stations (same location).
+        // Train fixtures via the production sync script. 3o needs
+        // forecasts + rainfall + orographic + models — the script's case
+        // table covers all four trees for this phase id. Predict
+        // 'reported' rows direct after sync.
+        var fakeR2 = Path.Combine(scope.Root, "fake-r2");
         await SmokeFixtures.WriteForecastTreeAsync(
-            scope.ForecastsPath, locationName, trainStart, trainDays,
-            runTimeSource: "offset_day");
-        await SmokeFixtures.WriteForecastTreeAsync(
-            scope.ForecastsPath, locationName, predictAnchor.AddHours(1), nDays: 6,
-            runTimeSource: "reported");
-
-        // Per-station rainfall truth.
+            Path.Combine(fakeR2, "data", "forecasts"),
+            locationName, trainStart, trainDays, runTimeSource: "offset_day");
         foreach (var (_, friendly) in bonehillStations)
         {
             await SmokeFixtures.WriteRainfallTruthAsync(
-                scope.RainfallPath, locationName, friendly, trainStart, trainDays);
+                Path.Combine(fakeR2, "data", "truth", "rainfall"),
+                locationName, friendly, trainStart, trainDays);
         }
-
-        // Orographic JSONs. Production code (PrecipTrainCommand etc.)
-        // resolves orography from ForecastsPath's parent — so for the
-        // SmokeScope storage layout that's {scope.Root}/static/orographic.
-        // No CWD mutation required → parallel-safe.
-        var oroRoot = Path.Combine(
-            Path.GetDirectoryName(scope.Config.Storage.ForecastsPath)!,
-            "static", "orographic");
-        Directory.CreateDirectory(oroRoot);
         foreach (var (_, friendly) in bonehillStations)
         {
-            var slug = SmokeFixtures.EaSlug(friendly);
-            await SmokeFixtures.WriteOrographicStaticAsync(oroRoot, slug);
+            await SmokeFixtures.WriteOrographicStaticAsync(
+                Path.Combine(fakeR2, "data", "static", "orographic"),
+                SmokeFixtures.EaSlug(friendly));
         }
+        SmokeFixtures.RunSyncTrainData(
+            location: locationName, phases: "3o",
+            r2Source: fakeR2, localRoot: scope.Root);
+
+        // Predict 'reported' rows direct (predict-time pulls are a
+        // separate production path).
+        await SmokeFixtures.WriteForecastTreeAsync(
+            scope.ForecastsPath, locationName, predictAnchor.AddHours(1), nDays: 6,
+            runTimeSource: "reported");
 
         {
 
