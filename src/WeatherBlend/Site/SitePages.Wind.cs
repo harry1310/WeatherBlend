@@ -105,9 +105,33 @@ public static partial class SitePages
         // Group at-lead rows by phase, keep freshest PredictedAtUtc per
         // ValidTime (covers the case where two versions of the same phase
         // are both Active — newer cycle wins).
+        //
+        // input.PhaseByVersion only carries entries for temperature /
+        // precipitation / dry_window bundles (see ModelMetadataRepository.
+        // GetPhaseByVersion) — it never reads element (wind / humidity /
+        // …) training_metadata. So for wind versions the dict lookup
+        // misses and we have to derive the phase from the version-string
+        // convention the trainers stamp:
+        //   * "v_wind_blend_live"            → wind_blend (minted, no bundle)
+        //   * "...{_wind_speed_lgb}"         → wind_speed_lgb
+        //   * "...{_wind_mvn}"               → wind_mvn
+        //   * bare "vYYYY-MM-DD_hhmmss"      → wind (champion, pre-VersionSuffix)
+        // Long-term we'd want GetPhaseByVersion to also read element
+        // bundle metadata.
+        static string DeriveWindPhase(string version)
+        {
+            if (version.StartsWith("v_wind_blend", StringComparison.Ordinal)
+                || version.Contains("_wind_blend", StringComparison.Ordinal))
+                return "wind_blend";
+            if (version.Contains("_wind_speed_lgb", StringComparison.Ordinal))
+                return "wind_speed_lgb";
+            if (version.Contains("_wind_mvn", StringComparison.Ordinal))
+                return "wind_mvn";
+            return "wind";
+        }
         string PhaseOf(string version)
             => input.PhaseByVersion.TryGetValue(version, out var ph) && !string.IsNullOrEmpty(ph)
-               ? ph : version;
+               ? ph : DeriveWindPhase(version);
 
         var byPhase = atLead
             .GroupBy(p => PhaseOf(p.Version))
