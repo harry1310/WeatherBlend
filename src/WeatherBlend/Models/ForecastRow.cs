@@ -59,4 +59,19 @@ public sealed class ForecastRow
     /// model top as "no cloud base" rather than literally that height.
     /// </summary>
     public double? CloudBaseHeightM { get; init; }
+
+    // ---- Multi-level (pressure-level) fields — added 2026-05-29 ----
+    // Open-Meteo per-model exposure varies; absent levels arrive as NULL and
+    // are safe to ignore at training time. Not yet consumed by any blender
+    // spec — purely accumulating a backfill window for future upper-air work.
+    public double? Temperature850hPa { get; init; }
+    public double? Temperature700hPa { get; init; }
+    public double? Temperature500hPa { get; init; }
+    public double? GeopotentialHeight850hPa { get; init; }
+    public double? GeopotentialHeight500hPa { get; init; }
+    public double? WindSpeed850hPa { get; init; }
+    public double? WindSpeed500hPa { get; init; }
+    public double? WindDirection850hPa { get; init; }
+    public double? WindDirection500hPa { get; init; }
+    public double? RelativeHumidity850hPa { get; init; }
 }

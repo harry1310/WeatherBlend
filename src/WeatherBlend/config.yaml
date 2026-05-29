@@ -179,6 +179,23 @@ variables:
     - shortwave_radiation
     - direct_radiation
     - diffuse_radiation
+    # Multi-level (pressure-level) NWP inputs — added 2026-05-29 to start
+    # the backfill window for the upper-air precip blender experiment.
+    # Spans vertical temp profile (lapse rates), synoptic pattern (z500),
+    # 850-500 thickness, vector shear, and low-level moisture. Not yet
+    # consumed by any blender spec — data on disk only until a v4-style
+    # upper-air feature builder lands. Open-Meteo handles missing levels
+    # per-model gracefully (returns nulls).
+    - temperature_850hPa
+    - temperature_700hPa
+    - temperature_500hPa
+    - geopotential_height_850hPa
+    - geopotential_height_500hPa
+    - wind_speed_850hPa
+    - wind_speed_500hPa
+    - wind_direction_850hPa
+    - wind_direction_500hPa
+    - relative_humidity_850hPa
   era5:
     - temperature_2m
     - dew_point_2m
@@ -198,6 +215,19 @@ variables:
     - shortwave_radiation
     - direct_radiation
     - diffuse_radiation
+    # Multi-level (pressure-level) ERA5 reanalysis fields — mirror of the
+    # forecast list above so train-truth and forecast inputs are aligned
+    # on the same vertical structure. ERA5 has all pressure levels.
+    - temperature_850hPa
+    - temperature_700hPa
+    - temperature_500hPa
+    - geopotential_height_850hPa
+    - geopotential_height_500hPa
+    - wind_speed_850hPa
+    - wind_speed_500hPa
+    - wind_direction_850hPa
+    - wind_direction_500hPa
+    - relative_humidity_850hPa
 
 # How far ahead to pull each run.
 forecastDays: 7

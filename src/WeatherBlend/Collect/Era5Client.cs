@@ -81,6 +81,16 @@ public sealed class Era5Client
         var swr = Col("shortwave_radiation");
         var drr = Col("direct_radiation");
         var dfr = Col("diffuse_radiation");
+        var t850  = Col("temperature_850hPa");
+        var t700  = Col("temperature_700hPa");
+        var t500  = Col("temperature_500hPa");
+        var z850  = Col("geopotential_height_850hPa");
+        var z500  = Col("geopotential_height_500hPa");
+        var ws850 = Col("wind_speed_850hPa");
+        var ws500 = Col("wind_speed_500hPa");
+        var wd850 = Col("wind_direction_850hPa");
+        var wd500 = Col("wind_direction_500hPa");
+        var rh850 = Col("relative_humidity_850hPa");
 
         var rows = new List<Era5Row>(times.Length);
         for (int i = 0; i < times.Length; i++)
@@ -94,7 +104,12 @@ public sealed class Era5Client
                 CloudCover = cc[i], CloudCoverLow = ccl[i], CloudCoverMid = ccm[i], CloudCoverHigh = cch[i],
                 WindSpeed10m = ws[i], WindDirection10m = wd[i], WindGusts10m = wg[i],
                 SurfacePressure = sp[i], Visibility = vis[i],
-                ShortwaveRadiation = swr[i], DirectRadiation = drr[i], DiffuseRadiation = dfr[i]
+                ShortwaveRadiation = swr[i], DirectRadiation = drr[i], DiffuseRadiation = dfr[i],
+                Temperature850hPa = t850[i], Temperature700hPa = t700[i], Temperature500hPa = t500[i],
+                GeopotentialHeight850hPa = z850[i], GeopotentialHeight500hPa = z500[i],
+                WindSpeed850hPa = ws850[i], WindSpeed500hPa = ws500[i],
+                WindDirection850hPa = wd850[i], WindDirection500hPa = wd500[i],
+                RelativeHumidity850hPa = rh850[i],
             });
         }
         return rows;

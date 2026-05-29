@@ -35,4 +35,18 @@ public sealed class Era5Row
     public double? ShortwaveRadiation { get; init; }
     public double? DirectRadiation { get; init; }
     public double? DiffuseRadiation { get; init; }
+
+    // ---- Multi-level (pressure-level) fields — added 2026-05-29 ----
+    // Mirror of ForecastRow's pressure-level fields so train-truth aligns to
+    // forecast inputs vertically. ERA5 exposes all standard pressure levels.
+    public double? Temperature850hPa { get; init; }
+    public double? Temperature700hPa { get; init; }
+    public double? Temperature500hPa { get; init; }
+    public double? GeopotentialHeight850hPa { get; init; }
+    public double? GeopotentialHeight500hPa { get; init; }
+    public double? WindSpeed850hPa { get; init; }
+    public double? WindSpeed500hPa { get; init; }
+    public double? WindDirection850hPa { get; init; }
+    public double? WindDirection500hPa { get; init; }
+    public double? RelativeHumidity850hPa { get; init; }
 }

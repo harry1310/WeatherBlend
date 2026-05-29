@@ -229,6 +229,16 @@ public sealed class OpenMeteoClient
                     ShortwaveRadiation      = Maybe("shortwave_radiation"),
                     DirectRadiation         = Maybe("direct_radiation"),
                     DiffuseRadiation        = Maybe("diffuse_radiation"),
+                    Temperature850hPa       = Maybe("temperature_850hPa"),
+                    Temperature700hPa       = Maybe("temperature_700hPa"),
+                    Temperature500hPa       = Maybe("temperature_500hPa"),
+                    GeopotentialHeight850hPa= Maybe("geopotential_height_850hPa"),
+                    GeopotentialHeight500hPa= Maybe("geopotential_height_500hPa"),
+                    WindSpeed850hPa         = Maybe("wind_speed_850hPa"),
+                    WindSpeed500hPa         = Maybe("wind_speed_500hPa"),
+                    WindDirection850hPa     = Maybe("wind_direction_850hPa"),
+                    WindDirection500hPa     = Maybe("wind_direction_500hPa"),
+                    RelativeHumidity850hPa  = Maybe("relative_humidity_850hPa"),
                 });
 
                 double? Maybe(string v) => cols.TryGetValue(v, out var byOff) ? byOff[n][i] : null;
@@ -357,6 +367,16 @@ public sealed class OpenMeteoClient
         var swr   = Col("shortwave_radiation");
         var drr   = Col("direct_radiation");
         var dfr   = Col("diffuse_radiation");
+        var t850  = Col("temperature_850hPa");
+        var t700  = Col("temperature_700hPa");
+        var t500  = Col("temperature_500hPa");
+        var z850  = Col("geopotential_height_850hPa");
+        var z500  = Col("geopotential_height_500hPa");
+        var ws850 = Col("wind_speed_850hPa");
+        var ws500 = Col("wind_speed_500hPa");
+        var wd850 = Col("wind_direction_850hPa");
+        var wd500 = Col("wind_direction_500hPa");
+        var rh850 = Col("relative_humidity_850hPa");
 
         // Run-time strategy (see Models/ForecastRow.RunTimeSource for canonical values):
         // Live endpoint: if the caller supplied a reportedRunTime (from the model's
@@ -402,7 +422,17 @@ public sealed class OpenMeteoClient
                 Visibility = vis[i],
                 ShortwaveRadiation = swr[i],
                 DirectRadiation = drr[i],
-                DiffuseRadiation = dfr[i]
+                DiffuseRadiation = dfr[i],
+                Temperature850hPa = t850[i],
+                Temperature700hPa = t700[i],
+                Temperature500hPa = t500[i],
+                GeopotentialHeight850hPa = z850[i],
+                GeopotentialHeight500hPa = z500[i],
+                WindSpeed850hPa = ws850[i],
+                WindSpeed500hPa = ws500[i],
+                WindDirection850hPa = wd850[i],
+                WindDirection500hPa = wd500[i],
+                RelativeHumidity850hPa = rh850[i],
             });
         }
         return rows;
