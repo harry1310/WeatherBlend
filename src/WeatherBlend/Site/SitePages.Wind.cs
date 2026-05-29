@@ -35,11 +35,11 @@ public static partial class SitePages
               <hgroup>
                 <h2>Wind +{lead}h</h2>
                 <p>Blender speed forecasts on top, with the wind_mvn model-asserted
-                   80%-shaped uncertainty band shaded behind the MVN speed line
-                   (uncalibrated — see footer). Raw per-NWP inputs below. Per-hour
-                   direction circles at the bottom show the latest day this lead
-                   predicts; the wedge span is the wind_mvn 80% direction credible
-                   arc (calibrated on validation).</p>
+                   95%-shaped uncertainty band shaded behind the MVN speed line
+                   (uncalibrated). Raw per-NWP inputs below. Per-hour direction
+                   circles at the bottom show the latest day this lead predicts;
+                   each wedge spans the wind_mvn 80% direction credible arc
+                   (calibrated on validation).</p>
               </hgroup>
             """);
 
@@ -156,7 +156,7 @@ public static partial class SitePages
                 rows.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.SpeedMs * MsToMph)).ToList()));
         }
 
-        // wind_mvn: speed magnitude line + CI80 ribbon. The ribbon's low +
+        // wind_mvn: speed magnitude line + CI95 ribbon. The ribbon's low +
         // high series both need to be in Series so the renderer can match
         // them by name. Boundary lines stay in the legend (mirrors the
         // rainfall_amount P10/P90 pattern in SitePages.RainfallAmount.cs)
@@ -164,27 +164,22 @@ public static partial class SitePages
         // rather than two competing lines, while still leaving them as
         // identifiable reference values.
         //
-        // Defaults to CI80 (10/90 percentiles) — locked 2026-05-28 after
-        // CI95 read as "very very wide" against the 30-day-trained MVN.
-        // Falls back to CI95 when the parquet predates the CI80 columns
-        // (pre-2026-05-28 wind_mvn runs).
+        // Defaults to CI95 (2.5/97.5 percentile shape on the network's
+        // raw σ — uncalibrated since 2026-05-29 commit be75403 in WP).
+        // CI95 is always present on every parquet so no fallback needed
+        // for the speed band.
         if (mvnAtLead.Count > 0)
         {
-            // Per-row low/high in m/s. Each row picks CI80 when present,
-            // CI95 otherwise — mixed parquets fall back gracefully.
-            (double, double) CiPair(WindDirectionForecastPoint r)
-                => (r.SpeedCi80LoMs ?? r.SpeedCi95LoMs,
-                    r.SpeedCi80HiMs ?? r.SpeedCi95HiMs);
             blendSeries.Add(new LineSeries("MVN speed", "#1976d2",
                 mvnAtLead.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.SpeedMs * MsToMph)).ToList()));
-            blendSeries.Add(new LineSeries("MVN CI80 low", "#bbdefb",
-                mvnAtLead.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: CiPair(r).Item1 * MsToMph)).ToList()));
-            blendSeries.Add(new LineSeries("MVN CI80 high", "#bbdefb",
-                mvnAtLead.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: CiPair(r).Item2 * MsToMph)).ToList()));
+            blendSeries.Add(new LineSeries("MVN CI95 low", "#bbdefb",
+                mvnAtLead.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.SpeedCi95LoMs * MsToMph)).ToList()));
+            blendSeries.Add(new LineSeries("MVN CI95 high", "#bbdefb",
+                mvnAtLead.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.SpeedCi95HiMs * MsToMph)).ToList()));
         }
 
         var ribbons = mvnAtLead.Count > 0
-            ? new[] { new RibbonSpec("MVN CI80 low", "MVN CI80 high", "rgba(25, 118, 210, 0.18)") }
+            ? new[] { new RibbonSpec("MVN CI95 low", "MVN CI95 high", "rgba(25, 118, 210, 0.18)") }
             : Array.Empty<RibbonSpec>();
 
         // wind_gust_lgb gust line — pulled from input.WindGustByValidMs
