@@ -34,10 +34,12 @@ public static partial class SitePages
         body.Append(Ci, $"""
               <hgroup>
                 <h2>Wind +{lead}h</h2>
-                <p>Blender speed forecasts on top (with the wind_mvn 80% credible
-                   band shaded); raw NWP inputs below. Per-hour direction circles
-                   at the bottom show the latest day this lead predicts; the wedge
-                   span is the wind_mvn 80% direction CI.</p>
+                <p>Blender speed forecasts on top, with the wind_mvn model-asserted
+                   80%-shaped uncertainty band shaded behind the MVN speed line
+                   (uncalibrated — see footer). Raw per-NWP inputs below. Per-hour
+                   direction circles at the bottom show the latest day this lead
+                   predicts; the wedge span is the wind_mvn 80% direction credible
+                   arc (calibrated on validation).</p>
               </hgroup>
             """);
 
