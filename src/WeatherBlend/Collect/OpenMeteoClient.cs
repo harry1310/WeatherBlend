@@ -19,7 +19,24 @@ public sealed class OpenMeteoClient
 {
     private const string LiveBase = "https://api.open-meteo.com/v1/forecast";
     private const string PreviousRunsBase = "https://previous-runs-api.open-meteo.com/v1/forecast";
+    private const string HistoricalForecastBase = "https://historical-forecast-api.open-meteo.com/v1/forecast";
     private const string MetadataBase = "https://api.open-meteo.com/data";
+
+    /// <summary>
+    /// Pressure-level (…hPa) variables. The Previous Runs API rejects these with a
+    /// 400 (see <see cref="FetchPreviousRunsAsync"/>), so the offset_day archive
+    /// can't carry upper-air fields. The Historical Forecast API serves them as a
+    /// plain (lead-unlabelled) time series back to ~2022, which we backfill into a
+    /// separate hist_forecast.parquet — see <see cref="FetchHistoricalForecastAsync"/>.
+    /// </summary>
+    public static readonly string[] PressureLevelVariables =
+    {
+        "temperature_850hPa", "temperature_700hPa", "temperature_500hPa",
+        "geopotential_height_850hPa", "geopotential_height_500hPa",
+        "wind_speed_850hPa", "wind_speed_500hPa",
+        "wind_direction_850hPa", "wind_direction_500hPa",
+        "relative_humidity_850hPa",
+    };
 
     /// <summary>Offsets exposed by the Previous Runs API. Each offset N maps to
     /// the lead-hour bucket [24N..24N+23]; we tag rows with LeadHours = 24N.</summary>
@@ -254,6 +271,111 @@ public sealed class OpenMeteoClient
 
                 double? Maybe(string v) => cols.TryGetValue(v, out var byOff) ? byOff[n][i] : null;
             }
+        }
+        return rows;
+    }
+
+    /// <summary>
+    /// Fetches pressure-level fields from Open-Meteo's Historical Forecast API
+    /// (archived model forecasts, ~2022→present). Used ONLY to backfill the
+    /// upper-air (…hPa) columns the Previous Runs API refuses to serve. The
+    /// endpoint exposes no run/initialisation time and its per-lead mechanism
+    /// rejects pressure variables, so rows are lead-unlabelled:
+    /// <see cref="RunTimeSources.HistForecast"/>, RunTime = ValidTime, LeadHours = 0
+    /// (placeholders, not a real cycle). Only pressure columns are populated.
+    /// A model that doesn't archive pressure for the window returns all-null
+    /// columns and yields zero rows (the caller logs that).
+    /// </summary>
+    public async Task<List<ForecastRow>> FetchHistoricalForecastAsync(
+        LocationConfig location,
+        string modelId,
+        DateOnly startDate,
+        DateOnly endDate,
+        CancellationToken ct)
+    {
+        var hourly = string.Join(",", PressureLevelVariables);
+        var qs = new[]
+        {
+            $"latitude={location.Latitude.ToString(System.Globalization.CultureInfo.InvariantCulture)}",
+            $"longitude={location.Longitude.ToString(System.Globalization.CultureInfo.InvariantCulture)}",
+            $"elevation={location.ElevationMeters.ToString(System.Globalization.CultureInfo.InvariantCulture)}",
+            $"hourly={Uri.EscapeDataString(hourly)}",
+            $"models={Uri.EscapeDataString(modelId)}",
+            "timezone=UTC",
+            "windspeed_unit=ms",
+            "temperature_unit=celsius",
+            "precipitation_unit=mm",
+            $"start_date={startDate:yyyy-MM-dd}",
+            $"end_date={endDate:yyyy-MM-dd}"
+        };
+        var url = $"{HistoricalForecastBase}?{string.Join('&', qs)}";
+        _log.LogInformation("GET {Url}", url);
+
+        using var resp = await _http.GetAsync(url, ct);
+        resp.EnsureSuccessStatusCode();
+        await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+
+        return ParseHistoricalForecast(doc.RootElement, location.Name, modelId);
+    }
+
+    internal static List<ForecastRow> ParseHistoricalForecast(
+        JsonElement root, string locationName, string modelId)
+    {
+        if (!root.TryGetProperty("hourly", out var hourly)) return new();
+
+        var times = hourly.GetProperty("time").EnumerateArray()
+            .Select(e => DateTime.SpecifyKind(DateTime.Parse(e.GetString()!), DateTimeKind.Utc))
+            .ToArray();
+
+        double?[] Col(string name) =>
+            hourly.TryGetProperty(name, out var arr)
+                ? arr.EnumerateArray()
+                     .Select(e => e.ValueKind == JsonValueKind.Null ? (double?)null : e.GetDouble())
+                     .ToArray()
+                : Enumerable.Repeat<double?>(null, times.Length).ToArray();
+
+        var t850 = Col("temperature_850hPa");
+        var t700 = Col("temperature_700hPa");
+        var t500 = Col("temperature_500hPa");
+        var z850 = Col("geopotential_height_850hPa");
+        var z500 = Col("geopotential_height_500hPa");
+        var ws850 = Col("wind_speed_850hPa");
+        var ws500 = Col("wind_speed_500hPa");
+        var wd850 = Col("wind_direction_850hPa");
+        var wd500 = Col("wind_direction_500hPa");
+        var rh850 = Col("relative_humidity_850hPa");
+
+        var rows = new List<ForecastRow>(times.Length);
+        for (int i = 0; i < times.Length; i++)
+        {
+            // Drop hours with no pressure data at all — a model that doesn't
+            // archive upper-air levels returns all-null columns (e.g. UKMO/AIFS).
+            if (t850[i] is null && t700[i] is null && t500[i] is null &&
+                z850[i] is null && z500[i] is null && ws850[i] is null &&
+                ws500[i] is null && wd850[i] is null && wd500[i] is null && rh850[i] is null)
+                continue;
+
+            rows.Add(new ForecastRow
+            {
+                LocationName = locationName,
+                Model = modelId,
+                // Lead-unlabelled: no run time exists, so these are placeholders.
+                RunTimeUtc = times[i],
+                ValidTimeUtc = times[i],
+                LeadHours = 0,
+                RunTimeSource = RunTimeSources.HistForecast,
+                Temperature850hPa = t850[i],
+                Temperature700hPa = t700[i],
+                Temperature500hPa = t500[i],
+                GeopotentialHeight850hPa = z850[i],
+                GeopotentialHeight500hPa = z500[i],
+                WindSpeed850hPa = ws850[i],
+                WindSpeed500hPa = ws500[i],
+                WindDirection850hPa = wd850[i],
+                WindDirection500hPa = wd500[i],
+                RelativeHumidity850hPa = rh850[i],
+            });
         }
         return rows;
     }

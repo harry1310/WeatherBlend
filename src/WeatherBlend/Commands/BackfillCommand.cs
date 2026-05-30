@@ -68,10 +68,14 @@ public sealed class BackfillCommand
         if (src is "era5" or "all")          errors += await BackfillEra5Async(start, end, locations, ct);
         if (src is "metar" or "all")         errors += await BackfillMetarAsync(start, end, locations, ct);
         if (src is "rainfall" or "all")      errors += await BackfillRainfallAsync(start, end, locations, ct);
+        // hist-forecast is deliberately NOT part of "all": it's a one-off gap-fill
+        // for the upper-air (…hPa) history the Previous Runs API can't serve.
+        // Recent pressure accrues forward via the live collector (reported rows).
+        if (src is "hist-forecast")          errors += await BackfillHistoricalForecastAsync(start, end, model, locations, ct);
 
-        if (src is not ("previous-runs" or "era5" or "metar" or "rainfall" or "all"))
+        if (src is not ("previous-runs" or "era5" or "metar" or "rainfall" or "hist-forecast" or "all"))
         {
-            _log.LogError("Unknown source '{Source}'. Use: previous-runs | era5 | metar | rainfall | all", source);
+            _log.LogError("Unknown source '{Source}'. Use: previous-runs | era5 | metar | rainfall | hist-forecast | all", source);
             return 2;
         }
 
@@ -145,6 +149,59 @@ public sealed class BackfillCommand
                     {
                         errors++;
                         _log.LogError(ex, "  previous-runs/{Name}/{Model} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} FAILED",
+                            location.Name, model.Id, cursor, chunkEnd);
+                    }
+                    await Task.Delay(TimeSpan.FromSeconds(_cfg.Http.PreviousRunsBackfillDelaySeconds), ct);
+                    cursor = chunkEnd.AddDays(1);
+                }
+            }
+        }
+        return errors;
+    }
+
+    // ---- Historical forecast pressure (monthly chunks, per model) ----------------
+    // Backfills ONLY the pressure-level (…hPa) fields the Previous Runs API rejects
+    // (400). Source: Open-Meteo Historical Forecast API (~2022→present). The data
+    // is lead-unlabelled (RunTimeSource=hist_forecast) and lands in a SEPARATE
+    // file — date=*/hist_forecast.parquet — alongside previous_runs.parquet, never
+    // overwriting it. Models that don't archive upper-air levels (e.g. UKMO, AIFS)
+    // return all-null columns → 0 rows, logged and skipped (not an error).
+
+    private async Task<int> BackfillHistoricalForecastAsync(DateOnly start, DateOnly end, string? modelFilter, IReadOnlyList<LocationConfig> locations, CancellationToken ct)
+    {
+        var errors = 0;
+        var models = modelFilter is null
+            ? (IEnumerable<ModelConfig>)_cfg.Models
+            : _cfg.Models.Where(m => string.Equals(m.Id, modelFilter, StringComparison.OrdinalIgnoreCase));
+        if (modelFilter is not null && !models.Any())
+        {
+            _log.LogError("--model '{M}' not in configured models list. Available: [{Avail}]",
+                modelFilter, string.Join(", ", _cfg.Models.Select(m => m.Id)));
+            return 1;
+        }
+        foreach (var location in locations)
+        {
+            _log.LogInformation("hist-forecast backfill: location={Name} ({Lat:0.0000}, {Lon:0.0000})",
+                location.Name, location.Latitude, location.Longitude);
+            foreach (var model in models)
+            {
+                var cursor = start;
+                while (cursor <= end)
+                {
+                    var chunkEnd = cursor.AddMonths(1).AddDays(-1);
+                    if (chunkEnd > end) chunkEnd = end;
+                    try
+                    {
+                        var rows = await _forecasts.FetchHistoricalForecastAsync(
+                            location, model.Id, cursor, chunkEnd, ct);
+                        await ParquetWriter.WriteHistoricalForecastAsync(_cfg.Storage.ForecastsPath, rows, ct);
+                        _log.LogInformation("  hist-forecast/{Name}/{Model} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd}: {Rows} rows",
+                            location.Name, model.Id, cursor, chunkEnd, rows.Count);
+                    }
+                    catch (Exception ex)
+                    {
+                        errors++;
+                        _log.LogError(ex, "  hist-forecast/{Name}/{Model} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} FAILED",
                             location.Name, model.Id, cursor, chunkEnd);
                     }
                     await Task.Delay(TimeSpan.FromSeconds(_cfg.Http.PreviousRunsBackfillDelaySeconds), ct);

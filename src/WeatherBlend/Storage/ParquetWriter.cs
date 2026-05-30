@@ -63,6 +63,38 @@ public static class ParquetWriter
         }
     }
 
+    /// <summary>
+    /// Historical-forecast pressure writer. Same partition scheme as the Previous
+    /// Runs writer, but a SEPARATE file (hist_forecast.parquet) so it can never
+    /// overwrite previous_runs.parquet — the two coexist in one date partition
+    /// exactly as reported (run=NN.parquet) and offset_day (previous_runs.parquet)
+    /// already do. Rows carry RunTimeSource=hist_forecast (lead-unlabelled pressure).
+    /// Path: location=.../model=.../date=&lt;valid_date&gt;/hist_forecast.parquet
+    /// </summary>
+    public static async Task WriteHistoricalForecastAsync(
+        string basePath,
+        IReadOnlyList<ForecastRow> rows,
+        CancellationToken ct = default)
+    {
+        if (rows.Count == 0) return;
+
+        foreach (var group in rows.GroupBy(r => new { r.LocationName, r.Model, Date = r.ValidTimeUtc.Date }))
+        {
+            var dateStr = group.Key.Date.ToString("yyyy-MM-dd");
+            var dir = Path.Combine(
+                basePath,
+                $"location={group.Key.LocationName}",
+                $"model={group.Key.Model}",
+                $"date={dateStr}");
+            Directory.CreateDirectory(dir);
+
+            var file = Path.Combine(dir, "hist_forecast.parquet");
+            await ParquetSerializer.SerializeAsync(
+                group.OrderBy(r => r.ValidTimeUtc).ToList(),
+                file, cancellationToken: ct);
+        }
+    }
+
     public static async Task WriteEra5Async(
         string basePath,
         IReadOnlyList<Era5Row> rows,

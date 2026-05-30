@@ -21,4 +21,15 @@ public static class RunTimeSources
     /// is the lower edge of the [24N..24N+23] bucket the API actually covers.
     /// </summary>
     public const string OffsetDay = "offset_day";
+
+    /// <summary>
+    /// Open-Meteo Historical Forecast API row, used only to backfill pressure-level
+    /// (…hPa) fields the Previous Runs API refuses to serve. The endpoint exposes no
+    /// run/initialisation time and the per-lead (previous_day) mechanism rejects
+    /// pressure variables, so these rows are LEAD-UNLABELLED: RunTime is set equal to
+    /// ValidTime and LeadHours = 0 as placeholders, NOT a real cycle. Treat the
+    /// pressure columns as a lead-invariant upper-air field joined by valid-time;
+    /// never mix these rows into per-lead-time training as if they were offset_day.
+    /// </summary>
+    public const string HistForecast = "hist_forecast";
 }

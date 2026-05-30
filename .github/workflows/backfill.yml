@@ -14,11 +14,11 @@ on:
   workflow_dispatch:
     inputs:
       source:
-        description: "previous-runs | era5 | metar | rainfall | all"
+        description: "previous-runs | era5 | metar | rainfall | hist-forecast | all"
         required: true
         default: "all"
         type: choice
-        options: [previous-runs, era5, metar, rainfall, all]
+        options: [previous-runs, era5, metar, rainfall, hist-forecast, all]
       start:
         description: "Start date (yyyy-MM-dd, UTC)"
         required: true

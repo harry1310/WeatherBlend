@@ -266,11 +266,11 @@ public static class Program
             getDefaultValue: () => DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-1)));
         var sourceOpt = new Option<string>(
             name: "--source",
-            description: "previous-runs | era5 | metar | rainfall | all",
+            description: "previous-runs | era5 | metar | rainfall | hist-forecast | all",
             getDefaultValue: () => "all");
         var modelOpt = new Option<string?>(
             name: "--model",
-            description: "Optional: backfill only this Open-Meteo model id (previous-runs only). Defaults to all configured models.",
+            description: "Optional: backfill only this Open-Meteo model id (previous-runs / hist-forecast only). Defaults to all configured models.",
             getDefaultValue: () => null);
         var locationOpt = new Option<string?>(
             name: "--location",
@@ -281,7 +281,11 @@ public static class Program
         backfill.SetHandler(async (source, start, end, model, location) =>
         {
             var cmd = host.Services.GetRequiredService<BackfillCommand>();
-            await cmd.RunAsync(source, start, end, model, location, CancellationToken.None);
+            // Propagate the command's exit code (non-zero when any chunk errored).
+            // Without this the process exited 0 even when every API call failed,
+            // so a fully-failed backfill showed green in CI (the 2026-05-30
+            // pressure-level 400 incident). Other command handlers already do this.
+            Environment.ExitCode = await cmd.RunAsync(source, start, end, model, location, CancellationToken.None);
         }, sourceOpt, startOpt, endOpt, modelOpt, locationOpt);
         root.AddCommand(backfill);
 
