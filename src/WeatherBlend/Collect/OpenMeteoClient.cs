@@ -114,7 +114,18 @@ public sealed class OpenMeteoClient
         DateOnly endDate,
         CancellationToken ct)
     {
-        var varList = variables.ToArray();
+        // Open-Meteo's Previous Runs endpoint rejects pressure-level (…hPa)
+        // variables with a 400 ("Cannot initialize SurfacePressureAndHeight-
+        // Variable … from invalid String value …"). Because one bad variable
+        // fails the whole multi-variable request, every previous-runs pull 400s
+        // and the refresh writes nothing (observed 2026-05-30, having worked the
+        // day before — an OM-side validation change). The live forecast endpoint
+        // still serves these; only previous_runs dropped them. Drop them here so
+        // the surface variables — the bulk of the offset_day archive — keep
+        // flowing; the hPa columns just come back null for offset_day rows.
+        var varList = variables
+            .Where(v => !v.EndsWith("hPa", StringComparison.Ordinal))
+            .ToArray();
         // Build hourly = var1_previous_day1,var1_previous_day2,...,varK_previous_day7
         var hourlyNames = new List<string>(varList.Length * PreviousDayOffsets.Length);
         foreach (var v in varList)
