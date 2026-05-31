@@ -299,9 +299,17 @@ public static partial class SitePages
         var firstHour = HomeFirstVisibleHourUtc;
         var lastHourExcl = HomeLastVisibleHourUtcExclusive;
 
+        // Defensive dedupe by hour. >1 prediction can share a valid hour when
+        // the predictions tree holds more than one wind_mvn ModelVersion (e.g.
+        // straddling a retrain) — a raw ToDictionary(Hour) then threw
+        // ArgumentException ("same key 0") and killed the WHOLE site render
+        // (2026-05-31 render-site failure). Keep the newest ModelVersion.
         var byHour = mvnAtLead
             .Where(p => p.ValidTimeUtc.Date == latestDate)
-            .ToDictionary(p => p.ValidTimeUtc.Hour, p => p);
+            .GroupBy(p => p.ValidTimeUtc.Hour)
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderByDescending(r => r.Version, StringComparer.Ordinal).First());
 
         s.Append(Ci, $"""<p class="wind-day-label">Latest day at +{lead}h: <strong>{latestDate:ddd dd MMM yyyy}</strong> (UTC; hours {firstHour:00}–{lastHourExcl - 1:00})</p>""");
 
