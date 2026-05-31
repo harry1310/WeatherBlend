@@ -68,15 +68,16 @@ targets:
         role: champion
         impl: dotnet
         minValidTime: "2024-01-01"
-      # 3c retained as a Membury-only reference (per the 2026-05-25 cleanup
-      # plan — kept for Membury after the 3f stage-1 bake-off showed 3a /
-      # 3c / 3c-oro within 0.4% CRPS there). Dropped from Bonehill in
-      # favour of 3o (= 3c-oro, 4-station Bonehill pool), shipped here as
-      # challenger.
+      # 3c runs at BOTH locations. Membury: the only rich-precip challenger
+      # (3o was rejected there at the 2026-05-25 stage-1 bake-off). Bonehill:
+      # re-added 2026-05-31 — 3o (= 3c-oro) is the preferred Bonehill rich
+      # challenger, but 3c is kept active alongside it for now (its bundles
+      # were still live in the manifest, so this keeps them retrained rather
+      # than going stale). Revisit dropping Bonehill 3c once 3o is settled.
       - id: "3c"
         role: challenger
         impl: dotnet
-        locations: ["membury_devon"]
+        locations: ["bonehill_rocks", "membury_devon"]
         minValidTime: "2024-01-01"
       - id: "3d"
         role: challenger
