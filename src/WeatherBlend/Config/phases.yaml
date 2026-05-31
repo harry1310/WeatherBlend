@@ -26,6 +26,15 @@
 #   bonehill_rocks-only until a Membury-cell S3 archive backfill lands.
 #   Read via PhaseRegistry.ByTargetAndLocation / PhaseEntry.AppliesToLocation;
 #   the per-location retrain fanout skips a phase a location can't train.
+#
+# retrain (optional): retrain semantics. Absent = trained by this phase's
+#   impl engine (dotnet → retrain-blenders, python → retrain-python). A phase
+#   that is COMPOSED at predict time and has no retrain step (train or mint)
+#   MUST set `retrain: none` — otherwise the "train = every impl=dotnet phase"
+#   fanout tries to train it and fails (this broke the 2026-05-31 retrain when
+#   wind_blend was added without it). The phases-consistency test
+#   (PhaseWiringConsistencyTests) enforces that every retrained dotnet phase
+#   has both a sync_train_data.sh entry and a retrain-blenders run step.
 
 targets:
   temperature:
@@ -184,6 +193,11 @@ targets:
         role: challenger
         impl: dotnet
         locations: ["bonehill_rocks"]
+        # Composed live at predict time (wind-blend-predict: sigmoid of
+        # wind_speed_lgb + wind_mvn). No trainer / no bundle yet — exclude
+        # from the train fanout. Flip to (remove retrain / set blenders) once
+        # a wind-blend-mint lands, like 4b.
+        retrain: none
   humidity:
     phases:
       - id: "humidity"

@@ -112,10 +112,14 @@ jobs:
           MATRIX_LOCATION: ${{ matrix.location }}
         run: |
           PHASES_YAML=src/WeatherBlend/Config/phases.yaml
-          # One "id|loc1,loc2" row per impl=dotnet phase (empty = all locations).
+          # One "id|loc1,loc2" row per TRAINED impl=dotnet phase (empty = all
+          # locations). retrain:none phases are composed at predict time with
+          # no train/mint step (e.g. wind_blend) — exclude them so the fanout
+          # doesn't try to train a thing that can't be trained.
           mapfile -t PHASE_ROWS < <(yq -r '
             .targets | to_entries[].value.phases[]
             | select(.impl == "dotnet")
+            | select((.retrain // "") != "none")
             | .id + "|" + ((.locations // []) | join(","))
           ' "$PHASES_YAML")
           DOTNET_PHASES=$(printf '%s\n' "${PHASE_ROWS[@]}" | cut -d'|' -f1 | paste -sd, -)

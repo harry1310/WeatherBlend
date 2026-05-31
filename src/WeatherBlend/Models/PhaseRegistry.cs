@@ -216,7 +216,8 @@ public sealed class PhaseRegistry
                         .Select(l => l.Trim())
                         .ToArray();
                 var minValidTime = ParseMinValidTime(raw.MinValidTime, target, raw.Id);
-                entries.Add(new PhaseEntry(raw.Id, role, impl, locations, minValidTime));
+                var retrain = NormalizeRetrain(raw.Retrain, target, raw.Id);
+                entries.Add(new PhaseEntry(raw.Id, role, impl, locations, minValidTime, retrain));
             }
 
             // Sanity: at most one champion per target. Multiple champions
@@ -300,6 +301,20 @@ public sealed class PhaseRegistry
         return DateTime.SpecifyKind(dt, DateTimeKind.Utc);
     }
 
+    /// <summary>Normalise the optional <c>retrain:</c> field to lowercase and
+    /// validate it. Absent → null (= trained by the phase's impl engine).
+    /// Allowed explicit values: <c>blenders</c>, <c>python</c>, <c>none</c>.</summary>
+    private static string? NormalizeRetrain(string? raw, string target, string phaseId)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var v = raw.Trim().ToLowerInvariant();
+        if (v is not ("blenders" or "python" or "none"))
+            throw new InvalidOperationException(
+                $"Target '{target}' phase '{phaseId}' has invalid retrain '{raw}'. " +
+                "Expected one of: blenders, python, none (or omit the field).");
+        return v;
+    }
+
     // ---- YAML POCOs (private; the public surface is PhaseEntry) -------
 
     private sealed class PhaseRegistryDocument
@@ -328,6 +343,14 @@ public sealed class PhaseRegistry
         /// <c>minValidTime</c>. See <see cref="ParseMinValidTime"/> for why.
         /// </summary>
         public string? MinValidTime { get; set; }
+
+        /// <summary>Optional retrain semantics (2026-05-31). Absent = trained
+        /// by this phase's <see cref="Impl"/> engine (dotnet→retrain-blenders,
+        /// python→retrain-python). <c>none</c> = composed at predict time, no
+        /// retrain step (e.g. wind_blend's live sigmoid blend) — excluded from
+        /// the train fanouts. Stops a predict-only phase being treated as
+        /// trainable, which broke the 2026-05-31 retrain.</summary>
+        public string? Retrain { get; set; }
     }
 }
 
@@ -338,8 +361,20 @@ public sealed class PhaseRegistry
 /// </summary>
 public sealed record PhaseEntry(
     string Id, PhaseRole Role, PhaseImpl Impl, IReadOnlyList<string> Locations,
-    DateTime? MinValidTime = null)
+    DateTime? MinValidTime = null, string? Retrain = null)
 {
+    /// <summary>
+    /// True if this phase is produced by a retrain step (train or mint) and
+    /// so must be wired into the retrain fanout + <c>sync_train_data.sh</c>.
+    /// False only when <c>retrain: none</c> — a predict-time-only synthesised
+    /// phase (e.g. wind_blend). The phases-consistency test asserts every
+    /// retrained dotnet phase is fully wired; that invariant is what
+    /// <see cref="Retrain"/> exists to make checkable.
+    /// </summary>
+    public bool IsRetrained
+        => !string.Equals(Retrain, "none", StringComparison.OrdinalIgnoreCase);
+
+
     /// <summary>
     /// True if this phase should be trained / shipped for
     /// <paramref name="location"/>. An empty <see cref="Locations"/> list
