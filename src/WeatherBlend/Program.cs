@@ -208,9 +208,7 @@ public static class Program
                 services.AddTransient<Exact12hBakeoffCommand>();
                 services.AddTransient<PrecipExactBakeoffCommand>();
                 services.AddTransient<PrecipIfsCycleBakeoffCommand>();
-                services.AddTransient<Phase3cOroBakeoffCommand>();
                 services.AddTransient<Phase3cDataWindowBakeoffCommand>();
-                services.AddTransient<Phase3fStage1BakeoffCommand>();
                 // Live S3 collect — refreshes the five exact-runtime sources
                 // the 2d temperature blender consumes (GFS / IFS / AIFS /
                 // Met Office Global / Met Office UKV). Each is a thin
@@ -553,21 +551,6 @@ public static class Program
         }, ifsCycleLeadOpt, ifsCycleStationOpt, ifsCycleAsOfOpt);
         root.AddCommand(ifsCycleBakeoff);
 
-        // precip-oro-bakeoff — Phase 3c-oro pooled-multi-station bake-off
-        // (docs/OROGRAPHIC_BONEHILL_3C_PLAN.md). No args; trains per-station
-        // baseline + pooled challenger across every configured rainfall station
-        // that has a data/static/orographic/{slug}.json record. Writes the
-        // markdown report to data/reports/phase3c_oro_bakeoff_{date}.md.
-        var oroBakeoff = new Command(
-            "precip-oro-bakeoff",
-            "Phase 3c-oro: pooled rich+terrain vs per-station rich bake-off across configured EA gauges");
-        oroBakeoff.SetHandler(async ctx =>
-        {
-            var cmd = host.Services.GetRequiredService<Phase3cOroBakeoffCommand>();
-            ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
-        });
-        root.AddCommand(oroBakeoff);
-
         // precip-data-window-bakeoff — A vs B diagnostic. Trains per-station
         // 3c on full data vs 2024+ only, scores on identical test rows.
         // Answers: did the JMA 2022-2023 backfill help or hurt 3c?
@@ -580,19 +563,6 @@ public static class Program
             ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
         });
         root.AddCommand(dataWindowBakeoff);
-
-        // precip-3f-stage1-bakeoff — trains per-station 3a / 3c + pooled 3c-oro
-        // for the 3 Membury rainfall stations, dumps test predictions for the
-        // Python NGBoost-LogNormal stage-2 + CRPS scorer.
-        var phase3fStage1 = new Command(
-            "precip-3f-stage1-bakeoff",
-            "Train 3a / 3c / pooled 3c-oro Membury stage-1 candidates for the Phase 3f rainfall_amount bake-off");
-        phase3fStage1.SetHandler(async ctx =>
-        {
-            var cmd = host.Services.GetRequiredService<Phase3fStage1BakeoffCommand>();
-            ctx.ExitCode = await cmd.RunAsync(ctx.GetCancellationToken());
-        });
-        root.AddCommand(phase3fStage1);
 
         // s3-collect — live refresh of the five exact-runtime forecast sources
         // the 2d temperature blender consumes. Defaults to all sources; pass
