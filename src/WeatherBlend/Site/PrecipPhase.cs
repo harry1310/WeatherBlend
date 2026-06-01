@@ -78,7 +78,10 @@ public static class PrecipPhases
         ShortTitle: "Phase 3o (rich+oro)",
         Description: "55-feature rich set plus 9 terrain features (elevation, slope, aspect, ruggedness, upwind gain, uplift, station id), trained pooled across the 4 Bonehill rainfall gauges to give the terrain features cross-station diversity. Replaces 3c on Bonehill (3c stays as a Membury reference).",
         ChampionVsChallengerLabel: "Phase 3o (rich+oro)",
-        Color: "#26a69a");
+        // Blue (material 600) — was #26a69a, identical to 3c's teal-green, so
+        // the two lines were indistinguishable on the rolling-Brier chart.
+        // Blue is well clear of 3c (teal), 3a (violet), 3d (red), 4a (amber).
+        Color: "#1e88e5");
 
     // Phase 4b: arithmetic mean of Phase 4a (BART) + Phase 3o (rich+oro).
     public static readonly PrecipPhase Phase4b = new(
