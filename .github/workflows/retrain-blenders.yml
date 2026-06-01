@@ -55,6 +55,11 @@ on:
         required: false
         default: true
         type: boolean
+      guard_rows_delta:
+        description: "One-time RetrainGuard row-delta band override (e.g. 0.8 = ±80%). Empty = default ±30%. Use ONLY for a deliberate, permanent training-window change (e.g. a model moving required->optional) for the single run that resets the baseline; leave empty afterwards. Currently consumed by the Phase 2c step only."
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   # Distinct group from previous-runs-refresh / collect / backfill so
@@ -265,6 +270,12 @@ jobs:
         id: train_2c
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_2c == 'true'
         continue-on-error: true
+        # WB_GUARD_ROWS_DELTA_OVERRIDE: single-use RetrainGuard row-band relax
+        # for a deliberate training-window change (TrainCommand.RowsDeltaOverride).
+        # Empty by default -> default ±30%; only set via the guard_rows_delta
+        # dispatch input for the one run that resets the 2c baseline.
+        env:
+          WB_GUARD_ROWS_DELTA_OVERRIDE: ${{ github.event.inputs.guard_rows_delta }}
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target temperature --feature-set rich --location ${{ matrix.location }}
