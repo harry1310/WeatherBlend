@@ -338,29 +338,37 @@ blenders:
     # rich. Revisit once AIFS history extends further back into 2024.
     - target: temperature
       featureSet: lean
-      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, gem_seamless]
-      optionalModels: [ecmwf_aifs025_single]
-      # Leads 96 + 120 drop MF — Open-Meteo Previous Runs caps meteofrance_seamless
-      # at ~72h (zero rows beyond), so requiring it would produce an empty training set.
-      perLeadOverrides:
-        - lead: 96
-          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless]
-          optionalModels: [ecmwf_aifs025_single]
-        - lead: 120
-          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless]
-          optionalModels: [ecmwf_aifs025_single]
+      # Minimal required set — only the two load-bearing global models that
+      # publish to 120h AND have the most reliable Open-Meteo ingestion. icon /
+      # mf / gem / aifs are OPTIONAL: a single upstream feed outage can't
+      # truncate predictions because LightGBM handles the NaN slot natively
+      # (same lenient policy precipitation has always used).
+      #
+      # 2026-06-01: replaced the old 5-required policy. Open-Meteo's GEM
+      # (cmc_gem_gdps) ingestion stalled — frozen at 2026-05-26 — and because
+      # gem was REQUIRED the row-drop gate silently killed every 72/96/120h
+      # temperature row site-wide (nothing on the overview / charts beyond +2
+      # days), worsening by a day each day. MF was a latent second offender
+      # (caps ~72h). Requiring only gfs+ecmwf removes the whole class of
+      # "one short-horizon / lapsed feed truncates all long leads".
+      #
+      # No perLeadOverrides: both required models carry data at every lead
+      # including 96/120h (precip's 96/120 specs already rely on this), so the
+      # old MF-dropping overrides are unnecessary.
+      requiredModels: [gfs_seamless, ecmwf_ifs025]
+      optionalModels: [icon_seamless, meteofrance_seamless, gem_seamless, ecmwf_aifs025_single]
 
     - target: temperature
       featureSet: rich
-      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, ukmo_seamless, gem_seamless]
-      optionalModels: [ecmwf_aifs025_single]
-      perLeadOverrides:
-        - lead: 96
-          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, ukmo_seamless, gem_seamless]
-          optionalModels: [ecmwf_aifs025_single]
-        - lead: 120
-          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, ukmo_seamless, gem_seamless]
-          optionalModels: [ecmwf_aifs025_single]
+      # Same minimal-required policy as lean (see the note above for the
+      # 2026-06-01 GEM-outage rationale). NOTE: dropping ukmo from required
+      # widens the rich training window back to the lean floor (~2024-02),
+      # because ukmo's Open-Meteo history only starts 2024-09 and previously
+      # gated rich's rows. The first retrain after this change may trip the
+      # RetrainGuard row-count band ONCE as the baseline resets to the wider
+      # window; that's expected, not a regression.
+      requiredModels: [gfs_seamless, ecmwf_ifs025]
+      optionalModels: [icon_seamless, meteofrance_seamless, ukmo_seamless, gem_seamless, ecmwf_aifs025_single]
 
     # ---- Precipitation ----
     # Lenient policy: precip rows kept where ANY model has data — models often

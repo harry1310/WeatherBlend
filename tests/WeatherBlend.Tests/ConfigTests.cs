@@ -178,7 +178,7 @@ public class ConfigTests
         var bound = new AppConfig();
         cfg.Bind(bound);
 
-        bound.Blenders.Items.Should().HaveCount(10);
+        bound.Blenders.Items.Should().HaveCount(12);
         var keys = bound.Blenders.Items.Select(b => $"{b.Target}/{b.FeatureSet}").ToArray();
         keys.Should().Contain(new[]
         {
@@ -186,15 +186,19 @@ public class ConfigTests
             "precipitation/lean", "precipitation/rich",
             "dry_window/base", "dry_window/shape",
             "wind/default", "humidity/default", "cloud/default", "radiation/default",
+            "wind_speed_lgb/default", "wind_gust/default",
         });
 
-        // Lean temp: 5 strict + AIFS optional. MF dropped at 120h, AIFS still optional.
+        // Lean temp (2026-06-01 minimal-required policy): only gfs+ecmwf
+        // required; icon/mf/gem/aifs optional; no perLeadOverrides (both
+        // required models carry data at every lead incl. 120h). See the
+        // TemperatureRequiredModels_stay_minimal guard below for why.
         var leanTemp = bound.Blenders.Get("temperature", "lean");
-        leanTemp.RequiredModels.Should().HaveCount(5);
-        leanTemp.OptionalModels.Should().Equal("ecmwf_aifs025_single");
-        leanTemp.RequiredForLead(120).Should().HaveCount(4);
-        leanTemp.RequiredForLead(120).Should().NotContain("meteofrance_seamless");
-        leanTemp.OptionalForLead(120).Should().Equal("ecmwf_aifs025_single");
+        leanTemp.RequiredModels.Should().Equal("gfs_seamless", "ecmwf_ifs025");
+        leanTemp.OptionalModels.Should().Equal(
+            "icon_seamless", "meteofrance_seamless", "gem_seamless", "ecmwf_aifs025_single");
+        leanTemp.PerLeadOverrides.Should().BeEmpty();
+        leanTemp.RequiredForLead(120).Should().Equal("gfs_seamless", "ecmwf_ifs025");
 
         // Lean precip: nothing required, 7 optional (5 NWPs + AIFS + JMA, COALESCE-any).
         var leanPrecip = bound.Blenders.Get("precipitation", "lean");
@@ -208,5 +212,52 @@ public class ConfigTests
         wind.OptionalModels.Should().Equal("ukmo_seamless", "ecmwf_aifs025_single");
         wind.RequiredModels.Should().NotContain("meteofrance_seamless");
         wind.OptionalModels.Should().NotContain("meteofrance_seamless");
+    }
+
+    // The two NWPs we trust to publish to 120h with reliable Open-Meteo
+    // ingestion. Any model OUTSIDE this set, if made REQUIRED for temperature,
+    // can silently truncate long-lead predictions the moment its feed lapses
+    // or its horizon falls short — the row-drop gate kills every row missing a
+    // required model.
+    private static readonly string[] ReliableTo120h = { "gfs_seamless", "ecmwf_ifs025" };
+
+    [Fact]
+    public void TemperatureRequiredModels_stay_minimal_so_one_feed_outage_cannot_truncate_leads()
+    {
+        // Regression guard for the 2026-06-01 incident: Open-Meteo's GEM
+        // (cmc_gem_gdps) ingestion stalled (frozen at 2026-05-26). Because
+        // gem_seamless was REQUIRED for temperature 2b/2c, the post-pivot
+        // "every required model NOT NULL" gate silently dropped EVERY
+        // 72/96/120h temperature row site-wide — nothing on the overview or
+        // temperature charts beyond +2 days, worsening by a day each day.
+        //
+        // The fix made the temperature required set minimal (gfs+ecmwf only,
+        // both publish to 120h with reliable ingestion); every other model is
+        // optional, so a single lapsed/short-horizon feed leaves a NaN slot
+        // LightGBM handles natively instead of nuking the row. This test pins
+        // that invariant at EVERY lead (base list + per-lead overrides) so a
+        // future edit can't quietly reintroduce a fragile required model.
+        var configPath = Path.Combine(AppContext.BaseDirectory, "config.yaml");
+        var cfg = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+            .AddYamlFile(configPath, optional: false)
+            .Build();
+        var bound = new AppConfig();
+        cfg.Bind(bound);
+
+        int[] leads = { 24, 48, 72, 96, 120 };
+        foreach (var featureSet in new[] { "lean", "rich" })
+        {
+            var blender = bound.Blenders.Get("temperature", featureSet);
+            blender.RequiredModels.Should().OnlyContain(
+                m => ReliableTo120h.Contains(m),
+                $"temperature/{featureSet} base required set must stay within {{gfs,ecmwf}} " +
+                "(see the 2026-06-01 GEM-outage incident)");
+            foreach (var lead in leads)
+            {
+                blender.RequiredForLead(lead).Should().OnlyContain(
+                    m => ReliableTo120h.Contains(m),
+                    $"temperature/{featureSet} required set at lead {lead}h must stay within {{gfs,ecmwf}}");
+            }
+        }
     }
 }

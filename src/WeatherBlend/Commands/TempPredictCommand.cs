@@ -375,6 +375,24 @@ public sealed class TempPredictCommand
             return false;
         }
 
+        // Coverage summary: a trained lead that produced ZERO rows is the
+        // signature of a silent truncation (e.g. a required model's feed
+        // lapsing at long leads — the 2026-06-01 GEM incident). Surface it as
+        // one clear WRN per version instead of leaving it buried in per-row
+        // skip lines, so a log scrape / eyeball catches it without diffing
+        // the predictions parquet against the bundle's trained leads.
+        var producedLeads = predictions.Select(p => p.LeadHours).ToHashSet();
+        var emptyTrainedLeads = specs.Keys.Where(l => !producedLeads.Contains(l)).OrderBy(l => l).ToList();
+        if (emptyTrainedLeads.Count > 0)
+        {
+            _log.LogWarning(
+                "Version {V}: {Empty} of {Trained} trained leads produced NO rows ([{EmptyLeads}] empty; produced [{ProducedLeads}]). " +
+                "Likely a required-model feed gap at those leads — check forecast coverage.",
+                version, emptyTrainedLeads.Count, specs.Count,
+                string.Join(",", emptyTrainedLeads),
+                string.Join(",", producedLeads.OrderBy(l => l)));
+        }
+
         await WritePredictionsAsync(stationKey, predictions, anchor, metadata.Version, ct);
         return true;
     }
