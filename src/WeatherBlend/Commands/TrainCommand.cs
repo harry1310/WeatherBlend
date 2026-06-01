@@ -415,25 +415,31 @@ public sealed class TrainCommand : TrainCommandBase
 
     /// <summary>
     /// One-time escape hatch for a DELIBERATE, permanent training-window change
-    /// that legitimately blows the RetrainGuard ±30% row band — e.g. the
-    /// 2026-06-01 Phase 2c change making ukmo optional, which widened the rich
-    /// window back to the lean 2024-02 floor (ukmo history starts 2024-09).
+    /// that legitimately blows RetrainGuard's bands — e.g. the 2026-06-01 Phase
+    /// 2c change making ukmo optional, which widened the rich window back to the
+    /// lean 2024-02 floor. That shift trips TWO bands at once: the ±30% row band
+    /// (~+33% rows) AND the per-feature NaN band (models whose Open-Meteo history
+    /// doesn't span the added window go fully NaN over it — ukmo from 2024-09:
+    /// 0→0.31; aifs from 2025-02: 0.43→0.64). So this relaxes the row band to
+    /// <paramref name="WB_GUARD_ROWS_DELTA_OVERRIDE"/> AND effectively disables
+    /// the NaN-fraction band (1.0 = any change passes). <see cref="GuardTolerances.FeaturesEffectiveDelta"/>
+    /// stays 0 — a real column add/remove still aborts.
     ///
     /// Set <c>WB_GUARD_ROWS_DELTA_OVERRIDE=&lt;pct&gt;</c> (e.g. <c>0.8</c>) for the
     /// single retrain that establishes the new baseline. Once that run passes
-    /// and writes its training_summary, the next cycle compares wide-vs-wide and
-    /// the band auto-returns to the default — so this is genuinely single-use and
-    /// does NOT permanently weaken the guard. Returns null when unset/unparseable
-    /// → <see cref="RetrainGuard.Defaults"/>. Applied only to the 2c call site;
-    /// 2b/2d keep the default band.
+    /// and writes its training_summary, the next cycle compares wide-vs-wide
+    /// (rows AND NaN profile match) and the bands auto-return to default — so
+    /// this is genuinely single-use and does NOT permanently weaken the guard.
+    /// Returns null when unset/unparseable → <see cref="RetrainGuard.Defaults"/>.
+    /// Applied only to the 2c call site; 2b/2d keep the default bands.
     /// </summary>
-    private static GuardTolerances? RowsDeltaOverride()
+    private static GuardTolerances? DeliberateWindowChangeOverride()
     {
         var raw = Environment.GetEnvironmentVariable("WB_GUARD_ROWS_DELTA_OVERRIDE");
         if (string.IsNullOrWhiteSpace(raw)) return null;
         if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var pct) || pct <= 0)
             return null;
-        return RetrainGuard.Defaults with { RowsDeltaPct = pct };
+        return RetrainGuard.Defaults with { RowsDeltaPct = pct, NanPctAbsolute = 1.0 };
     }
 
     // ---- Phase 2c: rich-feature temperature blender (champion/challenger) ----------
@@ -572,12 +578,13 @@ public sealed class TrainCommand : TrainCommandBase
             },
         };
         ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
-        var rowsOverride2c = RowsDeltaOverride();
-        if (rowsOverride2c is not null)
+        var guardOverride2c = DeliberateWindowChangeOverride();
+        if (guardOverride2c is not null)
             _log.LogWarning(
-                "Phase 2c: RetrainGuard row-delta band relaxed to ±{Pct:P0} via WB_GUARD_ROWS_DELTA_OVERRIDE — " +
-                "single-use baseline reset for a deliberate training-window change. The band auto-returns to default next cycle.",
-                rowsOverride2c.RowsDeltaPct);
+                "Phase 2c: RetrainGuard bands relaxed (rows ±{Pct:P0}, per-feature NaN check off) via " +
+                "WB_GUARD_ROWS_DELTA_OVERRIDE — single-use baseline reset for a deliberate training-window " +
+                "change. Bands auto-return to default next cycle; feature-count check stays active.",
+                guardOverride2c.RowsDeltaPct);
         var guardResult2c = RetrainGuard.BuildCheckAndSave(_log,
             versionDir,
             composite: $"temperature/{stationKey}", phase: "2c", version: versionName,
@@ -586,7 +593,7 @@ public sealed class TrainCommand : TrainCommandBase
             trainFeatures: firstLeadTrainFeatures,
             featureNames: specsPerLead.TryGetValue(leads[0], out var sp2c)
                 ? sp2c.FeatureNames.ToList() : Array.Empty<string>(),
-            tolerances: rowsOverride2c,
+            tolerances: guardOverride2c,
             locationName: location.Name);
         if (!guardResult2c.Passed)
         {
