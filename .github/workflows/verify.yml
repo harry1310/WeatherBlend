@@ -54,7 +54,11 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 25 min (was 15). The R2 pull grew past 15 min and the job was cancelled
+    # mid-pull on 2026-06-01 (cascading skips). Real fix is the lighter models
+    # pull below (excludes 4a BART artefacts); the bump is margin for continued
+    # data growth.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -87,10 +91,16 @@ jobs:
           rclone copy "r2:${R2_BUCKET}/data/truth/rainfall" ./data/truth/rainfall --fast-list --transfers 16 --checkers 32 --progress
 
           # Model metadata (training_metadata.json + MANIFEST.json) for the drift
-          # threshold reference. We don't need the .zip artefacts for verify but
-          # copying the whole models tree is simpler than filtering.
+          # threshold reference. verify reads ONLY the json metadata + reports —
+          # never the per-cell 4a BART artefacts (state_lead_*.rds ~452 MiB +
+          # arrays_lead_*.npz ~21 MiB), which are ~80% of this tree's bytes.
+          # Excluding them is what pulls the job back under the timeout — the
+          # whole-tree copy had crept past the 15-min cap (2026-06-01 cancel).
+          # Mirrors .github/actions/sync-render-inputs. 32/64 like that action.
           mkdir -p data/models
-          rclone copy "r2:${R2_BUCKET}/data/models" ./data/models --fast-list --transfers 16 --checkers 32 --progress
+          rclone copy "r2:${R2_BUCKET}/data/models" ./data/models \
+            --exclude '**/*.rds' --exclude '**/*.npz' \
+            --fast-list --transfers 32 --checkers 64 --progress
 
           # Existing reports — additive-only writes land in the same tree.
           mkdir -p data/reports
