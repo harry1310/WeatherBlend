@@ -597,12 +597,14 @@ public static partial class SitePages
 
     /// <summary>
     /// Sibling sub-table to the verify-history view, rendered below the
-    /// trained-lead table. Buckets predictions by their ACTUAL lead at
-    /// prediction time (<c>ValidTime − PredictionMadeAt</c>) in 6h slices,
+    /// trained-lead table. Buckets predictions by their ACTUAL NWP forecast
+    /// lead (<c>ValidTime − freshest contributing NWP cycle</c>) in 6h slices,
     /// so the reader can see whether MAE varies within a trained-lead bucket
     /// (relevant after the 2026-05-04 hourly-temp-predict change which
-    /// spread each trained bucket across actual leads L .. L+23). Empty
-    /// string when no bucket rows are present in the verify sidecars
+    /// spread each trained bucket across a calendar day of valid times).
+    /// Bucketing off the NWP cycle (not PredictionMadeAt) means a min-lead-24
+    /// model never shows sub-24h buckets — see TempVerifier.FreshestNwpRunTime.
+    /// Empty string when no bucket rows are present in the verify sidecars
     /// (older sidecars written before the 2026-05-05 schema bump).
     /// </summary>
     private static string RenderActualLeadBucketTable(
@@ -672,8 +674,8 @@ public static partial class SitePages
             bucketHeaders.Append(Ci, $"""<th class="num">{bucket}-{bucket + 5}h</th>""");
 
         return $"""
-            <h6 style="margin-top:0.6rem">By actual lead at prediction time <small>(6h buckets)</small></h6>
-            <p class="skill-line">Same data grouped by <code>ValidTime − PredictionMadeAt</code> (6h buckets) instead of trained-lead label. Reveals MAE structure within a trained bucket once predict spread to hourly outputs (2026-05-04+).</p>
+            <h6 style="margin-top:0.6rem">By actual NWP forecast lead <small>(6h buckets)</small></h6>
+            <p class="skill-line">Same data grouped by <code>ValidTime − freshest contributing NWP cycle</code> (6h buckets) instead of trained-lead label. Reveals MAE structure within a trained bucket once predict spread to hourly outputs (2026-05-04+). Buckets start at the trained lead — earlier figures measured from the cron-fire time, which made offset-day models look like sub-lead forecasts.</p>
             <table>
               <thead>
                 <tr>

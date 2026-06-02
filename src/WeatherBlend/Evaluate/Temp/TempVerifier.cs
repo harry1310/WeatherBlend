@@ -111,14 +111,16 @@ public static class TempVerifier
         bool DriftFlag,
         // 2026-05-05 addition: bucketing-by-actual-lead view. Null on the
         // existing trained-lead rows; set to the 6-hour bucket lower bound
-        // (0, 6, 12, 18, 24, ...) on rows produced by ComputeActualLeadBuckets.
+        // (24, 30, 36, ...) on rows produced by ComputeActualLeadBuckets.
         // No persistence + no drift flag on bucket rows — there's no per-
         // actual-lead training-time baseline to compare to.
         int? ActualLeadBucketLowH = null);
 
     /// <summary>The 6h actual-lead bucket size used for the bucketed view.
-    /// Verify groups predictions whose actual lead falls in <c>[low, low+6)</c>
-    /// where <c>actual lead = ValidTimeUtc - PredictionMadeAtUtc (hours)</c>.
+    /// Verify groups predictions whose actual NWP forecast lead falls in
+    /// <c>[low, low+6)</c> where <c>actual lead = ValidTimeUtc − freshest
+    /// contributing NWP RunTime (hours)</c> — see <see cref="FreshestNwpRunTime"/>
+    /// for why the NWP cycle, not PredictionMadeAtUtc, is the reference instant.
     /// Same bucket size used in 2026-05-05 ad-hoc bucketing analysis; see
     /// memory/project_temp_actual_lead_bucketing.md for the rationale.</summary>
     public const int ActualLeadBucketHours = 6;
@@ -149,14 +151,25 @@ public static class TempVerifier
     }
 
     /// <summary>
-    /// Parallel view that groups predictions by their ACTUAL lead at
-    /// prediction time (<c>ValidTimeUtc − PredictionMadeAtUtc</c>) in 6-hour
+    /// Parallel view that groups predictions by their ACTUAL NWP forecast lead
+    /// (<c>ValidTimeUtc − freshest contributing NWP RunTime</c>) in 6-hour
     /// buckets, instead of by the trained-lead bucket label. Becomes
     /// meaningful once predict emits 24 hourly rows per cycle (the
     /// 2026-05-04 hourly-temp-predict change), where each trained-lead
-    /// bucket spreads predictions across actual leads <c>L .. L+23h</c>.
+    /// bucket spreads predictions across a *calendar day* of valid times.
     /// Per-bucket: blend MAE / mean-of-models MAE / best single. No
     /// drift flag — there's no per-actual-lead training-time baseline.
+    ///
+    /// The reference instant is the freshest NWP cycle that fed the blend, NOT
+    /// PredictionMadeAtUtc (the wall-clock moment the cron fired). Those differ
+    /// sharply: the predict job runs mid-day but emits the whole target calendar
+    /// day (00:00–23:00 of <c>anchorDay + L/24</c>), so <c>ValidTime −
+    /// PredictionMadeAt</c> for the early hours of that day is &lt; L even
+    /// though the blend was fed a ≥L-lead NWP forecast (predict floors every
+    /// NWP cycle at <c>RunTime ≤ ValidTime − L</c>). Bucketing off the NWP
+    /// cycle reports the genuine forecast lead, so a min-lead-24 model never
+    /// shows sub-24h buckets. (2026-06-02 — Harry: the old PredictionMadeAt
+    /// math made 2b/2c look like they were making &lt;24h forecasts.)
     /// </summary>
     public static IReadOnlyList<VerifyRow> ComputeActualLeadBuckets(Inputs inputs)
     {
@@ -168,15 +181,19 @@ public static class TempVerifier
             .Where(p => inputs.TruthByTime.ContainsKey(p.ValidTimeUtc))
             .ToList();
 
-        // Bucket by floor((ValidTime - PredictionMadeAt).TotalHours / 6) * 6.
-        // Negative actual leads (test artifacts where predict ran AFTER
-        // valid time) are kept honestly — they bucket to negative bucket
-        // labels and the renderer can decide whether to surface them.
+        // Bucket by floor((ValidTime − freshestNwpRunTime).TotalHours / 6) * 6.
+        // Rows with no NWP cycle time at all (legacy parquets pre-dating
+        // run-time capture) can't be placed on an NWP-lead axis honestly, so
+        // they're dropped from this view rather than guessed at. Current
+        // production rows always carry RunTimes, and the 14-day rolling window
+        // ages out anything older.
         var groups = kept
-            .Select(p => new
+            .Select(p => new { Pred = p, Run = FreshestNwpRunTime(p) })
+            .Where(x => x.Run.HasValue)
+            .Select(x => new
             {
-                Pred = p,
-                BucketLow = (int)Math.Floor((p.ValidTimeUtc - p.PredictionMadeAtUtc).TotalHours / ActualLeadBucketHours) * ActualLeadBucketHours,
+                x.Pred,
+                BucketLow = (int)Math.Floor((x.Pred.ValidTimeUtc - x.Run!.Value).TotalHours / ActualLeadBucketHours) * ActualLeadBucketHours,
             })
             .GroupBy(x => (x.Pred.ModelVersion, x.BucketLow))
             .OrderBy(g => g.Key.ModelVersion, StringComparer.Ordinal)
@@ -192,6 +209,37 @@ public static class TempVerifier
             result.Add(BuildBucketRow(g.Key.ModelVersion, g.Key.BucketLow, preds, inputs));
         }
         return result;
+    }
+
+    /// <summary>
+    /// The freshest (max) NWP cycle time among every per-model RunTime
+    /// populated on the row — offset_day (2b/2c) slots and exact-runtime (2d)
+    /// slots alike. This is the reference instant for the bucketed actual-lead
+    /// view: a blended prediction's effective forecast lead is how far ahead
+    /// its most recent contributing cycle was, i.e. <c>ValidTime − freshest
+    /// RunTime</c>. Because predict floors every contributing cycle at
+    /// <c>RunTime ≤ ValidTime − L</c>, the freshest cycle is still ≥ L hours
+    /// out, so the bucket can never read below the trained lead.
+    ///
+    /// Returns null only when the row carries no cycle times at all (legacy
+    /// parquets pre-dating run-time capture); the caller drops such rows.
+    /// </summary>
+    private static DateTime? FreshestNwpRunTime(TempPredictionRow p)
+    {
+        DateTime? best = null;
+        void Consider(DateTime? t)
+        {
+            if (t.HasValue && (best is null || t.Value > best.Value)) best = t.Value;
+        }
+        // offset_day (2b/2c)
+        Consider(p.RunTimeGfs);   Consider(p.RunTimeEcmwf); Consider(p.RunTimeIcon);
+        Consider(p.RunTimeMf);    Consider(p.RunTimeUkmo);  Consider(p.RunTimeGem);
+        Consider(p.RunTimeAifs);
+        // exact-runtime (2d)
+        Consider(p.RunTimeGfsExact);      Consider(p.RunTimeIfsOperExact);
+        Consider(p.RunTimeAifsOperExact); Consider(p.RunTimeMoGlobalExact);
+        Consider(p.RunTimeUkvExact);
+        return best;
     }
 
     private static VerifyRow BuildBucketRow(

@@ -120,11 +120,12 @@ public sealed class TempVerifyCommand
             MinDriftN = MinDriftNDefault,
         };
         var rows = TempVerifier.Compute(inputs);
-        // Parallel view: same predictions grouped by ACTUAL lead at prediction
-        // time in 6h buckets. Distinct from the trained-lead view above —
-        // post 2026-05-04 hourly predict, each trained-lead bucket spreads
-        // across actual leads L .. L+23. Surfaces whether MAE varies within
-        // a trained bucket. No drift flag (no per-actual-lead baseline).
+        // Parallel view: same predictions grouped by ACTUAL NWP forecast lead
+        // (ValidTime − freshest contributing NWP cycle) in 6h buckets. Distinct
+        // from the trained-lead view above — post 2026-05-04 hourly predict,
+        // each trained-lead bucket spreads across a calendar day of valid times.
+        // Surfaces whether MAE varies within a trained bucket. No drift flag
+        // (no per-actual-lead baseline).
         var bucketRows = TempVerifier.ComputeActualLeadBuckets(inputs);
 
         var md = TempVerifyReporter.BuildMarkdown(asOfUtc, windowDays, era5LatencyDays, driftThreshold, rows, metadata);

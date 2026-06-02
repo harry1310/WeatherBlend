@@ -432,11 +432,18 @@ public class VerifierTests
 
     private static TempPredictionRow MakePrediction(
         string version, int leadHours, DateTime valid, double blend)
-        => new()
+    {
+        // Stamp every populated per-model cycle at valid − leadHours so the
+        // actual NWP forecast lead (ValidTime − freshest RunTime, what
+        // ComputeActualLeadBuckets buckets on since 2026-06-02) equals the
+        // trained lead. PredictionMadeAtUtc is set to the same instant but is
+        // no longer the bucket reference — the NWP cycle is.
+        var cycle = valid.AddHours(-leadHours);
+        return new()
         {
             LocationName = "Bonehill Rocks",
             ModelVersion = version,
-            PredictionMadeAtUtc = valid.AddHours(-leadHours),
+            PredictionMadeAtUtc = cycle,
             ValidTimeUtc = valid,
             LeadHours = leadHours,
             BlendTemperature = blend,
@@ -446,11 +453,18 @@ public class VerifierTests
             TempMf    = blend + 0.4,
             TempUkmo  = blend + 0.5,
             TempGem   = blend + 0.6,
+            RunTimeGfs   = cycle,
+            RunTimeEcmwf = cycle,
+            RunTimeIcon  = cycle,
+            RunTimeMf    = cycle,
+            RunTimeUkmo  = cycle,
+            RunTimeGem   = cycle,
             TempMean  = blend + 0.35,
             TempStd   = 0.2,
             TempRange = 0.4,
             FeatureVectorHash = "fakehash",
         };
+    }
 
     private static ModelArtifact.TrainingMetadata MetadataWithLead(int leadHours, double blendTestMae)
         => new()
@@ -473,27 +487,32 @@ public class VerifierTests
 
     // -----------------------------------------------------------------------
     // ComputeActualLeadBuckets — the 6h actual-lead bucket view added 2026-05-05
-    // alongside the trained-lead view. Same input shape, different grouping
-    // (by ValidTime − PredictionMadeAt, floored to nearest 6h bucket).
+    // alongside the trained-lead view. Same input shape, different grouping:
+    // by ValidTime − freshest contributing NWP RunTime (2026-06-02 onward;
+    // was ValidTime − PredictionMadeAt before, which made offset-day models
+    // look like they made sub-trained-lead forecasts), floored to 6h buckets.
     // -----------------------------------------------------------------------
 
     [Fact]
     public void ComputeActualLeadBuckets_groups_by_actual_lead_in_6h_buckets()
     {
-        // Two predictions at the same trained lead (24) but different
-        // PredictionMadeAt times → different actual leads → different buckets.
-        // Pred A made 24h before V → actual lead 24h → bucket [24, 30).
-        // Pred B made 30h before V → actual lead 30h → bucket [30, 36).
+        // Two predictions at the same trained lead (24) but different freshest
+        // NWP cycles → different actual NWP leads → different buckets.
+        // Pred A: freshest cycle 24h before V → actual lead 24h → bucket [24, 30).
+        // Pred B: freshest cycle 30h before V → actual lead 30h → bucket [30, 36).
         var v1 = AsOf.AddDays(-7).AddHours(0); // inside window
         var predA = MakePrediction(V1, leadHours: 24, valid: v1, blend: 10.0);
+        var cycleB = v1.AddHours(-30);
         var predB = new TempPredictionRow
         {
             LocationName = "Bonehill Rocks",
             ModelVersion = V1,
-            PredictionMadeAtUtc = v1.AddHours(-30), // 30h before valid
+            PredictionMadeAtUtc = cycleB,
             ValidTimeUtc = v1,
             LeadHours = 24, // trained-lead bucket label, not actual lead
             BlendTemperature = 10.5,
+            RunTimeGfs   = cycleB,
+            RunTimeEcmwf = cycleB,
             FeatureVectorHash = "fakehash",
         };
         var truth = new Dictionary<DateTime, double> { [v1] = 10.0 };
@@ -503,6 +522,64 @@ public class VerifierTests
         // Two distinct buckets: lead 24 (pred A) and lead 30 (pred B).
         rows.Should().HaveCount(2);
         rows.Select(r => r.ActualLeadBucketLowH).Should().BeEquivalentTo(new int?[] { 24, 30 });
+    }
+
+    [Fact]
+    public void ComputeActualLeadBuckets_keys_off_nwp_cycle_not_prediction_made_at()
+    {
+        // Regression for the 2026-06-02 fix. The real offset-day predict path
+        // emits the whole target calendar day, stamping PredictionMadeAtUtc =
+        // wall-clock-now (mid-day) while the freshest NWP cycle that fed the
+        // blend is ≥24h before valid. The old math (ValidTime − PredictionMadeAt)
+        // produced sub-24h buckets for a min-lead-24 model; the NWP-cycle math
+        // must not.
+        var v = AsOf.AddDays(-7);
+        var nwpCycle = v.AddHours(-26);  // freshest NWP cycle: 26h before valid
+        var pred = new TempPredictionRow
+        {
+            LocationName = "Bonehill Rocks",
+            ModelVersion = V1,
+            PredictionMadeAtUtc = v.AddHours(-9), // cron fired only 9h before valid
+            ValidTimeUtc = v,
+            LeadHours = 24,
+            BlendTemperature = 10.0,
+            TempGfs = 10.2,
+            RunTimeGfs = nwpCycle,
+            FeatureVectorHash = "fakehash",
+        };
+        var truth = new Dictionary<DateTime, double> { [v] = 10.0 };
+
+        var rows = TempVerifier.ComputeActualLeadBuckets(BaseInputs(new[] { pred }, truth));
+
+        rows.Should().HaveCount(1);
+        // 26h actual NWP lead → bucket [24, 30), NOT the 9h (→ [6,12)) the
+        // PredictionMadeAt-based math would have produced.
+        rows[0].ActualLeadBucketLowH.Should().Be(24);
+    }
+
+    [Fact]
+    public void ComputeActualLeadBuckets_drops_rows_with_no_nwp_cycle()
+    {
+        // Legacy parquets pre-dating run-time capture can't be placed on an
+        // NWP-lead axis, so they're dropped from the bucket view rather than
+        // guessed at from PredictionMadeAt.
+        var v = AsOf.AddDays(-7);
+        var pred = new TempPredictionRow
+        {
+            LocationName = "Bonehill Rocks",
+            ModelVersion = V1,
+            PredictionMadeAtUtc = v.AddHours(-24),
+            ValidTimeUtc = v,
+            LeadHours = 24,
+            BlendTemperature = 10.0,
+            TempGfs = 10.2, // value present but no RunTime
+            FeatureVectorHash = "fakehash",
+        };
+        var truth = new Dictionary<DateTime, double> { [v] = 10.0 };
+
+        var rows = TempVerifier.ComputeActualLeadBuckets(BaseInputs(new[] { pred }, truth));
+
+        rows.Should().BeEmpty();
     }
 
     [Fact]
