@@ -1075,7 +1075,13 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             ct.ThrowIfCancellationRequested();
             _log.LogInformation("--- Lead {Lead}h ---", lead);
 
-            var spec = PrecipExactFeatureBuilder.BuildSpec(tier, targetLead: lead, includeUkv: includeUkv);
+            // 3d carries the multi-level pressure (upper-air) block in-place
+            // (2026-06-02): the FULL set retest (reports/ua_ab_3d_full) was
+            // −16…−19% Brier @12h+24h (the earlier negative used the curated
+            // 3-col subset). 3d is exact-runtime + Bonehill-only, and pressure
+            // is on the same exact rows it already reads (no ASOF). Predict
+            // mirrors via UpperAirValuesFromPerModel.
+            var spec = PrecipExactFeatureBuilder.BuildSpec(tier, targetLead: lead, includeUkv: includeUkv, withUpperAir: true);
             specsPerLead[lead] = spec;
             _log.LogInformation("Spec: {Spec}", spec);
 
@@ -1212,7 +1218,10 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             locationName: location.Name,
             featureNames: specsPerLead.TryGetValue(firstLead3d, out var sp3d)
                 ? sp3d.FeatureNames.ToList() : Array.Empty<string>(),
-            labelRates: labelRates3d);
+            labelRates: labelRates3d,
+            // 3d gained the upper-air block in-place — allow the one-time
+            // feature-count jump without aborting; other gates stay enforced.
+            tolerances: RetrainGuard.Defaults with { AllowFeaturesEffectiveChange = true });
         if (!guardResult3d.Passed)
         {
             _log.LogError("Aborting Phase 3d retrain ({Station}) — sanity guard failed. Orphan dir {Dir} not promoted; ChampionByLead retains the previous 3d pin (manifest unchanged).", stationSlug, versionDir);

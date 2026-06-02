@@ -108,6 +108,62 @@ public static class PrecipExactFeatureBuilder
         AllTiers.FirstOrDefault(t => t.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
             ?? throw new ArgumentException($"Unknown tier '{name}'", nameof(name));
 
+    /// Full backfilled multi-level pressure set (ForecastRow column → feature
+    /// short), used by the --upper-air path. Superset of the temp-oriented
+    /// curated 3 (t850/gh850/gh500): adds RH850 (mid-level moisture — the key
+    /// precip field), t700/t500 (lapse-rate / instability), and winds aloft.
+    /// Wind direction kept raw (deg) for this first full pass — a known GBT
+    /// wrap caveat at 0/360; refine to sin/cos only if it proves load-bearing.
+    private static readonly (string Col, string Short)[] UaPressureCols =
+    {
+        ("Temperature850hPa", "t850"), ("Temperature700hPa", "t700"), ("Temperature500hPa", "t500"),
+        ("GeopotentialHeight850hPa", "gh850"), ("GeopotentialHeight500hPa", "gh500"),
+        ("WindSpeed850hPa", "ws850"), ("WindSpeed500hPa", "ws500"),
+        ("WindDirection850hPa", "wd850"), ("WindDirection500hPa", "wd500"),
+        ("RelativeHumidity850hPa", "rh850"),
+    };
+
+    /// <summary>ForecastRow column names of the upper-air pressure block, in the
+    /// per-model order <see cref="UpperAirValuesFromPerModel"/> expects. Exposed
+    /// so the live exact-predict pivot pulls exactly these 10 columns.</summary>
+    public static IReadOnlyList<string> UaPressureColumnNames { get; } =
+        UaPressureCols.Select(c => c.Col).ToArray();
+
+    /// <summary>
+    /// Predict-time upper-air values for one (lead, valid) — model-major
+    /// (spec.Models × UaPressureCols) then ensemble t850_mean + rh850_mean.
+    /// BIT-IDENTICAL ordering to BuildForLead's training uaValues construction
+    /// (asserted by tests), so the live exact predict feeds the model the same
+    /// column layout it was trained on. <paramref name="perModelPressure"/>:
+    /// model id → 10 pressure values in <see cref="UaPressureColumnNames"/>
+    /// order (NaN where absent). Models missing from the dict contribute all-NaN
+    /// (e.g. met_office_global has no pressure backfill); LightGBM tolerates it.
+    /// </summary>
+    public static double[] UpperAirValuesFromPerModel(
+        BlenderSpec spec, IReadOnlyDictionary<string, double[]> perModelPressure)
+    {
+        int pc = UaPressureCols.Length;
+        int mc = spec.Models.Count;
+        var ua = new double[pc * mc + 2];
+        int t850Off = Array.FindIndex(UaPressureCols, c => c.Short == "t850");
+        int rh850Off = Array.FindIndex(UaPressureCols, c => c.Short == "rh850");
+        double t850Sum = 0, rh850Sum = 0; int t850N = 0, rh850N = 0;
+        for (int k = 0; k < mc; k++)
+        {
+            perModelPressure.TryGetValue(spec.Models[k], out var vals);
+            for (int j = 0; j < pc; j++)
+            {
+                var v = (vals is not null && j < vals.Length) ? vals[j] : double.NaN;
+                ua[pc * k + j] = v;
+                if (j == t850Off && !double.IsNaN(v)) { t850Sum += v; t850N++; }
+                if (j == rh850Off && !double.IsNaN(v)) { rh850Sum += v; rh850N++; }
+            }
+        }
+        ua[pc * mc] = t850N == 0 ? double.NaN : t850Sum / t850N;
+        ua[pc * mc + 1] = rh850N == 0 ? double.NaN : rh850Sum / rh850N;
+        return ua;
+    }
+
     /// <summary>
     /// Mirrors <c>Exact12hFeatureBuilder.BuildSpec(..., includeUkv: bool)</c>.
     /// When <paramref name="includeUkv"/> is true the feature vector gets one
@@ -119,7 +175,8 @@ public static class PrecipExactFeatureBuilder
     public static BlenderSpec BuildSpec(
         TierSpec tier,
         int targetLead = DefaultTargetLead,
-        bool includeUkv = false)
+        bool includeUkv = false,
+        bool withUpperAir = false)
     {
         var requiredSet = tier.Required.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var optionalSet = tier.Optional.ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -139,10 +196,27 @@ public static class PrecipExactFeatureBuilder
         featureNames.Add("doy_sin");
         featureNames.Add("doy_cos");
 
+        // Upper-air block (2026-06-01; FULL set 2026-06-01) — APPENDED after
+        // baseline features so existing indices are untouched (ComposeRow's
+        // FeatureCount guard catches any miscount). Per model: the FULL
+        // UaPressureCols at the target lead (RH850 + t700/t500 + winds, not
+        // just the temp-oriented curated 3 the first 3d pass used — that pass
+        // was negative likely BECAUSE it omitted the precip-relevant fields) +
+        // ensemble t850_mean + rh850_mean. NULL for met_office_global (no
+        // pressure backfill) and AIFS rh850 — LightGBM handles gaps.
+        if (withUpperAir)
+        {
+            foreach (var m in orderedModels)
+                foreach (var (_, sh) in UaPressureCols)
+                    featureNames.Add($"{sh}_{ShortName(m)}");
+            featureNames.Add("t850_mean");
+            featureNames.Add("rh850_mean");
+        }
+
         return new BlenderSpec
         {
             Target = "precipitation",
-            FeatureSet = $"exact-l{targetLead:00}-{tier.Name}{(includeUkv ? "-ukv" : "")}",
+            FeatureSet = $"exact-l{targetLead:00}-{tier.Name}{(includeUkv ? "-ukv" : "")}{(withUpperAir ? "-ua" : "")}",
             LeadHours = targetLead,
             RequiredModels = CanonicalModelOrder.Where(requiredSet.Contains).ToList(),
             OptionalModels = CanonicalModelOrder.Where(optionalSet.Contains).ToList(),
@@ -188,6 +262,32 @@ public static class PrecipExactFeatureBuilder
         var pivotCols = string.Join(",\n        ",
             spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN Precipitation END) AS precip_{ShortName(m)}"));
         var selectCols = string.Join(", ", spec.Models.Select(m => $"p.precip_{ShortName(m)}"));
+
+        // Upper-air block — derived from the spec so Build stays in sync with
+        // BuildSpec. Per-model FULL UaPressureCols at the (already lead-filtered)
+        // target lead, in spec.Models × UaPressureCols order; t850_mean +
+        // rh850_mean computed in C#. Pulled into latest + pivoted, SELECTed
+        // trailing (after truth + ukv) so existing reader indices are untouched.
+        var withUpperAir = spec.FeatureNames.Contains("t850_mean");
+        var uaPivotCols = new List<string>();
+        var uaSelectCols = new List<string>();
+        if (withUpperAir)
+        {
+            foreach (var m in spec.Models)
+            {
+                var s = ShortName(m);
+                foreach (var (col, sh) in UaPressureCols)
+                {
+                    uaPivotCols.Add($"MAX(CASE WHEN Model = '{m}' THEN {col} END) AS {sh}_{s}");
+                    uaSelectCols.Add($"p.{sh}_{s}");
+                }
+            }
+        }
+        var uaPivotSql   = uaPivotCols.Count  > 0 ? ",\n        " + string.Join(",\n        ", uaPivotCols) : "";
+        var uaSelectSql  = uaSelectCols.Count > 0 ? ", " + string.Join(", ", uaSelectCols) : "";
+        var uaLatestCols = withUpperAir
+            ? ", " + string.Join(", ", UaPressureCols.Select(c => c.Col))
+            : "";
 
         var requiredNotNull = spec.RequiredModels.Count > 0
             ? string.Join("\n  AND ", spec.RequiredModels.Select(m => $"p.precip_{ShortName(m)} IS NOT NULL"))
@@ -257,7 +357,7 @@ WITH hourly_truth AS (
     HAVING COUNT(*) = 4
 ),
 latest AS (
-    SELECT ValidTimeUtc, Model, Precipitation,
+    SELECT ValidTimeUtc, Model, Precipitation{uaLatestCols},
            ROW_NUMBER() OVER (
                PARTITION BY ValidTimeUtc, Model
                ORDER BY RunTimeUtc DESC
@@ -266,11 +366,11 @@ latest AS (
     WHERE {fcWhere}
 ),
 pivoted AS (
-    SELECT ValidTimeUtc, {pivotCols}
+    SELECT ValidTimeUtc, {pivotCols}{uaPivotSql}
     FROM latest WHERE rn = 1
     GROUP BY ValidTimeUtc
 ){ukvCte}
-SELECT p.ValidTimeUtc, {selectCols}, t.precip_mm_hour{ukvSelectCol}
+SELECT p.ValidTimeUtc, {selectCols}, t.precip_mm_hour{ukvSelectCol}{uaSelectSql}
 FROM pivoted p
 JOIN hourly_truth t ON p.ValidTimeUtc = t.valid_time
 {ukvJoin}
@@ -297,7 +397,32 @@ ORDER BY p.ValidTimeUtc;
             var ukvPrecip = ukvIdx >= 0
                 ? (r.IsDBNull(ukvIdx) ? double.NaN : r.GetDouble(ukvIdx))
                 : double.NaN;
-            rows.Add(ComposeRow(spec, valid, pcps, truthMm, ukvPrecip));
+
+            // Trailing upper-air columns (after truth + optional ukv), in
+            // spec.Models × UaPressureCols order, then ensemble t850_mean +
+            // rh850_mean.
+            double[]? uaValues = null;
+            if (withUpperAir)
+            {
+                int pc = UaPressureCols.Length;
+                int t850Off = Array.FindIndex(UaPressureCols, c => c.Short == "t850");
+                int rh850Off = Array.FindIndex(UaPressureCols, c => c.Short == "rh850");
+                int uaStart = (includeUkv ? 3 : 2) + modelCount;
+                uaValues = new double[pc * modelCount + 2];
+                double t850Sum = 0, rh850Sum = 0; int t850N = 0, rh850N = 0;
+                for (int k = 0; k < modelCount; k++)
+                    for (int j = 0; j < pc; j++)
+                    {
+                        var v = r.IsDBNull(uaStart + pc * k + j) ? double.NaN : r.GetDouble(uaStart + pc * k + j);
+                        uaValues[pc * k + j] = v;
+                        if (j == t850Off && !double.IsNaN(v)) { t850Sum += v; t850N++; }
+                        if (j == rh850Off && !double.IsNaN(v)) { rh850Sum += v; rh850N++; }
+                    }
+                uaValues[pc * modelCount]     = t850N == 0 ? double.NaN : t850Sum / t850N;
+                uaValues[pc * modelCount + 1] = rh850N == 0 ? double.NaN : rh850Sum / rh850N;
+            }
+
+            rows.Add(ComposeRow(spec, valid, pcps, truthMm, ukvPrecip, uaValues));
         }
         return rows;
     }
@@ -307,7 +432,8 @@ ORDER BY p.ValidTimeUtc;
         DateTime validTimeUtc,
         IReadOnlyList<double> perModelPrecip,
         double truthMmHour,
-        double ukvPrecip = double.NaN)
+        double ukvPrecip = double.NaN,
+        IReadOnlyList<double>? upperAir = null)
     {
         // Spread features computed across the per-model precip values only —
         // UKV is excluded so spread retains "model disagreement" semantics
@@ -337,10 +463,11 @@ ORDER BY p.ValidTimeUtc;
         // Mirror Exact12hFeatureBuilder: derive includeUkv from the spec
         // rather than a parameter so callers can't get the pair out of sync.
         var includeUkv = spec.FeatureNames.Contains("precip_ukv");
-        var expectedCount = perModelPrecip.Count + (includeUkv ? 1 : 0) + 7;
+        var uaCount = upperAir?.Count ?? 0;
+        var expectedCount = perModelPrecip.Count + (includeUkv ? 1 : 0) + 7 + uaCount;
         if (expectedCount != spec.FeatureCount)
             throw new InvalidOperationException(
-                $"perModelPrecip count {perModelPrecip.Count} (+ ukv:{includeUkv}) + 7 stats != spec.FeatureCount {spec.FeatureCount}.");
+                $"perModelPrecip count {perModelPrecip.Count} (+ ukv:{includeUkv}) + 7 stats + ua:{uaCount} != spec.FeatureCount {spec.FeatureCount}.");
 
         var features = new float[spec.FeatureCount];
         int idx = 0;
@@ -353,6 +480,9 @@ ORDER BY p.ValidTimeUtc;
         features[idx++] = (float)Math.Cos(2 * Math.PI * hourFrac);
         features[idx++] = (float)Math.Sin(2 * Math.PI * doyFrac);
         features[idx++] = (float)Math.Cos(2 * Math.PI * doyFrac);
+        if (upperAir is not null)
+            for (int i = 0; i < upperAir.Count; i++)
+                features[idx++] = (float)upperAir[i];
 
         return new BinaryTrainingRow
         {

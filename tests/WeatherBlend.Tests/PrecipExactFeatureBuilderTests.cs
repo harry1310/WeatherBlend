@@ -173,4 +173,43 @@ public class PrecipExactFeatureBuilderTests
         var meanIdx = spec.FeatureNames.ToList().IndexOf("precip_mean");
         row.Features[meanIdx].Should().BeApproximately(1.5f, 1e-3f);
     }
+
+    // ----- Upper-air predict-time parity (2026-06-02) ----------------------------
+    // UpperAirValuesFromPerModel must reproduce the trainer's model-major
+    // (spec.Models × UaPressureCols) + t850_mean/rh850_mean order, so the live 3d
+    // predict feeds the model its trained UA columns (column-parity bug = silent
+    // prediction corruption).
+    [Fact]
+    public void UpperAirValuesFromPerModel_matches_training_model_major_order_with_means()
+    {
+        var spec = PrecipExactFeatureBuilder.BuildSpec(
+            PrecipExactFeatureBuilder.AllTiers[0], targetLead: 24, includeUkv: false, withUpperAir: true);
+        int mc = spec.Models.Count;
+        // 10 pressure cols/model in UaPressureColumnNames order: t850 = idx 0,
+        // rh850 = idx 9. Set t850=10+k, rh850=80+k per model; the rest 0.
+        var perModel = new Dictionary<string, double[]>();
+        for (int k = 0; k < mc; k++)
+        {
+            var vals = new double[10];
+            vals[0] = 10 + k;   // t850
+            vals[9] = 80 + k;   // rh850
+            perModel[spec.Models[k]] = vals;
+        }
+
+        var ua = PrecipExactFeatureBuilder.UpperAirValuesFromPerModel(spec, perModel);
+        ua.Length.Should().Be(10 * mc + 2);
+        for (int k = 0; k < mc; k++)
+        {
+            ua[10 * k + 0].Should().Be(10 + k, "t850 is model-major col 0");
+            ua[10 * k + 9].Should().Be(80 + k, "rh850 is model-major col 9");
+        }
+        ua[10 * mc].Should().BeApproximately(Enumerable.Range(0, mc).Average(k => 10.0 + k), 1e-9);     // t850_mean
+        ua[10 * mc + 1].Should().BeApproximately(Enumerable.Range(0, mc).Average(k => 80.0 + k), 1e-9); // rh850_mean
+
+        // Models absent from the dict → all-NaN slots (graceful; LightGBM-missing).
+        var uaNaN = PrecipExactFeatureBuilder.UpperAirValuesFromPerModel(spec, new Dictionary<string, double[]>());
+        uaNaN.Length.Should().Be(10 * mc + 2);
+        uaNaN.Take(10 * mc).Should().OnlyContain(x => double.IsNaN(x));
+        double.IsNaN(uaNaN[10 * mc]).Should().BeTrue();
+    }
 }

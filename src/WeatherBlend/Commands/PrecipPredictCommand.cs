@@ -1232,8 +1232,16 @@ ORDER BY ValidTimeUtc, Model;";
                 }
 
                 var ukvPrecip = pivot.UkvPrecip;
+                // Upper-air block (3d-with-UA) — built from the pivot's per-model
+                // pressure in the SAME model-major order the trainer used (see
+                // PrecipExactFeatureBuilder.UpperAirValuesFromPerModel). Null when
+                // the schema has no UA (legacy 3d bundles) → ComposeRow emits the
+                // legacy-length vector. Missing pressure → NaN slots (graceful).
+                double[]? uaValues = spec.FeatureNames.Contains("t850_mean")
+                    ? PrecipExactFeatureBuilder.UpperAirValuesFromPerModel(spec, pivot.PerModelPressure)
+                    : null;
                 var row = PrecipExactFeatureBuilder.ComposeRow(
-                    spec, valid, modelPrecip, truthMmHour: 0.0, ukvPrecip: ukvPrecip);
+                    spec, valid, modelPrecip, truthMmHour: 0.0, ukvPrecip: ukvPrecip, upperAir: uaValues);
 
                 var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
                 var pWet = PrecipOccurrenceTrainer.PredictVectorProbability(ml, loadedModel, spec, new[] { row });
@@ -1314,7 +1322,11 @@ ORDER BY ValidTimeUtc, Model;";
         Dictionary<string, double?> PerModelPrecip,
         Dictionary<string, DateTime> PerModelRunTime,
         double UkvPrecip,
-        DateTime? UkvRunTime);
+        DateTime? UkvRunTime,
+        // Per-model upper-air pressure values (10 cols in
+        // PrecipExactFeatureBuilder.UaPressureColumnNames order), populated only
+        // when a spec carries the UA block (3d-with-UA). Empty otherwise.
+        Dictionary<string, double[]> PerModelPressure);
 
     private Dictionary<(int Lead, DateTime ValidTime), ExactPivotRow> QueryExactForecastRows(
         string forecastsPath,
@@ -1336,6 +1348,15 @@ ORDER BY ValidTimeUtc, Model;";
         var leadInClause = "(" + string.Join(",", specLeads) + ")";
         var hourInClause = "(" + string.Join(",", Phase3dValidHoursUtc) + ")";
 
+        // Upper-air: pull the 10 pressure cols per model when any spec carries
+        // the UA block (3d-with-UA). Pressure is on the same exact rows, so it
+        // rides through the existing pivot — no separate join. Cols land trailing
+        // (ordinals 7..16) so the existing precip/ukv reader indices are untouched.
+        var anyUa = specs.Values.Any(s => s.FeatureNames.Contains("t850_mean"));
+        var uaCols = PrecipExactFeatureBuilder.UaPressureColumnNames;
+        var uaLatestCols = anyUa ? ", " + string.Join(", ", uaCols) : "";
+        var uaFinalCols = anyUa ? ", " + string.Join(", ", uaCols.Select(c => $"l.{c}")) : "";
+
         // Same UKV-leads gating as TempPredictCommand.QueryExactForecastRows
         // — see the docstring there for the bug + fix history (2026-05-08
         // production crash on no-UKV long-lead 3d versions).
@@ -1347,7 +1368,7 @@ ORDER BY ValidTimeUtc, Model;";
 
         var latestCte = $@"
 WITH latest AS (
-    SELECT ValidTimeUtc, Model, LeadHours, RunTimeUtc, Precipitation,
+    SELECT ValidTimeUtc, Model, LeadHours, RunTimeUtc, Precipitation{uaLatestCols},
            ROW_NUMBER() OVER (
                PARTITION BY ValidTimeUtc, Model, LeadHours
                ORDER BY RunTimeUtc DESC
@@ -1392,7 +1413,7 @@ ukv AS (
     WHERE rn2 = 1
 )
 SELECT l.ValidTimeUtc, l.Model, l.LeadHours, l.RunTimeUtc, l.Precipitation,
-       u.ukv_precip, u.ukv_run_time
+       u.ukv_precip, u.ukv_run_time{uaFinalCols}
 FROM latest l
 LEFT JOIN ukv u
        ON l.ValidTimeUtc = u.ValidTimeUtc
@@ -1405,7 +1426,7 @@ ORDER BY l.ValidTimeUtc, l.LeadHours, l.Model;";
         {
             sql = $@"{latestCte}
 SELECT l.ValidTimeUtc, l.Model, l.LeadHours, l.RunTimeUtc, l.Precipitation,
-       CAST(NULL AS DOUBLE) AS ukv_precip, CAST(NULL AS TIMESTAMP) AS ukv_run_time
+       CAST(NULL AS DOUBLE) AS ukv_precip, CAST(NULL AS TIMESTAMP) AS ukv_run_time{uaFinalCols}
 FROM latest l
 WHERE l.rn = 1
   AND l.RunTimeUtc <= l.ValidTimeUtc - (l.LeadHours * INTERVAL 1 HOUR)
@@ -1437,11 +1458,21 @@ ORDER BY l.ValidTimeUtc, l.LeadHours, l.Model;";
                     PerModelPrecip: new Dictionary<string, double?>(StringComparer.Ordinal),
                     PerModelRunTime: new Dictionary<string, DateTime>(StringComparer.Ordinal),
                     UkvPrecip: ukvPrecip,
-                    UkvRunTime: ukvRunTime);
+                    UkvRunTime: ukvRunTime,
+                    PerModelPressure: new Dictionary<string, double[]>(StringComparer.Ordinal));
                 result[key] = existing;
             }
             existing.PerModelPrecip[model] = precip;
             if (precip.HasValue) existing.PerModelRunTime[model] = runTime;
+            if (anyUa)
+            {
+                // Pressure cols are trailing (ordinals 7..7+uaCols.Count-1),
+                // in PrecipExactFeatureBuilder.UaPressureColumnNames order.
+                var pressure = new double[uaCols.Count];
+                for (int j = 0; j < uaCols.Count; j++)
+                    pressure[j] = NullableDouble(reader, 7 + j) ?? double.NaN;
+                existing.PerModelPressure[model] = pressure;
+            }
         }
         return result;
     }
