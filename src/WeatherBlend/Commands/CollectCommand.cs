@@ -143,7 +143,20 @@ public sealed class CollectCommand
 
         var metOfficeErrors = await CollectMetOfficeAsync(ct);
 
-        if (forecastErrors > 0 || metarErrors > 0 || rainfallErrors > 0 || metOfficeErrors > 0) return 1;
+        // Met Office Spot + Land Obs are NON-CRITICAL and deliberately excluded
+        // from the exit code. Spot is a skill-page comparison line (not a blender
+        // input) and Obs is a supplemental truth signal — neither feeds predict or
+        // retrain. DataHub is also markedly less reliable than Open-Meteo / EA, so
+        // a transient outage there (2026-06-02: every DataHub call timed out while
+        // all 9 NWP models + EA rainfall + METAR succeeded and pushed to R2) must
+        // not fail the whole cycle red. We log loudly so the gap is still visible,
+        // but the cycle stands. OM / METAR / EA failures stay fatal.
+        if (metOfficeErrors > 0)
+            _log.LogWarning(
+                "  Met Office: {N} sub-collector(s) FAILED — non-critical, NOT failing the cycle (see ERR lines above)",
+                metOfficeErrors);
+
+        if (forecastErrors > 0 || metarErrors > 0 || rainfallErrors > 0) return 1;
         return 0;
     }
 
