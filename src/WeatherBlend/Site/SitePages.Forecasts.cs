@@ -14,7 +14,7 @@ public static partial class SitePages
     /// is the single knob to turn when tuning the historical context shown
     /// alongside the forward forecast.
     /// </summary>
-    private const int ForecastChartHistoryDays = 3;
+    private const int ForecastChartHistoryDays = 1;
 
     /// <summary>
     /// Lower bound (OADate) of the X axis on every forecast-page chart.
@@ -241,13 +241,14 @@ public static partial class SitePages
     }
 
     /// <summary>
-    /// History days for the rain forecast tab's shared X axis. Wider than
-    /// <see cref="ForecastChartHistoryDays"/> (3) because the rain page has
-    /// stacked panels (top P(wet) + 4a + NWP rate) and the eye benefits
-    /// from a wider context window when comparing them top-to-bottom.
-    /// User-set 2026-05-10 alongside the per-tab axis-unification work.
+    /// History days for the rain forecast tab's shared X axis. Kept in lockstep
+    /// with <see cref="ForecastChartHistoryDays"/> (1) per Harry's 2026-06-02
+    /// ask to show only the previous day of context before the forward forecast
+    /// on both the rain and temperature pages. (Was 7d from 2026-05-10 to give
+    /// the stacked rain panels a wider comparison window; narrowed to keep the
+    /// focus on the forward forecast.)
     /// </summary>
-    private const int RainChartHistoryDays = 7;
+    private const int RainChartHistoryDays = 1;
 
     private static string RenderPrecipSection(SiteInputs input, int lead)
         => RenderPrecipSection(input, lead, activeLocation: null);
