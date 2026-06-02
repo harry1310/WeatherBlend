@@ -105,6 +105,23 @@ public sealed class EcmwfClient
         new VarMap("tcc",    (r, v) => r.CloudCover          = v * 100.0),   // 0..1 → %
         new VarMap("ssrd",   (r, v) => r.ShortwaveRadiation  = v / 3600.0),  // J/m² acc → W/m² avg-over-hour
         new VarMap("mucape", (r, v) => r.Cape                = v),           // J/kg
+        // ── Added 2026-05-31: multi-level pressure fields (850/700/500 hPa) ──
+        // levtype=pl entries. `gh` is geopotential height in gpm (matches OM's
+        // geopotential_height); `z` (geopotential, m²/s²) is also published but
+        // we want height. `r` is relative humidity (%). Wind from u/v per level.
+        // AIFS publishes t/gh/u/v but NOT r — its RelativeHumidity850hPa stays
+        // null (the `r` VarMap simply finds no index entry), which is fine: the
+        // column is nullable and the blender's missing-value handling ignores it.
+        new VarMap("t",  (r, v) => r.Temperature850hPa = v - 273.15, "pl", "850"),
+        new VarMap("t",  (r, v) => r.Temperature700hPa = v - 273.15, "pl", "700"),
+        new VarMap("t",  (r, v) => r.Temperature500hPa = v - 273.15, "pl", "500"),
+        new VarMap("gh", (r, v) => r.GeopotentialHeight850hPa = v, "pl", "850"),  // gpm
+        new VarMap("gh", (r, v) => r.GeopotentialHeight500hPa = v, "pl", "500"),
+        new VarMap("r",  (r, v) => r.RelativeHumidity850hPa = v, "pl", "850"),    // % (IFS only)
+        new VarMap("u",  (r, v) => r.U850 = v, "pl", "850"),
+        new VarMap("v",  (r, v) => r.V850 = v, "pl", "850"),
+        new VarMap("u",  (r, v) => r.U500 = v, "pl", "500"),
+        new VarMap("v",  (r, v) => r.V500 = v, "pl", "500"),
     };
 
     private readonly HttpClient _http;
@@ -235,19 +252,23 @@ public sealed class EcmwfClient
         //    by exact param match. ECMWF param codes ARE unique per (param,
         //    levtype) so a literal equals on `param` for sfc-only entries
         //    works without the substring fuzziness GFS needs.
-        var picks = new List<(string Param, long Offset, long Length)>();
+        var picks = new List<(VarMap Var, long Offset, long Length)>();
         foreach (var v in Variables)
         {
             // FirstOrDefault on a record returns the default-constructed
             // record (Param == null, all defaults) when nothing matches —
             // not actually null on the reference itself. Filter explicitly
             // on Param being non-null so a missed variable just drops out
-            // (logged separately when the picks list ends up empty).
+            // (logged separately when the picks list ends up empty). Match is
+            // exact on (param, levtype, levelist) so a pressure param resolves
+            // to the right level rather than the first same-param entry — and
+            // AIFS's missing `r` simply finds nothing and drops out.
             var hit = indexEntries.FirstOrDefault(e =>
                 string.Equals(e.Param, v.Param, StringComparison.Ordinal)
-                && string.Equals(e.LevType, "sfc", StringComparison.Ordinal));
+                && string.Equals(e.LevType, v.LevType, StringComparison.Ordinal)
+                && (v.Level is null || string.Equals(e.Levelist, v.Level, StringComparison.Ordinal)));
             if (hit is not null && !string.IsNullOrEmpty(hit.Param))
-                picks.Add((v.Param, hit.Offset, hit.Length));
+                picks.Add((v, hit.Offset, hit.Length));
         }
         if (picks.Count == 0)
         {
@@ -301,7 +322,7 @@ public sealed class EcmwfClient
 
             var raw = new RawEcmwfValues();
             for (int i = 0; i < Math.Min(vals.Count, picks.Count); i++)
-                Variables.First(v => v.Param == picks[i].Param).Apply(raw, vals[i].Value);
+                picks[i].Var.Apply(raw, vals[i].Value);
 
             // Stream-specific tp units fix-up (2026-05-05). Per ECMWF Open Data
             // docs, IFS oper publishes total precipitation in METRES (water
@@ -339,6 +360,16 @@ public sealed class EcmwfClient
                 Cape = raw.Cape,
                 Precipitation = raw.Precipitation,
                 ShortwaveRadiation = raw.ShortwaveRadiation,
+                Temperature850hPa = raw.Temperature850hPa,
+                Temperature700hPa = raw.Temperature700hPa,
+                Temperature500hPa = raw.Temperature500hPa,
+                GeopotentialHeight850hPa = raw.GeopotentialHeight850hPa,
+                GeopotentialHeight500hPa = raw.GeopotentialHeight500hPa,
+                RelativeHumidity850hPa = raw.RelativeHumidity850hPa,
+                WindSpeed850hPa = raw.U850 is { } u850 && raw.V850 is { } v850 ? Math.Sqrt(u850 * u850 + v850 * v850) : null,
+                WindDirection850hPa = raw.U850 is { } u850d && raw.V850 is { } v850d ? WindDirection(u850d, v850d) : null,
+                WindSpeed500hPa = raw.U500 is { } u500 && raw.V500 is { } v500 ? Math.Sqrt(u500 * u500 + v500 * v500) : null,
+                WindDirection500hPa = raw.U500 is { } u500d && raw.V500 is { } v500d ? WindDirection(u500d, v500d) : null,
             };
         }
         finally
@@ -360,10 +391,11 @@ public sealed class EcmwfClient
             using var doc = JsonDocument.Parse(line);
             var root = doc.RootElement;
             entries.Add(new IndexEntry(
-                Param:   root.GetProperty("param").GetString() ?? "",
-                LevType: root.TryGetProperty("levtype", out var lt) ? (lt.GetString() ?? "") : "",
-                Offset:  root.GetProperty("_offset").GetInt64(),
-                Length:  root.GetProperty("_length").GetInt64()));
+                Param:    root.GetProperty("param").GetString() ?? "",
+                LevType:  root.TryGetProperty("levtype", out var lt) ? (lt.GetString() ?? "") : "",
+                Levelist: root.TryGetProperty("levelist", out var ll) ? (ll.GetString() ?? "") : "",
+                Offset:   root.GetProperty("_offset").GetInt64(),
+                Length:   root.GetProperty("_length").GetInt64()));
         }
         return entries;
     }
@@ -390,7 +422,7 @@ public sealed class EcmwfClient
     /// </summary>
     private async Task FetchRangesIndividuallyAsync(
         string gribUrl,
-        IReadOnlyList<(string Param, long Offset, long Length)> picks,
+        IReadOnlyList<(VarMap Var, long Offset, long Length)> picks,
         string destPath,
         CancellationToken ct)
     {
@@ -507,8 +539,20 @@ public sealed class EcmwfClient
     private static double WindDirection(double u, double v)
         => (Math.Atan2(-u, -v) * 180.0 / Math.PI + 360.0) % 360.0;
 
-    private sealed record IndexEntry(string Param, string LevType, long Offset, long Length);
-    private sealed record VarMap(string Param, Action<RawEcmwfValues, double> Apply);
+    private sealed record IndexEntry(string Param, string LevType, string Levelist, long Offset, long Length);
+
+    /// <summary>
+    /// One ECMWF param to extract. <paramref name="LevType"/>/<paramref name="Level"/>
+    /// default to a surface field ("sfc", no level); pressure-level entries pass
+    /// LevType="pl" + Level (e.g. "850"). Matching is exact on all three, so the
+    /// same param code at different levels (t/u/v/gh at 850/700/500) resolves to
+    /// the right index entry.
+    /// </summary>
+    private sealed record VarMap(
+        string Param,
+        Action<RawEcmwfValues, double> Apply,
+        string LevType = "sfc",
+        string? Level = null);
 
     private sealed class RawEcmwfValues
     {
@@ -522,5 +566,16 @@ public sealed class EcmwfClient
         public double? Cape { get; set; }
         public double? Precipitation { get; set; }
         public double? ShortwaveRadiation { get; set; }
+        // Pressure-level (850/700/500 hPa); wind kept as U/V per level.
+        public double? Temperature850hPa { get; set; }
+        public double? Temperature700hPa { get; set; }
+        public double? Temperature500hPa { get; set; }
+        public double? GeopotentialHeight850hPa { get; set; }
+        public double? GeopotentialHeight500hPa { get; set; }
+        public double? RelativeHumidity850hPa { get; set; }
+        public double? U850 { get; set; }
+        public double? V850 { get; set; }
+        public double? U500 { get; set; }
+        public double? V500 { get; set; }
     }
 }

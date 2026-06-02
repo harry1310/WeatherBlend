@@ -63,6 +63,26 @@ public sealed class GfsClient
         // Downward shortwave radiation at surface in W/m² (averaged over the
         // prior interval). Feeds the radiation element blender.
         new VarMap("DSWRF:surface",          (r, v) => r.ShortwaveRadiation = v),
+        // ── Added 2026-05-31: multi-level pressure fields (850/700/500 hPa) ──
+        // Upper-air signal that moved 24h-lead precip in the 3a/3o experiment
+        // but is unavailable on Open-Meteo's Previous Runs endpoint (it 400s on
+        // *hPa vars). The exact GRIB archive carries it per real lead, so these
+        // populate the same 10 ForecastRow pressure columns the OM hist_forecast
+        // path already fills — column-symmetric across both sources. Geopotential
+        // height (HGT) is in gpm, matching OM's geopotential_height. Wind at each
+        // level is derived from UGRD/VGRD exactly like the 10m surface wind.
+        // Trailing ':' on each match keeps "850 mb" from matching e.g. nothing
+        // wider; each (var, level) is unique within a pgrb2.0p25 cycle file.
+        new VarMap("TMP:850 mb:",  (r, v) => r.Temperature850hPa = v - 273.15),
+        new VarMap("TMP:700 mb:",  (r, v) => r.Temperature700hPa = v - 273.15),
+        new VarMap("TMP:500 mb:",  (r, v) => r.Temperature500hPa = v - 273.15),
+        new VarMap("HGT:850 mb:",  (r, v) => r.GeopotentialHeight850hPa = v),  // gpm
+        new VarMap("HGT:500 mb:",  (r, v) => r.GeopotentialHeight500hPa = v),
+        new VarMap("RH:850 mb:",   (r, v) => r.RelativeHumidity850hPa = v),
+        new VarMap("UGRD:850 mb:", (r, v) => r.U850 = v),
+        new VarMap("VGRD:850 mb:", (r, v) => r.V850 = v),
+        new VarMap("UGRD:500 mb:", (r, v) => r.U500 = v),
+        new VarMap("VGRD:500 mb:", (r, v) => r.V500 = v),
     };
 
     private readonly HttpClient _http;
@@ -198,6 +218,16 @@ public sealed class GfsClient
                 Precipitation = raw.Precipitation,
                 CloudBaseHeightM = raw.CloudBaseHeightM,
                 ShortwaveRadiation = raw.ShortwaveRadiation,
+                Temperature850hPa = raw.Temperature850hPa,
+                Temperature700hPa = raw.Temperature700hPa,
+                Temperature500hPa = raw.Temperature500hPa,
+                GeopotentialHeight850hPa = raw.GeopotentialHeight850hPa,
+                GeopotentialHeight500hPa = raw.GeopotentialHeight500hPa,
+                RelativeHumidity850hPa = raw.RelativeHumidity850hPa,
+                WindSpeed850hPa = raw.U850 is { } u850 && raw.V850 is { } v850 ? Math.Sqrt(u850 * u850 + v850 * v850) : null,
+                WindDirection850hPa = raw.U850 is { } u850d && raw.V850 is { } v850d ? WindDirection(u850d, v850d) : null,
+                WindSpeed500hPa = raw.U500 is { } u500 && raw.V500 is { } v500 ? Math.Sqrt(u500 * u500 + v500 * v500) : null,
+                WindDirection500hPa = raw.U500 is { } u500d && raw.V500 is { } v500d ? WindDirection(u500d, v500d) : null,
             };
         }
         finally
@@ -249,5 +279,17 @@ public sealed class GfsClient
         public double? Precipitation { get; set; }
         public double? CloudBaseHeightM { get; set; }
         public double? ShortwaveRadiation { get; set; }
+        // Pressure-level (850/700/500 hPa). Wind held as U/V components per
+        // level; speed + direction are derived at row-assembly time.
+        public double? Temperature850hPa { get; set; }
+        public double? Temperature700hPa { get; set; }
+        public double? Temperature500hPa { get; set; }
+        public double? GeopotentialHeight850hPa { get; set; }
+        public double? GeopotentialHeight500hPa { get; set; }
+        public double? RelativeHumidity850hPa { get; set; }
+        public double? U850 { get; set; }
+        public double? V850 { get; set; }
+        public double? U500 { get; set; }
+        public double? V500 { get; set; }
     }
 }

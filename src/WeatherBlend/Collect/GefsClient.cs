@@ -60,6 +60,22 @@ public sealed class GefsClient
         new VarMap("APCP:surface:",          (r, v) => r.Precipitation       = v),           // mm (kg/m² ≡ mm)
         new VarMap("TCDC:entire atmosphere:",(r, v) => r.CloudCover          = v),
         new VarMap("DSWRF:surface:",         (r, v) => r.ShortwaveRadiation  = v),
+        // ── Added 2026-05-31: multi-level pressure fields (850/700/500 hPa) ──
+        // pgrb2a 0.5° DOES carry the isobaric TMP/HGT/RH/UGRD/VGRD set (verified
+        // against the live .idx), so the ensemble mean contributes the same
+        // upper-air columns as the deterministic exact models. Trailing ':' is
+        // doubly safe here — GEFS idx lines append ":ens mean", so the matcher
+        // hits "TMP:850 mb:24 hour fcst:ens mean". See GfsClient for rationale.
+        new VarMap("TMP:850 mb:",  (r, v) => r.Temperature850hPa = v - 273.15),
+        new VarMap("TMP:700 mb:",  (r, v) => r.Temperature700hPa = v - 273.15),
+        new VarMap("TMP:500 mb:",  (r, v) => r.Temperature500hPa = v - 273.15),
+        new VarMap("HGT:850 mb:",  (r, v) => r.GeopotentialHeight850hPa = v),  // gpm
+        new VarMap("HGT:500 mb:",  (r, v) => r.GeopotentialHeight500hPa = v),
+        new VarMap("RH:850 mb:",   (r, v) => r.RelativeHumidity850hPa = v),
+        new VarMap("UGRD:850 mb:", (r, v) => r.U850 = v),
+        new VarMap("VGRD:850 mb:", (r, v) => r.V850 = v),
+        new VarMap("UGRD:500 mb:", (r, v) => r.U500 = v),
+        new VarMap("VGRD:500 mb:", (r, v) => r.V500 = v),
     };
 
     private readonly HttpClient _http;
@@ -189,6 +205,16 @@ public sealed class GefsClient
                 CloudCover = raw.CloudCover,
                 Precipitation = raw.Precipitation,
                 ShortwaveRadiation = raw.ShortwaveRadiation,
+                Temperature850hPa = raw.Temperature850hPa,
+                Temperature700hPa = raw.Temperature700hPa,
+                Temperature500hPa = raw.Temperature500hPa,
+                GeopotentialHeight850hPa = raw.GeopotentialHeight850hPa,
+                GeopotentialHeight500hPa = raw.GeopotentialHeight500hPa,
+                RelativeHumidity850hPa = raw.RelativeHumidity850hPa,
+                WindSpeed850hPa = raw.U850 is { } u850 && raw.V850 is { } v850 ? Math.Sqrt(u850 * u850 + v850 * v850) : null,
+                WindDirection850hPa = raw.U850 is { } u850d && raw.V850 is { } v850d ? WindDirection(u850d, v850d) : null,
+                WindSpeed500hPa = raw.U500 is { } u500 && raw.V500 is { } v500 ? Math.Sqrt(u500 * u500 + v500 * v500) : null,
+                WindDirection500hPa = raw.U500 is { } u500d && raw.V500 is { } v500d ? WindDirection(u500d, v500d) : null,
             };
         }
         finally
@@ -244,5 +270,16 @@ public sealed class GefsClient
         public double? Precipitation;
         public double? CloudCover;
         public double? ShortwaveRadiation;
+        // Pressure-level (850/700/500 hPa); wind kept as U/V per level.
+        public double? Temperature850hPa;
+        public double? Temperature700hPa;
+        public double? Temperature500hPa;
+        public double? GeopotentialHeight850hPa;
+        public double? GeopotentialHeight500hPa;
+        public double? RelativeHumidity850hPa;
+        public double? U850;
+        public double? V850;
+        public double? U500;
+        public double? V500;
     }
 }
