@@ -430,11 +430,16 @@ internal static class SmokeFixtures
         IReadOnlyList<int>? leads = null,
         DateTime? testSliceStart = null,
         int testSliceDays = 14,
-        int rngSeed = 71)
+        int rngSeed = 71,
+        // phaseSuffix/phaseTag let this same stand-in stand in for any binary
+        // precip member the 4b mint joins (4a, 3o, 3c) — only test_predictions
+        // is read off non-3o members, so the metadata Phase tag is cosmetic.
+        string phaseSuffix = "_phase4a",
+        string phaseTag = "4a")
     {
         leads ??= DefaultLeads;
         var rng = new Random(rngSeed);
-        var version = anchor.ToString("'v'yyyy-MM-dd_HHmmss") + "_phase4a";
+        var version = anchor.ToString("'v'yyyy-MM-dd_HHmmss") + phaseSuffix;
         var bundleDir = Path.Combine(modelsRoot, "precipitation", stationSlug, version);
         Directory.CreateDirectory(bundleDir);
 
@@ -491,7 +496,7 @@ internal static class SmokeFixtures
         {
             Version = version,
             Target = "precipitation",
-            Phase = "4a",
+            Phase = phaseTag,
             LocationName = locationName,
             DataSource = "smoke-fake",
             TrainedAtUtc = DateTime.UtcNow,

@@ -158,4 +158,40 @@ public class PrecipFeatureBuilderTests
         row.Features[spec.IndexOf("precip_max")].Should().BeApproximately(1.0f, 1e-4f);
         row.Features[spec.IndexOf("precip_agreement_wet_01")].Should().BeApproximately(1.0f, 1e-4f);
     }
+
+    // --- Predict-time upper-air (UpperAirValuesFor) — must reproduce the
+    //     trainer's uaValues construction so 3c/3o predict feeds the model the
+    //     same column layout it was trained on. (2026-06-02 UA productionisation.)
+
+    [Fact]
+    public void UpperAirValuesFor_picks_freshest_entry_at_or_before_valid_with_means()
+    {
+        // 4 models × 10 cols = 40, model-major. t850 is col 0 of each model's
+        // block (idx 0,10,20,30); rh850 is col 9 (idx 9,19,29,39). Build two
+        // exact-grid entries; query between them → expect the EARLIER one.
+        const int width = 40;
+        double[] Block(double t850, double rh850)
+        {
+            var a = new double[width];
+            Array.Fill(a, double.NaN);
+            for (int k = 0; k < 4; k++) { a[10 * k + 0] = t850 + k; a[10 * k + 9] = rh850 + k; }
+            return a;
+        }
+        var early = new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc);
+        var late  = new DateTime(2026, 6, 1, 6, 0, 0, DateTimeKind.Utc);
+        var asof = new List<(DateTime, double[])> { (early, Block(10, 80)), (late, Block(20, 90)) };
+
+        // Query at 03:00Z — freshest ≤ V is the 00:00Z (early) entry.
+        var v = PrecipFeatureBuilder.UpperAirValuesFor(asof, early.AddHours(3));
+        v.Length.Should().Be(42, "40 model×col + t850_mean + rh850_mean");
+        v[0].Should().Be(10.0);                       // gfs t850 from the early block
+        // t850_mean = mean over models of (10,11,12,13) = 11.5; rh850_mean of (80..83)=81.5
+        v[40].Should().BeApproximately(11.5, 1e-9);
+        v[41].Should().BeApproximately(81.5, 1e-9);
+
+        // Query before the first entry → all-NaN (missing; LightGBM tolerant).
+        var none = PrecipFeatureBuilder.UpperAirValuesFor(asof, early.AddHours(-1));
+        none.Length.Should().Be(42);
+        none.Should().OnlyContain(x => double.IsNaN(x));
+    }
 }

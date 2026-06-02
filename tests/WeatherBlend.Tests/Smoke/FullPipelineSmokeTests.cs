@@ -212,6 +212,19 @@ public class FullPipelineSmokeTests
                     scope.ModelsPath, "precipitation", slug, v4a, "4a");
                 await SmokeFixtures.WriteFakePhase4aPredictionsAsync(
                     scope.PredictionsPath, slug, locationName, v4a, predictAnchor, leads: leads);
+
+                // 4b became a 3-way mean(4a, 3o, 3c) on 2026-06-02, so the mint +
+                // live predict now also require a 3c member. The chain trains 3o
+                // for real but not 3c, so hand-build a 3c stand-in (test_predictions
+                // for the mint join + live predictions for the live composition),
+                // overlapping the same test slice / anchor as 4a so the (V,L)
+                // joins are non-empty. Found by suffix glob — no manifest promote.
+                var v3c = await SmokeFixtures.WriteFakePhase4aBundleAsync(
+                    scope.ModelsPath, slug, locationName, predictAnchor,
+                    leads: leads, testSliceStart: oroTestStart, testSliceDays: oroTestDays,
+                    rngSeed: 75, phaseSuffix: "_phase3c", phaseTag: "3c");
+                await SmokeFixtures.WriteFakePhase4aPredictionsAsync(
+                    scope.PredictionsPath, slug, locationName, v3c, predictAnchor, leads: leads, rngSeed: 76);
             }
 
             // ---- 7. Phase 4b mint (joins 4a + 3o test_predictions) ----

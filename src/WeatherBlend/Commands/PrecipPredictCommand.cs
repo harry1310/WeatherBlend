@@ -374,6 +374,26 @@ public sealed class PrecipPredictCommand
         var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
         var canonOrder = TempFeatureBuilder.CanonicalModelOrder.ToList();
 
+        // Pre-load live upper-air per lead for any lead whose schema carries the
+        // UA block (3c-with-UA, 2026-06-02). Mirrors the training exact_ua ASOF:
+        // freshest exact lead-L pressure ≤ target valid. One DuckDB scan per UA
+        // lead; rows ASOF-matched per target at compose time below. Empty until
+        // the live collector has accumulated exact pressure — then UA slots are
+        // NaN (missing), which the model tolerates.
+        var uaByLead = new Dictionary<int, IReadOnlyList<(DateTime ValidTimeUa, double[] PerModelCol)>>();
+        if (isRich)
+        {
+            foreach (var lead in targets.Select(t => t.Lead).Distinct())
+            {
+                if (!specs.TryGetValue(lead, out var s) || !s.FeatureNames.Contains("t850_mean")) continue;
+                var lv = targets.Where(t => t.Lead == lead).Select(t => t.Valid).ToList();
+                uaByLead[lead] = PrecipFeatureBuilder.LoadUpperAirLive(
+                    _cfg.Storage.ForecastsPath, location.Name, lead, lv.Min().AddDays(-2), lv.Max(), ct);
+                _log.LogInformation("Station {Station} lead {Lead}h: loaded {N} live upper-air rows (exact pressure ASOF).",
+                    station, lead, uaByLead[lead].Count);
+            }
+        }
+
         foreach (var (lead, valid) in targets)
         {
             if (!perLeadValid.TryGetValue(lead, out var perValid)
@@ -437,6 +457,14 @@ public sealed class PrecipPredictCommand
                 }
                 var runTime = valid.AddHours(-lead);
                 var persist = PrecipRichFeatureBuilder.ComputePersistence(hourlyRain!, runTime);
+                // Upper-air block (3c-with-UA) — freshest exact lead-L pressure
+                // ≤ this valid, in the same model-major order the trainer used.
+                // Null when the schema has no UA (legacy 3c bundles) so ComposeRow
+                // emits the legacy-length vector unchanged.
+                double[]? uaValues = spec.FeatureNames.Contains("t850_mean")
+                    ? PrecipFeatureBuilder.UpperAirValuesFor(
+                        uaByLead.TryGetValue(lead, out var asof) ? asof : System.Array.Empty<(DateTime, double[])>(), valid)
+                    : null;
                 row = PrecipRichFeatureBuilder.ComposeRow(
                     spec, valid, specPrecip, dew, rh, dewDep, pres,
                     rhMean: pivot.RhMean, dewDepressionMean: pivot.DewDepressionMean,
@@ -447,7 +475,8 @@ public sealed class PrecipPredictCommand
                     eaRainPrev72hMm: persist.Prev72hMm,
                     eaWetHoursLast24h: persist.WetHoursLast24h,
                     eaDryHoursTrailing: persist.DryHoursTrailing,
-                    truthMmHour: 0.0);
+                    truthMmHour: 0.0,
+                    upperAir: uaValues);
             }
             else
             {
@@ -648,6 +677,18 @@ public sealed class PrecipPredictCommand
             nwpMeanByValid = new();
         }
 
+        // Live upper-air per lead (3o-with-UA, 2026-06-02) — freshest exact
+        // lead-L pressure ASOF, same loader the 3c predict path uses. Composed
+        // into the rich half of the row below (layout [rich || UA || terrain]).
+        var uaByLead = new Dictionary<int, IReadOnlyList<(DateTime ValidTimeUa, double[] PerModelCol)>>();
+        foreach (var lead in targets.Select(t => t.Lead).Distinct())
+        {
+            if (!specs.TryGetValue(lead, out var s) || !s.FeatureNames.Contains("t850_mean")) continue;
+            var lv = targets.Where(t => t.Lead == lead).Select(t => t.Valid).ToList();
+            uaByLead[lead] = PrecipFeatureBuilder.LoadUpperAirLive(
+                _cfg.Storage.ForecastsPath, location.Name, lead, lv.Min().AddDays(-2), lv.Max(), ct);
+        }
+
         // EA hourly rainfall for the rich row's persistence features —
         // exact same load path 3c uses.
         var friendly = ResolveFriendlyStationName(station, location);
@@ -731,6 +772,13 @@ public sealed class PrecipPredictCommand
             }
             var runTime = valid.AddHours(-lead);
             var persist = PrecipRichFeatureBuilder.ComputePersistence(hourlyRain, runTime);
+            // UA block lands in the rich half (richSpec.FeatureNames includes the
+            // UA names when on, since UA precedes terrain in the rich-oro layout),
+            // so ComposeRow fills it; terrain is appended after → [rich||UA||terrain].
+            double[]? uaValues = richSpec.FeatureNames.Contains("t850_mean")
+                ? PrecipFeatureBuilder.UpperAirValuesFor(
+                    uaByLead.TryGetValue(lead, out var asof) ? asof : System.Array.Empty<(DateTime, double[])>(), valid)
+                : null;
             var richRow = PrecipRichFeatureBuilder.ComposeRow(
                 richSpec, valid, specPrecip, dew, rh, dewDep, pres,
                 rhMean: pivot.RhMean, dewDepressionMean: pivot.DewDepressionMean,
@@ -741,7 +789,8 @@ public sealed class PrecipPredictCommand
                 eaRainPrev72hMm: persist.Prev72hMm,
                 eaWetHoursLast24h: persist.WetHoursLast24h,
                 eaDryHoursTrailing: persist.DryHoursTrailing,
-                truthMmHour: 0.0);
+                truthMmHour: 0.0,
+                upperAir: uaValues);
 
             // Terrain block — needs NWP-mean wind/temp/dew/pressure at
             // this valid_time. The live-tree aux table was loaded once

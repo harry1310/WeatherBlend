@@ -25,14 +25,18 @@ public class FeatureBuilderTests
     }
 
     [Fact]
-    public void BuildSpec_lean_temperature_lead_24_uses_5_required_plus_aifs_optional()
+    public void BuildSpec_lean_temperature_lead_24_requires_only_gfs_ecmwf_rest_optional()
     {
+        // 2026-06-01 (commit 42f591d): temp lean requires only gfs+ecmwf; icon/
+        // mf/gem/aifs are optional so a single lapsed feed can't truncate rows.
+        // The model UNION (and feature schema) is unchanged — only the
+        // required/optional split moved.
         var spec = TempFeatureBuilder.BuildSpec(LoadShippedConfig(), 24);
         spec.Target.Should().Be("temperature");
         spec.FeatureSet.Should().Be("lean");
-        spec.RequiredModels.Should().Equal(
-            "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "meteofrance_seamless", "gem_seamless");
-        spec.OptionalModels.Should().Equal("ecmwf_aifs025_single");
+        spec.RequiredModels.Should().Equal("gfs_seamless", "ecmwf_ifs025");
+        spec.OptionalModels.Should().Equal(
+            "icon_seamless", "meteofrance_seamless", "gem_seamless", "ecmwf_aifs025_single");
         spec.Models.Should().Equal(
             "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "meteofrance_seamless", "gem_seamless", "ecmwf_aifs025_single");
         // 6 per-model temps + 3 spread + 4 calendar = 13 features.
@@ -44,41 +48,49 @@ public class FeatureBuilderTests
     }
 
     [Fact]
-    public void BuildSpec_lean_temperature_lead_120_drops_MF_keeps_aifs_optional()
+    public void BuildSpec_lean_temperature_lead_120_keeps_full_union_no_per_lead_drop()
     {
+        // Post-42f591d there are NO perLeadOverrides: the required set is a flat
+        // {gfs, ecmwf} at every lead, and MF/gem/aifs stay in the union as
+        // optional (a short-horizon feed just leaves a NaN slot rather than
+        // truncating the row). So lead 120 carries the SAME 6-model union as 24.
         var spec = TempFeatureBuilder.BuildSpec(LoadShippedConfig(), 120);
-        spec.RequiredModels.Should().Equal("gfs_seamless", "ecmwf_ifs025", "icon_seamless", "gem_seamless");
-        spec.OptionalModels.Should().Equal("ecmwf_aifs025_single");
-        spec.Models.Should().HaveCount(5);
-        // 5 per-model temps + 3 spread + 4 calendar = 12 features.
-        spec.FeatureNames.Should().HaveCount(12);
-        spec.FeatureNames.Should().NotContain("temp_mf");
-        spec.FeatureNames.Should().NotContain("temp_ukmo");
+        spec.RequiredModels.Should().Equal("gfs_seamless", "ecmwf_ifs025");
+        spec.OptionalModels.Should().Equal(
+            "icon_seamless", "meteofrance_seamless", "gem_seamless", "ecmwf_aifs025_single");
+        spec.Models.Should().HaveCount(6);
+        spec.FeatureNames.Should().HaveCount(13);
+        spec.FeatureNames.Should().Contain("temp_mf");      // no longer dropped at long lead
+        spec.FeatureNames.Should().NotContain("temp_ukmo"); // lean never carries ukmo
         spec.FeatureNames.Should().Contain("temp_aifs");
     }
 
     [Fact]
-    public void BuildSpec_lean_temperature_lead_96_mirrors_lead_120_dropping_MF()
+    public void BuildSpec_lean_temperature_lead_96_matches_lead_24_flat_required()
     {
-        // Lead 96h was added 2026-04-29. Open-Meteo Previous Runs caps
-        // meteofrance_seamless at ~72h, so MF must be excluded from required
-        // at any lead ≥96h or training would yield zero rows.
-        var spec = TempFeatureBuilder.BuildSpec(LoadShippedConfig(), 96);
-        spec.RequiredModels.Should().Equal("gfs_seamless", "ecmwf_ifs025", "icon_seamless", "gem_seamless");
-        spec.OptionalModels.Should().Equal("ecmwf_aifs025_single");
-        spec.FeatureNames.Should().HaveCount(12);
-        spec.FeatureNames.Should().NotContain("temp_mf");
+        // Flat required set ⇒ model membership no longer varies by lead (42f591d
+        // removed the MF/gem-dropping perLeadOverrides). The lead-96 spec is
+        // identical to lead-24's.
+        var spec96 = TempFeatureBuilder.BuildSpec(LoadShippedConfig(), 96);
+        var spec24 = TempFeatureBuilder.BuildSpec(LoadShippedConfig(), 24);
+        spec96.RequiredModels.Should().Equal("gfs_seamless", "ecmwf_ifs025");
+        spec96.Models.Should().Equal(spec24.Models);
+        spec96.FeatureNames.Should().Equal(spec24.FeatureNames);
+        spec96.FeatureNames.Should().Contain("temp_mf");
     }
 
     [Fact]
-    public void BuildSpec_rich_temperature_lead_96_drops_MF_keeps_UKMO_and_aifs()
+    public void BuildSpec_rich_temperature_lead_96_requires_only_gfs_ecmwf_union_7()
     {
+        // Rich mirrors lean's minimal-required policy (42f591d) but keeps ukmo
+        // in the union → 7 models. No per-lead dropping, so MF + ukmo are both
+        // present at lead 96.
         var spec = WeatherBlend.Train.TempRichFeatureBuilder.BuildSpec(LoadShippedConfig(), 96);
-        spec.RequiredModels.Should().Equal(
-            "gfs_seamless", "ecmwf_ifs025", "icon_seamless", "ukmo_seamless", "gem_seamless");
-        spec.OptionalModels.Should().Equal("ecmwf_aifs025_single");
-        spec.Models.Should().HaveCount(6);
-        spec.FeatureNames.Should().NotContain("temp_mf");
+        spec.RequiredModels.Should().Equal("gfs_seamless", "ecmwf_ifs025");
+        spec.OptionalModels.Should().Equal(
+            "icon_seamless", "meteofrance_seamless", "ukmo_seamless", "gem_seamless", "ecmwf_aifs025_single");
+        spec.Models.Should().HaveCount(7);
+        spec.FeatureNames.Should().Contain("temp_mf");
         spec.FeatureNames.Should().Contain("temp_ukmo");
         spec.FeatureNames.Should().Contain("temp_aifs");
     }
@@ -116,17 +128,18 @@ public class FeatureBuilderTests
     }
 
     [Fact]
-    public void ComposeRow_lead_120_packs_5_per_model_values_no_mf_no_ukmo_with_aifs()
+    public void ComposeRow_lead_120_packs_6_per_model_values_full_lean_union()
     {
         var spec = TempFeatureBuilder.BuildSpec(LoadShippedConfig(), 120);
-        // Spec order at 120h: gfs, ecmwf, icon, gem, aifs.
-        var temps = new[] { 5.0, 6.0, 7.0, 8.0, 9.0 };
+        // Flat 6-model lean union at 120h: gfs, ecmwf, icon, mf, gem, aifs
+        // (no per-lead dropping post-42f591d).
+        var temps = new[] { 5.0, 6.0, 7.0, 8.0, 9.0, 10.0 };
         var row = TempFeatureBuilder.ComposeRow(
             spec, new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc),
             temps, windDirMeanDeg: 90, era5Temp: 7.0);
-        row.Features.Length.Should().Be(12);
-        spec.FeatureNames.Should().NotContain("temp_mf");
-        spec.FeatureNames.Should().NotContain("temp_ukmo");
+        row.Features.Length.Should().Be(13);
+        spec.FeatureNames.Should().Contain("temp_mf");      // present post-42f591d
+        spec.FeatureNames.Should().NotContain("temp_ukmo"); // lean
         spec.FeatureNames.Should().Contain("temp_aifs");
     }
 

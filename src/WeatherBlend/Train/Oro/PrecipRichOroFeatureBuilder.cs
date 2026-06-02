@@ -47,17 +47,25 @@ public static class PrecipRichOroFeatureBuilder
     public const int TerrainFeatureCount = 9;
 
     /// <summary>Resolve the runtime <see cref="BlenderSpec"/> for rich-oro precipitation at a given lead.</summary>
-    public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours)
+    /// <param name="withUpperAir">Experimental (2026-06-02): build the underlying
+    /// rich spec WITH the multi-level pressure block, so the layout becomes
+    /// <c>[rich || upper-air || terrain]</c>. The terrain block stays appended
+    /// LAST, so <see cref="BuildForLead"/>'s <c>Take(count − TerrainFeatureCount)</c>
+    /// still reconstructs the rich(+UA) prefix unchanged, and the rich builder
+    /// auto-detects the ASOF upper-air join from <c>t850_mean</c> being present.
+    /// Default false keeps every production caller (train/predict/conformal)
+    /// bit-identical. See PrecipUaBakeoffCommand --oro.</param>
+    public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours, bool withUpperAir = false)
     {
         // Reuse rich's model membership + names — same precipitation blender
         // membership (the terrain block doesn't change which NWPs the
         // builder ingests).
-        var rich = PrecipRichFeatureBuilder.BuildSpec(blendersCfg, leadHours);
+        var rich = PrecipRichFeatureBuilder.BuildSpec(blendersCfg, leadHours, withUpperAir);
         var names = rich.FeatureNames.Concat(TerrainFeatureNames).ToList();
         return new BlenderSpec
         {
             Target = rich.Target,
-            FeatureSet = SpecFeatureSet,
+            FeatureSet = withUpperAir ? SpecFeatureSet + "-ua" : SpecFeatureSet,
             LeadHours = rich.LeadHours,
             RequiredModels = rich.RequiredModels,
             OptionalModels = rich.OptionalModels,

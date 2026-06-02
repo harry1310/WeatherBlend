@@ -1760,8 +1760,10 @@ public class SitePagesTests
         var generatedAt = new DateTime(2026, 5, 26, 12, 0, 0, DateTimeKind.Utc);
         var todayHour    = generatedAt.AddHours(2);                    // 14:00Z today — should appear in hourly
         var tomorrowHour = generatedAt.AddDays(1).AddHours(6);          // 18:00Z tomorrow — should appear
-        var pastHour     = generatedAt.AddDays(-2).AddHours(12);        // 2 days ago — should NOT appear in hourly,
-                                                                       // but date should still appear in daily
+        var pastHour     = generatedAt.AddDays(-1).AddHours(6);         // yesterday 18:00Z — inside the 1-day rain
+                                                                       // daily window (now − 1d, narrowed 2026-06-02)
+                                                                       // but before today's hourly cutoff: should
+                                                                       // appear in daily, NOT in hourly
 
         SitePages.PrecipForecastPoint Row(string version, DateTime predictedAt, DateTime valid, double pwet, string? conformalTag)
             => new(

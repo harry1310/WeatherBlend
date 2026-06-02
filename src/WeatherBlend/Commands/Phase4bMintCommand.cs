@@ -131,10 +131,14 @@ public sealed class Phase4bMintCommand
         // constraint; this commit closes it out.)
         var bundle4a = FindLatestBundle(stationDir, "_phase4a", "test_predictions.parquet");
         var bundle3o = FindLatestBundle(stationDir, "_phase3o", "test_predictions.parquet");
-        // No 4a or no 3o ⇒ this station isn't a 4b station (e.g. Membury,
-        // where 4a has never been trained). Skip, don't fail.
+        var bundle3c = FindLatestBundle(stationDir, "_phase3c", "test_predictions.parquet");
+        // No 4a / 3o / 3c ⇒ this station isn't a 4b station (e.g. Membury, where
+        // 4a/3o aren't trained). Skip, don't fail. 3c joined the blend 2026-06-02
+        // (3-way mean) — required like the other members; a transiently-missing
+        // 3c (e.g. guard-failed retrain) skips the cycle so the previous 4b stays.
         if (bundle4a is null) return (MintOutcome.Skipped, $"no 4a bundle — station not provisioned for 4b ({stationDir})");
         if (bundle3o is null) return (MintOutcome.Skipped, $"no 3o bundle — station not provisioned for 4b ({stationDir})");
+        if (bundle3c is null) return (MintOutcome.Skipped, $"no 3c bundle — station not provisioned for 4b 3-way ({stationDir})");
 
         // Pull the active location from the 3o bundle's metadata — 4b
         // inherits 3o's location pinning. If a station ever ended up
@@ -150,9 +154,10 @@ public sealed class Phase4bMintCommand
         // {valid_time, station, lead, p_wet, observed_wet}.
         var joined = ReadAndJoinTestPredictions(
             Path.Combine(bundle4a, "test_predictions.parquet"),
-            Path.Combine(bundle3o, "test_predictions.parquet"));
+            Path.Combine(bundle3o, "test_predictions.parquet"),
+            Path.Combine(bundle3c, "test_predictions.parquet"));
         if (joined.Count == 0)
-            return (MintOutcome.Failed, "inner-join of 4a + 3o test_predictions produced 0 rows");
+            return (MintOutcome.Failed, "inner-join of 4a + 3o + 3c test_predictions produced 0 rows");
 
         // Write bundle dir + artefacts.
         var outDir = Path.Combine(stationDir, version);
@@ -183,11 +188,14 @@ public sealed class Phase4bMintCommand
             var p = rows.Select(r => r.PWet).ToArray();
             var p4a = rows.Select(r => r.PWet4a).ToArray();
             var p3o = rows.Select(r => r.PWet3o).ToArray();
+            var p3c = rows.Select(r => r.PWet3c).ToArray();
             var brierBlend = Brier(p, y);
             var brier4a    = Brier(p4a, y);
             var brier3o    = Brier(p3o, y);
-            var bestBrier  = Math.Min(brier4a, brier3o);
-            var bestName   = brier3o <= brier4a ? "p_3o" : "p_4a";
+            var brier3c    = Brier(p3c, y);
+            // Best single across the three members.
+            var bestBrier  = Math.Min(brier4a, Math.Min(brier3o, brier3c));
+            var bestName   = bestBrier == brier3o ? "p_3o" : bestBrier == brier3c ? "p_3c" : "p_4a";
             perLead[leadGroup.Key.ToString()] = new ModelArtifact.PerLeadStats
             {
                 LeadHours          = leadGroup.Key,
@@ -215,23 +223,24 @@ public sealed class Phase4bMintCommand
             Target        = "precipitation",
             Phase         = Phase,
             LocationName  = location,
-            DataSource    = $"derived: mean(p_4a, p_3o) — 4a={Path.GetFileName(bundle4a)}, 3o={Path.GetFileName(bundle3o)}",
+            DataSource    = $"derived: mean(p_4a, p_3o, p_3c) — 4a={Path.GetFileName(bundle4a)}, 3o={Path.GetFileName(bundle3o)}, 3c={Path.GetFileName(bundle3c)}",
             TrainedAtUtc  = trainedAt,
             Hyperparameters = new Dictionary<string, object>
             {
                 ["method"]            = "arithmetic_mean",
-                ["components"]        = new[] { "p_4a", "p_3o" },
+                ["components"]        = new[] { "p_4a", "p_3o", "p_3c" },
                 ["source_bundle_4a"]  = Path.GetFileName(bundle4a)!,
                 ["source_bundle_3o"]  = Path.GetFileName(bundle3o)!,
+                ["source_bundle_3c"]  = Path.GetFileName(bundle3c)!,
             },
             TestMae = perLead.ToDictionary(
                 kv => $"lead_{kv.Key}h_brier",
                 kv => kv.Value.BlendTestMae),
             DeviationsFromBrief = new List<string>
             {
-                "Phase 4b is NOT a trained model — it is the arithmetic mean of phase 4a's BART P(wet) and phase 3o's MLP P(wet). The bundle is minted by Phase4bMintCommand (typically after Sunday auto-retrain) so the ModelMetadata + Manifest plumbing treats it as a first-class phase (renders on rain forecasts, scored by verify, shown on the Models page). The 'training' step is the join + average.",
-                "test_predictions.parquet is the inner-join of 4a and 3o's test_predictions parquets with p_wet = (p_4a + p_3o) / 2. PerLead.BlendTestMae reports Brier on that joined slice — matches the 2026-05-12 LightGBM-meta-learner bake-off finding (mean Brier 0.0830 vs best single 3o at 0.0844).",
-                "No feature schema, no LightGBM/MLP/BART training step. Phase4bPredictCommand performs the same arithmetic on the live cycle's 4a + 3o prediction parquets — predict-and-render runs it inline between predict-all and the R2 push.",
+                "Phase 4b is NOT a trained model — it is the arithmetic mean of phase 4a's BART P(wet), phase 3o's rich-oro P(wet), and phase 3c's rich P(wet). The bundle is minted by Phase4bMintCommand (typically after Sunday auto-retrain) so the ModelMetadata + Manifest plumbing treats it as a first-class phase (renders on rain forecasts, scored by verify, shown on the Models page). The 'training' step is the join + average.",
+                "test_predictions.parquet is the inner-join of 4a, 3o and 3c's test_predictions parquets with p_wet = (p_4a + p_3o + p_3c) / 3. 3c joined the blend 2026-06-02 once it carried the upper-air block in-place — a decorrelated member (UA route, not terrain) that beat the prior 2-way 4b by ~−3% Brier averaged across leads. PerLead.BlendTestMae reports Brier on that joined slice.",
+                "No feature schema, no LightGBM/MLP/BART training step. Phase4bPredictCommand performs the same arithmetic on the live cycle's 4a + 3o + 3c prediction parquets — predict-and-render runs it inline between predict-all and the R2 push.",
                 "PerLeadStats fields repurposed: BlendTestMae=Brier on joined test slice, BlendTestBias=mean(p − y), BlendTestRmse=0.0 (not meaningful), BestSingleTestMae=Brier of the better of 4a/3o alone on the same slice.",
                 "Climatology copied from the station's 3o bundle — 4b targets the same wet/dry indicator at the same station, so the baseline is identical.",
             },
@@ -327,22 +336,27 @@ public sealed class Phase4bMintCommand
     }
 
     private record JoinedRow(DateTime ValidTime, string Station, int Lead,
-                             double PWet4a, double PWet3o, double PWet, bool Observed);
+                             double PWet4a, double PWet3o, double PWet3c, double PWet, bool Observed);
 
-    private static List<JoinedRow> ReadAndJoinTestPredictions(string parquet4a, string parquet3o)
+    /// <summary>3-way inner-join of 4a + 3o + 3c test_predictions on
+    /// (valid_time, station, lead); p_wet = mean of the three. 3c joined the
+    /// blend 2026-06-02 (3c carries upper-air in-place now → a decorrelated
+    /// member: D blend beats the old 2-way 4b by ~−3% Brier across leads).</summary>
+    private static List<JoinedRow> ReadAndJoinTestPredictions(string parquet4a, string parquet3o, string parquet3c)
     {
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
         var p4a = parquet4a.Replace("\\", "/");
         var p3o = parquet3o.Replace("\\", "/");
+        var p3c = parquet3c.Replace("\\", "/");
         var sql = $@"
 SELECT a.valid_time, a.station, a.lead,
-       a.p_wet AS p_4a, e.p_wet AS p_3o, a.observed_wet
+       a.p_wet AS p_4a, e.p_wet AS p_3o, c.p_wet AS p_3c, a.observed_wet
 FROM read_parquet('{p4a}') a
 INNER JOIN read_parquet('{p3o}') e
-  ON a.valid_time = e.valid_time
- AND a.station    = e.station
- AND a.lead       = e.lead
+  ON a.valid_time = e.valid_time AND a.station = e.station AND a.lead = e.lead
+INNER JOIN read_parquet('{p3c}') c
+  ON a.valid_time = c.valid_time AND a.station = c.station AND a.lead = c.lead
 ORDER BY a.valid_time, a.lead";
         var rows = new List<JoinedRow>();
         using var cmd = conn.CreateCommand();
@@ -355,8 +369,9 @@ ORDER BY a.valid_time, a.lead";
             var lead = (int)r.GetInt64(2);
             var p4   = r.GetDouble(3);
             var p3   = r.GetDouble(4);
-            var obs  = !r.IsDBNull(5) && r.GetInt32(5) > 0;
-            rows.Add(new JoinedRow(vt, st, lead, p4, p3, (p4 + p3) / 2.0, obs));
+            var pc   = r.GetDouble(5);
+            var obs  = !r.IsDBNull(6) && r.GetInt32(6) > 0;
+            rows.Add(new JoinedRow(vt, st, lead, p4, p3, pc, (p4 + p3 + pc) / 3.0, obs));
         }
         return rows;
     }

@@ -157,7 +157,13 @@ ORDER BY 1;
     public const string SpecFeatureSet = "rich";
 
     /// <summary>Resolve the runtime <see cref="BlenderSpec"/> for rich precipitation at a given lead.</summary>
-    public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours)
+    /// <param name="withUpperAir">Experimental (2026-06-01): append the FULL
+    /// multi-level pressure block (per exact model × <see cref="PrecipFeatureBuilder.UaPressureCols"/>
+    /// + ensemble t850_mean/rh850_mean) to test whether upper-air adds value ON
+    /// TOP of the rich surface features (humidity / dew-depression / EA
+    /// persistence) — i.e. is the lean 3a-UA win orthogonal or already captured
+    /// here. Appended LAST so the baseline rich indices are untouched.</param>
+    public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours, bool withUpperAir = false)
     {
         var blender = blendersCfg.Get(SpecTarget, SpecFeatureSet);
         var requiredSet = blender.RequiredForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -204,10 +210,24 @@ ORDER BY 1;
             "ea_dry_hours_trailing",
         });
 
+        // Experimental upper-air block — APPENDED last (after EA persistence) so
+        // every baseline rich index is untouched; ComposeRow's exact-count guard
+        // catches a miscount. Same FULL set + lead-matched backward-ASOF join the
+        // lean 3a-UA path uses (see PrecipFeatureBuilder), so the only variable
+        // between this and the 3a-UA A/B is the surface-feature richness.
+        if (withUpperAir)
+        {
+            foreach (var (_, s) in PrecipFeatureBuilder.UpperAirModels)
+                foreach (var (_, sh) in PrecipFeatureBuilder.UaPressureCols)
+                    names.Add($"{sh}_{s}");
+            names.Add("t850_mean");
+            names.Add("rh850_mean");
+        }
+
         return new BlenderSpec
         {
             Target = SpecTarget,
-            FeatureSet = SpecFeatureSet,
+            FeatureSet = withUpperAir ? SpecFeatureSet + "-ua" : SpecFeatureSet,
             LeadHours = leadHours,
             RequiredModels = orderedRequired,
             OptionalModels = orderedOptional,
@@ -244,6 +264,45 @@ ORDER BY 1;
         var escLocation = locationName.Replace("'", "''");
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
         var n = spec.Models.Count;
+
+        // Experimental upper-air block — identical mechanism to the lean 3a-UA
+        // path (PrecipFeatureBuilder.BuildForLead): for each offset_day valid V,
+        // a leak-free backward ASOF attaches the freshest exact lead-{LeadHours}
+        // multi-level pressure forecast with valid_time <= V (issued >= L hours
+        // before V, genuinely in hand). LEFT join so pre-pressure rows get NULL
+        // UA (LightGBM handles gaps). Detected off the spec so Build stays in
+        // sync with BuildSpec.
+        var withUpperAir = spec.FeatureNames.Contains("t850_mean");
+        var uaModels = PrecipFeatureBuilder.UpperAirModels;
+        var uaCols = PrecipFeatureBuilder.UaPressureCols;
+        string uaCte = "", uaSelectSql = "", uaJoin = "";
+        if (withUpperAir)
+        {
+            var uaModelIn = "(" + string.Join(",", uaModels.Select(x => $"'{x.Model}'")) + ")";
+            var uaPivots = string.Join(",\n           ", uaModels.SelectMany(x =>
+                uaCols.Select(c => $"MAX(CASE WHEN Model = '{x.Model}' THEN {c.Col} END) AS {c.Short}_{x.Short}")));
+            var uaInnerCols = string.Join(", ", uaCols.Select(c => c.Col));
+            uaCte = $@",
+exact_ua AS (
+    SELECT valid_time_ua,
+           {uaPivots}
+    FROM (
+        SELECT ValidTimeUtc AS valid_time_ua, Model,
+               {uaInnerCols},
+               ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, Model ORDER BY RunTimeUtc DESC) AS rn
+        FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
+        WHERE LocationName = '{escLocation}'
+          AND RunTimeSource = 'exact'
+          AND LeadHours = {spec.LeadHours}
+          AND Model IN {uaModelIn}
+    )
+    WHERE rn = 1
+    GROUP BY valid_time_ua
+)";
+            uaSelectSql = ",\n    " + string.Join(", ", uaModels.SelectMany(x =>
+                uaCols.Select(c => $"x.{c.Short}_{x.Short}")));
+            uaJoin = "ASOF LEFT JOIN exact_ua x ON pivoted.ValidTimeUtc >= x.valid_time_ua";
+        }
 
         var sb = new StringBuilder();
         sb.AppendLine("WITH latest AS (");
@@ -282,6 +341,8 @@ ORDER BY 1;
         sb.AppendLine("        AVG(WindSpeed10m)   AS wind_speed_mean");
         sb.AppendLine("    FROM latest WHERE rn = 1 GROUP BY ValidTimeUtc");
         sb.AppendLine(")");
+        sb.Append(uaCte);
+        if (withUpperAir) sb.AppendLine();
         sb.AppendLine("SELECT ValidTimeUtc,");
         for (int i = 0; i < n; i++) sb.Append($"    precip_{TempFeatureBuilder.ShortName(spec.Models[i])},");
         sb.AppendLine();
@@ -295,8 +356,10 @@ ORDER BY 1;
         sb.AppendLine();
         sb.AppendLine("    rh_mean, dew_depression_mean,");
         sb.AppendLine("    cloud_low_mean, cloud_mid_mean, cloud_high_mean,");
-        sb.AppendLine("    cape_mean, wind_speed_mean");
+        sb.Append("    cape_mean, wind_speed_mean");
+        sb.AppendLine(uaSelectSql);
         sb.AppendLine("FROM pivoted");
+        if (withUpperAir) sb.AppendLine(uaJoin);
         var requiredNotNull = spec.RequiredModels.Count > 0
             ? string.Join("\n  AND ", spec.RequiredModels.Select(m => $"precip_{TempFeatureBuilder.ShortName(m)} IS NOT NULL"))
             : "TRUE";
@@ -337,6 +400,32 @@ ORDER BY 1;
             var cape     = r.IsDBNull(col + 5) ? double.NaN : r.GetDouble(col + 5);
             var wind     = r.IsDBNull(col + 6) ? double.NaN : r.GetDouble(col + 6);
 
+            // Trailing upper-air columns (after wind_speed_mean), in
+            // UpperAirModels × UaPressureCols order, then ensemble t850_mean +
+            // rh850_mean computed in .NET (mirrors PrecipFeatureBuilder).
+            double[]? uaValues = null;
+            if (withUpperAir)
+            {
+                int uaStart = col + 7;  // col == 1+5N here; covariates occupy col..col+6
+                int mc = uaModels.Length;
+                int pc = uaCols.Length;
+                int t850Off = Array.FindIndex(uaCols, c => c.Short == "t850");
+                int rh850Off = Array.FindIndex(uaCols, c => c.Short == "rh850");
+                uaValues = new double[pc * mc + 2];
+                double t850Sum = 0, rh850Sum = 0; int t850N = 0, rh850N = 0;
+                for (int k = 0; k < mc; k++)
+                    for (int j = 0; j < pc; j++)
+                    {
+                        var ucol = uaStart + pc * k + j;
+                        var uv = r.IsDBNull(ucol) ? double.NaN : r.GetDouble(ucol);
+                        uaValues[pc * k + j] = uv;
+                        if (j == t850Off && !double.IsNaN(uv)) { t850Sum += uv; t850N++; }
+                        if (j == rh850Off && !double.IsNaN(uv)) { rh850Sum += uv; rh850N++; }
+                    }
+                uaValues[pc * mc]     = t850N == 0 ? double.NaN : t850Sum / t850N;
+                uaValues[pc * mc + 1] = rh850N == 0 ? double.NaN : rh850Sum / rh850N;
+            }
+
             var runTime = valid.AddHours(-spec.LeadHours);
             var persistence = ComputePersistence(hourlyRain, runTime);
 
@@ -344,7 +433,7 @@ ORDER BY 1;
                 rhMean, dewDepMn, cL, cM, cH, cape, wind,
                 persistence.Prev24hMm, persistence.Prev72hMm,
                 persistence.WetHoursLast24h, persistence.DryHoursTrailing,
-                truth));
+                truth, uaValues));
         }
         return rows;
     }
@@ -373,7 +462,8 @@ ORDER BY 1;
         double eaRainPrev72hMm,
         double eaWetHoursLast24h,
         double eaDryHoursTrailing,
-        double truthMmHour)
+        double truthMmHour,
+        IReadOnlyList<double>? upperAir = null)
     {
         var n = spec.Models.Count;
         if (perModelPrecip.Count != n) throw new ArgumentException($"Expected {n} model precip values", nameof(perModelPrecip));
@@ -443,6 +533,9 @@ ORDER BY 1;
         features[idx++] = (float)eaRainPrev72hMm;
         features[idx++] = (float)eaWetHoursLast24h;
         features[idx++] = (float)eaDryHoursTrailing;
+        if (upperAir is not null)
+            for (int i = 0; i < upperAir.Count; i++)
+                features[idx++] = (float)upperAir[i];
 
         if (idx != spec.FeatureCount)
             throw new InvalidOperationException(

@@ -95,8 +95,10 @@ targets:
         # a Membury-cell S3 archive backfill lands.
         locations: ["bonehill_rocks"]
       # 3o (3c-oro, 4-station Bonehill pool: Bellever + Bovey + Hexworthy
-      # + Princetown) added 2026-05-25 in cleanup Phase 2. Rich (55) +
-      # 9 terrain features = 64 features. Trained pooled across all 4
+      # + Princetown) added 2026-05-25 in cleanup Phase 2. Rich (59) +
+      # 9 terrain + 42 upper-air = 110 features (multi-level pressure added
+      # in-place 2026-06-02; the decorrelated UA-route member of the 3-way 4b).
+      # Trained pooled across all 4
       # stations to give the terrain features cross-station diversity;
       # bundle is saved per-station so predict-time plumbing matches
       # 3a / 3c exactly. Bonehill-only — Membury 3o was rejected at
@@ -118,9 +120,10 @@ targets:
         # WeatherProbabilistic. retrain-python reads this filter.
         locations: ["bonehill_rocks"]
         minValidTime: "2024-01-01"
-      # 4b: arithmetic mean of 4a + 3o. Mint reads the latest 3o
-      # test_predictions alongside the latest 4a (which lands via
-      # the WP-side cron).
+      # 4b: arithmetic mean of 4a + 3o + 3c (3-way since 2026-06-02 — 3c+UA
+      # joined as a decorrelated member, ~−3% Brier vs the old 2-way). Mint
+      # inner-joins the latest 4a + 3o + 3c test_predictions; live predict
+      # means today's 4a + freshest 3o + freshest 3c per (valid, lead).
       - id: "4b"
         role: challenger
         impl: dotnet

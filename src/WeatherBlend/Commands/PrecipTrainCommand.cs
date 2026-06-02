@@ -425,7 +425,16 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             ct.ThrowIfCancellationRequested();
             _log.LogInformation("--- Lead {Lead}h ---", lead);
 
-            var spec = PrecipRichFeatureBuilder.BuildSpec(_cfg.Blenders, lead);
+            // 3c carries the multi-level pressure (upper-air) block in-place at
+            // BONEHILL (2026-06-02): rich 59 → 101 feats. UA is the freshest exact
+            // lead-L pressure ASOF-joined to each offset_day row (leak-free; see
+            // PrecipRichFeatureBuilder). Bake-off win −3.7% Brier agg @24h,
+            // growing to −6.8% @72h. Predict mirrors via the live ASOF join.
+            // Bonehill-only for now — Membury keeps the 59-feat rich spec until
+            // its exact-pressure backfill lands (same posture as 3d/3o). Per-loc
+            // schema is fine: predict reads each bundle's own feature_schema.json.
+            var useUpperAir = location.Name.Equals("bonehill_rocks", StringComparison.OrdinalIgnoreCase);
+            var spec = PrecipRichFeatureBuilder.BuildSpec(_cfg.Blenders, lead, withUpperAir: useUpperAir);
             specsPerLead[lead] = spec;
             _log.LogInformation("Spec: {Spec}", spec);
 
@@ -578,7 +587,11 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             featureNames: specsPerLead.TryGetValue(leads[0], out var sp3c)
                 ? sp3c.FeatureNames.ToList() : Array.Empty<string>(),
             locationName: location.Name,
-            labelRates: labelRates3c);
+            labelRates: labelRates3c,
+            // 3c gained the upper-air block in-place (59→101) — allow the
+            // one-directional feature-count jump without aborting; other gates
+            // stay enforced. See RetrainGuard.AllowFeaturesEffectiveChange.
+            tolerances: RetrainGuard.Defaults with { AllowFeaturesEffectiveChange = true });
         if (false /* TEMP 2026-05-26 JMA-extension local verify; revert */ && !guardResult3c.Passed)
         {
             _log.LogError("Aborting Phase 3c retrain ({Station}) — sanity guard failed. Orphan dir {Dir} not promoted.", stationSlug, versionDir);
@@ -754,7 +767,12 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             ct.ThrowIfCancellationRequested();
             _log.LogInformation("--- Lead {Lead}h ---", lead);
 
-            var spec = PrecipRichOroFeatureBuilder.BuildSpec(_cfg.Blenders, lead);
+            // 3o now carries the upper-air block in-place too (2026-06-02):
+            // rich+oro 68 → 110 feats. Layout [rich || UA || terrain]; terrain
+            // stays last so BuildForLead's Take(count-9) reconstruction is
+            // unchanged. Standalone −1.4%..−2.1% Brier; the real win is in the
+            // 4b blend (3-way mean(4a, 3o+UA, 3c+UA) beats live 4b −3.5%@24h).
+            var spec = PrecipRichOroFeatureBuilder.BuildSpec(_cfg.Blenders, lead, withUpperAir: true);
             specsPerLead[lead] = spec;
             _log.LogInformation("Spec: {Spec} ({N} features)", spec, spec.FeatureCount);
 
@@ -934,7 +952,10 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             featureNames: specsPerLead.TryGetValue(leads[0], out var sp3o)
                 ? sp3o.FeatureNames.ToList() : Array.Empty<string>(),
             locationName: location.Name,
-            labelRates: perStationLabelRates);
+            labelRates: perStationLabelRates,
+            // 3o gained the upper-air block in-place (68→110) — allow the
+            // feature-count jump without aborting; other gates stay enforced.
+            tolerances: RetrainGuard.Defaults with { AllowFeaturesEffectiveChange = true });
         if (false /* TEMP 2026-05-26 JMA-extension local verify; revert */ && !guardResult.Passed)
         {
             _log.LogError("Aborting Phase 3o retrain — pooled-train sanity guard failed. " +

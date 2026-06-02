@@ -96,14 +96,27 @@ public static class RetrainGuard
 
         // ---- Features-effective: absolute delta (0 = any change abort)
         var featDelta = current.FeaturesEffective - previous.FeaturesEffective;
+        var featNote = "";
         if (Math.Abs(featDelta) > tolerances.FeaturesEffectiveDelta)
         {
-            breaches.Add(new GuardBreach(
-                Field: "featuresEffective",
-                Previous: previous.FeaturesEffective,
-                Current: current.FeaturesEffective,
-                Threshold: tolerances.FeaturesEffectiveDelta,
-                Reason: $"feature count changed by {featDelta:+0;-0;0} (tolerance ±{tolerances.FeaturesEffectiveDelta}) — a column appearing or disappearing always signals an upstream schema shift; abort and inspect"));
+            if (tolerances.AllowFeaturesEffectiveChange)
+            {
+                // Intentional schema change this run — downgrade to a note so
+                // the run promotes and the new count reseeds the baseline. The
+                // row-count / NaN% / label-rate / location gates still apply.
+                featNote = $" Feature count changed by {featDelta:+0;-0;0} "
+                    + $"({previous.FeaturesEffective}→{current.FeaturesEffective}) — ALLOWED (intentional "
+                    + "schema change; baseline reseeds). Other gates still enforced.";
+            }
+            else
+            {
+                breaches.Add(new GuardBreach(
+                    Field: "featuresEffective",
+                    Previous: previous.FeaturesEffective,
+                    Current: current.FeaturesEffective,
+                    Threshold: tolerances.FeaturesEffectiveDelta,
+                    Reason: $"feature count changed by {featDelta:+0;-0;0} (tolerance ±{tolerances.FeaturesEffectiveDelta}) — a column appearing or disappearing always signals an upstream schema shift; abort and inspect"));
+            }
         }
 
         // ---- Per-feature NaN%: absolute delta in NaN fraction ---------
@@ -146,9 +159,10 @@ public static class RetrainGuard
         return new GuardResult(
             Passed: breaches.Count == 0,
             Breaches: breaches,
-            Note: breaches.Count == 0
+            Note: (breaches.Count == 0
                 ? "All bands within tolerance."
-                : $"{breaches.Count} breach(es); abort the bundle write and inspect.");
+                : $"{breaches.Count} breach(es); abort the bundle write and inspect.")
+                + featNote);
     }
 
     private static void CheckRelative(
@@ -337,7 +351,16 @@ public sealed record GuardTolerances(
     double LabelRateDeltaAbsolute,
     /// <summary>Maximum absolute change in featuresEffective. 0 = any
     /// change aborts; bumping above 0 effectively disables the check.</summary>
-    int FeaturesEffectiveDelta);
+    int FeaturesEffectiveDelta,
+    /// <summary>When true, an intentional feature-count change is downgraded
+    /// from a hard breach to a non-fatal note (the run still passes + reseeds
+    /// the baseline), while the other gates keep protecting. Set by a trainer
+    /// that is deliberately changing its feature schema this run (e.g. 3c/3o
+    /// gaining the upper-air block 2026-06-02). Default false preserves the
+    /// strict "any column appearing/disappearing aborts" behaviour everywhere
+    /// else. NOTE: weakens drift protection for the phase that sets it — only
+    /// set it on the run(s) that change the schema.</summary>
+    bool AllowFeaturesEffectiveChange = false);
 
 /// <summary>Outcome of a guard check. Caller aborts the bundle write
 /// when <see cref="Passed"/> is false.</summary>

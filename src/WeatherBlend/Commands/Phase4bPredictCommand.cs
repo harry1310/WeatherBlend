@@ -119,15 +119,23 @@ public sealed class Phase4bPredictCommand
             .Any(d => Directory.EnumerateFiles(d, "predictions.parquet", SearchOption.AllDirectories).Any());
         if (!anyTouched3o) return (false, "no 3o predictions parquets on disk for this station");
 
+        // 3c joined the blend 2026-06-02 (3-way mean). Same across-anchor glob
+        // as 3o — its per-cycle parquet at lead L also covers one calendar day.
+        var parquet3cGlob = Path.Combine(stationDir, "model_version=*_phase3c", "date=*", "predictions.parquet");
+        var anyTouched3c = Directory.EnumerateDirectories(stationDir, "model_version=*_phase3c")
+            .Any(d => Directory.EnumerateFiles(d, "predictions.parquet", SearchOption.AllDirectories).Any());
+        if (!anyTouched3c) return (false, "no 3c predictions parquets on disk for this station");
+
         // Read both with DuckDB rather than ParquetSerializer<PrecipPredictionRow> —
         // predict_4a.py writes from Python and only carries the bare minimum
         // columns (ProbWet + quantile bands + metadata, no ClimatologyPWet or
         // per-NWP precip). 3o is .NET-written with the full PrecipPredictionRow
         // schema, so we carry every covariate column from 3o and just plug in
         // 4a's ProbWet for the mean.
-        var (rows4a, rows3oByKey) = ReadBothPhases(parquet4a, parquet3oGlob, ct);
+        var (rows4a, rows3oByKey, rows3cByKey) = ReadBothPhases(parquet4a, parquet3oGlob, parquet3cGlob, ct);
         if (rows4a.Count == 0) return (false, $"4a parquet at {parquet4a} read as empty");
         if (rows3oByKey.Count == 0) return (false, "3o parquet glob produced 0 rows across all anchors");
+        if (rows3cByKey.Count == 0) return (false, "3c parquet glob produced 0 rows across all anchors");
 
         // Drive from 4a: each row in today's 4a becomes a candidate 4b
         // synthesis cell. Look up the freshest 3o row at the same
@@ -144,7 +152,10 @@ public sealed class Phase4bPredictCommand
         int matchedCount = 0;
         foreach (var (key, p4a) in rows4a)
         {
+            // Require all three members at this (V, L) — 3-way mean.
             if (!rows3oByKey.TryGetValue(key, out var r3o))
+                continue;
+            if (!rows3cByKey.TryGetValue(key, out var p3c))
                 continue;
             matchedCount++;
             joined.Add(new PrecipPredictionRow
@@ -155,7 +166,7 @@ public sealed class Phase4bPredictCommand
                 PredictionMadeAtUtc  = synthesisTime,
                 ValidTimeUtc         = key.ValidTime,
                 LeadHours            = key.Lead,
-                ProbWet              = (r3o.ProbWet + p4a) / 2.0,
+                ProbWet              = (r3o.ProbWet + p4a + p3c) / 3.0,
                 ClimatologyPWet      = r3o.ClimatologyPWet,
                 PrecipGfs            = r3o.PrecipGfs,
                 PrecipEcmwf          = r3o.PrecipEcmwf,
@@ -225,8 +236,9 @@ public sealed class Phase4bPredictCommand
     /// just lifts the open / read / dispose / "No files found" boilerplate.
     /// </summary>
     private (Dictionary<(DateTime ValidTime, int Lead), double> rows4a,
-             Dictionary<(DateTime ValidTime, int Lead), PrecipPredictionRow> rows3oByKey)
-        ReadBothPhases(string parquet4a, string parquet3oGlob, CancellationToken ct)
+             Dictionary<(DateTime ValidTime, int Lead), PrecipPredictionRow> rows3oByKey,
+             Dictionary<(DateTime ValidTime, int Lead), double> rows3cByKey)
+        ReadBothPhases(string parquet4a, string parquet3oGlob, string parquet3cGlob, CancellationToken ct)
     {
         // 3o: glob across all anchor parquets for this station's
         // *_phase3o versions. ROW_NUMBER picks the freshest
@@ -294,7 +306,26 @@ FROM ranked WHERE rn = 1";
             ct);
         var rows4a = rows4aList.ToDictionary(t => (t.ValidTime, t.Lead), t => t.ProbWet);
 
-        return (rows4a, rows3o);
+        // 3c: same across-anchor glob + freshest-per-(V,L) discipline as 3o
+        // (3c's per-cycle parquet at lead L also covers one calendar day). Only
+        // ProbWet is needed for the mean — covariates ride along from 3o.
+        var sql3c = $@"
+WITH ranked AS (
+  SELECT ValidTimeUtc, LeadHours, ProbWet, PredictionMadeAtUtc,
+         ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, LeadHours ORDER BY PredictionMadeAtUtc DESC) AS rn
+  FROM read_parquet('{ParquetReader.Glob(parquet3cGlob)}', union_by_name = true)
+)
+SELECT ValidTimeUtc, LeadHours, ProbWet
+FROM ranked WHERE rn = 1";
+        var rows3cList = ParquetReader.Query(
+            sql3c,
+            r => (ValidTime: r.GetDateTime(0), Lead: (int)r.GetInt64(1), ProbWet: r.GetDouble(2)),
+            _log,
+            $"3c prediction tree empty for glob {parquet3cGlob} — nothing to synthesise from",
+            ct);
+        var rows3c = rows3cList.ToDictionary(t => (t.ValidTime, t.Lead), t => t.ProbWet);
+
+        return (rows4a, rows3o, rows3c);
     }
 
     private static string? FindLatestPredictionParquet(string stationDir, string phaseSuffix, DateOnly anchor)

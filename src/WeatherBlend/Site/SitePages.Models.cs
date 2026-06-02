@@ -725,7 +725,8 @@ public static partial class SitePages
             // gets "2d" added to the temperature list.
             ("temperature", "2d")  => "Exact-runtime blender. Trains on raw S3 cycles (GFS + AIFS required, IFS oper + MO Global + UKV optional) instead of Open-Meteo offset_day, with rigorous (RunTime, ValidTime, Lead) provenance per row. UKV pulled per-V-hour from 03Z + 15Z cycles.",
             ("precipitation", "3a") => "Lean P(wet) classifier, 27 features.",
-            ("precipitation", "3c") => "Rich P(wet) classifier, 55 features.",
+            ("precipitation", "3c") => "Rich P(wet) classifier, 101 features — rich surface (humidity/dew-depression/cloud/EA persistence) + the multi-level pressure (upper-air) block (850/700/500 hPa temps, heights, winds, RH850 across 4 exact NWPs, lead-matched by a leak-free backward ASOF). UA added in-place 2026-06-02 (−3.7%→−6.8% Brier across 24→72h).",
+            ("precipitation", "3o") => "Rich + orographic + upper-air P(wet), pooled across the 4 Bonehill gauges (110 features = rich 59 + 9 terrain + 42 multi-level pressure). Bonehill rich champion; the decorrelated UA-route member of the 3-way 4b blend.",
             // 3d ships once UKV's lead-aware backfill (leads {9,15,21,27}) lands
             // on R2 and a real artefact has been trained. Description here so
             // the card renders correctly the moment ActivePhasePolicy gets "3d"

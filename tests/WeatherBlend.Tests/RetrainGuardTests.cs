@@ -87,6 +87,40 @@ public class RetrainGuardTests
     }
 
     [Fact]
+    public void Check_allows_feature_count_change_as_note_when_opted_in()
+    {
+        // AllowFeaturesEffectiveChange downgrades an intentional schema change
+        // (e.g. 3c/3o gaining the upper-air block: 59→101 / 68→110) from a hard
+        // breach to a non-fatal note so the run promotes + reseeds the baseline,
+        // while the other gates stay enforced. (2026-06-02 productionisation.)
+        var prev = MakeSummary(features: 59);
+        var curr = MakeSummary(features: 101);
+        var tol = RetrainGuard.Defaults with { AllowFeaturesEffectiveChange = true };
+
+        var result = RetrainGuard.Check(curr, prev, tol);
+
+        result.Passed.Should().BeTrue("an opted-in feature-count change must not abort");
+        result.Breaches.Should().NotContain(b => b.Field == "featuresEffective");
+        result.Note.Should().Contain("59").And.Contain("101").And.Contain("ALLOWED");
+    }
+
+    [Fact]
+    public void Check_still_breaches_other_gates_when_feature_change_allowed()
+    {
+        // The opt-in only relaxes featuresEffective — a concurrent row-count
+        // collapse must still abort.
+        var prev = MakeSummary(features: 59, trainRows: 10000);
+        var curr = MakeSummary(features: 101, trainRows: 100);
+        var tol = RetrainGuard.Defaults with { AllowFeaturesEffectiveChange = true };
+
+        var result = RetrainGuard.Check(curr, prev, tol);
+
+        result.Passed.Should().BeFalse();
+        result.Breaches.Should().Contain(b => b.Field == "rowsTrain");
+        result.Breaches.Should().NotContain(b => b.Field == "featuresEffective");
+    }
+
+    [Fact]
     public void Check_fails_when_per_feature_NaN_pct_jumps_more_than_tolerance()
     {
         // Single feature flipped from 0% NaN to 50% NaN — way past the
