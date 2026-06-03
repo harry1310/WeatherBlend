@@ -77,17 +77,21 @@ cloud blender if the `cloud-ua-bakeoff` shows a win.
 
 ## 4. Inputs → existing fields
 
-| Term      | Source field                                  | Notes |
-|-----------|-----------------------------------------------|-------|
-| SW↓       | `shortwave_radiation` element (or NWP)        | already produced |
-| C (cloud) | `cloud_cover` element (or NWP)                | feeds LW↓; weakest input |
-| Ta        | temperature blend (2b/2d)                     | per-station already |
-| V         | wind (element `wind` / NWP 10 m)              | convective coeff |
-| Td        | dew point (from RH+T, Magnus) — for the margin only | not in the energy balance |
+| Term        | Source field                              | Used for |
+|-------------|-------------------------------------------|----------|
+| SW↓         | `shortwave_radiation` element (or NWP)    | absorbed shortwave |
+| C (cloud)   | `cloud_cover` element (or NWP)            | LW↓ cloud enhancement; weakest input |
+| Ta          | temperature blend (2b/2d)                 | LW↓ (σTa⁴), convective term |
+| V           | wind (element `wind` / NWP 10 m)          | convective coefficient h(V) |
+| e_a / RH/Td | humidity → vapour pressure (Magnus from RH+T, or Td) | **LW↓ clear-sky emissivity (Brunt, §3)** *and* the condensation margin |
 
-All are exactly the streams `FeelsLikePredictPipeline` already loads
-(`temperature`, `ShortwaveRadiation`, `CloudCover` keyed by `(lead, valid)`),
-plus wind + dew point.
+So humidity enters **twice**: it sets the clear-sky longwave emissivity (moister
+air → higher εclear → more LW↓ → less nighttime cooling), and it is the dew-point
+side of the condensation comparison `m = Ts − Td`. All of SW↓, C, Ta are streams
+`FeelsLikePredictPipeline` already loads (`temperature`, `ShortwaveRadiation`,
+`CloudCover` keyed by `(lead, valid)`); add wind + humidity. Note the `humidity`
+element blender is the natural RH source (its skill: good at 24h, thin past
+that — see §9).
 
 ## 5. Granite parameters & calibration
 
@@ -158,6 +162,12 @@ times) and turns a binary flag into a calibrated probability.
   blend underperforms.
 - **LW parameterisation error.** Brunt + cloud-enhancement is approximate;
   validate the implied `LW↓` against ERA5's longwave if we ingest it.
+- **Humidity input quality.** Humidity drives both the clear-sky LW↓
+  emissivity and the dew-point margin. The `humidity` element blender is the
+  most *accurate* element absolutely (~3% RH MAE at 24h) but its blending skill
+  is thin and goes slightly negative past 24h (loses to the best single model at
+  48/72h). For the LW term this is low-stakes (εclear is weakly sensitive to RH);
+  for the margin it matters more — consider the best-single NWP RH at long lead.
 - **Sky-view for an all-aspect boulder field.** Bonehill faces every
   direction (aspect ~averages out per the user), but boulder mutual-shading
   reduces sky-view — a single `Fsky` is a simplification.
