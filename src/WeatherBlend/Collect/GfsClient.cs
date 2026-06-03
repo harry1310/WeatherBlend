@@ -36,6 +36,7 @@ public sealed class GfsClient
         new VarMap("VGRD:10 m above ground", (r, v) => r.V10 = v),
         new VarMap("GUST:surface",           (r, v) => r.WindGusts10m = v),
         new VarMap("PRES:surface",           (r, v) => r.SurfacePressure = v / 100.0),  // Pa→hPa
+        new VarMap("PRMSL:mean sea level",   (r, v) => r.PressureMsl = v / 100.0),      // Pa→hPa
         new VarMap("TCDC:entire atmosphere", (r, v) => r.CloudCover = v),
         new VarMap("CAPE:surface",           (r, v) => r.Cape = v),
         // ── Added 2026-05-04: variables that unlock new training surfaces ──
@@ -63,6 +64,10 @@ public sealed class GfsClient
         // Downward shortwave radiation at surface in W/m² (averaged over the
         // prior interval). Feeds the radiation element blender.
         new VarMap("DSWRF:surface",          (r, v) => r.ShortwaveRadiation = v),
+        // Downward longwave (thermal) radiation at surface, W/m² (interval-mean).
+        // The ONLY predicted-LW source in the whole pipeline — feeds the rock
+        // surface-temp net-longwave budget (ROCK_SURFACE_TEMP_PLAN §3).
+        new VarMap("DLWRF:surface",          (r, v) => r.DownwardLongwaveRadiation = v),
         // ── Added 2026-05-31: multi-level pressure fields (850/700/500 hPa) ──
         // Upper-air signal that moved 24h-lead precip in the 3a/3o experiment
         // but is unavailable on Open-Meteo's Previous Runs endpoint (it 400s on
@@ -211,6 +216,7 @@ public sealed class GfsClient
                 WindDirection10m = raw.U10 is { } uu && raw.V10 is { } vv ? WindDirection(uu, vv) : null,
                 WindGusts10m = raw.WindGusts10m,
                 SurfacePressure = raw.SurfacePressure,
+                PressureMsl = raw.PressureMsl,
                 CloudCover = raw.CloudCover,
                 CloudCoverLow = raw.CloudCoverLow,
                 Cape = raw.Cape,
@@ -218,6 +224,7 @@ public sealed class GfsClient
                 Precipitation = raw.Precipitation,
                 CloudBaseHeightM = raw.CloudBaseHeightM,
                 ShortwaveRadiation = raw.ShortwaveRadiation,
+                DownwardLongwaveRadiation = raw.DownwardLongwaveRadiation,
                 Temperature850hPa = raw.Temperature850hPa,
                 Temperature700hPa = raw.Temperature700hPa,
                 Temperature500hPa = raw.Temperature500hPa,
@@ -272,6 +279,7 @@ public sealed class GfsClient
         public double? V10 { get; set; }
         public double? WindGusts10m { get; set; }
         public double? SurfacePressure { get; set; }
+        public double? PressureMsl { get; set; }
         public double? CloudCover { get; set; }
         public double? CloudCoverLow { get; set; }
         public double? Cape { get; set; }
@@ -279,6 +287,7 @@ public sealed class GfsClient
         public double? Precipitation { get; set; }
         public double? CloudBaseHeightM { get; set; }
         public double? ShortwaveRadiation { get; set; }
+        public double? DownwardLongwaveRadiation { get; set; }
         // Pressure-level (850/700/500 hPa). Wind held as U/V components per
         // level; speed + direction are derived at row-assembly time.
         public double? Temperature850hPa { get; set; }

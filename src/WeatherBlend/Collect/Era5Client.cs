@@ -77,10 +77,11 @@ public sealed class Era5Client
         var cc = Col("cloud_cover"); var ccl = Col("cloud_cover_low");
         var ccm = Col("cloud_cover_mid"); var cch = Col("cloud_cover_high");
         var ws = Col("wind_speed_10m"); var wd = Col("wind_direction_10m"); var wg = Col("wind_gusts_10m");
-        var sp = Col("surface_pressure"); var vis = Col("visibility");
+        var sp = Col("surface_pressure"); var pmsl = Col("pressure_msl"); var vis = Col("visibility");
         var swr = Col("shortwave_radiation");
         var drr = Col("direct_radiation");
         var dfr = Col("diffuse_radiation");
+        var soil = Col("soil_temperature_0_to_7cm");
         var t850  = Col("temperature_850hPa");
         var t700  = Col("temperature_700hPa");
         var t500  = Col("temperature_500hPa");
@@ -103,8 +104,9 @@ public sealed class Era5Client
                 Precipitation = pr[i], Rain = rn[i], Snowfall = sn[i],
                 CloudCover = cc[i], CloudCoverLow = ccl[i], CloudCoverMid = ccm[i], CloudCoverHigh = cch[i],
                 WindSpeed10m = ws[i], WindDirection10m = wd[i], WindGusts10m = wg[i],
-                SurfacePressure = sp[i], Visibility = vis[i],
+                SurfacePressure = sp[i], PressureMsl = pmsl[i], Visibility = vis[i],
                 ShortwaveRadiation = swr[i], DirectRadiation = drr[i], DiffuseRadiation = dfr[i],
+                SoilTemperature0to7cm = soil[i],
                 Temperature850hPa = t850[i], Temperature700hPa = t700[i], Temperature500hPa = t500[i],
                 GeopotentialHeight850hPa = z850[i], GeopotentialHeight500hPa = z500[i],
                 WindSpeed850hPa = ws850[i], WindSpeed500hPa = ws500[i],

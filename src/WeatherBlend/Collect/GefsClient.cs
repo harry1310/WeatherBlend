@@ -57,6 +57,7 @@ public sealed class GefsClient
         new VarMap("UGRD:10 m above ground:",(r, v) => r.U10                 = v),
         new VarMap("VGRD:10 m above ground:",(r, v) => r.V10                 = v),
         new VarMap("PRES:surface:",          (r, v) => r.SurfacePressure     = v / 100.0),   // Pa → hPa
+        new VarMap("PRMSL:mean sea level:",  (r, v) => r.PressureMsl         = v / 100.0),   // Pa → hPa
         new VarMap("APCP:surface:",          (r, v) => r.Precipitation       = v),           // mm (kg/m² ≡ mm)
         new VarMap("TCDC:entire atmosphere:",(r, v) => r.CloudCover          = v),
         new VarMap("DSWRF:surface:",         (r, v) => r.ShortwaveRadiation  = v),
@@ -202,6 +203,7 @@ public sealed class GefsClient
                 WindSpeed10m = raw.U10 is { } u && raw.V10 is { } v ? Math.Sqrt(u * u + v * v) : null,
                 WindDirection10m = raw.U10 is { } uu && raw.V10 is { } vv ? WindDirection(uu, vv) : null,
                 SurfacePressure = raw.SurfacePressure,
+                PressureMsl = raw.PressureMsl,
                 CloudCover = raw.CloudCover,
                 Precipitation = raw.Precipitation,
                 ShortwaveRadiation = raw.ShortwaveRadiation,
@@ -267,6 +269,7 @@ public sealed class GefsClient
         public double? U10;
         public double? V10;
         public double? SurfacePressure;
+        public double? PressureMsl;
         public double? Precipitation;
         public double? CloudCover;
         public double? ShortwaveRadiation;

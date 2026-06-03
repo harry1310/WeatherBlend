@@ -101,6 +101,7 @@ public sealed class EcmwfClient
         new VarMap("10v",    (r, v) => r.V10                 = v),
         new VarMap("10fg",   (r, v) => r.WindGusts10m        = v),
         new VarMap("sp",     (r, v) => r.SurfacePressure     = v / 100.0),   // Pa → hPa
+        new VarMap("msl",    (r, v) => r.PressureMsl         = v / 100.0),   // Pa → hPa (mean sea level)
         new VarMap("tp",     (r, v) => r.Precipitation       = v * 1000.0),  // m (depth) → mm
         new VarMap("tcc",    (r, v) => r.CloudCover          = v * 100.0),   // 0..1 → %
         new VarMap("ssrd",   (r, v) => r.ShortwaveRadiation  = v / 3600.0),  // J/m² acc → W/m² avg-over-hour
@@ -356,6 +357,7 @@ public sealed class EcmwfClient
                 WindDirection10m = raw.U10 is { } uu && raw.V10 is { } vv ? WindDirection(uu, vv) : null,
                 WindGusts10m = raw.WindGusts10m,
                 SurfacePressure = raw.SurfacePressure,
+                PressureMsl = raw.PressureMsl,
                 CloudCover = raw.CloudCover,
                 Cape = raw.Cape,
                 Precipitation = raw.Precipitation,
@@ -562,6 +564,7 @@ public sealed class EcmwfClient
         public double? V10 { get; set; }
         public double? WindGusts10m { get; set; }
         public double? SurfacePressure { get; set; }
+        public double? PressureMsl { get; set; }
         public double? CloudCover { get; set; }
         public double? Cape { get; set; }
         public double? Precipitation { get; set; }

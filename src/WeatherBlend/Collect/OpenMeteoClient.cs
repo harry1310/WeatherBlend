@@ -252,6 +252,7 @@ public sealed class OpenMeteoClient
                     WindDirection10m        = Maybe("wind_direction_10m"),
                     WindGusts10m            = Maybe("wind_gusts_10m"),
                     SurfacePressure         = Maybe("surface_pressure"),
+                    PressureMsl             = Maybe("pressure_msl"),
                     Cape                    = Maybe("cape"),
                     Visibility              = Maybe("visibility"),
                     ShortwaveRadiation      = Maybe("shortwave_radiation"),
@@ -495,6 +496,7 @@ public sealed class OpenMeteoClient
         var wd10  = Col("wind_direction_10m");
         var wg10  = Col("wind_gusts_10m");
         var sp    = Col("surface_pressure");
+        var pmsl  = Col("pressure_msl");
         var cape  = Col("cape");
         var vis   = Col("visibility");
         var swr   = Col("shortwave_radiation");
@@ -551,6 +553,7 @@ public sealed class OpenMeteoClient
                 WindDirection10m = wd10[i],
                 WindGusts10m = wg10[i],
                 SurfacePressure = sp[i],
+                PressureMsl = pmsl[i],
                 Cape = cape[i],
                 Visibility = vis[i],
                 ShortwaveRadiation = swr[i],

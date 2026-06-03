@@ -42,11 +42,28 @@ public sealed class ForecastRow
     public double? WindDirection10m { get; init; }
     public double? WindGusts10m { get; init; }
     public double? SurfacePressure { get; init; }
+    /// <summary>
+    /// Mean sea level pressure (hPa). Added 2026-06-03. Synoptic-pattern
+    /// predictor — distinct from <see cref="SurfacePressure"/> (station-level,
+    /// elevation-dependent). Populated from OM (pressure_msl), GFS (PRMSL),
+    /// GEFS (PRMSL) and ECMWF (msl); nullable for back-compat with older rows.
+    /// </summary>
+    public double? PressureMsl { get; init; }
     public double? Cape { get; init; }
     public double? Visibility { get; init; }
     public double? ShortwaveRadiation { get; init; }
     public double? DirectRadiation { get; init; }
     public double? DiffuseRadiation { get; init; }
+    /// <summary>
+    /// Surface downwelling longwave (thermal) radiation, W/m² (interval-mean).
+    /// Added 2026-06-03 to feed the net-longwave term of the rock surface-temp
+    /// Force-Restore budget directly, replacing the cloud-driven Brunt
+    /// parameterisation (ROCK_SURFACE_TEMP_PLAN §3/§9). ONLY the GFS exact
+    /// archive supplies it (DLWRF:surface) — Open-Meteo exposes no longwave
+    /// variable, GEFS pgrb2a doesn't carry it, and the ECMWF oper stream we
+    /// pull maps only ssrd. Null on every non-GFS source.
+    /// </summary>
+    public double? DownwardLongwaveRadiation { get; init; }
 
     /// <summary>
     /// Modelled cloud base height in metres above ground at the forecast point.
