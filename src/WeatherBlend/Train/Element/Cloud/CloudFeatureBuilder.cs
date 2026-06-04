@@ -39,6 +39,11 @@ public static class CloudFeatureBuilder
         foreach (var m in orderedModels) names.Add($"cc_{TempFeatureBuilder.ShortName(m)}");
         names.AddRange(new[] { "cc_mean", "cc_std", "cc_range" });
         names.AddRange(new[] { "hour_sin", "hour_cos", "doy_sin", "doy_cos" });
+        // Ensemble-mean CAPE at the 24h lead ONLY (productionised 2026-06-04 from the
+        // cloud-cape-bakeoff: cape_mean −1.7% MAE @24h, mean-only; flat/negative at
+        // 48/72h once the CAPE forecast decays). Lead-gated here; ComposeRow writes it
+        // only when the (loaded) spec carries it, so 48/72h + older bundles stay lean.
+        if (leadHours == 24) names.Add("cape_mean");
 
         return new BlenderSpec
         {
@@ -77,7 +82,7 @@ public static class CloudFeatureBuilder
 
         var sql = $@"
 WITH latest AS (
-    SELECT ValidTimeUtc, Model, CloudCover,
+    SELECT ValidTimeUtc, Model, CloudCover, Cape,
            ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, Model ORDER BY RunTimeUtc DESC) AS rn
     FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
     WHERE LocationName = '{locationName}'
@@ -89,7 +94,8 @@ WITH latest AS (
 ),
 pivoted AS (
     SELECT ValidTimeUtc,
-        {pivotCc}
+        {pivotCc},
+        AVG(Cape) AS cape_mean
     FROM latest WHERE rn = 1 GROUP BY ValidTimeUtc
 ),
 era5 AS (
@@ -98,7 +104,7 @@ era5 AS (
     WHERE LocationName = '{locationName}' AND CloudCover IS NOT NULL
       AND ValidTimeUtc >= {minTs}
 )
-SELECT p.ValidTimeUtc, {selectCc}, e.truth
+SELECT p.ValidTimeUtc, {selectCc}, p.cape_mean, e.truth
 FROM pivoted p JOIN era5 e USING (ValidTimeUtc)
 WHERE ({requiredNotNull})
   AND {anyNotNull}
@@ -115,14 +121,16 @@ ORDER BY p.ValidTimeUtc;";
             ct.ThrowIfCancellationRequested();
             var valid = r.GetDateTime(0);
             for (int i = 0; i < n; i++) cc[i] = r.IsDBNull(1 + i) ? double.NaN : r.GetDouble(1 + i);
-            var truth = r.GetDouble(1 + n);
-            rows.Add(ComposeRow(spec, valid, cc, truth));
+            var capeMean = r.IsDBNull(1 + n) ? double.NaN : r.GetDouble(1 + n);
+            var truth = r.GetDouble(1 + n + 1);
+            rows.Add(ComposeRow(spec, valid, cc, truth, capeMean));
         }
         return rows;
     }
 
     public static RegressionTrainingRow ComposeRow(
-        BlenderSpec spec, DateTime validTimeUtc, IReadOnlyList<double> cc, double era5Cc)
+        BlenderSpec spec, DateTime validTimeUtc, IReadOnlyList<double> cc, double era5Cc,
+        double capeMean = double.NaN)
     {
         var n = spec.Models.Count;
         if (cc.Count != n) throw new ArgumentException($"Expected {n} cloud values", nameof(cc));
@@ -156,6 +164,10 @@ ORDER BY p.ValidTimeUtc;";
         features[n + 4] = (float)Math.Cos(hourAngle);
         features[n + 5] = (float)Math.Sin(doyAngle);
         features[n + 6] = (float)Math.Cos(doyAngle);
+        // CAPE mean — only when the (loaded) spec carries it (24h lead). Lean/48h/72h
+        // bundles (FeatureCount == n+7) keep predicting unchanged. Schema-gated.
+        if (spec.FeatureCount > n + 7)
+            features[n + 7] = (float)capeMean;
 
         return new RegressionTrainingRow
         {

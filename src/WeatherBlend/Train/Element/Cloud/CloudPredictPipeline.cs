@@ -74,7 +74,18 @@ public static class CloudPredictPipeline
                 continue;
             }
 
-            var row = CloudFeatureBuilder.ComposeRow(spec, valid, cc, era5Cc: float.NaN);
+            // 24h-lead bundles carry cape_mean (FeatureCount n+8); compute the NaN-safe
+            // ensemble-mean CAPE over the spec's models, matching BuildForLead's AVG.
+            // Harmless for lean 48/72h bundles — ComposeRow only writes it when present.
+            double cSum = 0; int cCnt = 0;
+            for (int i = 0; i < N; i++)
+            {
+                var ci = canonOrder.IndexOf(spec.Models[i]);
+                var cv = p.Cape[ci]; if (!float.IsNaN(cv)) { cSum += cv; cCnt++; }
+            }
+            var capeMean = cCnt > 0 ? cSum / cCnt : double.NaN;
+
+            var row = CloudFeatureBuilder.ComposeRow(spec, valid, cc, era5Cc: float.NaN, capeMean: capeMean);
             var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
             var yhat = TempTrainer.PredictVector(ml, loadedModel, spec, new[] { row })[0];
 
@@ -116,7 +127,7 @@ public static class CloudPredictPipeline
         return output;
     }
 
-    private sealed record Pivoted(float[] Cc, DateTime?[] RunTimes);
+    private sealed record Pivoted(float[] Cc, float[] Cape, DateTime?[] RunTimes);
 
     private static Dictionary<DateTime, Pivoted> QueryPivot(
         string forecastsPath, string locationName, DateTime asOf,
@@ -126,12 +137,12 @@ public static class CloudPredictPipeline
         var live = PredictForecastFilters.LiveCycleAsOf(locationName, asOf, earliestValid, latestValid);
         var sql = $@"
 WITH latest AS (
-    SELECT ValidTimeUtc, Model, RunTimeUtc, CloudCover,
+    SELECT ValidTimeUtc, Model, RunTimeUtc, CloudCover, Cape,
            ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, Model ORDER BY RunTimeUtc DESC) AS rn
     FROM read_parquet('{fcGlob}', hive_partitioning=false, union_by_name=true)
     WHERE {live}
 )
-SELECT ValidTimeUtc, Model, RunTimeUtc, CloudCover
+SELECT ValidTimeUtc, Model, RunTimeUtc, CloudCover, Cape
 FROM latest WHERE rn = 1
 ORDER BY ValidTimeUtc, Model;";
 
@@ -143,7 +154,7 @@ ORDER BY ValidTimeUtc, Model;";
         var slotByModel = TempFeatureBuilder.CanonicalModelOrder
             .Select((id, i) => (id, i)).ToDictionary(x => x.id, x => x.i);
 
-        var working = new Dictionary<DateTime, (float[] Cc, DateTime?[] Rt)>();
+        var working = new Dictionary<DateTime, (float[] Cc, float[] Cape, DateTime?[] Rt)>();
         using var r = cmd.ExecuteReader();
         while (r.Read())
         {
@@ -153,12 +164,14 @@ ORDER BY ValidTimeUtc, Model;";
             if (!slotByModel.TryGetValue(model, out var idx)) continue;
             if (!working.TryGetValue(valid, out var slot))
             {
-                slot = (Enumerable.Repeat(float.NaN, 8).ToArray(), new DateTime?[8]);
+                slot = (Enumerable.Repeat(float.NaN, 8).ToArray(),
+                        Enumerable.Repeat(float.NaN, 8).ToArray(), new DateTime?[8]);
                 working[valid] = slot;
             }
             slot.Rt[idx] = r.GetDateTime(2);
             slot.Cc[idx] = r.IsDBNull(3) ? float.NaN : (float)r.GetDouble(3);
+            slot.Cape[idx] = r.IsDBNull(4) ? float.NaN : (float)r.GetDouble(4);
         }
-        return working.ToDictionary(kv => kv.Key, kv => new Pivoted(kv.Value.Cc, kv.Value.Rt));
+        return working.ToDictionary(kv => kv.Key, kv => new Pivoted(kv.Value.Cc, kv.Value.Cape, kv.Value.Rt));
     }
 }

@@ -202,13 +202,14 @@ public static class ElementTrainerHarness
             featureNames: specsPerLead.TryGetValue(firstLeadElement, out var spEl)
                 ? spEl.FeatureNames.ToList() : Array.Empty<string>(),
             locationName: inputs.LocationName,
-            // ONE-TIME bypass: shortwave-radiation gained cloud_mean/rh_mean
-            // (lean 25 → rich 27 feats, productionised 2026-06-04). The guard's
-            // FeaturesEffectiveDelta=0 would otherwise abort the first retrain that
-            // sees the jump. Allow it for radiation ONLY so Sunday's retrain mints
-            // the 27-feat baseline; once that lands, 27→27 passes and this should be
-            // REVERTED (it currently masks any future radiation schema drift).
-            tolerances: inputs.Target.CliName == "shortwave-radiation"
+            // ONE-TIME bypass for two intentional feature-count changes productionised
+            // 2026-06-04: shortwave-radiation gained cloud_mean/rh_mean (25→27 feats);
+            // cloud-cover gained cape_mean at the 24h lead (13→14 feats). The guard's
+            // FeaturesEffectiveDelta=0 would abort the first retrain that sees either
+            // jump. Allow it for these two targets so Sunday's retrain mints the new
+            // baselines; once they land (n→n passes) this should be REVERTED — it
+            // currently masks any future radiation/cloud schema drift.
+            tolerances: inputs.Target.CliName is "shortwave-radiation" or "cloud-cover"
                 ? RetrainGuard.Defaults with { AllowFeaturesEffectiveChange = true }
                 : null);
         if (!guardResultEl.Passed)
