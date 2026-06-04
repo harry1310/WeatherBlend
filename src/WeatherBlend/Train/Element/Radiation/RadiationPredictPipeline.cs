@@ -78,7 +78,21 @@ public static class RadiationPredictPipeline
                 continue;
             }
 
-            var row = RadiationFeatureBuilder.ComposeRow(spec, valid, sw, dr, df, era5Sw: float.NaN);
+            // Rich bundles carry cloud_mean/rh_mean (FeatureCount 3N+9); compute the
+            // NaN-safe ensemble means over the spec's models, matching BuildForLead's
+            // AVG. Harmless for lean bundles — ComposeRow only writes them when the
+            // loaded spec includes them.
+            double cSum = 0, rSum = 0; int cCnt = 0, rCnt = 0;
+            for (int i = 0; i < N; i++)
+            {
+                var ci = canonOrder.IndexOf(spec.Models[i]);
+                var cv = p.Cc[ci]; if (!float.IsNaN(cv)) { cSum += cv; cCnt++; }
+                var rv = p.Rh[ci]; if (!float.IsNaN(rv)) { rSum += rv; rCnt++; }
+            }
+            var cloudMean = cCnt > 0 ? cSum / cCnt : double.NaN;
+            var rhMean    = rCnt > 0 ? rSum / rCnt : double.NaN;
+
+            var row = RadiationFeatureBuilder.ComposeRow(spec, valid, sw, dr, df, era5Sw: float.NaN, cloudMean: cloudMean, rhMean: rhMean);
             var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
             var yhat = TempTrainer.PredictVector(ml, loadedModel, spec, new[] { row })[0];
 
@@ -121,7 +135,7 @@ public static class RadiationPredictPipeline
         return output;
     }
 
-    private sealed record Pivoted(float[] Sw, float[] Dr, float[] Df, DateTime?[] RunTimes);
+    private sealed record Pivoted(float[] Sw, float[] Dr, float[] Df, float[] Cc, float[] Rh, DateTime?[] RunTimes);
 
     private static Dictionary<DateTime, Pivoted> QueryPivot(
         string forecastsPath, string locationName, DateTime asOf,
@@ -132,11 +146,13 @@ public static class RadiationPredictPipeline
         var sql = $@"
 WITH latest AS (
     SELECT ValidTimeUtc, Model, RunTimeUtc, ShortwaveRadiation, DirectRadiation, DiffuseRadiation,
+           CloudCover, RelativeHumidity2m,
            ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, Model ORDER BY RunTimeUtc DESC) AS rn
     FROM read_parquet('{fcGlob}', hive_partitioning=false, union_by_name=true)
     WHERE {live}
 )
-SELECT ValidTimeUtc, Model, RunTimeUtc, ShortwaveRadiation, DirectRadiation, DiffuseRadiation
+SELECT ValidTimeUtc, Model, RunTimeUtc, ShortwaveRadiation, DirectRadiation, DiffuseRadiation,
+       CloudCover, RelativeHumidity2m
 FROM latest WHERE rn = 1
 ORDER BY ValidTimeUtc, Model;";
 
@@ -148,7 +164,7 @@ ORDER BY ValidTimeUtc, Model;";
         var slotByModel = TempFeatureBuilder.CanonicalModelOrder
             .Select((id, i) => (id, i)).ToDictionary(x => x.id, x => x.i);
 
-        var working = new Dictionary<DateTime, (float[] Sw, float[] Dr, float[] Df, DateTime?[] Rt)>();
+        var working = new Dictionary<DateTime, (float[] Sw, float[] Dr, float[] Df, float[] Cc, float[] Rh, DateTime?[] Rt)>();
         using var r = cmd.ExecuteReader();
         while (r.Read())
         {
@@ -162,6 +178,8 @@ ORDER BY ValidTimeUtc, Model;";
                     Enumerable.Repeat(float.NaN, 8).ToArray(),
                     Enumerable.Repeat(float.NaN, 8).ToArray(),
                     Enumerable.Repeat(float.NaN, 8).ToArray(),
+                    Enumerable.Repeat(float.NaN, 8).ToArray(),
+                    Enumerable.Repeat(float.NaN, 8).ToArray(),
                     new DateTime?[8]);
                 working[valid] = slot;
             }
@@ -169,8 +187,10 @@ ORDER BY ValidTimeUtc, Model;";
             slot.Sw[idx] = r.IsDBNull(3) ? float.NaN : (float)r.GetDouble(3);
             slot.Dr[idx] = r.IsDBNull(4) ? float.NaN : (float)r.GetDouble(4);
             slot.Df[idx] = r.IsDBNull(5) ? float.NaN : (float)r.GetDouble(5);
+            slot.Cc[idx] = r.IsDBNull(6) ? float.NaN : (float)r.GetDouble(6);
+            slot.Rh[idx] = r.IsDBNull(7) ? float.NaN : (float)r.GetDouble(7);
         }
         return working.ToDictionary(kv => kv.Key,
-            kv => new Pivoted(kv.Value.Sw, kv.Value.Dr, kv.Value.Df, kv.Value.Rt));
+            kv => new Pivoted(kv.Value.Sw, kv.Value.Dr, kv.Value.Df, kv.Value.Cc, kv.Value.Rh, kv.Value.Rt));
     }
 }

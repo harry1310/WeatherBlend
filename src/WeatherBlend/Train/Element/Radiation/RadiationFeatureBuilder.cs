@@ -38,6 +38,13 @@ public static class RadiationFeatureBuilder
         foreach (var m in orderedModels) names.Add($"diffuse_{TempFeatureBuilder.ShortName(m)}");
         names.AddRange(new[] { "sw_mean", "sw_std", "sw_range" });
         names.AddRange(new[] { "hour_sin", "hour_cos", "doy_sin", "doy_cos" });
+        // Cross-variable RICH features (productionised 2026-06-04 after the
+        // radiation-rich-bakeoff: rich-mean beats lean at every lead, −0.9/−0.5/
+        // −2.5% at 24/48/72h). Cloud cover is the physical inverse-driver of SW;
+        // RH adds the haze/humidity attenuation signal. Ensemble means (AVG over
+        // present models), NaN-safe. ComposeRow writes these only when the loaded
+        // spec carries them, so older lean bundles keep predicting unchanged.
+        names.AddRange(new[] { "cloud_mean", "rh_mean" });
 
         return new BlenderSpec
         {
@@ -82,6 +89,7 @@ public static class RadiationFeatureBuilder
         var sql = $@"
 WITH latest AS (
     SELECT ValidTimeUtc, Model, ShortwaveRadiation, DirectRadiation, DiffuseRadiation,
+           CloudCover, RelativeHumidity2m,
            ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, Model ORDER BY RunTimeUtc DESC) AS rn
     FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
     WHERE LocationName = '{locationName}'
@@ -93,7 +101,9 @@ pivoted AS (
     SELECT ValidTimeUtc,
         {pivotSw},
         {pivotDr},
-        {pivotDf}
+        {pivotDf},
+        AVG(CloudCover)        AS cloud_mean,
+        AVG(RelativeHumidity2m) AS rh_mean
     FROM latest WHERE rn = 1 GROUP BY ValidTimeUtc
 ),
 era5 AS (
@@ -101,7 +111,7 @@ era5 AS (
     FROM read_parquet('{eraGlob}', hive_partitioning = false, union_by_name = true)
     WHERE LocationName = '{locationName}' AND ShortwaveRadiation IS NOT NULL
 )
-SELECT p.ValidTimeUtc, {selectSw}, {selectDr}, {selectDf}, e.truth
+SELECT p.ValidTimeUtc, {selectSw}, {selectDr}, {selectDf}, p.cloud_mean, p.rh_mean, e.truth
 FROM pivoted p JOIN era5 e USING (ValidTimeUtc)
 WHERE ({requiredNotNull})
   AND {anyNotNull}
@@ -122,8 +132,10 @@ ORDER BY p.ValidTimeUtc;";
             for (int i = 0; i < n; i++) sw[i] = r.IsDBNull(1 + i) ? double.NaN : r.GetDouble(1 + i);
             for (int i = 0; i < n; i++) dr[i] = r.IsDBNull(1 + n + i) ? double.NaN : r.GetDouble(1 + n + i);
             for (int i = 0; i < n; i++) df[i] = r.IsDBNull(1 + 2 * n + i) ? double.NaN : r.GetDouble(1 + 2 * n + i);
-            var truth = r.GetDouble(1 + 3 * n);
-            rows.Add(ComposeRow(spec, valid, sw, dr, df, truth));
+            var cloudMean = r.IsDBNull(1 + 3 * n)     ? double.NaN : r.GetDouble(1 + 3 * n);
+            var rhMean    = r.IsDBNull(1 + 3 * n + 1) ? double.NaN : r.GetDouble(1 + 3 * n + 1);
+            var truth = r.GetDouble(1 + 3 * n + 2);
+            rows.Add(ComposeRow(spec, valid, sw, dr, df, truth, cloudMean, rhMean));
         }
         return rows;
     }
@@ -131,7 +143,7 @@ ORDER BY p.ValidTimeUtc;";
     public static RegressionTrainingRow ComposeRow(
         BlenderSpec spec, DateTime validTimeUtc,
         IReadOnlyList<double> sw, IReadOnlyList<double> direct, IReadOnlyList<double> diffuse,
-        double era5Sw)
+        double era5Sw, double cloudMean = double.NaN, double rhMean = double.NaN)
     {
         var n = spec.Models.Count;
         if (sw.Count      != n) throw new ArgumentException($"Expected {n} SW values", nameof(sw));
@@ -170,6 +182,15 @@ ORDER BY p.ValidTimeUtc;";
         features[3 * n + 4] = (float)Math.Cos(hourAngle);
         features[3 * n + 5] = (float)Math.Sin(doyAngle);
         features[3 * n + 6] = (float)Math.Cos(doyAngle);
+        // RICH cross-variable means — written only when the (loaded) spec carries
+        // them, so lean bundles (FeatureCount == 3N+7) keep predicting unchanged
+        // and rich bundles (3N+9) get cloud_mean/rh_mean. Schema-gated, mirrors
+        // the upper-air predict pattern.
+        if (spec.FeatureCount > 3 * n + 7)
+        {
+            features[3 * n + 7] = (float)cloudMean;
+            features[3 * n + 8] = (float)rhMean;
+        }
 
         return new RegressionTrainingRow
         {
