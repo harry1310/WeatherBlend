@@ -209,12 +209,6 @@ public static class Program
                 // exploratory only.
                 services.AddTransient<Exact12hBakeoffCommand>();
                 services.AddTransient<PrecipExactBakeoffCommand>();
-                services.AddTransient<PrecipUaBakeoffCommand>();
-                services.AddTransient<CloudUaBakeoffCommand>();
-                services.AddTransient<CloudRichBakeoffCommand>();
-                services.AddTransient<CloudCapeBakeoffCommand>();
-                services.AddTransient<CloudMslpBakeoffCommand>();
-                services.AddTransient<RadiationRichBakeoffCommand>();
                 services.AddTransient<PrecipIfsCycleBakeoffCommand>();
                 services.AddTransient<Phase3cDataWindowBakeoffCommand>();
                 // Live S3 collect — refreshes the five exact-runtime sources
@@ -476,14 +470,10 @@ public static class Program
             name: "--include-ukv",
             description: "Add UKV as a 5th feature column (per-V-hour conditional pull, lead-aware: lead-12 reads UKV at leads {9,15}; lead-24 reads at {21,27}). Off by default.",
             getDefaultValue: () => false);
-        var exact12hUaOpt = new Option<bool>(
-            name: "--upper-air",
-            description: "Append the curated multi-level pressure block (per-model t850/gh850/gh500 at the target lead + ensemble t850_mean) to the feature set. Off = baseline 2d. Run both for an A/B (same split, baseline recomputed).",
-            getDefaultValue: () => false);
         var exact12hBakeoff = new Command(
             "exact-12h-bakeoff",
             "Train + score the exact-runtime temperature blender across the three coverage tiers")
-            { exact12hTierOpt, exact12hLeadOpt, exact12hLeadsOpt, exact12hMaskOpt, exact12hEvalAtLeadsOpt, exact12hHpSearchOpt, exact12hUkvOpt, exact12hUaOpt };
+            { exact12hTierOpt, exact12hLeadOpt, exact12hLeadsOpt, exact12hMaskOpt, exact12hEvalAtLeadsOpt, exact12hHpSearchOpt, exact12hUkvOpt };
         exact12hBakeoff.SetHandler(async (ctx) =>
         {
             var tier = ctx.ParseResult.GetValueForOption(exact12hTierOpt);
@@ -493,7 +483,6 @@ public static class Program
             var evalLeadsStr = ctx.ParseResult.GetValueForOption(exact12hEvalAtLeadsOpt) ?? "";
             var hpSearch = ctx.ParseResult.GetValueForOption(exact12hHpSearchOpt);
             var includeUkv = ctx.ParseResult.GetValueForOption(exact12hUkvOpt);
-            var withUpperAir = ctx.ParseResult.GetValueForOption(exact12hUaOpt);
             var inputLeads = string.IsNullOrWhiteSpace(leadsStr)
                 ? null
                 : (IReadOnlyList<int>)leadsStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -505,7 +494,7 @@ public static class Program
                     .Select(s => int.Parse(s, System.Globalization.CultureInfo.InvariantCulture))
                     .ToArray();
             var cmd = host.Services.GetRequiredService<Exact12hBakeoffCommand>();
-            ctx.ExitCode = await cmd.RunAsync(tier, lead, inputLeads, mask, evalLeads, hpSearch, includeUkv, withUpperAir, CancellationToken.None);
+            ctx.ExitCode = await cmd.RunAsync(tier, lead, inputLeads, mask, evalLeads, hpSearch, includeUkv, CancellationToken.None);
         });
         root.AddCommand(exact12hBakeoff);
 
@@ -527,157 +516,16 @@ public static class Program
             name: "--station",
             description: "EA rainfall station name (config-friendly, e.g. 'Bellever Dartmoor'). Defaults to first configured station.",
             getDefaultValue: () => null);
-        var precipUaOpt = new Option<bool>(
-            name: "--upper-air",
-            description: "Append the curated multi-level pressure block (per-model t850/gh850/gh500 at the target lead + ensemble t850_mean). Off = baseline 3d. Run both for an A/B (same split, baseline recomputed) — the experiment 3d was backfilled for.",
-            getDefaultValue: () => false);
         var precipBakeoff = new Command(
             "precip-exact-bakeoff",
             "Train + score the exact-runtime precipitation blender at a single lead, against EA gauge truth")
-            { precipLeadOpt, precipUkvOpt, precipStationOpt, precipUaOpt };
-        precipBakeoff.SetHandler(async (lead, includeUkv, station, ua) =>
+            { precipLeadOpt, precipUkvOpt, precipStationOpt };
+        precipBakeoff.SetHandler(async (lead, includeUkv, station) =>
         {
             var cmd = host.Services.GetRequiredService<PrecipExactBakeoffCommand>();
-            await cmd.RunAsync(lead, includeUkv, station, ua, CancellationToken.None);
-        }, precipLeadOpt, precipUkvOpt, precipStationOpt, precipUaOpt);
+            await cmd.RunAsync(lead, includeUkv, station, CancellationToken.None);
+        }, precipLeadOpt, precipUkvOpt, precipStationOpt);
         root.AddCommand(precipBakeoff);
-
-        // precip-ua-bakeoff — 3a (lean offset_day P(wet)) baseline vs +upper-air
-        // A/B. Joins exact lead-matched pressure to the OM offset_day rows via a
-        // leak-free backward ASOF, trains both ways on the same split, prints
-        // test Brier deltas. The higher-powered test of the original UA signal.
-        var pUaLeadOpt = new Option<int>(
-            name: "--lead",
-            description: "Target lead in hours (must be on the exact cycle grid, e.g. 24). Default 24.",
-            getDefaultValue: () => 24);
-        var pUaStationOpt = new Option<string?>(
-            name: "--station",
-            description: "EA rainfall station name. Defaults to first configured station.",
-            getDefaultValue: () => null);
-        var pUaRichOpt = new Option<bool>(
-            name: "--rich",
-            description: "Run the A/B on the 3c rich feature set (humidity/dew-depression/EA persistence) instead of lean 3a — tests whether upper-air is orthogonal to the rich surface features.",
-            getDefaultValue: () => false);
-        var pUaOroOpt = new Option<bool>(
-            name: "--oro",
-            description: "Run the A/B on the 3o pooled rich-oro model (all 4 Bonehill stations pooled with terrain features). Bonehill-only; ignores --station. Tests whether upper-air is orthogonal to rich surface + terrain features.",
-            getDefaultValue: () => false);
-        var precipUaBakeoff = new Command(
-            "precip-ua-bakeoff",
-            "3a/3c/3o P(wet) blender baseline vs +upper-air (exact lead-matched pressure, ASOF-joined) — test Brier A/B")
-            { pUaLeadOpt, pUaStationOpt, pUaRichOpt, pUaOroOpt };
-        precipUaBakeoff.SetHandler(async (lead, station, rich, oro) =>
-        {
-            var cmd = host.Services.GetRequiredService<PrecipUaBakeoffCommand>();
-            if (oro)
-                await cmd.RunOroAsync(lead, CancellationToken.None);
-            else
-                await cmd.RunAsync(lead, station, rich, CancellationToken.None);
-        }, pUaLeadOpt, pUaStationOpt, pUaRichOpt, pUaOroOpt);
-        root.AddCommand(precipUaBakeoff);
-
-        // cloud-ua-bakeoff — 4-way cloud-cover element bake-off: base vs +extra
-        // cloud (exact UKV/Global low/mid/high + GFS low/base, ASOF-joined) vs
-        // +UA (exact pressure, same join as precip) vs both. Trains the same
-        // LightGBM (TempTrainer L2) per arm on the production cloud split, prints
-        // per-lead blend MAE + Δ% vs base. Exploratory; persists nothing.
-        var cUaLeadsOpt = new Option<string>(
-            name: "--leads",
-            description: "Comma-separated target leads in hours. Default 24,48,72.",
-            getDefaultValue: () => "24,48,72");
-        var cloudUaBakeoff = new Command(
-            "cloud-ua-bakeoff",
-            "Cloud-cover element blender: base vs +extra-cloud vs +UA vs both (exact-archive ASOF) — test MAE")
-            { cUaLeadsOpt };
-        cloudUaBakeoff.SetHandler(async leadsCsv =>
-        {
-            var leads = leadsCsv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(int.Parse).ToArray();
-            var cmd = host.Services.GetRequiredService<CloudUaBakeoffCommand>();
-            await cmd.RunAsync(leads, CancellationToken.None);
-        }, cUaLeadsOpt);
-        root.AddCommand(cloudUaBakeoff);
-
-        // cloud-rich-bakeoff — lean cloud blender vs cross-variable RICH feature
-        // sets (saturation: dew-depression + RH, plus radiation/temp/wind), all
-        // from offset_day. Tests whether the untried cross-variable lever (used
-        // by precip 3c, never by an element blender) moves cloud MAE.
-        var cRichLeadsOpt = new Option<string>(
-            name: "--leads",
-            description: "Comma-separated target leads in hours. Default 24,48,72.",
-            getDefaultValue: () => "24,48,72");
-        var cloudRichBakeoff = new Command(
-            "cloud-rich-bakeoff",
-            "Cloud-cover element blender: lean vs rich cross-variable (saturation/radiation) feature sets — test MAE")
-            { cRichLeadsOpt };
-        cloudRichBakeoff.SetHandler(async leadsCsv =>
-        {
-            var leads = leadsCsv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(int.Parse).ToArray();
-            var cmd = host.Services.GetRequiredService<CloudRichBakeoffCommand>();
-            await cmd.RunAsync(leads, CancellationToken.None);
-        }, cRichLeadsOpt);
-        root.AddCommand(cloudRichBakeoff);
-
-        // cloud-cape-bakeoff — does convective instability (CAPE) improve the
-        // cloud blender? CAPE already feeds the precip-family blenders but no
-        // element blender uses it; convective cloud is where cloud is weakest.
-        var cCapeLeadsOpt = new Option<string>(
-            name: "--leads",
-            description: "Comma-separated target leads in hours. Default 24,48,72.",
-            getDefaultValue: () => "24,48,72");
-        var cloudCapeBakeoff = new Command(
-            "cloud-cape-bakeoff",
-            "Cloud-cover element blender: lean vs lean+CAPE (ensemble-mean / per-model) feature sets — test MAE")
-            { cCapeLeadsOpt };
-        cloudCapeBakeoff.SetHandler(async leadsCsv =>
-        {
-            var leads = leadsCsv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(int.Parse).ToArray();
-            var cmd = host.Services.GetRequiredService<CloudCapeBakeoffCommand>();
-            await cmd.RunAsync(leads, CancellationToken.None);
-        }, cCapeLeadsOpt);
-        root.AddCommand(cloudCapeBakeoff);
-
-        // cloud-mslp-bakeoff — does mean sea level pressure (synoptic regime)
-        // improve the cloud blender? MSLP collected from 2026-06-04. Needs the
-        // OM previous-runs MSLP backfill to have landed before it has data.
-        var cMslpLeadsOpt = new Option<string>(
-            name: "--leads",
-            description: "Comma-separated target leads in hours. Default 24,48,72.",
-            getDefaultValue: () => "24,48,72");
-        var cloudMslpBakeoff = new Command(
-            "cloud-mslp-bakeoff",
-            "Cloud-cover element blender: lean vs lean+MSLP (ensemble-mean / per-model) feature sets — test MAE")
-            { cMslpLeadsOpt };
-        cloudMslpBakeoff.SetHandler(async leadsCsv =>
-        {
-            var leads = leadsCsv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(int.Parse).ToArray();
-            var cmd = host.Services.GetRequiredService<CloudMslpBakeoffCommand>();
-            await cmd.RunAsync(leads, CancellationToken.None);
-        }, cMslpLeadsOpt);
-        root.AddCommand(cloudMslpBakeoff);
-
-        // radiation-rich-bakeoff — lean SW blender vs cross-variable rich
-        // (cloud cover = inverse driver of SW, + humidity). Closes out the
-        // element cross-variable question alongside cloud-rich-bakeoff.
-        var rRichLeadsOpt = new Option<string>(
-            name: "--leads",
-            description: "Comma-separated target leads in hours. Default 24,48,72.",
-            getDefaultValue: () => "24,48,72");
-        var radRichBakeoff = new Command(
-            "radiation-rich-bakeoff",
-            "Shortwave-radiation element blender: lean vs rich cross-variable (cloud/humidity) feature sets — test MAE")
-            { rRichLeadsOpt };
-        radRichBakeoff.SetHandler(async leadsCsv =>
-        {
-            var leads = leadsCsv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(int.Parse).ToArray();
-            var cmd = host.Services.GetRequiredService<RadiationRichBakeoffCommand>();
-            await cmd.RunAsync(leads, CancellationToken.None);
-        }, rRichLeadsOpt);
-        root.AddCommand(radRichBakeoff);
 
         // precip-ifs-cycle-bakeoff — 4-way IFS-cycle comparison for 3d
         // (Both / Oper / Scda / None) on a constant row/eval set. Trains
