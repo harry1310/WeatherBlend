@@ -89,6 +89,22 @@ jobs:
         with:
           r2_bucket: ${{ secrets.R2_BUCKET }}
 
+      # Coverage guard — the positive coverage assertion that was missing when
+      # the 2026-06-05 GEM outage silently zeroed cells for days. HARD-fail
+      # (exit 5, NOT in predict-all's soft-skip 2/3/4 set) so a regression reds
+      # the job → the GH App files [ci-fail] predict. if: always() so it still
+      # reports even if an earlier step failed.
+      - name: Coverage guard
+        if: always()
+        shell: bash
+        run: |
+          FOR_DATE="${{ github.event.inputs.for_date }}"
+          if [ -n "$FOR_DATE" ]; then
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict-coverage --for-date "$FOR_DATE"
+          else
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict-coverage
+          fi
+
       - name: Upload logs as artifact
         if: failure()
         uses: actions/upload-artifact@v4

@@ -108,6 +108,23 @@ jobs:
           cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
+      # Coverage guard runs AFTER render-and-deploy: a degraded cycle still
+      # publishes what it has (better a partial site than none), but a breach
+      # still reds the job → GH App files [ci-fail]. HARD-fail (exit 5, outside
+      # predict-all's soft-skip set). if: always() so deploy failure doesn't
+      # mask a coverage breach. Same guard as predict.yml (the split production
+      # path); kept in lockstep so the two callers can't drift.
+      - name: Coverage guard
+        if: always()
+        shell: bash
+        run: |
+          FOR_DATE="${{ github.event.inputs.for_date }}"
+          if [ -n "$FOR_DATE" ]; then
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict-coverage --for-date "$FOR_DATE"
+          else
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict-coverage
+          fi
+
       - name: Upload logs as artifact
         if: failure()
         uses: actions/upload-artifact@v4
