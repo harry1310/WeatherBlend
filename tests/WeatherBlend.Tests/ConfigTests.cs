@@ -206,10 +206,12 @@ public class ConfigTests
         leanPrecip.OptionalModels.Should().HaveCount(7);
         leanPrecip.OptionalForLead(120).Should().HaveCount(6);
 
-        // Wind: 4 strict + UKMO/AIFS optional, MF excluded entirely.
+        // Wind: 3 strict (gfs/ecmwf/icon) + GEM/UKMO/AIFS optional, MF excluded
+        // entirely. gem_seamless demoted required→optional 2026-06-05 (GEM-outage
+        // robustness — see the ElementBlenders_never_require_gem guard below).
         var wind = bound.Blenders.Get("wind", "default");
-        wind.RequiredModels.Should().HaveCount(4);
-        wind.OptionalModels.Should().Equal("ukmo_seamless", "ecmwf_aifs025_single");
+        wind.RequiredModels.Should().Equal("gfs_seamless", "ecmwf_ifs025", "icon_seamless");
+        wind.OptionalModels.Should().Equal("gem_seamless", "ukmo_seamless", "ecmwf_aifs025_single");
         wind.RequiredModels.Should().NotContain("meteofrance_seamless");
         wind.OptionalModels.Should().NotContain("meteofrance_seamless");
     }
@@ -257,6 +259,48 @@ public class ConfigTests
                 blender.RequiredForLead(lead).Should().OnlyContain(
                     m => ReliableTo120h.Contains(m),
                     $"temperature/{featureSet} required set at lead {lead}h must stay within {{gfs,ecmwf}}");
+            }
+        }
+    }
+
+    [Fact]
+    public void ElementBlenders_never_require_gem_so_a_gem_outage_cannot_zero_them()
+    {
+        // Regression guard for the 2026-06-05 incident (sibling to the
+        // temperature guard above): Open-Meteo's GEM (cmc_gem_gdps) ingestion
+        // froze at 2026-05-26. gem_seamless was REQUIRED across every element /
+        // wind blender, so the post-pivot "every required model NOT NULL" gate
+        // zeroed out wind / humidity / radiation / cloud / gust / wind_speed_lgb
+        // from 06-02 — which starved the feels-like / UTCI derivation (no element
+        // inputs → no feels-like, the original bug report). Demoting gem to
+        // OPTIONAL everywhere keeps it as a feature (LightGBM handles the NaN
+        // slot natively, preserving cloud's bracketing-corrector use) while
+        // making a gem outage a graceful degradation. This pins that gem is
+        // never required at any lead so a future edit can't reintroduce the
+        // fragility. (wind_mvn direction is Python + median-imputes missing
+        // NWPs, so it has no required gate to guard here.)
+        var configPath = Path.Combine(AppContext.BaseDirectory, "config.yaml");
+        var cfg = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+            .AddYamlFile(configPath, optional: false)
+            .Build();
+        var bound = new AppConfig();
+        cfg.Bind(bound);
+
+        var elementBlenders = new[]
+        {
+            ("wind", "default"), ("humidity", "default"), ("cloud", "default"),
+            ("radiation", "default"), ("wind_speed_lgb", "default"), ("wind_gust", "default"),
+        };
+        int[] leads = { 24, 48, 72, 96, 120 };
+        foreach (var (target, featureSet) in elementBlenders)
+        {
+            var blender = bound.Blenders.Get(target, featureSet);
+            blender.RequiredModels.Should().NotContain("gem_seamless",
+                $"{target}/{featureSet} must not require gem_seamless (2026-06-05 GEM-outage robustness)");
+            foreach (var lead in leads)
+            {
+                blender.RequiredForLead(lead).Should().NotContain("gem_seamless",
+                    $"{target}/{featureSet} must not require gem_seamless at lead {lead}h");
             }
         }
     }

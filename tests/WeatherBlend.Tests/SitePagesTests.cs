@@ -1629,6 +1629,54 @@ public class SitePagesTests
     }
 
     [Fact]
+    public void RenderRainfallAmountSection_shares_the_page_x_axis()
+    {
+        // Bug fix 2026-06-05 (Harry): the rainfall-amount intensity chart was
+        // auto-scaling to just its own 24 hourly points, so its time axis didn't
+        // line up with the P(wet) / NWP charts above it on the rain tab. It now
+        // takes the page-wide xMin/xMax + the "now" marker, exactly like every
+        // other LineChartSpec on the page. Assert the emitted chart config
+        // carries the bounds we pass in (rather than null = auto-scale).
+        var generatedAt = new DateTime(2026, 6, 5, 3, 0, 0, DateTimeKind.Utc);
+        var anchorDay = generatedAt.Date.AddDays(1); // lead-24 valid day
+        var rows = Enumerable.Range(0, 24).Select(h => new RainfallAmountPredictionRow
+        {
+            LocationName = "membury_devon",
+            TruthStation = Station,
+            ModelVersion = "v3f",
+            PredictionMadeAtUtc = generatedAt,
+            ValidTimeUtc = anchorDay.AddHours(h),
+            LeadHours = 24,
+            Pi = 0.5, MuLog = 0.0, SigmaLog = 0.5,
+            MeanMmPerHr = 0.6, MedianMmPerHr = 0.4,
+            P2_5MmPerHr = 0.0, P10MmPerHr = 0.0, P50MmPerHr = 0.3,
+            P90MmPerHr = 1.0, P97_5MmPerHr = 2.0,
+            PExceed0_1 = 0.4, PExceed1 = 0.2, PExceed5 = 0.05, PExceed10 = 0.01,
+            Precip3aVersion = "v3a",
+        }).ToArray();
+
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            RainfallAmountPredictions = rows,
+        };
+
+        // Deliberately wider than the data's own 24h span so a difference is
+        // visible: a pre-fix auto-scaled chart would NOT carry these bounds.
+        var pageXMin = new DateTime(2026, 6, 4, 0, 0, 0, DateTimeKind.Utc).ToOADate();
+        var pageXMax = new DateTime(2026, 6, 10, 0, 0, 0, DateTimeKind.Utc).ToOADate();
+
+        var html = SitePages.RenderRainfallAmountSection(input, Station, 24, pageXMin, pageXMax);
+
+        html.Should().NotBeEmpty();
+        // data-cjs carries HTML-encoded JSON; the numbers serialise exactly as
+        // System.Text.Json would render them.
+        html.Should().Contain($"&quot;xMin&quot;:{System.Text.Json.JsonSerializer.Serialize(pageXMin)}");
+        html.Should().Contain($"&quot;xMax&quot;:{System.Text.Json.JsonSerializer.Serialize(pageXMax)}");
+        html.Should().Contain($"&quot;todayX&quot;:{System.Text.Json.JsonSerializer.Serialize(generatedAt.ToOADate())}");
+    }
+
+    [Fact]
     public void RenderTempSkill_is_station_agnostic_and_has_no_station_subnav()
     {
         // Temperature is a single-location quantity; the temp-skill page should not

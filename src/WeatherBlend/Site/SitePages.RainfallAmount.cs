@@ -25,7 +25,7 @@ public static partial class SitePages
     /// rendering a misleading card.
     /// </summary>
     internal static string RenderRainfallAmountSection(
-        SiteInputs input, string stationSlug, int lead)
+        SiteInputs input, string stationSlug, int lead, double xMin, double xMax)
     {
         // Today's anchor — predict_3f writes one parquet per cycle, but
         // SiteInputs has them already joined; the per-(lead, valid_time)
@@ -48,7 +48,7 @@ public static partial class SitePages
         if (futureRows.Count == 0) return "";
 
         var headline = RenderRainfallAmountHeadline(futureRows);
-        var ribbon = RenderRainfallAmountRibbon(futureRows, lead);
+        var ribbon = RenderRainfallAmountRibbon(futureRows, lead, xMin, xMax, input.GeneratedAtUtc.ToOADate());
         var exceedance = RenderRainfallAmountExceedance(futureRows);
         return $"""
             <section class="rainfall-amount" data-station="{Escape(stationSlug)}" data-lead="{lead}">
@@ -134,7 +134,8 @@ public static partial class SitePages
     /// flat-zero floor honest than to silently swap meanings.
     /// </summary>
     private static string RenderRainfallAmountRibbon(
-        IReadOnlyList<RainfallAmountPredictionRow> rows, int lead)
+        IReadOnlyList<RainfallAmountPredictionRow> rows, int lead,
+        double xMin, double xMax, double todayLineX)
     {
         var median = rows.Select(r => (r.ValidTimeUtc.ToOADate(), r.MedianMmPerHr)).ToList();
         var p10 = rows.Select(r => (r.ValidTimeUtc.ToOADate(), r.P10MmPerHr)).ToList();
@@ -150,6 +151,13 @@ public static partial class SitePages
             Height = 220,
             FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
             FormatY = v => v.ToString("0.0", Ci),
+            // Share the rain page's X axis so this chart lines up with the
+            // P(wet) / NWP charts above it (was auto-scaling to just the 3f
+            // rows' narrow domain — Harry 2026-06-05). XMin/XMax + the
+            // "now" marker mirror the other LineChartSpec callers on the page.
+            XMin = xMin,
+            XMax = xMax,
+            TodayLineX = todayLineX,
             Series = new[]
             {
                 new LineSeries("P2.5",   "#bbdefb", p2),

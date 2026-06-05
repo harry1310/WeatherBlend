@@ -425,27 +425,40 @@ blenders:
           optionalModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless, ecmwf_aifs025_single, jma_seamless]
 
     # ---- Element blenders (single-variant) ----
-    # Wind: 4 strict + UKMO optional (UKMO wind has intra-2024-09+ gaps).
+    # 2026-06-05: gem_seamless demoted required→optional across EVERY element
+    # blender below, mirroring the 2026-06-01 temperature fix. Open-Meteo's GEM
+    # (cmc_gem_gdps) ingestion stalled — frozen at 2026-05-26 — and because gem
+    # was REQUIRED here, the row-drop gate silently zeroed out the wind /
+    # humidity / radiation / cloud / gust / wind_speed_lgb blenders from 06-02,
+    # which in turn starved the feels-like / UTCI derivation (no element inputs →
+    # no feels-like). GEM stays an OPTIONAL feature everywhere (LightGBM handles
+    # the NaN slot natively), so a single upstream feed outage degrades the blend
+    # gracefully instead of killing it. The cloud note below (GEM as a useful
+    # bracketing corrector) is preserved — optional keeps GEM in the vector when
+    # present; it just no longer drops the row when GEM is absent. wind_mvn
+    # (direction, Python) already median-imputes missing NWPs, so it's untouched.
+    #
+    # Wind: 3 strict + GEM/UKMO optional (UKMO wind has intra-2024-09+ gaps).
     # MF excluded everywhere — Open-Meteo Previous Runs ships no MF wind data.
     # AIFS optional (data starts 2025-02-17; preserves training window).
     - target: wind
       featureSet: default
-      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless]
-      optionalModels: [ukmo_seamless, ecmwf_aifs025_single]
+      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless]
+      optionalModels: [gem_seamless, ukmo_seamless, ecmwf_aifs025_single]
 
     # Humidity: UKMO excluded entirely in legacy (CAST NULL stamp).
     # MF excluded at 48/72h (live API horizon ~36h). AIFS optional everywhere.
     - target: humidity
       featureSet: default
-      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, gem_seamless]
-      optionalModels: [ecmwf_aifs025_single]
+      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless]
+      optionalModels: [gem_seamless, ecmwf_aifs025_single]
       perLeadOverrides:
         - lead: 48
-          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless]
-          optionalModels: [ecmwf_aifs025_single]
+          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless]
+          optionalModels: [gem_seamless, ecmwf_aifs025_single]
         - lead: 72
-          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless]
-          optionalModels: [ecmwf_aifs025_single]
+          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless]
+          optionalModels: [gem_seamless, ecmwf_aifs025_single]
 
     # Cloud: UKMO restored everywhere; MF dropped at 48/72h. AIFS optional.
     # 2026-05-04: tested dropping GEM (bias −23) + MF (bias +9.4) outright,
@@ -455,29 +468,29 @@ blenders:
     # Conclusion: leave GEM + lead-24h MF in. Don't repeat this experiment.
     - target: cloud
       featureSet: default
-      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, ukmo_seamless, gem_seamless]
-      optionalModels: [ecmwf_aifs025_single]
+      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, ukmo_seamless]
+      optionalModels: [gem_seamless, ecmwf_aifs025_single]
       perLeadOverrides:
         - lead: 48
-          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, ukmo_seamless, gem_seamless]
-          optionalModels: [ecmwf_aifs025_single]
+          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, ukmo_seamless]
+          optionalModels: [gem_seamless, ecmwf_aifs025_single]
         - lead: 72
-          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, ukmo_seamless, gem_seamless]
-          optionalModels: [ecmwf_aifs025_single]
+          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, ukmo_seamless]
+          optionalModels: [gem_seamless, ecmwf_aifs025_single]
 
     # Radiation: UKMO permanently absent (74% null at 24h, 100% at 48/72h).
     # MF dropped at 48/72h. AIFS optional everywhere.
     - target: radiation
       featureSet: default
-      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, gem_seamless]
-      optionalModels: [ecmwf_aifs025_single]
+      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless]
+      optionalModels: [gem_seamless, ecmwf_aifs025_single]
       perLeadOverrides:
         - lead: 48
-          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless]
-          optionalModels: [ecmwf_aifs025_single]
+          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless]
+          optionalModels: [gem_seamless, ecmwf_aifs025_single]
         - lead: 72
-          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless]
-          optionalModels: [ecmwf_aifs025_single]
+          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless]
+          optionalModels: [gem_seamless, ecmwf_aifs025_single]
 
     # Wind speed (Dunkeswell-truth LightGBM, Phase 3 of WIND_BLENDER_PLAN
     # 2026-05-27). Sibling phase to the ERA5-truth `wind` blender above —
@@ -490,8 +503,8 @@ blenders:
     # Runs). Trained at leads {24, 48, 72} only, no per-lead overrides.
     - target: wind_speed_lgb
       featureSet: default
-      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, gem_seamless, jma_seamless]
-      optionalModels: [ukmo_seamless]
+      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, jma_seamless]
+      optionalModels: [gem_seamless, ukmo_seamless]
 
     # Wind gust (2026-05-27): only 4 production NWPs publish gust on
     # Open-Meteo Previous Runs (audited). GFS / ICON / GEM required; UKMO
@@ -505,8 +518,8 @@ blenders:
     # project_gust_production_scope_2026-05-27.md.
     - target: wind_gust
       featureSet: default
-      requiredModels: [gfs_seamless, icon_seamless, gem_seamless]
-      optionalModels: [ukmo_seamless]
+      requiredModels: [gfs_seamless, icon_seamless]
+      optionalModels: [gem_seamless, ukmo_seamless]
 
 # Dry-window blender — local-time daytime allowed-window. Both labels (truth)
 # and per-NWP feature aggregates (longest dry run, has-dry-window indicator,

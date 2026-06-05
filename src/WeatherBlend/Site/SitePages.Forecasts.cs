@@ -605,7 +605,7 @@ public static partial class SitePages
             // 2026-05-28 so each station's complete rain story reads as one
             // unit (P(wet) chart + tables + 4a + 3f), rather than the old
             // shape that grouped by metric across stations.
-            s.Append(RenderRainfallAmountSection(input, station, lead));
+            s.Append(RenderRainfallAmountSection(input, station, lead, pageXMin, pageXMax));
         }
 
         // Per-NWP precip rate (mm/h) — point forecast at Bonehill, hoisted
