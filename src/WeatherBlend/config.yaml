@@ -114,6 +114,54 @@ locations:
         - id: "9cbfd7c3-d11f-4a5e-ac4c-99575bf18c86"
           name: "Raymonds Hill"
 
+  # Sennen, Cornwall — added 2026-06-05. Granite SEA CLIFF at the far SW tip
+  # (Sennen Cove / Land's End), ~35 m clifftop, full Atlantic exposure. The
+  # "hardest yet" location: truth is sparse out here. Rain = the 3 nearest EA
+  # gauges, but they're ALL 11-21 km inland to the E (none seaward), so a
+  # west-facing cliff catching Atlantic bands is the worst case for gauge
+  # representativeness — accepted for now. METAR = Culdrose (EGDR, ~32 km, the
+  # nearest reliable issuer). Wind: ERA5 reanalysis via the era5 backfill for
+  # now; the MIDAS SYNOP-truth path (Culdrose/Camborne) is a separate static
+  # CEDA fetch done at train time, not part of collect/backfill (see backlog).
+  # The truly representative site (NCI Gwennap Head Davis AWS, ~3 km, exposed)
+  # is access-gated (WeatherLink Pro+ / WeatherFile licence) so it's a future
+  # live cross-check only, not a trainable source.
+  #
+  # tabs: [] keeps Sennen OFF the live site until it has models — collect +
+  # backfill accumulate data now; the next Sunday auto-retrain trains temp
+  # 2b/2c + precip 3a off the backfilled history (unfiltered phases apply
+  # here), after which we add tabs to surface it.
+  - name: "sennen_cove"
+    displayName: "Sennen, Cornwall"
+    latitude: 50.0786
+    longitude: -5.7044
+    elevationMeters: 35
+
+    tabs: []
+
+    overview:
+      firstVisibleHourUtc: 6
+      lastVisibleHourUtcExclusive: 21
+
+    # Culdrose (RNAS) is the nearest reliable METAR issuer (~32 km E); Newquay
+    # (St Mawgan) is the fallback. Land's End (EGHC) is closer but doesn't issue
+    # reliable routine METAR. METAR is per-ICAO so these partitions are new.
+    metar:
+      primary: "EGDR"    # RNAS Culdrose
+      fallback: "EGHQ"   # Newquay (St Mawgan)
+
+    # 3 nearest EA Hydrology rainfall gauges (all inland-east; the SW tip has
+    # none seaward). Trengwainton ~11 km NE, St Ives Towednack ~18 km NE,
+    # St Erth ~21 km NE. Same 15-min EA Hydrology path as Bonehill/Membury.
+    rainfall:
+      stations:
+        - id: "9bd58397-e67c-4007-aaf5-fd9dfa5d929b"
+          name: "Trengwainton"
+        - id: "26cd5df2-d1c3-438a-bcc2-4a2126f5b9d2"
+          name: "St Ives Towednack"
+        - id: "eb6c1930-b131-4d71-9ce2-3616abd6ea39_382133"
+          name: "St Erth"
+
 # NWP models to collect via Open-Meteo.
 # Open-Meteo exposes many models through one API with a consistent schema.
 # See https://open-meteo.com/en/docs for the full list.

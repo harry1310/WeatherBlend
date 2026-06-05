@@ -88,7 +88,7 @@ public class ConfigTests
         var bound = new AppConfig();
         cfg.Bind(bound);
 
-        bound.Locations.Should().HaveCount(2);
+        bound.Locations.Should().HaveCount(3);
         bound.Locations[0].Name.Should().Be("bonehill_rocks");
         // Bonehill rainfall: Bellever + Bovey + Hexworthy + Princetown
         // (Princetown re-added 2026-05-25 in anticipation of Phase 3o's
@@ -112,6 +112,16 @@ public class ConfigTests
             .And.Contain("Raymonds Hill");
         bound.Locations[1].Metar.Primary.Should().Be("EGTE");
         bound.Locations[1].Metar.Fallback.Should().Be("EGDY");
+        // Sennen, Cornwall (added 2026-06-05, sea cliff). Data-only for now
+        // (tabs: [] keeps it off the site picker); 3 nearest EA gauges; METAR
+        // = Culdrose (EGDR) / Newquay (EGHQ).
+        bound.Locations[2].Name.Should().Be("sennen_cove");
+        bound.Locations[2].Tabs.Should().BeEmpty();
+        bound.Locations[2].Metar.Primary.Should().Be("EGDR");
+        bound.Locations[2].Rainfall.Stations.Select(s => s.Name).Should()
+            .Contain("Trengwainton")
+            .And.Contain("St Ives Towednack")
+            .And.Contain("St Erth");
         // Back-compat accessor still points to the primary.
         bound.Location.Name.Should().Be("bonehill_rocks");
     }

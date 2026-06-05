@@ -13,7 +13,11 @@ public static partial class SitePages
     /// </summary>
     public static string RenderHomePicker(SiteInputs input)
     {
-        var locs = input.Locations;
+        // Only list locations that actually render pages. A tab-less location
+        // (e.g. a data-only site like sennen_cove that's collecting/backfilling
+        // but has no models/tabs yet) would otherwise link to a non-existent
+        // {slug}/index.html — a 404. It surfaces here once it's given tabs.
+        var locs = input.Locations.Where(l => l.Tabs.Count > 0).ToList();
         var body = new StringBuilder();
         body.Append("<section>");
         body.Append("""

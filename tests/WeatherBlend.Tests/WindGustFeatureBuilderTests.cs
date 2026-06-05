@@ -26,10 +26,14 @@ public class WindGustFeatureBuilderTests
 
         spec.Target.Should().Be("wind_gust");
         spec.FeatureSet.Should().Be("default");
-        spec.RequiredModels.Should().Equal("gfs_seamless", "icon_seamless", "gem_seamless");
-        spec.OptionalModels.Should().Equal("ukmo_seamless");
+        // gem_seamless demoted required→optional 2026-06-05 (GEM-outage
+        // robustness — see ConfigTests.ElementBlenders_never_require_gem). gem
+        // keeps its feature slot (still in optional + Models), so a gem outage
+        // degrades the gust blend gracefully instead of zeroing it.
+        spec.RequiredModels.Should().Equal("gfs_seamless", "icon_seamless");
+        spec.OptionalModels.Should().Equal("ukmo_seamless", "gem_seamless");
         // spec.Models is required ∪ optional reordered by CanonicalModelOrder,
-        // so UKMO sits before GEM even though it's the optional one.
+        // so UKMO sits before GEM. Unchanged by the gem required→optional move.
         spec.Models.Should().Equal(
             "gfs_seamless", "icon_seamless", "ukmo_seamless", "gem_seamless");
         // 4 gust + 4 ratio + 2 spread = 10 features (production-scope shape,
