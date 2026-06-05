@@ -137,6 +137,14 @@ public static partial class SitePages
 
         var lowCloudByValid = input.LowCloudByValid;
 
+        // Rock surface / condensation (Phase P1) — smallest-lead-per-valid,
+        // freshest made on ties. Drives the "rock damp / greasy" tile badge.
+        var rockByValid = input.RockSurfacePredictions
+            .GroupBy(r => r.ValidTimeUtc)
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderBy(r => r.LeadHours).ThenByDescending(r => r.PredictedAtUtc).First());
+
         // Day summary line above the tile grid: temp range + mean P(wet) +
         // driest hour. Falls back to a temp-only line when no P(wet) is
         // available for the headline gauge this day.
@@ -174,7 +182,7 @@ public static partial class SitePages
             var tiles = new StringBuilder();
             int popoverId = 0;
             foreach (var p in dayPreds)
-                tiles.Append(RenderHourTile(p, feelsLikeByValid, pwetByValid, lowCloudByValid, input.WindGustByValidMs, popoverId++));
+                tiles.Append(RenderHourTile(p, feelsLikeByValid, pwetByValid, lowCloudByValid, rockByValid, input.WindGustByValidMs, popoverId++));
             tilesHtml = string.Create(Ci, $"<div class=\"forecast-grid\">{tiles}</div>");
         }
 
@@ -344,6 +352,7 @@ public static partial class SitePages
         IReadOnlyDictionary<DateTime, FeelsLikeForecastPoint> feelsLikeByValid,
         IReadOnlyDictionary<DateTime, PrecipForecastPoint> pwetByValid,
         IReadOnlyDictionary<DateTime, LowCloudSignal> lowCloudByValid,
+        IReadOnlyDictionary<DateTime, RockSurfaceForecastPoint> rockByValid,
         IReadOnlyDictionary<DateTime, double> windGustByValidMs,
         int popoverId)
     {
@@ -370,6 +379,26 @@ public static partial class SitePages
                     </details>
                     """;
             }
+        }
+
+        // Rock surface / condensation badge (Phase P1). Fires when the rock is
+        // at or near dew point: red "rock wet" for condensation (margin ≤ 0),
+        // amber "rock greasy?" for the marginal band (0 < margin ≤ greasyMargin,
+        // already encoded in GreasinessStatus). No badge when dry. Same ±1h
+        // tolerance + Pico <details> pop-out idiom as the low-cloud badge.
+        string rockBadge = "";
+        if (TryNearest(rockByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var rk)
+            && rk!.GreasinessStatus != Predict.Surface.RockSurfacePhysics.StatusDry)
+        {
+            var isCond = rk.GreasinessStatus == Predict.Surface.RockSurfacePhysics.StatusCondensation;
+            var cls = isCond ? "rock-badge rock-wet" : "rock-badge rock-greasy";
+            var label = isCond ? "rock wet" : "rock greasy?";
+            rockBadge = string.Create(Ci, $"""
+                <details class="rock-pop">
+                  <summary class="{cls}">&#x1FAA8; {label}</summary>
+                  <ul><li>Rock {rk.RockSurfaceTempC:0.0}°C vs dew point {rk.DewPointC:0.0}°C — margin {rk.CondensationMarginC:+0.0;-0.0;0.0}°C</li></ul>
+                </details>
+                """);
         }
 
         // Feels-like and P(wet) tolerate ±1h drift — predict cycles can land
@@ -452,7 +481,7 @@ public static partial class SitePages
         var tempColor = TemperatureColor(p.BlendTemperature);
         return string.Create(Ci, $"""
             <article class="forecast-card">
-              <header><h4>{p.ValidTimeUtc:HH:mm}Z</h4>{lowCloudBadge}</header>
+              <header><h4>{p.ValidTimeUtc:HH:mm}Z</h4>{lowCloudBadge}{rockBadge}</header>
               <div class="temp" style="--temp-color: {tempColor}">{p.BlendTemperature:0.0}°C</div>
               {feelsCell}
               {pwetCell}

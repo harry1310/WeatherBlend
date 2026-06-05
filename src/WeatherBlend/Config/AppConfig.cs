@@ -39,6 +39,7 @@ public sealed class AppConfig
     public MetOfficeConfig MetOffice { get; set; } = new();
     public BlendersConfig Blenders { get; set; } = new();
     public DryWindowConfig DryWindow { get; set; } = new();
+    public RockSurfaceConfig RockSurface { get; set; } = new();
 }
 
 /// <summary>

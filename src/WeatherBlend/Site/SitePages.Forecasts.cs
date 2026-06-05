@@ -237,6 +237,43 @@ public static partial class SitePages
             }));
         }
 
+        // ---- Rock surface temperature vs dew point (Phase P1) ----
+        // Force-Restore granite Ts vs the dew point + air temp; condensation is
+        // where the red Ts line sinks to/below the green dew-point line. Shares
+        // the page X axis. Empty (section omitted) until rock_surface predict
+        // runs / syncs — and Membury never has it (Bonehill-only elements).
+        var rockRows = input.RockSurfacePredictions
+            .GroupBy(r => r.ValidTimeUtc)
+            .Select(g => g.OrderBy(r => r.LeadHours).ThenByDescending(r => r.PredictedAtUtc).First())
+            .OrderBy(r => r.ValidTimeUtc)
+            .ToList();
+        if (rockRows.Count > 0)
+        {
+            var tsPts = rockRows.Select(r => (r.ValidTimeUtc.ToOADate(), r.RockSurfaceTempC)).ToList();
+            var tdPts = rockRows.Select(r => (r.ValidTimeUtc.ToOADate(), r.DewPointC)).ToList();
+            var taPts = rockRows.Select(r => (r.ValidTimeUtc.ToOADate(), r.AirTempC)).ToList();
+            s.Append("<h3>Rock surface vs dew point — condensation outlook</h3>");
+            s.Append("<p class=\"skill-line\"><small>Granite surface temperature (Force-Restore). Rock sweats when its surface cools to the dew point — “greasy” within ~3°C, condensation at/below. Phase P1: literature granite params, so treat the absolute level as indicative until on-site calibration.</small></p>");
+            s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
+            {
+                Title = "Rock surface temperature",
+                XLabel = "Valid time (UTC)",
+                YLabel = "Temperature (°C)",
+                Series = new[]
+                {
+                    new LineSeries("Rock surface", "#c62828", tsPts),
+                    new LineSeries("Dew point", "#2e7d32", tdPts),
+                    new LineSeries("Air temp", "#1565c0", taPts),
+                },
+                Height = 260,
+                FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
+                FormatY = v => v.ToString("0.#", Ci) + "°",
+                TodayLineX = input.GeneratedAtUtc.ToOADate(),
+                XMin = xMin,
+                XMax = xMax,
+            }));
+        }
+
         return s.ToString();
     }
 

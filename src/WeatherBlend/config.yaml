@@ -541,3 +541,27 @@ dryWindow:
   # average. Empirically validated 2026-04-29.
   calibrationStations:
     - "Bellever Dartmoor"
+
+# Rock surface temperature + condensation (Force-Restore, Phase P1 — derived,
+# Bonehill-only). Granite knobs = the validated P0 spike's PARAMS
+# (scripts/rock_temp_spike.py); these defaults match the spike so the module is
+# correct even if this block is removed. mu_scale / tau_long_seconds / f_sky are
+# the free knobs P2 on-site calibration (IR gun / logger) will fit. lw_cloud_k
+# was GFS-DLWRF-calibrated 2026-06-04 (1.0→0.54; removed a ~22 W/m² warm bias).
+# greasy_margin_c: flag "potentially greasy" when the rock gets within this many
+# °C of dew point (not just on a strict Ts ≤ Td crossing) — Harry 2026-06-05.
+rockSurface:
+  albedo: 0.30
+  epsRock: 0.95
+  lambda: 3.0
+  rho: 2650.0
+  cpRock: 790.0
+  tauDaySeconds: 86400.0
+  tauLongSeconds: 86400.0
+  fSky: 1.0
+  lwClearK: 1.0
+  lwCloudK: 0.54
+  muScale: 0.3
+  substeps: 6
+  spinupHours: 48
+  greasyMarginC: 3.0

@@ -304,4 +304,25 @@ public class ConfigTests
             }
         }
     }
+
+    [Fact]
+    public void RockSurface_block_binds_with_expected_defaults()
+    {
+        var configPath = Path.Combine(AppContext.BaseDirectory, "config.yaml");
+        var cfg = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+            .AddYamlFile(configPath, optional: false)
+            .Build();
+        var bound = new AppConfig();
+        cfg.Bind(bound);
+
+        var rs = bound.RockSurface;
+        rs.GreasyMarginC.Should().Be(3.0, "Harry's within-3°C greasy threshold");
+        rs.MuScale.Should().Be(0.3);
+        rs.LwCloudK.Should().Be(0.54, "GFS-DLWRF-calibrated cloud-enhancement scale");
+        rs.LwClearK.Should().Be(1.0);
+        rs.Substeps.Should().Be(6);
+        rs.SpinupHours.Should().Be(48);
+        rs.Albedo.Should().Be(0.30);
+        rs.EpsRock.Should().Be(0.95);
+    }
 }

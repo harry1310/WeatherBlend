@@ -460,6 +460,12 @@ public static partial class SitePages
         public IReadOnlyList<FeelsLikeForecastPoint> FeelsLikePredictions { get; init; }
             = Array.Empty<FeelsLikeForecastPoint>();
 
+        /// <summary>Rock surface temperature + condensation hours (Phase P1).
+        /// Empty when the rock_surface tree hasn't been synced — the overview
+        /// chip + temp-tab chart fall back silently to nothing.</summary>
+        public IReadOnlyList<RockSurfaceForecastPoint> RockSurfacePredictions { get; init; }
+            = Array.Empty<RockSurfaceForecastPoint>();
+
         /// <summary>
         /// Wind-gust blender predictions per valid_time (m/s). Surfaced inline
         /// on the UTCI pop-out next to the 10 m wind row when gust is materially
@@ -732,6 +738,21 @@ public static partial class SitePages
         /// per-loc home-card picks the right chip. Phase C commit 3a.
         /// Defaulted so any existing positional construction (mostly tests)
         /// keeps compiling.</summary>
+        string LocationName = "");
+
+    /// <summary>One rock surface temperature + condensation hour for the site
+    /// (Phase P1). <see cref="GreasinessStatus"/> is dry / potentially_greasy /
+    /// condensation. <see cref="LocationName"/> scopes the per-loc render.</summary>
+    public sealed record RockSurfaceForecastPoint(
+        string Version,
+        DateTime PredictedAtUtc,
+        DateTime ValidTimeUtc,
+        int LeadHours,
+        double RockSurfaceTempC,
+        double AirTempC,
+        double DewPointC,
+        double CondensationMarginC,
+        string GreasinessStatus,
         string LocationName = "");
 
     public sealed record DryWindowForecastPoint(
@@ -1012,6 +1033,34 @@ public static partial class SitePages
           max-width: 16rem;
         }
         details.low-cloud-pop > ul li { margin: 0; padding: 0.05rem 0; }
+
+        /* Rock surface / condensation badge (Phase P1) — same pill + pop-out
+           idiom as the low-cloud badge. Red = condensation (rock wet), amber =
+           potentially greasy (rock near dew point). */
+        details.rock-pop { display: inline; position: relative; margin-left: 0.25rem; }
+        details.rock-pop > summary.rock-badge { color: #fff; font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 999px; cursor: pointer; white-space: nowrap; list-style: none; display: inline-block; }
+        details.rock-pop > summary.rock-badge.rock-wet { background: #c62828; }
+        details.rock-pop > summary.rock-badge.rock-greasy { background: #ef6c00; }
+        details.rock-pop > summary.rock-badge::-webkit-details-marker { display: none; }
+        details.rock-pop > summary.rock-badge::after { display: none !important; content: none !important; }
+        details.rock-pop > ul {
+          position: absolute;
+          top: calc(100% + 0.25rem);
+          left: 0;
+          z-index: 10;
+          margin: 0;
+          padding: 0.4rem 0.6rem 0.4rem 1.5rem;
+          font-size: 0.78rem;
+          line-height: 1.35;
+          color: var(--pico-muted-color);
+          background: var(--pico-card-background-color);
+          border: 1px solid var(--pico-card-border-color);
+          border-radius: 4px;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+          width: max-content;
+          max-width: 16rem;
+        }
+        details.rock-pop > ul li { margin: 0; padding: 0.05rem 0; }
 
         /* Day-grouped home layout — one block per UTC day with a summary line
            above the per-hour tile grid. Top + bottom margin so days read as

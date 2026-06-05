@@ -1677,6 +1677,72 @@ public class SitePagesTests
     }
 
     [Fact]
+    public void RenderIndex_shows_rock_damp_badge_only_for_greasy_hours()
+    {
+        // Phase P1: the overview tile gets a "rock damp / greasy" badge when the
+        // rock surface row for that hour is greasy/condensation, and none when dry.
+        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
+        var valid = generatedAt.Date.AddHours(12); // in the default 5..20 window, future-of-now
+        var preds = new[]
+        {
+            new TempPredictionRow
+            {
+                LocationName = "Test", ModelVersion = "v", PredictionMadeAtUtc = generatedAt,
+                ValidTimeUtc = valid, LeadHours = 12, BlendTemperature = 11.0, FeatureVectorHash = "",
+            },
+        };
+        var greasy = new[]
+        {
+            new SitePages.RockSurfaceForecastPoint("v1", generatedAt, valid, 12,
+                RockSurfaceTempC: 9.0, AirTempC: 11.0, DewPointC: 8.5,
+                CondensationMarginC: 0.5, GreasinessStatus: "potentially_greasy", LocationName: "Test"),
+        };
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt, Predictions = preds, CurrentVersion = "v",
+            RockSurfacePredictions = greasy,
+        };
+
+        var html = SitePages.RenderIndex(input, dayOffset: 0);
+        html.Should().Contain("rock-badge").And.Contain("rock greasy?");
+
+        var dry = new[] { greasy[0] with { CondensationMarginC = 8.0, GreasinessStatus = "dry" } };
+        var dryHtml = SitePages.RenderIndex(input with { RockSurfacePredictions = dry }, dayOffset: 0);
+        dryHtml.Should().NotContain("rock-badge");
+    }
+
+    [Fact]
+    public void RenderForecastsTemp_includes_rock_surface_chart_when_rows_present()
+    {
+        // The temp tab early-returns when there's no temperature forecast at the
+        // lead, so the fixture needs temp predictions (as in production); the rock
+        // chart then renders iff rock rows are present.
+        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
+        var preds = Enumerable.Range(0, 6).Select(h => new TempPredictionRow
+        {
+            LocationName = "Test", ModelVersion = "v", PredictionMadeAtUtc = generatedAt,
+            ValidTimeUtc = generatedAt.Date.AddDays(1).AddHours(h * 2), LeadHours = 24,
+            BlendTemperature = 12.0, FeatureVectorHash = "",
+        }).ToArray();
+        var baseInput = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt, Predictions = preds, CurrentVersion = "v",
+            PhaseByVersion = new Dictionary<string, string> { ["v"] = "2b" },
+        };
+        var rock = Enumerable.Range(0, 6).Select(h => new SitePages.RockSurfaceForecastPoint(
+            "v1", generatedAt, generatedAt.Date.AddDays(1).AddHours(h * 2), 24,
+            RockSurfaceTempC: 10.0 + h, AirTempC: 12.0, DewPointC: 9.0,
+            CondensationMarginC: 1.0 + h, GreasinessStatus: "potentially_greasy", LocationName: "Test")).ToArray();
+
+        SitePages.RenderForecastsTemp(baseInput with { RockSurfacePredictions = rock }, lead: 24)
+            .Should().Contain("Rock surface vs dew point");
+
+        // Temp present but no rock rows → the rock chart guard suppresses it.
+        SitePages.RenderForecastsTemp(baseInput, lead: 24)
+            .Should().NotContain("Rock surface vs dew point");
+    }
+
+    [Fact]
     public void RenderTempSkill_is_station_agnostic_and_has_no_station_subnav()
     {
         // Temperature is a single-location quantity; the temp-skill page should not

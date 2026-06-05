@@ -172,3 +172,28 @@ runs:
           fi
         done
 
+    - name: Predict rock-surface (Force-Restore condensation, all configured locations)
+      shell: bash
+      # MUST run AFTER temp + elements — it integrates the Force-Restore ODE over
+      # the blended forcing trajectory (temp 2b + wind/shortwave-radiation/cloud-
+      # cover champions) plus NWP dew point + spin-up. Derived, not trained.
+      # Bonehill-only — Membury has no element blenders, so the pipeline returns
+      # no rows and this soft-skips (exit 3) until/if Membury elements ship.
+      # Soft-skip 2 / 3.
+      run: |
+        FOR_DATE="${{ inputs.for_date }}"
+        LOCS=$(dotnet run --project src/WeatherBlend --no-build -c Release -- list-locations)
+        for loc in $LOCS; do
+          echo "::group::predict rock-surface ($loc)"
+          code=0
+          if [ -n "$FOR_DATE" ]; then
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target rock-surface --location "$loc" --for-date "$FOR_DATE" || code=$?
+          else
+            dotnet run --project src/WeatherBlend --no-build -c Release -- predict --target rock-surface --location "$loc" || code=$?
+          fi
+          echo "::endgroup::"
+          if [ "$code" != "0" ] && [ "$code" != "2" ] && [ "$code" != "3" ]; then
+            echo "predict rock-surface ($loc) failed with exit $code"; exit "$code"
+          fi
+        done
+

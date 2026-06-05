@@ -194,6 +194,7 @@ public static class Program
                 services.AddTransient<ElementVerifyCommand>();
                 // ElementBakeoffCommand removed in Phase 5 of unify-model-membership refactor.
                 services.AddTransient<FeelsLikePredictCommand>();
+                services.AddTransient<RockSurfacePredictCommand>();
                 services.AddTransient<PredictCoverageCommand>();
                 // Met Office Global / UKV — raw AWS S3 backfill via Python.
                 // Reinstated 2026-05-05 with the parquet writer fixed to emit
@@ -887,6 +888,11 @@ public static class Program
             else if (string.Equals(target, "feels-like", StringComparison.OrdinalIgnoreCase))
             {
                 var cmd = host.Services.GetRequiredService<FeelsLikePredictCommand>();
+                ctx.ExitCode = await cmd.RunAsync(forDate, locationOverride, ctx.GetCancellationToken());
+            }
+            else if (string.Equals(target, "rock-surface", StringComparison.OrdinalIgnoreCase))
+            {
+                var cmd = host.Services.GetRequiredService<RockSurfacePredictCommand>();
                 ctx.ExitCode = await cmd.RunAsync(forDate, locationOverride, ctx.GetCancellationToken());
             }
             else if (elementTarget is not null)

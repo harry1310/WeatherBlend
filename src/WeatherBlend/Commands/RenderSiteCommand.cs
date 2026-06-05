@@ -111,6 +111,9 @@ public sealed class RenderSiteCommand
         var feelsLikeAllLocs = QueryFeelsLikePredictions(windowStart, predictionEnd, ct);
         _log.LogInformation("Loaded {N} feels-like prediction rows (all locations).", feelsLikeAllLocs.Count);
 
+        var rockSurfaceAllLocs = QueryRockSurfacePredictions(windowStart, predictionEnd, ct);
+        _log.LogInformation("Loaded {N} rock-surface prediction rows (all locations).", rockSurfaceAllLocs.Count);
+
         var windGustAllLocs = QueryWindGustByValidTime(windowStart, predictionEnd, ct);
         _log.LogInformation("Loaded {N} wind-gust prediction rows (all locations).", windGustAllLocs.Count);
 
@@ -277,6 +280,7 @@ public sealed class RenderSiteCommand
                 .Where(d => locStationSlugs.Count == 0 || locStationSlugs.Contains(d.Station))
                 .ToList();
             var feelsLike = feelsLikeAllLocs.Where(f => IsThisLoc(f.LocationName)).ToList();
+            var rockSurface = rockSurfaceAllLocs.Where(r => IsThisLoc(r.LocationName)).ToList();
             // Wind-gust: per-location dict, latest PredictedAtUtc per ValidTime
             // already collapsed by the SQL window function. Empty dict when the
             // wind_gust tree is unsynced — UTCI pop-out falls back to wind-only.
@@ -351,6 +355,7 @@ public sealed class RenderSiteCommand
                 ModelSummaries = locModelSummaries,
                 FeatureSpecRows = locFeatureSpecRows,
                 FeelsLikePredictions = feelsLike,
+                RockSurfacePredictions = rockSurface,
                 WindGustByValidMs = windGustByValid,
                 WindPredictions = windPredictions,
                 WindDirectionPredictions = windDirectionPredictions,
@@ -1048,6 +1053,53 @@ ORDER BY LocationName, LeadHours, ValidTimeUtc";
             CloudCoverPct:       r.IsDBNull(11) ? null : (double?)r.GetDouble(11),
             LocationName:        r.GetString(12)),
             _log, "Feels-like predictions tree empty — chip will be absent on home cards.", ct);
+    }
+
+    /// <summary>
+    /// Pulls rock surface temperature + condensation predictions (Phase P1) for
+    /// every configured location in the window. Flat tree (LocationName in-column);
+    /// the per-loc render filters at consume time. Empty when the rock_surface
+    /// tree hasn't been synced / predict hasn't run — the overview chip + temp-tab
+    /// chart fall back silently.
+    /// </summary>
+    private IReadOnlyList<SitePages.RockSurfaceForecastPoint> QueryRockSurfacePredictions(
+        DateTime start, DateTime end, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath,
+                                                   WeatherBlend.Commands.RockSurfacePredictCommand.PredictionsSubdir,
+                                                   "**", "*.parquet"));
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        if (!ParquetReader.HasColumn(conn, glob, "GreasinessStatus"))
+        {
+            _log.LogWarning("Rock-surface predictions tree empty — chip + chart absent until predict runs once.");
+            return Array.Empty<SitePages.RockSurfaceForecastPoint>();
+        }
+
+        var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
+        var sql = $@"
+SELECT ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
+       RockSurfaceTempC, AirTempC, DewPointC, CondensationMarginC, GreasinessStatus, LocationName
+FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+WHERE LocationName IN ({locFilter})
+  AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
+  AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+ORDER BY LocationName, LeadHours, ValidTimeUtc";
+
+        return ParquetReader.Query(conn, sql, r => new SitePages.RockSurfaceForecastPoint(
+            Version:             r.GetString(0),
+            PredictedAtUtc:      r.GetDateTime(1),
+            ValidTimeUtc:        r.GetDateTime(2),
+            LeadHours:           r.GetInt32(3),
+            RockSurfaceTempC:    r.GetDouble(4),
+            AirTempC:            r.GetDouble(5),
+            DewPointC:           r.GetDouble(6),
+            CondensationMarginC: r.GetDouble(7),
+            GreasinessStatus:    r.IsDBNull(8) ? "" : r.GetString(8),
+            LocationName:        r.GetString(9)),
+            _log, "Rock-surface predictions tree empty — chip + chart absent.", ct);
     }
 
     /// <summary>
