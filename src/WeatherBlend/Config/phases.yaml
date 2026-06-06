@@ -90,15 +90,19 @@ targets:
         role: champion
         impl: dotnet
         locations: ["bonehill_rocks"]
-      # 3c runs at BOTH locations. Membury: the only rich-precip challenger
+      # 3c runs at THREE locations. Membury: the only rich-precip challenger
       # (3o was rejected there at the 2026-05-25 stage-1 bake-off), so it is
       # the champion-by-fallback for Membury. Bonehill: re-added 2026-05-31,
       # kept active alongside 3o (its bundles were still live in the manifest,
-      # so this keeps them retrained rather than going stale).
+      # so this keeps them retrained rather than going stale). Sennen: added
+      # 2026-06-06 after the local bake-off — 3c (rich, incl UKMO) marginally
+      # beat 3a on Sennen's 3 inland gauges (aggregate Brier 0.1175 vs 0.1181,
+      # 11/15 station-leads). With no Bonehill-only 3o for Sennen, the
+      # fallback chain makes 3c Sennen's precip champion.
       - id: "3c"
         role: challenger
         impl: dotnet
-        locations: ["bonehill_rocks", "membury_devon"]
+        locations: ["bonehill_rocks", "membury_devon", "sennen_cove"]
         minValidTime: "2024-01-01"
       # 3a (lean P(wet ≥ 0.1mm)) — demoted from champion 2026-06-06; remains
       # the universal fallback (no locations filter → trains at every

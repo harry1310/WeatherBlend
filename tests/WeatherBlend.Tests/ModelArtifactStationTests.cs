@@ -205,7 +205,8 @@ public class ModelArtifactStationTests
         var root = FreshRoot();
         try
         {
-            // Sennen / any new location: only the universal 3a fallback trains.
+            // A station that only has the universal 3a fallback bundle (no
+            // richer 3o/3c trained for it yet) resolves its champion to 3a.
             SeedBundle(root, "precipitation", "ea_trengwainton", "v3a_lean", "3a", "sennen_cove");
             ModelArtifact.UpdateStationManifest(root, "precipitation", "ea_trengwainton", "v3a_lean");
 

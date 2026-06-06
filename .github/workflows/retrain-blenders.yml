@@ -81,10 +81,15 @@ jobs:
       # would overwrite job 1's just-pushed manifest. Serial means job 2
       # re-pulls the manifest job 1 wrote, then merges its own entries in.
       max-parallel: 1
-      # A Membury failure must not cancel the Bonehill job, or vice versa.
+      # A failure in one location's job must not cancel the others.
       fail-fast: false
       matrix:
-        location: [bonehill_rocks, membury_devon]
+        # One entry per configured location. Each job trains only the phases
+        # phases.yaml admits for that location (run_<id> gating below), so
+        # Sennen — added 2026-06-06 — trains just temp 2b/2c + precip 3a/3c
+        # (its bonehill/membury-only phases auto-skip). Keep this in step with
+        # config.yaml's `locations:` block.
+        location: [bonehill_rocks, membury_devon, sennen_cove]
     steps:
       - uses: actions/checkout@v4
 
