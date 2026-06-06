@@ -990,12 +990,10 @@ public static partial class SitePages
         .forecast-card footer { margin-top: auto; padding-top: 0.4rem; border-top: 1px solid var(--pico-muted-border-color); }
         .forecast-card footer small { color: var(--pico-muted-color); font-size: 0.75rem; }
         .forecast-card h4 { margin: 0; font-size: 1rem; font-variant-numeric: tabular-nums; }
-        /* Lock the header to a fixed min-height so tiles align across the
-           grid regardless of whether a low-cloud badge sits next to the
-           time. Without this, badged tiles render ~0.4rem taller than
-           plain tiles and the temperature row drifts down inconsistently
-           (visible 2026-05-07 — gap to temp tiny without badge, large
-           with). 1.4rem covers the badge's outer height. */
+        /* Fixed header min-height pins the time row to a uniform height across
+           the grid. (Badges no longer live in the header — they sit in the
+           .tile-badges block below, whose own min-height is what now aligns the
+           temperature across badged / badge-free tiles. See .tile-badges.) */
         .forecast-card header { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; min-height: 1.4rem; }
         /* Low-cloud / mist badge — slate pill in the tile header. Click to
            expand details (Pico <details>) listing which signal(s) fired and
@@ -1013,10 +1011,16 @@ public static partial class SitePages
            the <header> row, so the time + both pills laid out left-to-right and
            a card with BOTH a low-cloud and a rock badge overflowed its width
            onto the next tile. The column container + flex-start keeps each pill
-           on its own line, sized to its content. */
-        .forecast-card .tile-badges { display: flex; flex-direction: column; align-items: flex-start; gap: 0.25rem; margin: 0.2rem 0 0.35rem; }
+           on its own line, sized to its content.
+           ALWAYS rendered (even empty) with a fixed min-height sized to two
+           stacked pills (low-cloud + rock) so the temperature aligns across
+           every tile regardless of badge count — badge-free tiles show the
+           reserved space as a small blank gap, by design (2026-06-06). Margins
+           kept tight so the gap to the time above and temperature below is
+           small (was 0.2/0.35 — read as too large). */
+        .forecast-card .tile-badges { display: flex; flex-direction: column; align-items: flex-start; gap: 0.2rem; margin: 0.1rem 0 0.15rem; min-height: 2.25rem; }
         details.low-cloud-pop { display: block; position: relative; margin-top: 0; }
-        details.low-cloud-pop > summary.low-cloud-badge { background: #455a64; color: #fff; font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 999px; cursor: pointer; white-space: nowrap; list-style: none; display: inline-block; }
+        details.low-cloud-pop > summary.low-cloud-badge { background: #455a64; color: #fff; font-size: 0.7rem; line-height: 1.15; padding: 0.1rem 0.4rem; border-radius: 999px; cursor: pointer; white-space: nowrap; list-style: none; display: inline-block; }
         /* Kill BOTH native marker and Pico's ::after chevron — Pico v2 adds
            the chevron via a background-image on summary::after, which the
            webkit rule alone doesn't reach. User wants these as plain pills. */
@@ -1045,7 +1049,7 @@ public static partial class SitePages
            idiom as the low-cloud badge. Red = condensation (rock wet), amber =
            potentially greasy (rock near dew point). */
         details.rock-pop { display: block; position: relative; margin-top: 0; }
-        details.rock-pop > summary.rock-badge { color: #fff; font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 999px; cursor: pointer; white-space: nowrap; list-style: none; display: inline-block; }
+        details.rock-pop > summary.rock-badge { color: #fff; font-size: 0.7rem; line-height: 1.15; padding: 0.1rem 0.4rem; border-radius: 999px; cursor: pointer; white-space: nowrap; list-style: none; display: inline-block; }
         details.rock-pop > summary.rock-badge.rock-wet { background: #c62828; }
         /* Amber (not the old #ef6c00 deep-orange, which read as a second red).
            True amber needs dark text for legibility — override the white base. */

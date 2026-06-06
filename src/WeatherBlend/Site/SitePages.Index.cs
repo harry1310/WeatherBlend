@@ -395,7 +395,7 @@ public static partial class SitePages
             var label = isCond ? "rock wet" : "rock greasy?";
             rockBadge = string.Create(Ci, $"""
                 <details class="rock-pop">
-                  <summary class="{cls}">&#x1FAA8; {label}</summary>
+                  <summary class="{cls}">&#x26A0; {label}</summary>
                   <ul><li>Rock {rk.RockSurfaceTempC:0.0}°C vs dew point {rk.DewPointC:0.0}°C — margin {rk.CondensationMarginC:+0.0;-0.0;0.0}°C</li></ul>
                 </details>
                 """);
@@ -482,11 +482,12 @@ public static partial class SitePages
         // TOP of the tile — vertical column, left-aligned, one pill per line —
         // rather than as flex children of the <header> row (which laid the
         // time + both pills out left-to-right and overflowed onto the next
-        // tile once both fired). Emitted only when at least one badge exists
-        // so badge-free tiles don't carry an empty block.
-        string badgeBlock = (lowCloudBadge.Length == 0 && rockBadge.Length == 0)
-            ? ""
-            : $"""<div class="tile-badges">{lowCloudBadge}{rockBadge}</div>""";
+        // tile once both fired). ALWAYS emitted (even empty): the block carries
+        // a fixed reserved min-height in CSS so the temperature — the tile's
+        // main value — lines up across every tile in the grid regardless of how
+        // many badges (0/1/2) fired. Badge-free tiles show that reserved space
+        // as a small blank gap, by design (user call 2026-06-06).
+        string badgeBlock = $"""<div class="tile-badges">{lowCloudBadge}{rockBadge}</div>""";
 
         var tempColor = TemperatureColor(p.BlendTemperature);
         return string.Create(Ci, $"""
