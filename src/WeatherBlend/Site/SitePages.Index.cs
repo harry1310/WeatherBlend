@@ -395,7 +395,7 @@ public static partial class SitePages
             var label = isCond ? "rock wet" : "rock greasy?";
             rockBadge = string.Create(Ci, $"""
                 <details class="rock-pop">
-                  <summary class="{cls}">&#x26A0; {label}</summary>
+                  <summary class="{cls}">&#x26A0;&#xFE0E; {label}</summary>
                   <ul><li>Rock {rk.RockSurfaceTempC:0.0}°C vs dew point {rk.DewPointC:0.0}°C — margin {rk.CondensationMarginC:+0.0;-0.0;0.0}°C</li></ul>
                 </details>
                 """);

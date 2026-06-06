@@ -1018,8 +1018,14 @@ public static partial class SitePages
            reserved space as a small blank gap, by design (2026-06-06). Margins
            kept tight so the gap to the time above and temperature below is
            small (was 0.2/0.35 — read as too large). */
-        .forecast-card .tile-badges { display: flex; flex-direction: column; align-items: flex-start; gap: 0.2rem; margin: 0.1rem 0 0.15rem; min-height: 2.25rem; }
-        details.low-cloud-pop { display: block; position: relative; margin-top: 0; }
+        .forecast-card .tile-badges { display: flex; flex-direction: column; align-items: flex-start; gap: 0.2rem; margin: 0.1rem 0 0.15rem; min-height: 2.4rem; }
+        /* Pico defaults <details> to margin-bottom:1rem and adds the same to an
+           open <summary>. Left un-reset, each STACKED badge added ~1rem below
+           itself, so a two-badge tile overran the reserved min-height and shoved
+           the temperature down — the real alignment bug (closed state handled by
+           the margin:0 on each .*-pop below; this line handles the open state). */
+        .forecast-card .tile-badges details[open] > summary { margin-bottom: 0; }
+        details.low-cloud-pop { display: block; position: relative; margin: 0; }
         details.low-cloud-pop > summary.low-cloud-badge { background: #455a64; color: #fff; font-size: 0.7rem; line-height: 1.15; padding: 0.1rem 0.4rem; border-radius: 999px; cursor: pointer; white-space: nowrap; list-style: none; display: inline-block; }
         /* Kill BOTH native marker and Pico's ::after chevron — Pico v2 adds
            the chevron via a background-image on summary::after, which the
@@ -1048,12 +1054,13 @@ public static partial class SitePages
         /* Rock surface / condensation badge (Phase P1) — same pill + pop-out
            idiom as the low-cloud badge. Red = condensation (rock wet), amber =
            potentially greasy (rock near dew point). */
-        details.rock-pop { display: block; position: relative; margin-top: 0; }
-        details.rock-pop > summary.rock-badge { color: #fff; font-size: 0.7rem; line-height: 1.15; padding: 0.1rem 0.4rem; border-radius: 999px; cursor: pointer; white-space: nowrap; list-style: none; display: inline-block; }
-        details.rock-pop > summary.rock-badge.rock-wet { background: #c62828; }
-        /* Amber (not the old #ef6c00 deep-orange, which read as a second red).
-           True amber needs dark text for legibility — override the white base. */
-        details.rock-pop > summary.rock-badge.rock-greasy { background: #ffb300; color: #1f1300; }
+        details.rock-pop { display: block; position: relative; margin: 0; }
+        /* Same slate grey + white as the low-cloud badge (user call 2026-06-06):
+           the old wet/greasy red+amber made the ⚠ glyph illegible (yellow-on-amber).
+           The "rock wet" / "rock greasy?" label carries the severity now. The
+           rock-wet / rock-greasy classes stay in the markup but are no longer
+           recoloured. */
+        details.rock-pop > summary.rock-badge { background: #455a64; color: #fff; font-size: 0.7rem; line-height: 1.15; padding: 0.1rem 0.4rem; border-radius: 999px; cursor: pointer; white-space: nowrap; list-style: none; display: inline-block; }
         details.rock-pop > summary.rock-badge::-webkit-details-marker { display: none; }
         details.rock-pop > summary.rock-badge::after { display: none !important; content: none !important; }
         details.rock-pop > ul {
