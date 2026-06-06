@@ -197,6 +197,7 @@ public static partial class SitePages
             """);
         body.Append(daySummary);
         body.Append(tilesHtml);
+        body.Append(RenderDryWindowCalculator(input, dayUtc, pwetStation));
         body.Append("</section>");
 
         // Page filename is set by RenderSiteCommand (index.html for today,
@@ -253,6 +254,126 @@ public static partial class SitePages
         return slugs.FirstOrDefault(s => input.PrecipCurrentByStation.ContainsKey(s))
                ?? slugs[0];
     }
+
+    /// <summary>
+    /// "Will it stay dry?" calculator for the overview day page. Two dropdowns
+    /// — set-off time + window length — driven by a small client-side grid of
+    /// the Phase 3p Gaussian-copula MC probability that the chosen window is
+    /// entirely dry (no hour ≥ 0.1 mm/h). The grid value is the start-hour
+    /// curve's <c>RawProduct</c>, which despite the legacy name IS the
+    /// per-(start, length) fraction of copula draws in which that window was
+    /// all-dry (see DryWindow3pPredictor.ProbDryWindowWithStartHours) — NOT an
+    /// iid product. So it answers the user's exact window and carries the
+    /// within-day wet/dry autocorrelation 3p models.
+    ///
+    /// 3p start-hour curves exist only at leads 24/48/72 (target = tomorrow →
+    /// +3), so this renders "" on today / +4 / +5. Length options are the
+    /// trained windows {3,4,6}h, and the length menu is filtered per start
+    /// (client-side, from the grid) so a window can't run past the end of the
+    /// daytime span. Times are shown in Europe/London local — the daytime
+    /// window is anchored at 09:00 local (matching the dry-window page copy),
+    /// so the earliest start = 09:00 and each later start is +1h; deriving the
+    /// label this way avoids a timezone lookup and is correct in BST and GMT.
+    /// </summary>
+    private static string RenderDryWindowCalculator(SiteInputs input, DateTime dayUtc, string station)
+    {
+        var version = DryWindowPhases.Phase3p.StartHourCurveVersion;
+        if (string.IsNullOrEmpty(version)) return "";
+
+        // Freshest forecast per (window, start) for this target day: smallest
+        // lead, newest made — mirrors the overview tiles' smallest-lead pick.
+        var rows = input.StartHourPredictions
+            .Where(s => s.Station == station
+                        && string.Equals(s.Version, version, StringComparison.Ordinal)
+                        && s.TargetDateUtc.Date == dayUtc.Date)
+            .GroupBy(s => (s.WindowHours, s.StartHourUtc))
+            .Select(g => g.OrderBy(s => s.LeadHours).ThenByDescending(s => s.PredictedAtUtc).First())
+            .ToList();
+        if (rows.Count == 0) return "";
+
+        int minStartUtc = rows.Min(r => r.StartHourUtc);
+        const int LocalDaytimeStartHour = 9; // matches the "09:00–18:00 local" copy
+        string Label(int startHourUtc, int addHours) =>
+            string.Create(Ci, $"{LocalDaytimeStartHour + (startHourUtc - minStartUtc) + addHours:00}:00");
+
+        // start (UTC, ascending) -> ordered list of {length, end-label, prob}.
+        var byStart = rows
+            .GroupBy(r => r.StartHourUtc)
+            .OrderBy(g => g.Key)
+            .Select(g => new
+            {
+                t = Label(g.Key, 0),
+                L = g.OrderBy(r => r.WindowHours)
+                     .Select(r => new { n = r.WindowHours, e = Label(g.Key, r.WindowHours), p = r.RawProduct })
+                     .ToList(),
+            })
+            .ToList();
+
+        var json = System.Text.Json.JsonSerializer.Serialize(new { starts = byStart });
+
+        var sb = new StringBuilder();
+        sb.Append("<section class=\"drywin-calc\">");
+        sb.Append("<h3>Will it stay dry?</h3>");
+        sb.Append("<p class=\"drywin-intro\">Pick when you'd set off and for how long — the chance it stays dry (no hour with ≥&#8201;0.1&#8201;mm of rain) right through that window, from the Phase&#160;3p copula simulation.</p>");
+        sb.Append("<div class=\"drywin-controls\">");
+        sb.Append("<label>Set off at <select class=\"dw-start\">");
+        for (int i = 0; i < byStart.Count; i++)
+            sb.Append(Ci, $"<option value=\"{i}\">{byStart[i].t}</option>");
+        sb.Append("</select></label>");
+        sb.Append("<label>For <select class=\"dw-len\"></select></label>");
+        sb.Append("</div>");
+        sb.Append("<p class=\"drywin-result\" aria-live=\"polite\"></p>");
+        sb.Append("<script type=\"application/json\" class=\"dw-data\">").Append(json).Append("</script>");
+        sb.Append(DryWindowCalcScript);
+        sb.Append("</section>");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Vanilla-JS for the dry-window calculator. Scoped to its own
+    /// <c>.drywin-calc</c> section via <c>document.currentScript</c>, so it is
+    /// self-contained per page and independent of the shared <c>chart.js</c>.
+    /// Populates the length menu from the selected start (so invalid
+    /// start+length pairs never appear) and writes the live result line.
+    /// </summary>
+    private const string DryWindowCalcScript = """
+        <script>
+        (function () {
+          var root = document.currentScript.closest('.drywin-calc');
+          if (!root) return;
+          var data;
+          try { data = JSON.parse(root.querySelector('.dw-data').textContent); } catch (e) { return; }
+          var startSel = root.querySelector('.dw-start');
+          var lenSel = root.querySelector('.dw-len');
+          var out = root.querySelector('.drywin-result');
+          function colour(p) { return p >= 0.7 ? '#2e7d32' : (p >= 0.4 ? '#b8860b' : '#c62828'); }
+          function fillLengths() {
+            var s = data.starts[startSel.value];
+            lenSel.innerHTML = '';
+            for (var i = 0; i < s.L.length; i++) {
+              var o = s.L[i];
+              var opt = document.createElement('option');
+              opt.value = i;
+              opt.textContent = o.n + ' hours (to ' + o.e + ')';
+              lenSel.appendChild(opt);
+            }
+          }
+          function update() {
+            var s = data.starts[startSel.value];
+            var o = s.L[lenSel.value];
+            if (!o) { out.textContent = ''; return; }
+            var pct = Math.round(o.p * 100);
+            out.innerHTML = 'Set off at <strong>' + s.t + '</strong> for <strong>' + o.n +
+              ' hours</strong>: <strong style="color:' + colour(o.p) + '">' + pct +
+              '%</strong> chance it stays dry.';
+          }
+          startSel.addEventListener('change', function () { fillLengths(); update(); });
+          lenSel.addEventListener('change', update);
+          fillLengths();
+          update();
+        })();
+        </script>
+        """;
 
     /// <summary>
     /// Day sub-nav for the home page — pill links labelled "Mon 4/5"

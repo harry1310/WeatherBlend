@@ -1082,6 +1082,19 @@ public static partial class SitePages
         }
         details.rock-pop > ul li { margin: 0; padding: 0.05rem 0; }
 
+        /* "Will it stay dry?" overview calculator (Phase 3p copula MC). Two
+           dropdowns + a live result line; the per-(start,length) probability
+           grid + JS are embedded per page by RenderDryWindowCalculator. */
+        .drywin-calc { margin: 1.25rem 0 0; padding: 0.85rem 1rem; border: 1px solid var(--pico-card-border-color); border-radius: 8px; background: var(--pico-card-sectioning-background-color); }
+        .drywin-calc h3 { margin: 0 0 0.25rem; font-size: 1.05rem; }
+        .drywin-calc .drywin-intro { margin: 0 0 0.6rem; font-size: 0.85rem; color: var(--pico-muted-color); }
+        .drywin-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 0.6rem 1rem; }
+        .drywin-controls label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.8rem; color: var(--pico-muted-color); }
+        /* width:auto + margin:0 override Pico's full-width, margin-bottom form
+           controls so the two selects sit inline on the row. */
+        .drywin-controls select { width: auto; min-width: 9rem; margin: 0; padding: 0.3rem 0.5rem; font-size: 0.95rem; }
+        .drywin-result { margin: 0.75rem 0 0; font-size: 1rem; min-height: 1.4rem; }
+
         /* Day-grouped home layout — one block per UTC day with a summary line
            above the per-hour tile grid. Top + bottom margin so days read as
            visually separated blocks; the overall page still scrolls naturally. */
