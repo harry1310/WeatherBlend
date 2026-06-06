@@ -2362,7 +2362,12 @@ public class SitePagesTests
         var dryHtml  = SitePages.RenderModels(input, "dry_window");
 
         tempHtml.IndexOf("v_lean").Should().BeLessThan(tempHtml.IndexOf("v_rich"));
-        rainHtml.IndexOf("v_lean_p").Should().BeLessThan(rainHtml.IndexOf("v_rich_p"));
+        // Precipitation lineup is 3o → 3c → 3a since 2026-06-06 (3a demoted
+        // from champion to the universal fallback). With only 3c + 3a in this
+        // fixture, the richer 3c (v_rich_p) now sits ABOVE the lean 3a
+        // (v_lean_p) — the reverse of the temperature lean-on-top case, and
+        // still driven by PhasePriority rather than list order.
+        rainHtml.IndexOf("v_rich_p").Should().BeLessThan(rainHtml.IndexOf("v_lean_p"));
         // Dry-window: the active phases come from ActivePhasePolicy. A
         // retired-phase summary ("3d-shape", here as "v_retired") is
         // filtered out entirely so v_lean_dw renders alone. Pin both:

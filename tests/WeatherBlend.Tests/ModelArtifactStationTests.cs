@@ -16,7 +16,9 @@ public class ModelArtifactStationTests
     /// pinned location back off disk, and the derived-champion resolver
     /// (<see cref="ModelArtifact.ResolveStationChampionVersion"/>) reads the
     /// phase — so a version that should resolve as champion must be seeded
-    /// with the target's champion phase ("3a" for precipitation).</summary>
+    /// with a phase in the target's lineup. Precipitation is a fallback chain
+    /// (3o → 3c → 3a, champion-first), so the highest-priority phase a station
+    /// has a bundle of wins.</summary>
     private static void SeedBundle(
         string root, string target, string station, string version,
         string phase, string location = "bonehill_rocks")
@@ -147,12 +149,12 @@ public class ModelArtifactStationTests
     }
 
     [Fact]
-    public void SetStationActive_replaces_list_and_champion_stays_the_3a_version()
+    public void SetStationActive_replaces_list_and_champion_follows_fallback_chain()
     {
         var root = FreshRoot();
         try
         {
-            // 3a-lean champion + 3c-rich challenger both Active.
+            // 3a-lean + 3c-rich both Active; no 3o bundle for this station.
             SeedBundle(root, "precipitation", "ea_bellever_dartmoor", "v3a_lean", "3a");
             SeedBundle(root, "precipitation", "ea_bellever_dartmoor", "v3c_rich", "3c");
             ModelArtifact.UpdateStationManifest(root, "precipitation", "ea_bellever_dartmoor", "v3a_lean");
@@ -163,10 +165,51 @@ public class ModelArtifactStationTests
             ModelArtifact.ResolveStationActive(root, "precipitation", "ea_bellever_dartmoor")
                 .Should().Equal("v3a_lean", "v3c_rich");
 
-            // The champion is derived: the newest Active version of the
-            // precipitation champion phase (3a) — the 3c challenger never
-            // becomes the headline even though it's Active.
+            // The champion is derived by walking the precipitation lineup
+            // champion-first (3o → 3c → 3a, 2026-06-06) and returning the
+            // first phase this station has an Active bundle of. With no 3o
+            // bundle here, 3c wins over 3a — exactly the per-station fallback
+            // that makes Bonehill 3o, Membury 3c, and Sennen 3a.
             ModelArtifact.ResolveStationChampionVersion(root, "precipitation", "ea_bellever_dartmoor")
+                .Should().Be("v3c_rich");
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void ResolveStationChampionVersion_prefers_3o_over_3c_and_3a()
+    {
+        var root = FreshRoot();
+        try
+        {
+            // Full Bonehill stack: 3o (champion phase) + 3c + 3a all Active.
+            SeedBundle(root, "precipitation", "ea_bellever_dartmoor", "v3a_lean", "3a");
+            SeedBundle(root, "precipitation", "ea_bellever_dartmoor", "v3c_rich", "3c");
+            SeedBundle(root, "precipitation", "ea_bellever_dartmoor", "v3o_oro", "3o");
+            ModelArtifact.UpdateStationManifest(root, "precipitation", "ea_bellever_dartmoor", "v3a_lean");
+            ModelArtifact.AppendStationVersion(root, "precipitation", "ea_bellever_dartmoor", "v3c_rich");
+            ModelArtifact.AppendStationVersion(root, "precipitation", "ea_bellever_dartmoor", "v3o_oro");
+            ModelArtifact.SetStationActive(root, "precipitation", "ea_bellever_dartmoor",
+                new[] { "v3a_lean", "v3c_rich", "v3o_oro" });
+
+            // 3o is first in the lineup, so it wins outright.
+            ModelArtifact.ResolveStationChampionVersion(root, "precipitation", "ea_bellever_dartmoor")
+                .Should().Be("v3o_oro");
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void ResolveStationChampionVersion_falls_back_to_3a_when_only_lean_trained()
+    {
+        var root = FreshRoot();
+        try
+        {
+            // Sennen / any new location: only the universal 3a fallback trains.
+            SeedBundle(root, "precipitation", "ea_trengwainton", "v3a_lean", "3a", "sennen_cove");
+            ModelArtifact.UpdateStationManifest(root, "precipitation", "ea_trengwainton", "v3a_lean");
+
+            ModelArtifact.ResolveStationChampionVersion(root, "precipitation", "ea_trengwainton")
                 .Should().Be("v3a_lean");
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }

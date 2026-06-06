@@ -81,10 +81,13 @@ public sealed class ModelMetadataRepository
     /// Per-station champion versions for the per-station manifest layout
     /// (<c>precipitation</c>, <c>temperature</c>). Returns an ordinal-keyed
     /// dict of (station-slug → champion-version), where the champion is
-    /// derived — the newest Active version of the target's phases.yaml
-    /// champion phase (<see cref="ModelArtifact.ResolveStationChampionVersion"/>).
-    /// Stations with no Active version of the champion phase are omitted.
-    /// Empty dict on a missing manifest.
+    /// derived by walking the target's phases.yaml lineup champion-first and
+    /// taking the newest Active version of the first phase the station has a
+    /// bundle of (<see cref="ModelArtifact.ResolveStationChampionVersion"/>).
+    /// For precipitation that lineup is a fallback chain (3o → 3c → 3a), so
+    /// the per-station champion phase varies by location. Stations with no
+    /// Active version of any lineup phase are omitted. Empty dict on a
+    /// missing manifest.
     /// </summary>
     public IReadOnlyDictionary<string, string> GetChampionsByStation(string target)
     {

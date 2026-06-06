@@ -67,47 +67,53 @@ targets:
 
   precipitation:
     phases:
-      # 3d ships as champion at lead 12h only (per-station ChampionByLead in
-      # StationEntry); 3a stays Current for 24/48/72/96/120 where 3d isn't
-      # trained. 3c keeps its challenger slot. 4a (dbarts BART, trained +
-      # predicted in WeatherProbabilistic, written to the same predictions
-      # tree) added 2026-05-09 as a cross-lead challenger; beats deployed
-      # 3a in all 9 (station × lead) cells tested (avg −5.7% Brier).
-      - id: "3a"
+      # Champion = 3o where it exists, falling back down the lineup per
+      # station: 3o → 3c → 3a. ResolveStationChampionVersion walks this
+      # list in order and returns the first phase the station has an Active
+      # bundle of, so Bonehill resolves to 3o, Membury to 3c (no Bonehill-
+      # only 3o), and Sennen / any new location to 3a (the universal floor).
+      # Lineup ORDER below is therefore the fallback preference — keep
+      # 3o, 3c, 3a contiguous and first, specialised challengers after.
+      #
+      # 3o (3c-oro, 4-station Bonehill pool: Bellever + Bovey + Hexworthy
+      # + Princetown) added 2026-05-25 in cleanup Phase 2. Rich (59) +
+      # 9 terrain + 42 upper-air = 110 features (multi-level pressure added
+      # in-place 2026-06-02; the decorrelated UA-route member of the 3-way 4b).
+      # Trained pooled across all 4 stations to give the terrain features
+      # cross-station diversity; bundle is saved per-station so predict-time
+      # plumbing matches 3a / 3c exactly. Bonehill-only — Membury 3o was
+      # rejected at the 2026-05-25 stage-1 bake-off (Membury terrain pool too
+      # homogeneous, +0.36% CRPS vs 3a — see project_3f_stage1_membury_
+      # bakeoff_2026-05-25.md). Promoted champion 2026-06-06: conservative on
+      # the 0.1mm trace-precip threshold that made 3a over-read P(wet).
+      - id: "3o"
         role: champion
         impl: dotnet
-        minValidTime: "2024-01-01"
+        locations: ["bonehill_rocks"]
       # 3c runs at BOTH locations. Membury: the only rich-precip challenger
-      # (3o was rejected there at the 2026-05-25 stage-1 bake-off). Bonehill:
-      # re-added 2026-05-31 — 3o (= 3c-oro) is the preferred Bonehill rich
-      # challenger, but 3c is kept active alongside it for now (its bundles
-      # were still live in the manifest, so this keeps them retrained rather
-      # than going stale). Revisit dropping Bonehill 3c once 3o is settled.
+      # (3o was rejected there at the 2026-05-25 stage-1 bake-off), so it is
+      # the champion-by-fallback for Membury. Bonehill: re-added 2026-05-31,
+      # kept active alongside 3o (its bundles were still live in the manifest,
+      # so this keeps them retrained rather than going stale).
       - id: "3c"
         role: challenger
         impl: dotnet
         locations: ["bonehill_rocks", "membury_devon"]
         minValidTime: "2024-01-01"
+      # 3a (lean P(wet ≥ 0.1mm)) — demoted from champion 2026-06-06; remains
+      # the universal fallback (no locations filter → trains at every
+      # location), so any location without a richer bundle (Sennen, new
+      # sites) still gets a precipitation champion.
+      - id: "3a"
+        role: challenger
+        impl: dotnet
+        minValidTime: "2024-01-01"
       - id: "3d"
         role: challenger
         impl: dotnet
         # Exact-runtime (raw S3 cycle archive) — bonehill_rocks only until
-        # a Membury-cell S3 archive backfill lands.
-        locations: ["bonehill_rocks"]
-      # 3o (3c-oro, 4-station Bonehill pool: Bellever + Bovey + Hexworthy
-      # + Princetown) added 2026-05-25 in cleanup Phase 2. Rich (59) +
-      # 9 terrain + 42 upper-air = 110 features (multi-level pressure added
-      # in-place 2026-06-02; the decorrelated UA-route member of the 3-way 4b).
-      # Trained pooled across all 4
-      # stations to give the terrain features cross-station diversity;
-      # bundle is saved per-station so predict-time plumbing matches
-      # 3a / 3c exactly. Bonehill-only — Membury 3o was rejected at
-      # the 2026-05-25 stage-1 bake-off (Membury terrain pool too
-      # homogeneous, +0.36% CRPS vs 3a — see project_3f_stage1_membury_
-      # bakeoff_2026-05-25.md).
-      - id: "3o"
-        role: challenger
-        impl: dotnet
+        # a Membury-cell S3 archive backfill lands. Lead-12h specialist;
+        # never a whole-cell champion, so it sits after 3a in the lineup.
         locations: ["bonehill_rocks"]
       # 4a became per-cell on 2026-05-11 (lead-pooled flavour
       # retired). One BART per (station, lead), matching 3a's

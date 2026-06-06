@@ -531,16 +531,30 @@ public static class ModelArtifact
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// The champion VERSION for a (target, station) — the newest Active
-    /// entry whose trained phase equals the target's phases.yaml champion
-    /// phase (<see cref="ActivePhasePolicy.ChampionPhase"/>). Replaces the
-    /// retired per-station <c>Current</c> pointer. Empty when the station
-    /// has no Active version of the champion phase.
+    /// The champion VERSION for a (target, station) — walks the target's
+    /// phases.yaml lineup champion-first (<see cref="ActivePhasePolicy.ByTarget"/>)
+    /// and returns the newest Active version of the FIRST phase the station
+    /// actually has a bundle of. This makes the champion a per-station
+    /// fallback chain rather than a single phase: precipitation is
+    /// 3o → 3c → 3a, so Bonehill stations resolve to 3o, Membury (no
+    /// Bonehill-only 3o) to 3c, and Sennen / any new location to 3a. The
+    /// phases.yaml <c>locations:</c> filter is enforced implicitly here —
+    /// a station only has a bundle of a phase that trains for its location.
+    /// Empty when the station has no Active version of any lineup phase.
     /// </summary>
     public static string ResolveStationChampionVersion(
         string modelsRoot, string target, string station)
-        => ResolveStationPhaseVersion(
-            modelsRoot, target, station, ActivePhasePolicy.ChampionPhase(target));
+    {
+        if (!ActivePhasePolicy.ByTarget.TryGetValue(target, out var lineup))
+            return "";
+        foreach (var phase in lineup)
+        {
+            var version = ResolveStationPhaseVersion(modelsRoot, target, station, phase);
+            if (!string.IsNullOrEmpty(version))
+                return version;
+        }
+        return "";
+    }
 
     /// <summary>
     /// The newest Active version of a specific <paramref name="phase"/> for

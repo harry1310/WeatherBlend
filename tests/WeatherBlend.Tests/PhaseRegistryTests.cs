@@ -279,7 +279,11 @@ public class PhaseRegistryTests
         // shape the pre-YAML code did.
         ActivePhasePolicy.ByTarget.Should().BeEquivalentTo(PhaseRegistry.Default.ByTarget);
         ActivePhasePolicy.IsActive("precipitation", "3a").Should().BeTrue();
-        ActivePhasePolicy.Priority("precipitation", "3a").Should().Be(0);
+        // 3o is the precipitation champion since 2026-06-06 (3a demoted to
+        // the universal fallback challenger). Champion → priority 0; 3a now
+        // sits behind 3o (0) and 3c (1).
+        ActivePhasePolicy.Priority("precipitation", "3o").Should().Be(0);
+        ActivePhasePolicy.Priority("precipitation", "3a").Should().Be(2);
     }
 
     // ---- min_valid_time parsing (2026-05-26) ------------------------------

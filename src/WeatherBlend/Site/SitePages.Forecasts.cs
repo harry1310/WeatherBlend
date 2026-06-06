@@ -411,15 +411,21 @@ public static partial class SitePages
         var latestPerValidByStation = new Dictionary<string, IReadOnlyList<PrecipForecastPoint>>(StringComparer.Ordinal);
         // Champion-phase-scoped peer of latestPerValid. The freshness tiebreak
         // candidate pool is restricted to rows whose phase matches the
-        // precipitation champion (3a) — 4a/4b re-predict more often and
+        // precipitation champion — 4a/4b re-predict more often and
         // were silently winning the all-phase tiebreak in latestPerValid,
         // killing the daily + hourly conformal tables (their rows have no
         // ConformalSetTag). Daily summary + hourly P(wet) tables read off
         // THIS list so chips populate consistently for every champion-phase
         // hour. Chart series stays on latestPerValid so the multi-phase
         // line overlay is unaffected. (2026-05-26 site review.)
+        //
+        // The champion phase is resolved PER STATION (2026-06-06): with the
+        // precipitation lineup now a fallback chain (3o → 3c → 3a), Bonehill
+        // stations are 3o while Membury is 3c. A single global champion phase
+        // here blanked Membury's daily/hourly rain tables. Derive it from each
+        // station's champion version (PrecipCurrentByStation → PhaseByVersion),
+        // the same resolution the home tiles use.
         var championLatestPerValidByStation = new Dictionary<string, IReadOnlyList<PrecipForecastPoint>>(StringComparer.Ordinal);
-        var championPrecipPhase = ActivePhasePolicy.ChampionPhase("precipitation");
 
         // Pre-compute the latest-per-(station, valid) lists up front so we
         // can derive the page-wide X axis window before rendering any chart.
@@ -443,9 +449,13 @@ public static partial class SitePages
                 .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
                 .OrderBy(r => r.ValidTimeUtc)
                 .ToList();
+            var stationChampPhase =
+                input.PrecipCurrentByStation.TryGetValue(station, out var stationChampVer)
+                && input.PhaseByVersion.TryGetValue(stationChampVer, out var stationChampPh)
+                    ? stationChampPh : "";
             championLatestPerValidByStation[station] = stationLeadRows
                 .Where(r => input.PhaseByVersion.TryGetValue(r.Version, out var ph)
-                            && string.Equals(ph, championPrecipPhase, StringComparison.Ordinal))
+                            && string.Equals(ph, stationChampPhase, StringComparison.Ordinal))
                 .GroupBy(r => r.ValidTimeUtc)
                 .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
                 .OrderBy(r => r.ValidTimeUtc)
