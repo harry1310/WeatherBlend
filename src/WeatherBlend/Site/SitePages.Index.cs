@@ -478,10 +478,21 @@ public static partial class SitePages
             pwetCell = string.Create(Ci, $"<div class=\"pwet\">P(wet) <strong style=\"color: {pwColor}\">{(pw.ProbWet * 100):0}%</strong>{rain}</div>");
         }
 
+        // Badges sit in their own stacked block directly under the time at the
+        // TOP of the tile — vertical column, left-aligned, one pill per line —
+        // rather than as flex children of the <header> row (which laid the
+        // time + both pills out left-to-right and overflowed onto the next
+        // tile once both fired). Emitted only when at least one badge exists
+        // so badge-free tiles don't carry an empty block.
+        string badgeBlock = (lowCloudBadge.Length == 0 && rockBadge.Length == 0)
+            ? ""
+            : $"""<div class="tile-badges">{lowCloudBadge}{rockBadge}</div>""";
+
         var tempColor = TemperatureColor(p.BlendTemperature);
         return string.Create(Ci, $"""
             <article class="forecast-card">
-              <header><h4>{p.ValidTimeUtc:HH:mm}Z</h4>{lowCloudBadge}{rockBadge}</header>
+              <header><h4>{p.ValidTimeUtc:HH:mm}Z</h4></header>
+              {badgeBlock}
               <div class="temp" style="--temp-color: {tempColor}">{p.BlendTemperature:0.0}°C</div>
               {feelsCell}
               {pwetCell}

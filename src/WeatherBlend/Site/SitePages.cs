@@ -1008,10 +1008,14 @@ public static partial class SitePages
            makes the inner panel's position:absolute anchor to it. The
            panel is invisible by default; details[open] flips it to
            visible. Click-to-toggle is the native <details> behaviour. */
-        /* Badges stack vertically under the tile time (block, not inline) so a
-           card with BOTH a low-cloud and a rock badge doesn't overflow its
-           width onto the next tile — rock sits on its own line under low-cloud. */
-        details.low-cloud-pop { display: block; position: relative; margin-top: 0.2rem; }
+        /* Badges live in a dedicated stacked block under the tile time (top of
+           the card), one pill per line. Previously they were flex children of
+           the <header> row, so the time + both pills laid out left-to-right and
+           a card with BOTH a low-cloud and a rock badge overflowed its width
+           onto the next tile. The column container + flex-start keeps each pill
+           on its own line, sized to its content. */
+        .forecast-card .tile-badges { display: flex; flex-direction: column; align-items: flex-start; gap: 0.25rem; margin: 0.2rem 0 0.35rem; }
+        details.low-cloud-pop { display: block; position: relative; margin-top: 0; }
         details.low-cloud-pop > summary.low-cloud-badge { background: #455a64; color: #fff; font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 999px; cursor: pointer; white-space: nowrap; list-style: none; display: inline-block; }
         /* Kill BOTH native marker and Pico's ::after chevron — Pico v2 adds
            the chevron via a background-image on summary::after, which the
@@ -1040,10 +1044,12 @@ public static partial class SitePages
         /* Rock surface / condensation badge (Phase P1) — same pill + pop-out
            idiom as the low-cloud badge. Red = condensation (rock wet), amber =
            potentially greasy (rock near dew point). */
-        details.rock-pop { display: block; position: relative; margin-top: 0.15rem; }
+        details.rock-pop { display: block; position: relative; margin-top: 0; }
         details.rock-pop > summary.rock-badge { color: #fff; font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 999px; cursor: pointer; white-space: nowrap; list-style: none; display: inline-block; }
         details.rock-pop > summary.rock-badge.rock-wet { background: #c62828; }
-        details.rock-pop > summary.rock-badge.rock-greasy { background: #ef6c00; }
+        /* Amber (not the old #ef6c00 deep-orange, which read as a second red).
+           True amber needs dark text for legibility — override the white base. */
+        details.rock-pop > summary.rock-badge.rock-greasy { background: #ffb300; color: #1f1300; }
         details.rock-pop > summary.rock-badge::-webkit-details-marker { display: none; }
         details.rock-pop > summary.rock-badge::after { display: none !important; content: none !important; }
         details.rock-pop > ul {
@@ -1203,7 +1209,14 @@ public static partial class SitePages
             return s + (ycfg.suffix || '');
           }
           // OADate (days since 1899-12-30) → Unix ms. Keeps server-side data tight.
-          function oaToMs(oa) { return (oa - 25569) * 86400000; }
+          // Snap to the nearest minute: the OADate fraction can't represent a
+          // whole hour exactly in a double, so (oa - 25569) * 86400000 lands a
+          // few tenths of a ms BELOW the true instant — e.g. 10:00:00 comes out
+          // as 09:59:59.9996, and getUTCHours() then floors it to 09, which is
+          // why adjacent hourly tooltips read 09:00 → 09:00 → 11:00. Our data is
+          // never finer than 15-min, so rounding to the minute is exact for real
+          // values and removes the float drift.
+          function oaToMs(oa) { return Math.round((oa - 25569) * 86400000 / 60000) * 60000; }
 
           function build(canvas) {
             if (!window.Chart) return;
