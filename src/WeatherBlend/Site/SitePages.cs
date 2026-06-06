@@ -1008,7 +1008,10 @@ public static partial class SitePages
            makes the inner panel's position:absolute anchor to it. The
            panel is invisible by default; details[open] flips it to
            visible. Click-to-toggle is the native <details> behaviour. */
-        details.low-cloud-pop { display: inline; position: relative; }
+        /* Badges stack vertically under the tile time (block, not inline) so a
+           card with BOTH a low-cloud and a rock badge doesn't overflow its
+           width onto the next tile — rock sits on its own line under low-cloud. */
+        details.low-cloud-pop { display: block; position: relative; margin-top: 0.2rem; }
         details.low-cloud-pop > summary.low-cloud-badge { background: #455a64; color: #fff; font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 999px; cursor: pointer; white-space: nowrap; list-style: none; display: inline-block; }
         /* Kill BOTH native marker and Pico's ::after chevron — Pico v2 adds
            the chevron via a background-image on summary::after, which the
@@ -1037,7 +1040,7 @@ public static partial class SitePages
         /* Rock surface / condensation badge (Phase P1) — same pill + pop-out
            idiom as the low-cloud badge. Red = condensation (rock wet), amber =
            potentially greasy (rock near dew point). */
-        details.rock-pop { display: inline; position: relative; margin-left: 0.25rem; }
+        details.rock-pop { display: block; position: relative; margin-top: 0.15rem; }
         details.rock-pop > summary.rock-badge { color: #fff; font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 999px; cursor: pointer; white-space: nowrap; list-style: none; display: inline-block; }
         details.rock-pop > summary.rock-badge.rock-wet { background: #c62828; }
         details.rock-pop > summary.rock-badge.rock-greasy { background: #ef6c00; }

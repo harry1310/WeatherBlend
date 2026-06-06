@@ -49,3 +49,17 @@ __pycache__/
 reports/4way_bakeoff_*.csv
 reports/3g_source_bakeoff_*.csv
 reports/3a_vs_3e_daytime_diagnostic.csv
+
+# Bake-off / experiment run logs + reports (research artefacts, regenerable;
+# results captured in memory). Cleanup 2026-06-06.
+reports/ua_ab*/
+reports/*_bakeoff_*.txt
+reports/cloud_cape_baseline_*.txt
+reports/cloud_samerows_*.txt
+reports/rock_lw_*.txt
+reports/rock_nwp_lw_*.txt
+reports/bonehill_ua_test.log
+reports/dispatch_mslp_lw_backfill.log
+testrun.log
+TestResults/
+*wb-smoke-out*.txt

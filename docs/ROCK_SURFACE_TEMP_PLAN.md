@@ -1,7 +1,12 @@
 # Rock surface temperature + condensation module — design plan
 
-Status: **design / not built.** Drafted 2026-06-02. Companion to the
-deep-research survey (memory `project_rock_surface_temp_condensation`).
+Status: **P0 spike validated; not yet wired into production (no P1 derived field).**
+Drafted 2026-06-02. Companion to the deep-research survey (memory
+`project_rock_surface_temp_condensation`). The `scripts/rock_temp_spike.py`
+Force-Restore spike passes all 5 physical checks; its LW term was GFS-calibrated
+2026-06-04 (§3 — warm bias removed). Next concrete step is **P1** (§8): the derived
+`RockSurfaceTempPipeline` + predictions write. Absolute condensation rate still
+needs on-site truth (no logger/IR yet).
 
 ## 1. Why
 
@@ -59,21 +64,39 @@ G_net = (1 − α)·SW↓                    absorbed shortwave        [have: sh
 - **sky-view factor `Fsky` < 1** multiplies the longwave loss for a boulder field
   (neighbouring boulders block part of the cold sky) — a Bonehill-specific knob
 
-## 3. Longwave parameterisation (no LW field in our data)
+## 3. Longwave parameterisation (GFS-calibrated 2026-06-04)
 
-We have shortwave (`shortwave_radiation` element) but **no downwelling longwave**.
-Parameterise it the way METRo does in "manual mode":
+LW↓ is parameterised (there is still no *full-coverage* LW forecast — see below).
+The spike implements Brutsaert clear-sky + a linear cloud enhancement:
 
 ```
-LW↓ = εsky · σ · Ta⁴,    εsky = εclear · (1 + k·C²)
-εclear = 0.23 + 0.484·√(e_a/100)     (Brunt; e_a = vapour pressure in Pa from Td)
-C = total cloud fraction (0..1),  k ≈ 0.20–0.26   (cloud longwave enhancement)
+LW↓   = εsky · σ · Ta⁴
+εclear = 1.24 · (e_a/Ta)^(1/7)                  (Brutsaert; e_a in hPa from Td)
+εsky   = clip(k_clear·εclear + k_cloud·(1−εclear)·C, 0, 1)
+C      = total cloud fraction (0..1)
 ```
 
-This is the single biggest physics dependency on the **cloud blender**, which is
-our weakest element model (see §9). Options: drive `C` from the `cloud_cover`
-element blend, or from a raw/ensemble NWP cloud, or (later) the UA-improved
-cloud blender if the `cloud-ua-bakeoff` shows a win.
+**Calibrated to GFS DLWRF (2026-06-04).** We now collect GFS downwelling longwave
+(see below); a least-squares fit of LW↓ to it gave **k_clear≈1.0** (Brutsaert
+clear-sky was already right) but **k_cloud≈0.54** — the original full-to-1.0 cloud
+enhancement over-stated cloudy-sky LW by **~22 W/m²**, a warm bias that under-cooled
+nights and under-predicted condensation. `lw_cloud_k=0.54` removes the bias
+(resid −0.3 W/m²) at full coverage, lifts soil-rail directional tracking (0.771→0.795),
+and roughly **halves the condensation flag's sensitivity to cloud-blend error**
+(flip rate 12%→6% under a ±15% cloud error) — i.e. it *reduces* the cloud-blender
+dependency that used to be the model's biggest risk (§9). Baked into the spike
+PARAMS (`--lw-cloud-k` to override; 1.0 = raw Brunt).
+
+**NWP LW now collected, but GFS-only and used to CALIBRATE, not drive.**
+`DownwardLongwaveRadiation` comes from the GFS exact archive (DLWRF, leads 1–120h
+at 10 points, hourly-sparse beyond 24h; OM/GEFS/ECMWF expose no LW). It is the
+calibration *target* above, not a wholesale driver (50% hourly coverage,
+single-model, 10km-orography caveat). A param+NWP-LW blend (use NWP where present)
+is an optional future refinement.
+
+Drive `C` from the `cloud_cover` element blend (now beats best-single ~3–4% and
+mean-of-NWPs ~7–13%, +CAPE at 24h). **Layered (low/mid/high) LW is a dead end** —
+the layer fields are null on the historical forecast archive (§9).
 
 ## 4. Inputs → existing fields
 
@@ -83,15 +106,19 @@ cloud blender if the `cloud-ua-bakeoff` shows a win.
 | C (cloud)   | `cloud_cover` element (or NWP)            | LW↓ cloud enhancement; weakest input |
 | Ta          | temperature blend (2b/2d)                 | LW↓ (σTa⁴), convective term |
 | V           | wind (element `wind` / NWP 10 m)          | convective coefficient h(V) |
-| e_a / RH/Td | humidity → vapour pressure (Magnus from RH+T, or Td) | **LW↓ clear-sky emissivity (Brunt, §3)** *and* the condensation margin |
+| Td (+ e_a) | **NWP dew point directly** (`DewPoint2m`, per-model, 0% null) | the condensation margin `m = Ts − Td` *and* LW↓ clear-sky emissivity (Brunt, §3; e_a = vapour pressure from Td via Magnus) |
 
-So humidity enters **twice**: it sets the clear-sky longwave emissivity (moister
-air → higher εclear → more LW↓ → less nighttime cooling), and it is the dew-point
-side of the condensation comparison `m = Ts − Td`. All of SW↓, C, Ta are streams
-`FeelsLikePredictPipeline` already loads (`temperature`, `ShortwaveRadiation`,
-`CloudCover` keyed by `(lead, valid)`); add wind + humidity. Note the `humidity`
-element blender is the natural RH source (its skill: good at 24h, thin past
-that — see §9).
+**Use NWP dew point directly — do NOT back-calculate from the RH blender.** Dew
+point is exactly what we need (margin + vapour pressure) and every model supplies
+it at 0% null. Deriving it from the `humidity` blender's RH + the temperature
+blend would compound RH-error and temp-error through Magnus, for no gain — the
+humidity blender targets RH only because that was chosen for the feels-like/UTCI
+work. Dew point is smooth and well-forecast, and the humidity-blend finding
+(barely beats best-single past 24h, see §9) suggests a dedicated dew-point *blend*
+buys little — so **best-single or mean NWP dew point** is the simple default; a
+small dew-point blend is an optional refinement, not a prerequisite. So humidity
+enters the model **twice** (LW emissivity + the margin), both from Td directly.
+SW↓, C, Ta are streams `FeelsLikePredictPipeline` already loads; add wind + Td.
 
 ## 5. Granite parameters & calibration
 
@@ -155,19 +182,25 @@ times) and turns a binary flag into a calibrated probability.
 
 ## 9. Risks / open questions
 
-- **Cloud-blender weakness feeds the most important term.** LW↓ (hence
-  nighttime cooling, hence dew) depends on cloud, our least-skilled element
-  model. Improving cloud (the `cloud-ua-bakeoff`) is complementary to this
-  module, not separate. Consider driving LW from raw/ensemble cloud if the
-  blend underperforms.
-- **LW parameterisation error.** Brunt + cloud-enhancement is approximate;
-  validate the implied `LW↓` against ERA5's longwave if we ingest it.
-- **Humidity input quality.** Humidity drives both the clear-sky LW↓
-  emissivity and the dew-point margin. The `humidity` element blender is the
-  most *accurate* element absolutely (~3% RH MAE at 24h) but its blending skill
-  is thin and goes slightly negative past 24h (loses to the best single model at
-  48/72h). For the LW term this is low-stakes (εclear is weakly sensitive to RH);
-  for the margin it matters more — consider the best-single NWP RH at long lead.
+- **Cloud-blender weakness feeds the most important term — LARGELY MITIGATED
+  (2026-06-04).** The GFS calibration of `k_cloud` (1.0→0.54, §3) roughly halved
+  the condensation flag's sensitivity to cloud-blend error (flip 12%→6% under ±15%
+  cloud error), so LW↓ now leans on cloud far less. The cloud blender also improved
+  (beats best-single ~3-4%, +CAPE@24h). Residual exposure is small; not a blocker.
+- **LW parameterisation error — VALIDATED & DEBIASED (2026-06-04).** Validated the
+  implied `LW↓` against **GFS DLWRF** (ERA5 has no LW via Open-Meteo, so GFS is the
+  reference) and recalibrated to remove a ~22 W/m² warm bias (§3). Residual RMSE
+  ~26 W/m² remains (a single linear `k_cloud` can't capture the nonlinear cf→LW
+  relationship). A truly clean accuracy check would still want ERA5 `strd` (CDS) or
+  field IR; the layered-cloud refinement that would cut the residual is BLOCKED —
+  low/mid/high cloud is null on the historical forecast archive (only live OM rows
+  and GFS-low carry it), so it can't be fit historically or driven in production.
+- **Dew-point source.** Taken **directly from the NWPs** (`DewPoint2m`, 0% null),
+  not back-calculated from the RH blender. It drives both the clear-sky LW↓
+  emissivity (low-stakes — εclear is weakly sensitive to e_a) and the condensation
+  margin (matters more). The humidity blender's RH skill is thin past 24h (loses
+  to best-single at 48/72h), which is why a dew-point *blend* is unlikely to beat
+  best-single/mean NWP dew point — start with the simple aggregate.
 - **Sky-view for an all-aspect boulder field.** Bonehill faces every
   direction (aspect ~averages out per the user), but boulder mutual-shading
   reduces sky-view — a single `Fsky` is a simplification.
