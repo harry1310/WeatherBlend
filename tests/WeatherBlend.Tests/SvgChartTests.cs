@@ -101,6 +101,39 @@ public class SvgChartTests
     }
 
     [Fact]
+    public void RenderChartJs_emits_xKind_hour_for_ClockHour_axis()
+    {
+        // The dry-window start-hour curve sets XAxis = ClockHour so the JS
+        // treats X as a plain hour-of-day (no OADate conversion) and labels
+        // ticks/tooltips "HH:00Z". Its FormatX ("HH:00Z") would otherwise
+        // probe as "datetime" and the JS would mangle the hour via oaToMs.
+        var spec = SimpleSpec() with
+        {
+            XAxis = ChartXAxis.ClockHour,
+            FormatX = h => $"{Math.Round(h):00}:00Z",
+            Series = new[]
+            {
+                new LineSeries("+24h", "#1e88e5",
+                    new (double, double)[] { (9.0, 58.0), (10.0, 61.0), (11.0, 55.0) }),
+            },
+        };
+        var cfg = ExtractCjsConfig(LineChartRenderer.RenderChartJs(spec));
+
+        cfg.GetProperty("xKind").GetString().Should().Be("hour");
+        // Points pass through unchanged — the hour value is the X, not an OADate.
+        cfg.GetProperty("datasets")[0].GetProperty("points")[0][0].GetDouble().Should().Be(9.0);
+    }
+
+    [Fact]
+    public void RenderChartJs_xKind_falls_back_to_probe_for_Auto_axis()
+    {
+        // Default (Auto) keeps the existing probe behaviour: a date-only
+        // FormatX → "date", so every existing OADate chart is unchanged.
+        var cfg = ExtractCjsConfig(LineChartRenderer.RenderChartJs(SimpleSpec()));
+        cfg.GetProperty("xKind").GetString().Should().Be("date");
+    }
+
+    [Fact]
     public void RenderChartJs_returns_static_SVG_when_every_series_is_empty()
     {
         var spec = new LineChartSpec

@@ -1196,8 +1196,11 @@ public static partial class SitePages
     public static string ChartScript() => """
         (function () {
           const PAD = n => String(n).padStart(2, '0');
-          function fmtDate(ms, kind) {
-            const d = new Date(ms);
+          function fmtDate(v, kind) {
+            // 'hour' axis: v is a plain hour-of-day number (0-23), not a ms
+            // timestamp — label it as a clock time.
+            if (kind === 'hour') return PAD(Math.round(v)) + ':00Z';
+            const d = new Date(v);
             const md = PAD(d.getUTCMonth() + 1) + '-' + PAD(d.getUTCDate());
             if (kind === 'datetime') return md + ' ' + PAD(d.getUTCHours()) + 'Z';
             return md;
@@ -1227,10 +1230,13 @@ public static partial class SitePages
 
             const ycfg = { dec: cfg.yDec, suffix: cfg.ySuffix, trim: cfg.yTrim };
             const xKind = cfg.xKind || 'date';
+            // Date/datetime X arrives as an OADate and converts to Unix ms;
+            // the 'hour' axis is already a plain number, so pass it through.
+            const xVal = x => xKind === 'hour' ? x : oaToMs(x);
 
             const datasets = cfg.datasets.map(ds => ({
               label: ds.label,
-              data: ds.points.map(p => ({ x: oaToMs(p[0]), y: p[1] })),
+              data: ds.points.map(p => ({ x: xVal(p[0]), y: p[1] })),
               borderColor: ds.color,
               // Ribbon fill (added 2026-05-27 for the rainfall_amount 3f
               // chart): when the server-side LineChartSpec.Ribbons names
@@ -1275,8 +1281,8 @@ public static partial class SitePages
                 ann.bands.forEach((b, i) => {
                   annoCfg['band' + i] = {
                     type: 'box',
-                    xMin: oaToMs(b[0]),
-                    xMax: oaToMs(b[1]),
+                    xMin: xVal(b[0]),
+                    xMax: xVal(b[1]),
                     yMin: -Infinity, yMax: Infinity,
                     backgroundColor: ann.bandColor || 'rgba(33,150,243,0.18)',
                     borderWidth: 0,
@@ -1287,8 +1293,8 @@ public static partial class SitePages
               if (ann.todayX != null) {
                 annoCfg['today'] = {
                   type: 'line',
-                  xMin: oaToMs(ann.todayX),
-                  xMax: oaToMs(ann.todayX),
+                  xMin: xVal(ann.todayX),
+                  xMax: xVal(ann.todayX),
                   borderColor: 'rgba(102,102,102,0.7)',
                   borderWidth: 1.25,
                   borderDash: [4, 4],
@@ -1327,7 +1333,7 @@ public static partial class SitePages
                       mode: 'x',
                     },
                     limits: cfg.xMin != null && cfg.xMax != null
-                      ? { x: { min: oaToMs(cfg.xMin), max: oaToMs(cfg.xMax) } }
+                      ? { x: { min: xVal(cfg.xMin), max: xVal(cfg.xMax) } }
                       : undefined,
                   },
                   tooltip: {
@@ -1349,11 +1355,15 @@ public static partial class SitePages
                     // Server-supplied min/max pin the X axis so multiple charts
                     // in a section share the same time window. When unset, fall
                     // back to Chart.js's per-chart auto-scaling.
-                    min: cfg.xMin != null ? oaToMs(cfg.xMin) : undefined,
-                    max: cfg.xMax != null ? oaToMs(cfg.xMax) : undefined,
+                    min: cfg.xMin != null ? xVal(cfg.xMin) : undefined,
+                    max: cfg.xMax != null ? xVal(cfg.xMax) : undefined,
                     title: { display: !!cfg.xLabel, text: cfg.xLabel || '' },
                     ticks: {
                       autoSkip: true, maxTicksLimit: 8,
+                      // Hour axis: force integer-spaced ticks so two adjacent
+                      // ticks can't both round to the same "HH:00Z" label (the
+                      // duplicate-label bug the SVG renderer had).
+                      precision: xKind === 'hour' ? 0 : undefined,
                       font: { family: 'ui-monospace, monospace', size: 10 },
                       callback: v => fmtDate(v, xKind),
                     },

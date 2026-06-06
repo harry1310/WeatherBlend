@@ -20,12 +20,27 @@ public sealed record LineSeries(
     bool PointsOnly = false,
     bool Dashed = false);
 
+/// <summary>
+/// How the Chart.js renderer should interpret + label X values.
+/// <c>Auto</c> (default) treats X as an OADate and picks "date" / "datetime"
+/// by probing <see cref="LineChartSpec.FormatX"/>. <c>ClockHour</c> treats X
+/// as a plain hour-of-day number (0–23) on a linear axis — used by the
+/// dry-window start-hour curve, whose lines overlay several forecast horizons
+/// on a shared time-of-day axis, so the points are NOT datetimes.
+/// </summary>
+public enum ChartXAxis { Auto, ClockHour }
+
 public sealed record LineChartSpec
 {
     public required string Title { get; init; }
     public required string XLabel { get; init; }
     public required string YLabel { get; init; }
     public required IReadOnlyList<LineSeries> Series { get; init; }
+
+    /// <summary>X-axis interpretation for the Chart.js renderer. See
+    /// <see cref="ChartXAxis"/>. Default <c>Auto</c> keeps every existing
+    /// OADate chart unchanged.</summary>
+    public ChartXAxis XAxis { get; init; } = ChartXAxis.Auto;
 
     public int Width { get; init; } = 720;
     public int Height { get; init; } = 320;
@@ -251,7 +266,11 @@ public static class LineChartRenderer
         if (spec.Series.All(s => s.Points.Count == 0))
             return EmptyChart(spec);
 
-        var xKind = ProbeXKind(spec.FormatX);
+        // ClockHour overrides the probe — its FormatX ("HH:00Z") would
+        // otherwise probe as "datetime" and the JS would run oaToMs on a raw
+        // hour number. "hour" tells the JS to treat X linearly (no OADate
+        // conversion) and label it "HH:00Z".
+        var xKind = spec.XAxis == ChartXAxis.ClockHour ? "hour" : ProbeXKind(spec.FormatX);
         var (yDec, ySuffix, yTrim) = ProbeYFormat(spec.FormatY);
 
         // Build datasets and remember each kept series's name → final index

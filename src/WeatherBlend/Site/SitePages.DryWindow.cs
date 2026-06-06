@@ -436,7 +436,10 @@ public static partial class SitePages
                 .GroupBy(p => p.StartHourUtc)
                 .Select(g => g.OrderByDescending(p => p.PredictedAtUtc).First())
                 .OrderBy(p => p.StartHourUtc)
-                .Select(p => ((double)p.StartHourUtc, p.RawProduct))
+                // Y pre-scaled to 0-100: the Chart.js path formats the raw
+                // value (no *100), so the points carry the percentage and
+                // FormatY is a bare "{v}%".
+                .Select(p => ((double)p.StartHourUtc, p.RawProduct * 100.0))
                 .ToList();
             series.Add(new LineSeries(
                 Name: string.Create(Ci, $"+{lead}h · {cell.TargetDateUtc:ddd dd MMM}"),
@@ -454,12 +457,16 @@ public static partial class SitePages
             YLabel = "P(dry block starts here)",
             Series = series,
             Height = 300,
+            // X is a plain hour-of-day (0-23), shared across forecast-horizon
+            // lines — NOT a datetime. ClockHour keeps the JS from running the
+            // OADate conversion and labels ticks/tooltips as "HH:00Z".
+            XAxis = ChartXAxis.ClockHour,
             FormatX = h => string.Create(Ci, $"{Math.Round(h):00}:00Z"),
-            FormatY = v => string.Create(Ci, $"{v * 100:0}%"),
+            FormatY = v => string.Create(Ci, $"{v:0}%"),
         };
         return string.Create(Ci, $"""
             <figure>
-              {LineChartRenderer.Render(spec)}
+              {LineChartRenderer.RenderChartJs(spec)}
               <figcaption class="skill-line">Monte-Carlo P(an {window}-hour dry block runs from each start hour) — one line per forecast horizon, soonest target day shown. The peak is the best time to set off; the height is how likely it stays dry. Each hour is its own probability, so the lines need not sum to the daily "any dry window" figure.</figcaption>
             </figure>
             """);
