@@ -270,10 +270,11 @@ public static partial class SitePages
     /// +3), so this renders "" on today / +4 / +5. Length options are the
     /// trained windows {3,4,6}h, and the length menu is filtered per start
     /// (client-side, from the grid) so a window can't run past the end of the
-    /// daytime span. Times are shown in Europe/London local — the daytime
-    /// window is anchored at 09:00 local (matching the dry-window page copy),
-    /// so the earliest start = 09:00 and each later start is +1h; deriving the
-    /// label this way avoids a timezone lookup and is correct in BST and GMT.
+    /// daytime span. Times are shown in UTC with a Z to match the overview
+    /// tiles, the start-hour chart and every forecast page (the whole site
+    /// labels displayed clock times in UTC). The daytime window itself is still
+    /// defined as 09:00–18:00 local, so the UTC start options shift by an hour
+    /// between BST and GMT — same as the existing start-hour chart axis.
     /// </summary>
     private static string RenderDryWindowCalculator(SiteInputs input, DateTime dayUtc, string station)
     {
@@ -291,10 +292,14 @@ public static partial class SitePages
             .ToList();
         if (rows.Count == 0) return "";
 
-        int minStartUtc = rows.Min(r => r.StartHourUtc);
-        const int LocalDaytimeStartHour = 9; // matches the "09:00–18:00 local" copy
+        // All displayed clock times on the site are UTC with a Z (overview
+        // tiles, start-hour chart, every forecast page) — match that so the
+        // calculator agrees with the tiles right above it. The daytime window
+        // is still DEFINED as 09:00–18:00 local; in UTC that's 08:00–17:00Z in
+        // BST / 09:00–18:00Z in GMT, so the start options shift seasonally
+        // (exactly like the existing start-hour chart axis).
         string Label(int startHourUtc, int addHours) =>
-            string.Create(Ci, $"{LocalDaytimeStartHour + (startHourUtc - minStartUtc) + addHours:00}:00");
+            string.Create(Ci, $"{startHourUtc + addHours:00}:00Z");
 
         // start (UTC, ascending) -> ordered list of {length, end-label, prob}.
         var byStart = rows
