@@ -75,8 +75,18 @@ public static partial class SitePages
             .Where(p => p.LeadHours == lead)
             .OrderBy(p => p.ValidTimeUtc)
             .ToList();
+        // Dedupe to ONE row per ValidTime — newest ModelVersion, then freshest
+        // PredictedAtUtc. Without this, when the wind_direction (mvn) tree holds
+        // >1 version (e.g. straddling a Sunday retrain) the "MVN speed" line below
+        // plots every version per valid and the chart zig-zags between the two
+        // versions' lines (observed 2026-06-08 after the 06-07 retrain landed a
+        // second wind_mvn version). Mirrors the direction-grid dedupe at byHour
+        // and the blend-line dedupe in byPhase.
         var mvnAtLead = input.WindDirectionPredictions
             .Where(p => p.LeadHours == lead)
+            .GroupBy(p => p.ValidTimeUtc)
+            .Select(g => g.OrderByDescending(r => r.Version, StringComparer.Ordinal)
+                          .ThenByDescending(r => r.PredictedAtUtc).First())
             .OrderBy(p => p.ValidTimeUtc)
             .ToList();
 
