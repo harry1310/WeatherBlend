@@ -149,40 +149,93 @@ public static partial class SitePages
         content.Append("""
               <hgroup>
                 <h2>Skill — wind</h2>
-                <p>Rolling MAE for blended wind speed and circular MAE for direction —
-                   both scored against Dunkeswell SYNOP truth (MIDAS Open station 01383).</p>
+                <p>Rolling MAE for blended wind speed (scored vs ERA5 by element-verify)
+                   and circular MAE for direction (wind_mvn, vs Dunkeswell SYNOP).</p>
               </hgroup>
             """);
 
-        content.Append("<h3>Speed MAE (rolling, Dunkeswell truth)</h3>");
+        content.Append("<h3>Speed MAE (rolling, ERA5 truth)</h3>");
         content.Append(RenderWindSpeedSkillBlock(input));
 
         content.Append("<hr/><h3>Direction MAE (circular, rolling, Dunkeswell truth)</h3>");
         content.Append(RenderWindDirectionSkillBlock(input));
 
-        content.Append("<hr/><h3>CI calibration (wind_mvn)</h3>");
-        content.Append(RenderWindCalibrationBlock(input));
-
         content.Append("</section>");
         return WrapPage(input, "Skill — wind", "skill", content.ToString());
     }
 
-    /// <summary>Rolling MAE chart for wind speed — one line per active
-    /// phase (wind champion + wind_speed_lgb + wind_blend) + a baseline
-    /// for NWP-mean. Empty-state until the verify pipeline accumulates
-    /// MAE rows for these phases (first cycles post-Sunday-retrain).</summary>
+    /// <summary>Rolling MAE chart(s) for wind speed — per lead, one line per
+    /// phase (wind champion + wind_speed_lgb + wind_blend + wind_gust_lgb gust).
+    /// Driven from <see cref="SiteInputs.VerifyHistory"/>: each element-verify run
+    /// writes an <c>element_wind</c> / <c>element_wind_gust</c> file (AsOfUtc +
+    /// per-(phase, lead) BlendMetric in m/s), so plotting BlendMetric over AsOfUtc
+    /// is the rolling-MAE-over-time series. Renders the empty-state per lead until
+    /// element-verify rows accumulate. MAE shown in mph to match the forecast page.</summary>
     private static string RenderWindSpeedSkillBlock(SiteInputs input)
     {
-        // TODO when verify rows for wind speed accumulate: build per-phase
-        // LineSeries from input.RollingMae (extend to carry "wind_speed"
-        // target rows), render via LineChartRenderer.RenderChartJs. Same
-        // shape as RenderRollingMaeBlock for temperature. For now the
-        // empty-state is the contract: structure exists, lines arrive
-        // when data lands.
-        return RenderEmptyChart(
-            "Wind speed MAE (mph) — rolling 30-day",
-            "Verify rows accumulating. First Sunday retrain after 2026-05-31 will populate wind_speed_lgb and wind_blend lines; " +
-            "the existing wind (ERA5 champion) line lands as soon as verify scores it against Dunkeswell SYNOP truth.");
+        // Flatten every element_wind / element_wind_gust verify row to a point.
+        var pts = input.VerifyHistory
+            .Where(f => f.Target is "element_wind" or "element_wind_gust")
+            .SelectMany(f => f.Rows.Select(r => (
+                AsOf: f.AsOfUtc,
+                Phase: string.IsNullOrEmpty(r.Phase) ? r.ModelVersion : r.Phase,
+                Lead: r.LeadHours,
+                MaeMph: r.BlendMetric * MsToMph)))
+            .ToList();
+
+        if (pts.Count == 0)
+            return RenderEmptyChart(
+                "Wind speed MAE (mph) — rolling",
+                "No element-verify rows yet. Lines (wind champion / wind_speed_lgb / wind_blend / "
+                + "wind_gust_lgb gust) populate per lead once element-verify scores these phases against ERA5.");
+
+        // Phase → (label, colour). Unknown phases fall through to a neutral grey.
+        static (string Label, string Color) PhaseStyle(string phase) => phase switch
+        {
+            "wind"           => ("wind (champion)", "#6a1b9a"),
+            "wind_speed_lgb" => ("wind_speed_lgb",  "#1976d2"),
+            "wind_blend"     => ("wind_blend",      "#2e7d32"),
+            "wind_gust_lgb"  => ("wind_gust_lgb gust", "#ff9800"),
+            _                 => (phase,            "#9e9e9e"),
+        };
+
+        double xMax = pts.Max(p => p.AsOf).ToOADate();
+        double xMin = xMax - 30.0;
+
+        var content = new StringBuilder();
+        foreach (var lead in new[] { 24, 48, 72 })
+        {
+            var leadPts = pts.Where(p => p.Lead == lead).ToList();
+            content.Append(Ci, $"<h4>Lead +{lead}h</h4>");
+            if (leadPts.Count == 0)
+            {
+                content.Append(RenderEmptyChart($"Wind speed MAE — lead {lead}h", "No scored rows at this lead yet."));
+                continue;
+            }
+            var series = new List<LineSeries>();
+            foreach (var phase in leadPts.Select(p => p.Phase).Distinct().OrderBy(p => p, StringComparer.Ordinal))
+            {
+                var (label, color) = PhaseStyle(phase);
+                var line = leadPts.Where(p => p.Phase == phase)
+                    .OrderBy(p => p.AsOf)
+                    .Select(p => (X: p.AsOf.ToOADate(), Y: p.MaeMph))
+                    .ToList();
+                if (line.Count > 0) series.Add(new LineSeries(label, color, line));
+            }
+            content.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
+            {
+                Title = $"Wind speed MAE — lead +{lead}h (mph)",
+                XLabel = "Verify date (UTC)",
+                YLabel = "MAE (mph)",
+                Series = series,
+                FormatX = v => DateTime.FromOADate(v).ToString("MM-dd", Ci),
+                FormatY = v => v.ToString("0.00", Ci),
+                TodayLineX = input.GeneratedAtUtc.ToOADate(),
+                XMin = xMin,
+                XMax = xMax,
+            }));
+        }
+        return content.ToString();
     }
 
     /// <summary>Rolling circular MAE chart for wind direction —
@@ -194,24 +247,6 @@ public static partial class SitePages
             "Direction verification arrives once wind_mvn predictions land on R2 " +
             "(first Sunday retrain after 2026-05-31). Circular MAE is min(|err|, 360 - |err|) " +
             "averaged over the rolling window.");
-    }
-
-    /// <summary>α' calibration coverage for wind_mvn — direction Ci95 +
-    /// speed Ci95 should both hover near 0.95 if the per-lead α' grid-fit
-    /// on val generalised. Surfaces calibration drift before MAE does.</summary>
-    private static string RenderWindCalibrationBlock(SiteInputs input)
-    {
-        return """
-            <div class="chart-empty-box">
-              <p>
-                Coverage metrics will appear here once wind_mvn predictions
-                are scored against Dunkeswell truth. Targets: direction
-                Ci95 coverage ≈ 0.95, speed Ci95 coverage ≈ 0.95.
-                Anything &lt; 0.90 or &gt; 0.99 sustained over a week
-                triggers a calibration re-fit.
-              </p>
-            </div>
-            """;
     }
 
     /// <summary>
