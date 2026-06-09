@@ -398,6 +398,12 @@ jobs:
         id: train_wind
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_wind == 'true'
         continue-on-error: true
+        # WB_GUARD_ROWS_DELTA_OVERRIDE — one-time row-band relax for the floor-drop
+        # window change (see ElementTrainerHarness.ResolveElementTolerances). Empty
+        # by default → ±30%; set via the guard_rows_delta dispatch input for the
+        # single run that resets the baseline, then leave empty.
+        env:
+          WB_GUARD_ROWS_DELTA_OVERRIDE: ${{ github.event.inputs.guard_rows_delta }}
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target wind
@@ -422,6 +428,10 @@ jobs:
         id: train_cloud
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_cloud_cover == 'true'
         continue-on-error: true
+        # WB_GUARD_ROWS_DELTA_OVERRIDE — one-time row-band relax for the UKMO
+        # required→optional window change (rows grow back to ~2024-02).
+        env:
+          WB_GUARD_ROWS_DELTA_OVERRIDE: ${{ github.event.inputs.guard_rows_delta }}
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target cloud-cover
@@ -434,6 +444,9 @@ jobs:
         id: train_wind_gust
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_wind_gust_lgb == 'true'
         continue-on-error: true
+        # WB_GUARD_ROWS_DELTA_OVERRIDE — one-time row-band relax for the floor-drop.
+        env:
+          WB_GUARD_ROWS_DELTA_OVERRIDE: ${{ github.event.inputs.guard_rows_delta }}
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target wind-gust
@@ -447,6 +460,10 @@ jobs:
         id: train_wind_speed_lgb
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_wind_speed_lgb == 'true'
         continue-on-error: true
+        # WB_GUARD_ROWS_DELTA_OVERRIDE — one-time row-band relax for the floor-drop
+        # (~2.5x rows: Feb–Dec 2024 vs autumn-only). Largest delta of the four.
+        env:
+          WB_GUARD_ROWS_DELTA_OVERRIDE: ${{ github.event.inputs.guard_rows_delta }}
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target wind-speed-lgb

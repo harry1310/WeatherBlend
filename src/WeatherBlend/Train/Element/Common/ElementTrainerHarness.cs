@@ -209,9 +209,7 @@ public static class ElementTrainerHarness
             // jump. Allow it for these two targets so Sunday's retrain mints the new
             // baselines; once they land (n→n passes) this should be REVERTED — it
             // currently masks any future radiation/cloud schema drift.
-            tolerances: inputs.Target.CliName is "shortwave-radiation" or "cloud-cover"
-                ? RetrainGuard.Defaults with { AllowFeaturesEffectiveChange = true }
-                : null);
+            tolerances: ResolveElementTolerances(inputs.Target.CliName));
         if (!guardResultEl.Passed)
         {
             log.LogError(
@@ -280,6 +278,30 @@ public static class ElementTrainerHarness
             if (string.Equals(spec.Models[i], modelId, StringComparison.OrdinalIgnoreCase))
                 return spec.FeatureNames[i];
         throw new InvalidOperationException($"Model '{modelId}' not in spec.Models for {spec}.");
+    }
+
+    /// <summary>
+    /// Element-blender RetrainGuard tolerances. Base: shortwave-radiation / cloud-cover
+    /// get the one-time feature-count allowance (see the note at the guard call site).
+    /// On top, <c>WB_GUARD_ROWS_DELTA_OVERRIDE</c> (same env TrainCommand's 2c step uses)
+    /// relaxes the row-count band for a deliberate, permanent training-window change —
+    /// e.g. dropping the UKMO clean-window floor, or moving UKMO required→optional, which
+    /// legitimately grow the row count past the default ±30%. Empty/invalid → default ±30%.
+    /// Set it ONLY for the single run that resets the baseline; leave empty afterwards.
+    /// </summary>
+    private static GuardTolerances? ResolveElementTolerances(string cliName)
+    {
+        GuardTolerances? baseTol = cliName is "shortwave-radiation" or "cloud-cover"
+            ? RetrainGuard.Defaults with { AllowFeaturesEffectiveChange = true }
+            : null;
+        var raw = Environment.GetEnvironmentVariable("WB_GUARD_ROWS_DELTA_OVERRIDE");
+        if (string.IsNullOrWhiteSpace(raw)
+            || !double.TryParse(raw, System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out var pct)
+            || pct <= 0)
+            return baseTol;
+        // Carry AllowFeaturesEffectiveChange from baseTol; relax rows + NaN bands.
+        return (baseTol ?? RetrainGuard.Defaults) with { RowsDeltaPct = pct, NanPctAbsolute = 1.0 };
     }
 
     /// <summary>Pairwise-NaN-aware MAE: skip pairs where prediction or truth is NaN.</summary>
