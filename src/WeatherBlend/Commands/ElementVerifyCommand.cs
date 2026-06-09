@@ -132,7 +132,12 @@ public sealed class ElementVerifyCommand
             {
                 Station = locationName,
                 ModelVersion = r.ModelVersion,
-                Phase = metadata.TryGetValue(r.ModelVersion, out var meta) ? meta.Phase : null,
+                // wind_blend is the synthetic v_wind_blend_live predict output — no
+                // trained bundle / training_metadata, so the metadata lookup misses
+                // and Phase would be null. Derive it from the version so the verify
+                // row (and the skill-page rolling-MAE line) reads as wind_blend.
+                Phase = metadata.TryGetValue(r.ModelVersion, out var meta) ? meta.Phase
+                    : (r.ModelVersion.Contains("wind_blend", StringComparison.Ordinal) ? "wind_blend" : null),
                 LeadHours = r.LeadHours,
                 WindowHours = null,
                 N = r.N,
