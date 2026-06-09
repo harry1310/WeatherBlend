@@ -60,6 +60,22 @@ public sealed class CollectCommand
         var metarErrors    = 0;
         var rainfallErrors = 0;
 
+        // Temporary EA-rainfall bypass. The EA Hydrology readings API
+        // (/id/measures/.../readings.json) can hang server-side for minutes
+        // with no response (confirmed down 2026-06-09); our per-request
+        // timeout + Polly retries then run the whole cycle past the
+        // collect workflow's 15-min ceiling, surfacing as a `cancelled`
+        // run and starving the predict-4a chain that fires on collect
+        // success. EA rainfall is precip/dry-window TRUTH (training +
+        // verify) — it is NOT a predict input — so skipping it leaves
+        // predict fully intact. Set WEATHERBLEND_SKIP_RAINFALL=1 to skip;
+        // unset before the Sunday retrain so training sees fresh truth.
+        var skipRainfall = (Environment.GetEnvironmentVariable("WEATHERBLEND_SKIP_RAINFALL") ?? "")
+            .Trim() is "1" or "true" or "TRUE";
+        if (skipRainfall)
+            _log.LogWarning("WEATHERBLEND_SKIP_RAINFALL set — SKIPPING all EA rainfall collection "
+                + "this cycle (truth-only source; predict unaffected). Restore before the next retrain.");
+
         // EA rainfall window: last 2 days per station. Interval-end
         // timestamps + overnight latency mean a 1-day window can miss
         // readings still being backfilled by EA; 2 days gives safe
@@ -123,8 +139,13 @@ public sealed class CollectCommand
             }
 
             // EA rainfall — silently skipped for locations with no
-            // rainfall.stations (e.g. a future temp-only secondary).
-            foreach (var st in location.Rainfall.Stations)
+            // rainfall.stations (e.g. a future temp-only secondary), or
+            // wholesale when WEATHERBLEND_SKIP_RAINFALL is set (see above).
+            // The skip does NOT touch rainfallErrors, so the cycle still
+            // exits 0 and the predict chain proceeds.
+            foreach (var st in skipRainfall
+                         ? Enumerable.Empty<RainfallStationConfig>()
+                         : location.Rainfall.Stations)
             {
                 try
                 {

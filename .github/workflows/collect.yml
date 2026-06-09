@@ -94,6 +94,13 @@ jobs:
         env:
           MET_OFFICE_SPOT_API_KEY: ${{ secrets.MET_OFFICE_SPOT_API_KEY }}
           MET_OFFICE_OBS_API_KEY: ${{ secrets.MET_OFFICE_OBS_API_KEY }}
+          # TEMPORARY (2026-06-09): EA Hydrology readings API is hanging
+          # server-side, running the cycle past the 15-min ceiling →
+          # `cancelled` runs that starve the predict-4a chain. EA rainfall is
+          # TRUTH only (training + verify), never a predict input, so skip it
+          # to keep collect green. REMOVE this line before the Sunday retrain
+          # so training sees fresh rainfall truth (and re-check EA is back up).
+          WEATHERBLEND_SKIP_RAINFALL: "1"
         # continue-on-error so a sub-collector failure (CollectCommand returns 1)
         # doesn't skip the R2 push below — partial data still lands. The "Fail
         # job if collect had errors" step at the end re-raises the failure so
