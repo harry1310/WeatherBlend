@@ -29,18 +29,33 @@ public static partial class SitePages
     /// </summary>
     public static string RenderModels(SiteInputs input, string target)
     {
-        var (subNavSlug, prettyTitle, intro) = target switch
+        // compositePrefixes = the set of composite first-segments this page shows.
+        // A composite matches when it equals a prefix or starts with "{prefix}/".
+        var (subNavSlug, prettyTitle, intro, compositePrefixes) = target switch
         {
             "temperature" => ("temp",
                 "Temperature models",
-                "2b (lean) + 2c (rich). MAE °C, lower better."),
+                "2b (lean) + 2c (rich). MAE °C, lower better.",
+                new[] { "temperature" }),
             "precipitation" => ("rain",
                 "Rain models",
                 "Per-station P(wet ≥ 0.1 mm/h) — 3a (lean) + 3c (rich), Brier, lower better. " +
-                "Plus per-station rainfall amount (mm/h) — 3f distributional, CRPS, lower better."),
+                "Plus per-station rainfall amount (mm/h) — 3f distributional, CRPS, lower better.",
+                new[] { "precipitation", "rainfall_amount" }),
             "dry_window" => ("dry-window",
                 "Dry-window models",
-                "Per-(station, window) P(N-hour dry block in 09–18 local). 3b LightGBM + 3p copula MC. Brier, lower better."),
+                "Per-(station, window) P(N-hour dry block in 09–18 local). 3b LightGBM + 3p copula MC. Brier, lower better.",
+                new[] { "dry_window" }),
+            "wind" => ("wind",
+                "Wind models",
+                "10 m wind speed — ERA5-truth `wind` + Dunkeswell-truth `wind_speed_lgb`; plus gust and " +
+                "direction (`wind_mvn`). MAE — m/s for speed/gust, ° for direction; lower better.",
+                new[] { "wind", "wind_gust", "wind_direction" }),
+            "element" => ("elements",
+                "Element models",
+                "Cloud cover, relative humidity and shortwave radiation blenders. MAE in each element's " +
+                "own units (% / % / W/m²), lower better.",
+                new[] { "cloud_cover", "humidity", "shortwave_radiation" }),
             _ => throw new ArgumentException($"Unknown target '{target}'.", nameof(target)),
         };
 
@@ -82,13 +97,9 @@ public static partial class SitePages
         // rain forecast tab already shows P(wet) + rainfall_amount together.
         // rainfall_amount keeps its own composite + cards (different metric,
         // different phase) — only the page they render on is shared.
-        var extraPrefixes = target == "precipitation"
-            ? new[] { "rainfall_amount/" }
-            : Array.Empty<string>();
         var targetSummaries = input.ModelSummaries
-            .Where(m => m.Composite == target
-                     || m.Composite.StartsWith(target + "/", StringComparison.Ordinal)
-                     || extraPrefixes.Any(p => m.Composite.StartsWith(p, StringComparison.Ordinal)))
+            .Where(m => compositePrefixes.Any(p =>
+                m.Composite == p || m.Composite.StartsWith(p + "/", StringComparison.Ordinal)))
             .Where(m => IsActivePhase(m.Composite, m.Phase))
             .ToList();
 
@@ -191,6 +202,8 @@ public static partial class SitePages
             ("temp",       "models-temp.html",       "Temperature", "temperature"),
             ("rain",       "models-rain.html",       "Rain",        "rain"),
             ("dry-window", "models-dry-window.html", "Dry window",  "dry_window"),
+            ("wind",       "models-wind.html",       "Wind",        "wind"),
+            ("elements",   "models-elements.html",   "Elements",    "element"),
         };
         var s = new StringBuilder();
         s.Append("<nav class=\"lead-nav\"><ul>");
@@ -735,6 +748,14 @@ public static partial class SitePages
             ("dry_window", "3b")   => "53-feature LightGBM per-(station, window).",
             ("dry_window", "3p")   => "Gaussian copula MC over Phase 3o's hourly P(wet) marginals. Single empirical Σ per station, fit on train-split observed daytime wet/dry binary sequences. Captures within-day wet/dry autocorrelation.",
             ("rainfall_amount", "3f") => "Two-stage distributional rainfall intensity (mm/h). Stage 1 = Phase 3a's P(wet); stage 2 = per-(station, lead) NGBoost-LogNormal fit on wet-hour rows (15-feature lean spec: 7 NWP precip + 4 spread + 4 calendar). Mixed predictive distribution F(x) = (1−π)·δ_0(x) + π·LogNormal(μ_log, σ_log)(x). CRPS is the headline skill metric — see Skill → Rain.",
+            ("wind", "wind") => "10 m wind-speed LightGBM blender, ERA5 WindSpeed10m truth. Per-NWP speed + direction (sin/cos) + ensemble spread + calendar.",
+            ("wind", "wind_speed_lgb") => "10 m wind-speed LightGBM blender trained on Dunkeswell SYNOP obs (real-station truth) instead of ERA5. 29-feature lean+ORO+spread set. The honest real-wind predictor — see the cross-truth bake-off.",
+            ("wind", "wind_blend") => "Equal-weight composition of the wind-speed members (no trained bundle). Composed at predict time.",
+            ("wind_gust", "wind_gust_lgb") => "10 m wind-gust LightGBM blender, ERA5 WindGusts10m truth. Per-NWP gust + gust/speed ratio + ratio spread over the gust-publishing NWPs.",
+            ("wind_direction", "wind_mvn") => "PyTorch MLP predicting a bivariate normal over the (u, v) wind vector, trained on Dunkeswell SYNOP truth. Direction = atan2(−μ_u, −μ_v); also emits a calibrated direction confidence interval.",
+            ("cloud_cover", "cloud_cover") => "Total-cloud-cover LightGBM blender, ERA5 CloudCover truth. Per-NWP cloud + NWP-mean CAPE.",
+            ("humidity", "humidity") => "2 m relative-humidity LightGBM blender, ERA5 RelativeHumidity2m truth.",
+            ("shortwave_radiation", "shortwave_radiation") => "Surface shortwave-radiation LightGBM blender, ERA5 ShortwaveRadiation truth.",
             _ => $"Phase {phase} blender.",
         };
     }
@@ -756,6 +777,12 @@ public static partial class SitePages
             "precipitation" => "Precipitation",
             "dry_window" => "Dry window",
             "rainfall_amount" => "Rainfall amount",
+            "wind" => "10 m wind speed",
+            "wind_gust" => "10 m wind gust",
+            "wind_direction" => "Wind direction",
+            "cloud_cover" => "Total cloud cover",
+            "humidity" => "Relative humidity",
+            "shortwave_radiation" => "Shortwave radiation",
             _ => parts[0],
         };
         if (parts.Length == 1) return target;

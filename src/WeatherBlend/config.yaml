@@ -20,7 +20,7 @@ locations:
     # Phase D nav tabs (2026-05-20). Bonehill is the full-stack location —
     # temperature, rain, dry-window forecasts, plus skill + models. Listed
     # order matches the site-nav left-to-right.
-    tabs: [overview, temperature, rain, wind, dry_window, skill, models]
+    tabs: [overview, temperature, rain, wind, dry_window, skill, models, element]
 
     # Outdoor walking / climbing window — sleep hours dropped from the
     # Overview tile grid. Pre-Phase-D this was the hardcoded constant

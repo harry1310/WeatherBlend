@@ -316,7 +316,7 @@ public sealed class RenderSiteCommand
             var rollingBrier = ComputeRollingBrier(precip, rainfall, phaseByVersion, precipRollingWindowDays);
 
             // Per-loc model summaries (scoped to loc's stations).
-            var locModelSummaries = LoadModelSummaries(predictions, precip, dryWindow, rainfallAmount, locStationSlugs);
+            var locModelSummaries = LoadModelSummaries(predictions, precip, dryWindow, rainfallAmount, locStationSlugs, elementLocationFilter: loc.Name);
             var locFeatureSpecRows = LoadFeatureSpecRows(predictions, precip, dryWindow, rainfallAmount, locStationSlugs, locModelSummaries);
 
             var locInputs = new SitePages.SiteInputs
@@ -501,6 +501,10 @@ public sealed class RenderSiteCommand
                 await Write("models-rain.html", SitePages.RenderModels(locInputs, "precipitation"));
             if (loc.HasTab("dry_window"))
                 await Write("models-dry-window.html", SitePages.RenderModels(locInputs, "dry_window"));
+            if (loc.HasTab("wind"))
+                await Write("models-wind.html", SitePages.RenderModels(locInputs, "wind"));
+            if (loc.HasTab("element"))
+                await Write("models-elements.html", SitePages.RenderModels(locInputs, "element"));
         }
 
         return count;
@@ -552,7 +556,8 @@ public sealed class RenderSiteCommand
         IReadOnlyList<SitePages.PrecipForecastPoint> precip,
         IReadOnlyList<SitePages.DryWindowForecastPoint> dryWindow,
         IReadOnlyList<RainfallAmountPredictionRow> rainfallAmount,
-        IReadOnlySet<string> activeStationSlugs)
+        IReadOnlySet<string> activeStationSlugs,
+        string? elementLocationFilter = null)
     {
         // Only load metadata for versions that actually emitted predictions in the
         // window. Anything else is stale / experimental / deleted and the Models page
@@ -615,6 +620,41 @@ public sealed class RenderSiteCommand
             var composite = $"rainfall_amount/{station}";
             var summary = TryLoadSummary(dir, composite, version, metricLabel: "Test CRPS");
             if (summary is not null) summaries.Add(summary);
+        }
+
+        // Element blenders — wind speed (ERA5 `wind` + Dunkeswell `wind_speed_lgb`,
+        // both under the `wind` dir), gust, direction (mvn), cloud, humidity,
+        // radiation. Location-keyed manifests (Stations key = location name), so
+        // enumerate Active versions per configured location via ResolveStationActive
+        // rather than a prediction list. Composite = "{modelDir}/{location}" so wind's
+        // two speed phases surface as champion/challenger cards (like temp 2b/2c).
+        // Metric label carries the per-target units. elementLocationFilter scopes the
+        // per-location Models page; null (all-locs / Specs) loads every location.
+        var elementDirs = new (string Dir, string Metric)[]
+        {
+            ("wind",                "Test MAE (m/s)"),
+            ("wind_gust",           "Test MAE (m/s)"),
+            ("wind_direction",      "Test MAE (°)"),
+            ("cloud_cover",         "Test MAE (%)"),
+            ("humidity",            "Test MAE (%)"),
+            ("shortwave_radiation", "Test MAE (W/m²)"),
+        };
+        foreach (var (dir, metric) in elementDirs)
+        {
+            if (!Directory.Exists(Path.Combine(modelsRoot, dir))) continue;
+            foreach (var loc in _cfg.Locations)
+            {
+                if (elementLocationFilter is not null && loc.Name != elementLocationFilter) continue;
+                IReadOnlyList<string> active;
+                try { active = ModelArtifact.ResolveStationActive(modelsRoot, dir, loc.Name); }
+                catch { continue; }
+                foreach (var version in active)
+                {
+                    var vdir = Path.Combine(modelsRoot, dir, loc.Name, version);
+                    var summary = TryLoadSummary(vdir, $"{dir}/{loc.Name}", version, metric);
+                    if (summary is not null) summaries.Add(summary);
+                }
+            }
         }
 
         return summaries;
