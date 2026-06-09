@@ -8,38 +8,31 @@ using WeatherBlend.Train;
 namespace WeatherBlend.Commands;
 
 /// <summary>
-/// Phase 3 Slice C of WIND_BLENDER_PLAN — per-cycle synthesis of the
-/// final wind speed from two sibling phases:
-///   * <c>wind_speed_lgb</c> (LightGBM, Dunkeswell-truth, ERA5-free) —
+/// Per-cycle synthesis of the final wind speed as the EQUAL-WEIGHT MEAN of two
+/// blenders that predict 10 m speed against different truth:
+///   * champion <c>wind</c> (LightGBM, ERA5 WindSpeed10m truth) — the element
+///     blender, lands at <c>predictions/wind/model_version={champion}/...</c>.
+///   * <c>wind_speed_lgb</c> (LightGBM, Dunkeswell SYNOP truth, ERA5-free) —
 ///     produced by <see cref="Train.Element.Wind.WindSpeedLgbPredictPipeline"/>,
 ///     lands at <c>predictions/wind/model_version=v..._wind_speed_lgb/...</c>.
-///   * <c>wind_mvn</c> (PyTorch bivariate-normal MLP) — produced by
-///     WeatherProbabilistic's <c>predict_wind_mvn.py</c>, lands at
-///     <c>predictions/wind_direction/{location}/model_version=v..._wind_mvn/...</c>.
-///     The python side stores the MVN's speed magnitude in
-///     <see cref="WindDirectionPredictionRow.BlendSpeedMagnitude"/>.
 ///
-/// Inner-joins both on (ValidTime, Lead) and applies the sigmoid blend
-/// the production-scope bake-off picked 2026-05-27:
-/// <code>
-///   w_mvn = 1 / (1 + exp((lgb_speed - center) / scale))
-///   final = w_mvn · mvn_speed + (1 - w_mvn) · lgb_speed
-/// </code>
-/// with center=2.50, scale=3.00 (the plan defaults — calibration.json
-/// from the wind_mvn bundle CAN override per-lead, deferred to a follow-up
-/// when the bake-off shows lead-specific tuning helps).
+/// Inner-joins both on (ValidTime, Lead): <c>final = 0.5·champion + 0.5·lgb</c>.
+/// The cross-truth bake-off (2026-06-09) showed the 50/50 mean beats either
+/// single on REAL (Dunkeswell) wind, and a val-fitted weight overfit and lost to
+/// 50/50 at every lead — so the weight is FIXED, not learned. This replaced the
+/// 2026-05-27 sigmoid(lgb, wind_mvn-speed) composition: wind_mvn's speed/CI broke
+/// in the 06-07 retrain (val NLL doubled), so MVN is now direction-only and its
+/// speed is no longer a blend input.
 ///
 /// Output schema: <see cref="ElementPredictionRow"/> with Element="wind"
 /// and BlendValue = blended speed. Lands at
 /// <c>predictions/wind/model_version=v_wind_blend_live/date={anchor}/predictions.parquet</c>.
-/// The fixed <c>v_wind_blend_live</c> version is intentional for v1:
-/// avoids requiring a wind_blend MANIFEST entry (no mint command yet),
-/// so the predict path can ship before the bundle/render plumbing.
-/// Bundle + MANIFEST integration is a follow-up slice.
+/// The fixed <c>v_wind_blend_live</c> version avoids requiring a wind_blend
+/// MANIFEST entry (no mint command); wind_blend stays a challenger, not champion.
 ///
 /// Soft-skip exit codes (treated as non-fatal by predict-tail):
 ///   2 — no locations configured
-///   3 — at least one component (lgb or mvn) missing for every location
+///   3 — at least one member (champion wind or lgb) missing for every location
 /// </summary>
 public sealed class WindBlendPredictCommand
 {
@@ -50,13 +43,6 @@ public sealed class WindBlendPredictCommand
     /// Stable across cycles so the daily date-partitioned parquets stack
     /// under one model_version dir rather than scattering.</summary>
     public const string VersionTag = "v_wind_blend_live";
-
-    /// <summary>Sigmoid composition center (m/s) — lgb speed where the
-    /// MVN weight = 0.5. Plan default from 2026-05-27 bake-off.</summary>
-    public const double DefaultBlendCenter = 2.50;
-    /// <summary>Sigmoid composition scale (m/s) — width of the transition
-    /// band around <see cref="DefaultBlendCenter"/>.</summary>
-    public const double DefaultBlendScale = 3.00;
 
     public WindBlendPredictCommand(ILogger<WindBlendPredictCommand> log, AppConfig cfg)
     {
@@ -108,15 +94,19 @@ public sealed class WindBlendPredictCommand
         if (lgbRows.Count == 0)
             return (false, $"no wind_speed_lgb predictions at {lgbGlob}");
 
-        // wind_mvn lives in WP's predictions/wind_direction/{loc}/ tree —
-        // WP uses a per-location subdir + suffixed model_version. Glob
-        // across every *_wind_mvn version dir under this location for
-        // this anchor date; DuckDB ROW_NUMBER picks the freshest cycle.
-        var mvnGlob = Path.Combine(predRoot, "wind_direction", location.Name,
-            "model_version=*_wind_mvn", $"date={dateStr}", "predictions.parquet");
-        var mvnByKey = ReadMvnRows(mvnGlob, ct);
-        if (mvnByKey.Count == 0)
-            return (false, $"no wind_mvn predictions at {mvnGlob}");
+        // Champion `wind` (ERA5-truth element blender) — the other blend member.
+        // Resolve its version from the wind manifest (champion phase = "wind", so
+        // this is NOT the *_wind_speed_lgb sibling nor the v_wind_blend_live output)
+        // and read its predictions from the same predictions/wind/ tree.
+        var championVer = ModelArtifact.ResolveStationChampionVersion(
+            _cfg.Storage.ModelsPath, "wind", location.Name);
+        if (string.IsNullOrEmpty(championVer))
+            return (false, "no champion wind version in manifest");
+        var champGlob = Path.Combine(predRoot, "wind",
+            $"model_version={championVer}", $"date={dateStr}", "predictions.parquet");
+        var champByKey = ReadChampionWindRows(champGlob, location.Name, ct);
+        if (champByKey.Count == 0)
+            return (false, $"no champion wind ({championVer}) predictions at {champGlob}");
 
         // Inner join on (ValidTime, Lead). Drive from lgb — it's the
         // canonical "what physical cells are we synthesising for". Cells
@@ -127,13 +117,15 @@ public sealed class WindBlendPredictCommand
         int matched = 0;
         foreach (var l in lgbRows)
         {
-            if (!mvnByKey.TryGetValue((l.ValidTimeUtc, l.LeadHours), out var m))
+            if (!champByKey.TryGetValue((l.ValidTimeUtc, l.LeadHours), out var champSpd))
                 continue;
             matched++;
             var lgbSpd = l.BlendValue;
-            var mvnSpd = m.SpeedMs;
-            var wMvn = 1.0 / (1.0 + Math.Exp((lgbSpd - DefaultBlendCenter) / DefaultBlendScale));
-            var blendSpd = wMvn * mvnSpd + (1.0 - wMvn) * lgbSpd;
+            // Equal-weight mean of the champion (ERA5-truth) and lgb (Dunkeswell-
+            // truth) speeds. The cross-truth bake-off (2026-06-09) showed the 50/50
+            // mean beats either single on REAL wind, and a val-fitted weight overfit
+            // and lost to 50/50 at every lead — so the weight is fixed, not learned.
+            var blendSpd = 0.5 * (champSpd + lgbSpd);
 
             blended.Add(new ElementPredictionRow
             {
@@ -162,7 +154,7 @@ public sealed class WindBlendPredictCommand
         }
         if (blended.Count == 0)
             return (false,
-                $"no (ValidTime, Lead) overlap between {lgbRows.Count} lgb rows and {mvnByKey.Count} mvn rows");
+                $"no (ValidTime, Lead) overlap between {lgbRows.Count} lgb rows and {champByKey.Count} champion wind rows");
 
         var outPath = Path.Combine(predRoot, "wind",
             $"model_version={VersionTag}", $"date={dateStr}", "predictions.parquet");
@@ -229,31 +221,32 @@ ORDER BY ValidTimeUtc, LeadHours";
         }, _log, $"wind_speed_lgb tree empty at {lgbGlob}", ct);
     }
 
-    /// <summary>Per-cell wind_mvn read — we only need (V, L, speed_ms)
-    /// from BlendSpeedMagnitude. ROW_NUMBER picks freshest cycle if
-    /// multiple mvn dirs partition this anchor.</summary>
-    private Dictionary<(DateTime ValidTime, int Lead), (double SpeedMs, DateTime PredictionMadeAt)>
-        ReadMvnRows(string mvnGlob, CancellationToken ct)
+    /// <summary>Per-cell champion `wind` (ERA5-truth) speed read — we only need
+    /// (V, L, speed) from BlendValue. ROW_NUMBER picks the freshest cycle if
+    /// multiple cycles wrote to this anchor date.</summary>
+    private Dictionary<(DateTime ValidTime, int Lead), double>
+        ReadChampionWindRows(string champGlob, string locationName, CancellationToken ct)
     {
-        var glob = ParquetReader.Glob(mvnGlob);
+        var glob = ParquetReader.Glob(champGlob);
+        var loc = locationName.Replace("'", "''");
         var sql = $@"
 WITH ranked AS (
-    SELECT ValidTimeUtc, LeadHours, BlendSpeedMagnitude, PredictionMadeAtUtc,
+    SELECT ValidTimeUtc, LeadHours, BlendValue, PredictionMadeAtUtc,
            ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, LeadHours
                               ORDER BY PredictionMadeAtUtc DESC) AS rn
     FROM read_parquet('{glob}', union_by_name = true)
+    WHERE LocationName = '{loc}'
 )
-SELECT ValidTimeUtc, LeadHours, BlendSpeedMagnitude, PredictionMadeAtUtc
+SELECT ValidTimeUtc, LeadHours, BlendValue
 FROM ranked WHERE rn = 1";
         var rows = ParquetReader.Query(sql, r => (
             ValidTime: r.GetDateTime(0),
             Lead: r.GetInt32(1),
-            SpeedMs: r.GetDouble(2),
-            PredictionMadeAt: r.GetDateTime(3)
-        ), _log, $"wind_mvn tree empty at {mvnGlob}", ct);
-        var dict = new Dictionary<(DateTime, int), (double, DateTime)>(rows.Count);
+            SpeedMs: r.GetDouble(2)
+        ), _log, $"champion wind tree empty at {champGlob}", ct);
+        var dict = new Dictionary<(DateTime, int), double>(rows.Count);
         foreach (var row in rows)
-            dict[(row.ValidTime, row.Lead)] = (row.SpeedMs, row.PredictionMadeAt);
+            dict[(row.ValidTime, row.Lead)] = row.SpeedMs;
         return dict;
     }
 }

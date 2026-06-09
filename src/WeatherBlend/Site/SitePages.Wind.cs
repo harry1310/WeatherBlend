@@ -34,12 +34,13 @@ public static partial class SitePages
         body.Append(Ci, $"""
               <hgroup>
                 <h2>Wind +{lead}h</h2>
-                <p>Blender speed forecasts on top, with the wind_mvn model-asserted
-                   95%-shaped uncertainty band shaded behind the MVN speed line
-                   (uncalibrated). Raw per-NWP inputs below. Per-hour direction
+                <p>Blender speed forecasts on top — champion (ERA5-truth), wind_speed_lgb
+                   (Dunkeswell-truth), and wind_blend (their equal-weight mean), plus the
+                   wind_gust_lgb gust line. Raw per-NWP inputs below. Per-hour direction
                    circles at the bottom show the latest day this lead predicts;
                    each wedge spans the wind_mvn 80% direction credible arc
-                   (calibrated on validation).</p>
+                   (calibrated on validation). wind_mvn is direction-only — its speed
+                   output was retired 2026-06-09.</p>
               </hgroup>
             """);
 
@@ -75,31 +76,19 @@ public static partial class SitePages
             .Where(p => p.LeadHours == lead)
             .OrderBy(p => p.ValidTimeUtc)
             .ToList();
-        // Dedupe to ONE row per ValidTime — newest ModelVersion, then freshest
-        // PredictedAtUtc. Without this, when the wind_direction (mvn) tree holds
-        // >1 version (e.g. straddling a Sunday retrain) the "MVN speed" line below
-        // plots every version per valid and the chart zig-zags between the two
-        // versions' lines (observed 2026-06-08 after the 06-07 retrain landed a
-        // second wind_mvn version). Mirrors the direction-grid dedupe at byHour
-        // and the blend-line dedupe in byPhase.
-        var mvnAtLead = input.WindDirectionPredictions
-            .Where(p => p.LeadHours == lead)
-            .GroupBy(p => p.ValidTimeUtc)
-            .Select(g => g.OrderByDescending(r => r.Version, StringComparer.Ordinal)
-                          .ThenByDescending(r => r.PredictedAtUtc).First())
-            .OrderBy(p => p.ValidTimeUtc)
-            .ToList();
-
-        if (atLead.Count == 0 && mvnAtLead.Count == 0)
+        // wind_mvn speed was removed from the speed chart 2026-06-09: its speed +
+        // CI broke in the 06-07 retrain (val NLL doubled) and the cross-truth work
+        // moved the speed product to wind_blend = mean(champion wind, wind_speed_lgb).
+        // MVN is now direction-only — see RenderWindDirectionCirclesSection (which
+        // keeps the direction circles + 80% direction arc, the live MVN product).
+        if (atLead.Count == 0)
         {
             s.Append("<h3>Wind speed — our blend</h3>");
             s.Append(Ci, $"<p><em>No +{lead}h wind speed forecast available yet.</em></p>");
             return s.ToString();
         }
 
-        var allXs = atLead.Select(p => p.ValidTimeUtc)
-            .Concat(mvnAtLead.Select(p => p.ValidTimeUtc))
-            .ToList();
+        var allXs = atLead.Select(p => p.ValidTimeUtc).ToList();
         var maxValid = allXs.Count == 0 ? input.GeneratedAtUtc : allXs.Max();
         if (maxValid < input.GeneratedAtUtc) maxValid = input.GeneratedAtUtc;
         var xMin = ForecastChartXMin(input);
@@ -166,31 +155,10 @@ public static partial class SitePages
                 rows.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.SpeedMs * MsToMph)).ToList()));
         }
 
-        // wind_mvn: speed magnitude line + CI95 ribbon. The ribbon's low +
-        // high series both need to be in Series so the renderer can match
-        // them by name. Boundary lines stay in the legend (mirrors the
-        // rainfall_amount P10/P90 pattern in SitePages.RainfallAmount.cs)
-        // — light grey so the eye reads the ribbon as the "envelope"
-        // rather than two competing lines, while still leaving them as
-        // identifiable reference values.
-        //
-        // Defaults to CI95 (2.5/97.5 percentile shape on the network's
-        // raw σ — uncalibrated since 2026-05-29 commit be75403 in WP).
-        // CI95 is always present on every parquet so no fallback needed
-        // for the speed band.
-        if (mvnAtLead.Count > 0)
-        {
-            blendSeries.Add(new LineSeries("MVN speed", "#1976d2",
-                mvnAtLead.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.SpeedMs * MsToMph)).ToList()));
-            blendSeries.Add(new LineSeries("MVN CI95 low", "#bbdefb",
-                mvnAtLead.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.SpeedCi95LoMs * MsToMph)).ToList()));
-            blendSeries.Add(new LineSeries("MVN CI95 high", "#bbdefb",
-                mvnAtLead.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.SpeedCi95HiMs * MsToMph)).ToList()));
-        }
-
-        var ribbons = mvnAtLead.Count > 0
-            ? new[] { new RibbonSpec("MVN CI95 low", "MVN CI95 high", "rgba(25, 118, 210, 0.18)") }
-            : Array.Empty<RibbonSpec>();
+        // MVN speed line + CI95 ribbon removed 2026-06-09 (MVN is direction-only
+        // now; the speed product is the wind_blend phase line above). A future CQR
+        // confidence band on wind_speed_lgb will reintroduce a speed envelope here.
+        var ribbons = Array.Empty<RibbonSpec>();
 
         // wind_gust_lgb gust line — pulled from input.WindGustByValidMs
         // (already collapsed to freshest PredictionMadeAtUtc per ValidTime
