@@ -944,6 +944,16 @@ public static class ModelArtifact
     /// same-phase complementary version (different lead set → coexist).
     /// Returns null on missing dir / file / parse error so callers can
     /// fall back to "preserve, don't risk silent removal".
+    ///
+    /// Parameter-free phases (e.g. 3p — Gaussian copula MC, no LightGBM)
+    /// ship NO <c>feature_schema.json</c>, so the primary read returns null.
+    /// Without a lead-set <see cref="ComposeActive"/> can't detect the
+    /// overlap and the prior same-phase version is preserved forever — the
+    /// Active list then accumulates one stale 3p per retrain, each bound to a
+    /// since-retired 3o version it can no longer read (the 2026-06-09 dead-3p
+    /// pile-up). Fall back to the lead keys in <c>training_metadata.json</c>'s
+    /// <c>PerLead</c> map so these phases get a readable lead-set and replace
+    /// cleanly like the LightGBM phases do.
     /// </summary>
     private static IReadOnlyList<int>? TryReadVersionLeads(string versionDir)
     {
@@ -951,15 +961,30 @@ public static class ModelArtifact
         {
             if (!Directory.Exists(versionDir)) return null;
             var path = Path.Combine(versionDir, FeatureSchemaFileName);
-            if (!File.Exists(path)) return null;
-            var schema = ReadJson<FeatureSchema>(path);
-            if (schema is null) return null;
-            var leads = new List<int>(schema.Leads.Count);
-            foreach (var key in schema.Leads.Keys)
+            if (File.Exists(path))
+            {
+                var schema = ReadJson<FeatureSchema>(path);
+                if (schema is not null)
+                {
+                    var leads = new List<int>(schema.Leads.Count);
+                    foreach (var key in schema.Leads.Keys)
+                        if (int.TryParse(key, System.Globalization.NumberStyles.Integer,
+                                         System.Globalization.CultureInfo.InvariantCulture, out var lead))
+                            leads.Add(lead);
+                    if (leads.Count > 0) return leads;
+                }
+            }
+            // Schema-less phase (3p et al.): derive leads from PerLead keys.
+            var metaPath = Path.Combine(versionDir, TrainingMetadataFileName);
+            if (!File.Exists(metaPath)) return null;
+            var meta = LoadTrainingMetadata(versionDir);
+            if (meta.PerLead.Count == 0) return null;
+            var metaLeads = new List<int>(meta.PerLead.Count);
+            foreach (var key in meta.PerLead.Keys)
                 if (int.TryParse(key, System.Globalization.NumberStyles.Integer,
                                  System.Globalization.CultureInfo.InvariantCulture, out var lead))
-                    leads.Add(lead);
-            return leads;
+                    metaLeads.Add(lead);
+            return metaLeads.Count > 0 ? metaLeads : null;
         }
         catch
         {
