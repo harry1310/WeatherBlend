@@ -62,7 +62,15 @@ public static class Program
                     c.Timeout = TimeSpan.FromSeconds(cfg.Http.TimeoutSeconds);
                     c.DefaultRequestHeaders.UserAgent.ParseAdd(cfg.Http.UserAgent);
                 })
-                .AddStandardResilienceHandler();
+                .AddStandardResilienceHandler(opts =>
+                {
+                    // Fatal collect source — the default 10s attempt timeout is too tight for
+                    // a slow aviationweather.gov response and would fail the whole cycle
+                    // (cascading into predict). Match the OpenMeteo headroom.
+                    opts.AttemptTimeout.Timeout = TimeSpan.FromSeconds(60);
+                    opts.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(180);
+                    opts.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(240);
+                });
 
                 services.AddHttpClient<Era5Client>(c =>
                 {
@@ -76,7 +84,15 @@ public static class Program
                     c.Timeout = TimeSpan.FromSeconds(cfg.Http.TimeoutSeconds);
                     c.DefaultRequestHeaders.UserAgent.ParseAdd(cfg.Http.UserAgent);
                 })
-                .AddStandardResilienceHandler();
+                .AddStandardResilienceHandler(opts =>
+                {
+                    // EA Hydrology readings.json (_limit=10000) is large/slow; the default 10s
+                    // attempt timeout tripped on a slow response 2026-06-09 and failed the whole
+                    // (fatal) collect, cascading into predict (no 4a -> 4b coverage breach, exit 5).
+                    opts.AttemptTimeout.Timeout = TimeSpan.FromSeconds(60);
+                    opts.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(180);
+                    opts.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(240);
+                });
 
                 services.AddHttpClient<MetOfficeSpotClient>(c =>
                 {
