@@ -514,17 +514,21 @@ blenders:
     # function as bracketing correctors — the blender uses GEM's systematic
     # under-prediction as a regime signal rather than a value to read off.
     # Conclusion: leave GEM + lead-24h MF in. Don't repeat this experiment.
+    # UKMO demoted required→optional 2026-06-09 (all leads): with no UKMO row-gate +
+    # no training-window floor, cloud trains back to ~2024-02 and beats the old
+    # UKMO-required/floored cloud by −1.6..−2.6% per lead (floor bake-off). UKMO still
+    # contributes when present; optional also means cloud survives UKMO outages (cf. GEM).
     - target: cloud
       featureSet: default
-      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless, ukmo_seamless]
-      optionalModels: [gem_seamless, ecmwf_aifs025_single]
+      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, meteofrance_seamless]
+      optionalModels: [gem_seamless, ecmwf_aifs025_single, ukmo_seamless]
       perLeadOverrides:
         - lead: 48
-          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, ukmo_seamless]
-          optionalModels: [gem_seamless, ecmwf_aifs025_single]
+          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless]
+          optionalModels: [gem_seamless, ecmwf_aifs025_single, ukmo_seamless]
         - lead: 72
-          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, ukmo_seamless]
-          optionalModels: [gem_seamless, ecmwf_aifs025_single]
+          requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless]
+          optionalModels: [gem_seamless, ecmwf_aifs025_single, ukmo_seamless]
 
     # Radiation: UKMO permanently absent (74% null at 24h, 100% at 48/72h).
     # MF dropped at 48/72h. AIFS optional everywhere.

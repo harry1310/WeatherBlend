@@ -61,7 +61,8 @@ public static class CloudFeatureBuilder
     }
 
     public static List<RegressionTrainingRow> BuildForLead(
-        string forecastsPath, string era5Path, string locationName, BlenderSpec spec, CancellationToken ct = default)
+        string forecastsPath, string era5Path, string locationName, BlenderSpec spec,
+        CancellationToken ct = default, string? floorOverride = null)
     {
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
@@ -70,7 +71,11 @@ public static class CloudFeatureBuilder
         var eraGlob = Norm(Path.Combine(era5Path, "**", "*.parquet"));
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
         var n = spec.Models.Count;
-        var minTs = $"TIMESTAMP '{TrainingWindow.UkmoCleanWindowStart}'";
+        // No training-window floor by default: with UKMO demoted to optional (config,
+        // 2026-06-09) + no floor, cloud gains ~Feb–Aug 2024 and beats the floored
+        // UKMO-required production cloud by −1.6..−2.6% (bake-off 2026-06-09).
+        // floorOverride re-imposes a floor if ever needed.
+        var floorClause = floorOverride is null ? "" : $"AND ValidTimeUtc >= TIMESTAMP '{floorOverride}'";
 
         var pivotCc = string.Join(",\n        ",
             spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN CloudCover END) AS cc_{TempFeatureBuilder.ShortName(m)}"));
@@ -89,7 +94,7 @@ WITH latest AS (
       AND RunTimeSource = 'offset_day'
       AND LeadHours = {spec.LeadHours}
       AND CloudCover IS NOT NULL
-      AND ValidTimeUtc >= {minTs}
+      {floorClause}
       AND Model IN {modelInClause}
 ),
 pivoted AS (
@@ -102,7 +107,7 @@ era5 AS (
     SELECT ValidTimeUtc, CloudCover AS truth
     FROM read_parquet('{eraGlob}', hive_partitioning = false, union_by_name = true)
     WHERE LocationName = '{locationName}' AND CloudCover IS NOT NULL
-      AND ValidTimeUtc >= {minTs}
+      {floorClause}
 )
 SELECT p.ValidTimeUtc, {selectCc}, p.cape_mean, e.truth
 FROM pivoted p JOIN era5 e USING (ValidTimeUtc)

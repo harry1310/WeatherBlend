@@ -83,7 +83,8 @@ public static class WindGustFeatureBuilder
         string era5Path,
         string locationName,
         BlenderSpec spec,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? floorOverride = null)
     {
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
@@ -93,9 +94,10 @@ public static class WindGustFeatureBuilder
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
         var n = spec.Models.Count;
 
-        // UKMO data starts 2024-09; restrict the training window so rows from before
-        // that are dropped (they'd have UKMO=NaN at every row). Mirrors WindFeatureBuilder.
-        var minTs = $"TIMESTAMP '{TrainingWindow.UkmoCleanWindowStart}'";
+        // No training-window floor by default: floor bake-off (2026-06-09) showed dropping
+        // the old 2024-09 floor IMPROVES gust at every lead (up to −13% @48h). UKMO is
+        // optional + NaN-tolerated. floorOverride re-imposes a floor if ever needed.
+        var floorClause = floorOverride is null ? "" : $"AND ValidTimeUtc >= TIMESTAMP '{floorOverride}'";
 
         var pivotGust = string.Join(",\n        ",
             spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN WindGusts10m END) AS gust_{TempFeatureBuilder.ShortName(m)}"));
@@ -121,7 +123,7 @@ WITH latest AS (
       AND LeadHours = {spec.LeadHours}
       AND WindGusts10m IS NOT NULL
       AND WindSpeed10m IS NOT NULL
-      AND ValidTimeUtc >= {minTs}
+      {floorClause}
       AND Model IN {modelInClause}
 ),
 pivoted AS (
@@ -135,7 +137,7 @@ era5 AS (
     FROM read_parquet('{eraGlob}', hive_partitioning = false, union_by_name = true)
     WHERE LocationName = '{locationName}'
       AND WindGusts10m IS NOT NULL
-      AND ValidTimeUtc >= {minTs}
+      {floorClause}
 )
 SELECT p.ValidTimeUtc, {selectGust}, {selectWsp}, e.truth
 FROM pivoted p JOIN era5 e USING (ValidTimeUtc)

@@ -66,7 +66,8 @@ public static class WindFeatureBuilder
         string era5Path,
         string locationName,
         BlenderSpec spec,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? floorOverride = null)
     {
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
@@ -76,11 +77,11 @@ public static class WindFeatureBuilder
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
         var n = spec.Models.Count;
 
-        // UKMO data starts 2024-09; restrict the training window so rows from before that
-        // are dropped (they'd have UKMO=NaN at every row). Even with UKMO optional, the
-        // post-pivot at-least-one safety check would survive but the blender wouldn't see
-        // UKMO contribution at all in the early window — better to be uniform.
-        var minTs = $"TIMESTAMP '{TrainingWindow.UkmoCleanWindowStart}'";
+        // No training-window floor by default: the floor bake-off (2026-06-09, common
+        // OOS holdout) showed dropping the old UkmoCleanWindowStart=2024-09 floor IMPROVES
+        // wind at every lead (−0.8..−2.5%) — the extra ~Feb–Aug 2024 rows help and UKMO
+        // (optional) is NaN-tolerated by LightGBM. floorOverride re-imposes a floor if ever needed.
+        var floorClause = floorOverride is null ? "" : $"AND ValidTimeUtc >= TIMESTAMP '{floorOverride}'";
 
         var pivotSpd = string.Join(",\n        ",
             spec.Models.Select(m => $"MAX(CASE WHEN Model = '{m}' THEN WindSpeed10m END) AS spd_{TempFeatureBuilder.ShortName(m)}"));
@@ -105,7 +106,7 @@ WITH latest AS (
       AND LeadHours = {spec.LeadHours}
       AND WindSpeed10m IS NOT NULL
       AND WindDirection10m IS NOT NULL
-      AND ValidTimeUtc >= {minTs}
+      {floorClause}
       AND Model IN {modelInClause}
 ),
 pivoted AS (
@@ -119,7 +120,7 @@ era5 AS (
     FROM read_parquet('{eraGlob}', hive_partitioning = false, union_by_name = true)
     WHERE LocationName = '{locationName}'
       AND WindSpeed10m IS NOT NULL
-      AND ValidTimeUtc >= {minTs}
+      {floorClause}
 )
 SELECT p.ValidTimeUtc, {selectSpd}, {selectDir}, e.truth
 FROM pivoted p JOIN era5 e USING (ValidTimeUtc)

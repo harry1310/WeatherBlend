@@ -125,7 +125,8 @@ public static class WindSpeedLgbFeatureBuilder
         string locationName,
         OroStaticFeatures oro,
         BlenderSpec spec,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? floorOverride = null)
     {
         // Load Dunkeswell truth into a {ValidTimeUtc → wsp_ms} dictionary
         // BEFORE running the forecast pivot. Cheaper to do the inner join
@@ -140,10 +141,11 @@ public static class WindSpeedLgbFeatureBuilder
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
         var n = spec.Models.Count;
 
-        // UKMO data starts 2024-09; restrict the training window so rows from
-        // before that are dropped (they'd have UKMO=NaN at every row). Same
-        // floor used by WindFeatureBuilder + WindGustFeatureBuilder.
-        var minTs = $"TIMESTAMP '{TrainingWindow.UkmoCleanWindowStart}'";
+        // No training-window floor by default: floor bake-off (2026-06-09) + the earlier
+        // no-floor validation showed dropping the old 2024-09 floor is fully usable and
+        // gives ~2.5× the data (Feb–Dec 2024). UKMO is optional + NaN-tolerated.
+        // floorOverride re-imposes a floor if ever needed.
+        var floorClause = floorOverride is null ? "" : $"AND ValidTimeUtc >= TIMESTAMP '{floorOverride}'";
 
         // 7 per-NWP variables pulled in one pivot pass: wsp + wdir feed
         // features directly, gust + t + td + p + cc feed the SPREAD block
@@ -186,7 +188,7 @@ WITH latest AS (
       AND LeadHours = {spec.LeadHours}
       AND WindSpeed10m IS NOT NULL
       AND WindDirection10m IS NOT NULL
-      AND ValidTimeUtc >= {minTs}
+      {floorClause}
       AND Model IN {modelInClause}
 ),
 pivoted AS (
