@@ -68,6 +68,20 @@ public static class RockSurfacePredictPipeline
         var rad = await LoadElementByValidAsync(predictionsRoot, ElementTargets.ShortwaveRadiation, loc, radV, anchor, ct);
         var cloud = await LoadElementByValidAsync(predictionsRoot, ElementTargets.CloudCover, loc, cloudV, anchor, ct);
 
+        // Gust champion (wind_gust_lgb) — the convective-cooling wind forcing uses
+        // mean(champion wind, gust), not the mean wind alone. Field validation
+        // (Bonehill IR-gun 2026-06-07) showed the rock model UNDER-cools because it
+        // saw only mean wind; the gust-blended effective wind closed ~2°C of the
+        // warm bias. Optional: if there's no gust champion / no gust for a valid,
+        // fall back to champion wind alone (EffWind below).
+        var gustV = ModelArtifact.ResolveStationChampionVersion(modelsRoot, ElementTargets.WindGust.ModelDirName, loc);
+        var gust = string.IsNullOrEmpty(gustV)
+            ? new Dictionary<DateTime, double>()
+            : await LoadElementByValidAsync(predictionsRoot, ElementTargets.WindGust, loc, gustV, anchor, ct);
+        // Effective wind for convective cooling = mean(champion wind, gust) when gust
+        // is present at this valid, else champion wind alone.
+        double EffWind(DateTime t) => gust.TryGetValue(t, out var g) ? 0.5 * (wind[t] + g) : wind[t];
+
         // Forward window = valids where ALL four blends exist (the +24..+72 tile).
         var forwardValids = temp.Keys
             .Where(v => wind.ContainsKey(v) && rad.ContainsKey(v) && cloud.ContainsKey(v))
@@ -116,7 +130,7 @@ public static class RockSurfacePredictPipeline
                     AirTempC: temp[t].Value,
                     DewPointC: useNwp.Td,
                     CloudFrac: cloud[t] / 100.0,
-                    WindMs: wind[t],
+                    WindMs: EffWind(t),
                     ShortwaveWm2: rad[t]));
             }
             else
@@ -162,7 +176,7 @@ public static class RockSurfacePredictPipeline
                 GreasinessStatus = RockSurfacePhysics.Greasiness(margin, cfg.GreasyMarginC),
                 ShortwaveDownWm2 = rad[h.ValidTimeUtc],
                 CloudCoverPct = cloud[h.ValidTimeUtc],
-                WindSpeed10mMs = wind[h.ValidTimeUtc],
+                WindSpeed10mMs = EffWind(h.ValidTimeUtc),
                 LongwaveDownWm2 = h.LongwaveDownWm2,
                 DeepTempC = h.DeepTempC,
                 TempModelVersion = tempV,
