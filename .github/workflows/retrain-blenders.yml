@@ -524,7 +524,12 @@ jobs:
         # Always push on partial success — successful phases' bundles
         # should land even if other phases failed. R2 sync is incremental
         # so this is cheap when nothing changed.
-        if: steps.gate.outputs.proceed == 'true' && always()
+        # Gated on phases_resolved_csv too: a location with NO resolved phases
+        # for this dispatch (e.g. a scoped Bonehill-only element retrain on the
+        # membury/sennen matrix jobs) skips Build + Install rclone + Pull, so
+        # this step would otherwise fail with no rclone / no ./data/models. Those
+        # jobs have nothing to push — skip cleanly instead of going red.
+        if: always() && steps.gate.outputs.proceed == 'true' && steps.phases.outputs.phases_resolved_csv != ''
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
