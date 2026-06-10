@@ -114,6 +114,24 @@ locations:
         - id: "9cbfd7c3-d11f-4a5e-ac4c-99575bf18c86"
           name: "Raymonds Hill"
 
+    # Village calibration (true-rainfall study 2026-06-10 —
+    # MemburyDailyTruth/true_rainfall_study.md): NNLS-through-origin
+    # weights mapping the 3 EA gauges onto 1,236 days of the on-site
+    # manual gauge (Rock, Forge Farm; 09:00Z rain-day, snow excluded).
+    # The rain pages compose the per-gauge 3f forecasts with these
+    # weights into a "Membury village" estimate. Missing/empty block =
+    # no village section. Refresh by re-running
+    # membury_true_rainfall_study.py as new manual months land —
+    # Chard's ratio is drifting year-on-year (0.98→1.09 over 2024→26),
+    # which is also why Goren carries half the weight.
+    villageRain:
+      label: "Membury village"
+      fittedOn: "2026-06-10"
+      weights:
+        "Chards Snowdon Hill": 0.309
+        "Goren": 0.513
+        "Raymonds Hill": 0.133
+
   # Sennen, Cornwall — added 2026-06-05. Granite SEA CLIFF at the far SW tip
   # (Sennen Cove / Land's End), ~35 m clifftop, full Atlantic exposure. The
   # "hardest yet" location: truth is sparse out here. Rain = the 3 nearest EA

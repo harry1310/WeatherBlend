@@ -61,6 +61,120 @@ public static partial class SitePages
     }
 
     /// <summary>
+    /// "Village" composite rainfall section — the location's per-gauge 3f
+    /// forecasts combined with the on-site calibration weights
+    /// (<see cref="VillageRainSpec"/>; Membury: NNLS vs 42 months of the
+    /// manual village gauge, true-rainfall study 2026-06-10). Rendered
+    /// once per rain page, after the per-station sections.
+    ///
+    /// Compositing: per common valid hour, every per-hour quantity
+    /// (median + quantile band edges) is the weighted sum across gauges.
+    /// Weighted-summing QUANTILES is exact only when the gauges co-vary
+    /// perfectly (comonotonicity); at 6-7 km apart their daily totals
+    /// correlate at r ≈ 0.95+, so the approximation is good and honest
+    /// for a display band. The exceedance grid is deliberately NOT
+    /// rendered here — P(weighted sum ≥ T) does not combine linearly
+    /// from per-gauge exceedance probabilities, and an almost-right
+    /// table is worse than none. The headline's "chance of any rain"
+    /// uses the weight-normalised average of the gauges' P≥0.1 — rain
+    /// OCCURRENCE is effectively common across a 7 km triangle, so a
+    /// consensus probability is fair where an amount-threshold one isn't.
+    ///
+    /// ALL weighted gauges must have rows at this lead — a composite
+    /// missing a 0.5-weight member would silently read ~half the real
+    /// rate. Absent gauge = no section (same empty-string contract as
+    /// the per-station card).
+    /// </summary>
+    internal static string RenderVillageRainfallSection(
+        SiteInputs input, LocationDescriptor location, int lead, double xMin, double xMax)
+    {
+        var cal = location.VillageRain;
+        if (cal is null || cal.WeightsBySlug.Count == 0) return "";
+
+        // Same freshest-per-(lead, valid) + future-only selection as the
+        // per-station section, per weighted gauge.
+        var byStation = new Dictionary<string, Dictionary<DateTime, RainfallAmountPredictionRow>>(StringComparer.Ordinal);
+        foreach (var slug in cal.WeightsBySlug.Keys)
+        {
+            var rows = input.RainfallAmountPredictions
+                .Where(r => string.Equals(r.TruthStation, slug, StringComparison.Ordinal))
+                .Where(r => r.LeadHours == lead)
+                .GroupBy(r => r.ValidTimeUtc)
+                .Select(g => g.OrderByDescending(r => r.PredictionMadeAtUtc).First())
+                .Where(r => r.ValidTimeUtc >= input.GeneratedAtUtc)
+                .ToDictionary(r => r.ValidTimeUtc);
+            if (rows.Count == 0) return "";
+            byStation[slug] = rows;
+        }
+
+        var commonValids = byStation.Values
+            .Select(d => (IEnumerable<DateTime>)d.Keys)
+            .Aggregate((a, b) => a.Intersect(b))
+            .OrderBy(v => v)
+            .ToList();
+        if (commonValids.Count == 0) return "";
+
+        var weightSum = cal.WeightsBySlug.Values.Sum();
+        var template = byStation.First().Value[commonValids[0]];
+        var composite = commonValids.Select(v =>
+        {
+            double W(Func<RainfallAmountPredictionRow, double> f) =>
+                cal.WeightsBySlug.Sum(kv => kv.Value * f(byStation[kv.Key][v]));
+            // Occurrence consensus (NOT a weighted amount — see doc note).
+            double Consensus(Func<RainfallAmountPredictionRow, double> f) => W(f) / weightSum;
+            return new RainfallAmountPredictionRow
+            {
+                LocationName = template.LocationName,
+                TruthStation = location.Name + "_village",
+                ModelVersion = template.ModelVersion,
+                Precip3aVersion = template.Precip3aVersion,
+                PredictionMadeAtUtc = byStation.Values.Min(d => d[v].PredictionMadeAtUtc),
+                ValidTimeUtc = v,
+                LeadHours = lead,
+                // Distribution parameters don't compose across gauges —
+                // the composite is quantile-level only. Carry the
+                // occurrence consensus as Pi; NaN the per-gauge LogNormal
+                // params so any future consumer that needs them fails
+                // loudly rather than reading one gauge's values.
+                Pi = Consensus(r => r.Pi),
+                MuLog = double.NaN,
+                SigmaLog = double.NaN,
+                MeanMmPerHr   = W(r => r.MeanMmPerHr),
+                MedianMmPerHr = W(r => r.MedianMmPerHr),
+                P2_5MmPerHr   = W(r => r.P2_5MmPerHr),
+                P10MmPerHr    = W(r => r.P10MmPerHr),
+                P50MmPerHr    = W(r => r.P50MmPerHr),
+                P90MmPerHr    = W(r => r.P90MmPerHr),
+                P97_5MmPerHr  = W(r => r.P97_5MmPerHr),
+                PExceed0_1 = Consensus(r => r.PExceed0_1),
+                PExceed1   = Consensus(r => r.PExceed1),
+                PExceed5   = Consensus(r => r.PExceed5),
+                PExceed10  = Consensus(r => r.PExceed10),
+            };
+        }).ToList();
+
+        var weightsLine = string.Join(" + ", cal.WeightsBySlug
+            .OrderByDescending(kv => kv.Value)
+            .Select(kv => $"{kv.Value.ToString("0.00", Ci)}·{Escape(PrettyStation(kv.Key))}"));
+        var headline = RenderRainfallAmountHeadline(composite);
+        var ribbon = RenderRainfallAmountRibbon(composite, lead, xMin, xMax, input.GeneratedAtUtc.ToOADate());
+        return $"""
+            <section class="rainfall-amount village" data-station="{Escape(location.Name)}_village" data-lead="{lead}">
+              <h3>{Escape(cal.Label)} — best estimate of rain at the village
+                <small>(EA gauge forecasts × on-site calibration)</small></h3>
+              <p><small>Weighted composite of the three gauge forecasts above:
+                {weightsLine}, fitted {Escape(cal.FittedOn)} against the village's own
+                daily gauge (42 months). The village receives ~7% less rain than the
+                raw gauge average. Band edges assume the gauges co-vary
+                (they correlate at r&nbsp;≈&nbsp;0.95); no exceedance table here because
+                threshold probabilities don't combine across gauges.</small></p>
+              {headline}
+              {ribbon}
+            </section>
+            """;
+    }
+
+    /// <summary>
     /// "Total median X mm • Wettest hour: Y mm/h (Z%) • W% chance of any rain".
     /// One line summarising the day. Two reasons we don't surface a
     /// "daily 80% interval" here:

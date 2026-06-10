@@ -213,7 +213,14 @@ public sealed class RenderSiteCommand
             IsPrimary: idx == 0,
             Tabs: loc.Tabs.ToList(),
             OverviewFirstVisibleHourUtc: loc.Overview.FirstVisibleHourUtc,
-            OverviewLastVisibleHourUtcExclusive: loc.Overview.LastVisibleHourUtcExclusive)).ToList();
+            OverviewLastVisibleHourUtcExclusive: loc.Overview.LastVisibleHourUtcExclusive,
+            VillageRain: loc.VillageRain is { Weights.Count: > 0 } vr
+                ? new SitePages.VillageRainSpec(
+                    Label: string.IsNullOrWhiteSpace(vr.Label) ? $"{loc.DisplayName} (on-site estimate)" : vr.Label,
+                    FittedOn: vr.FittedOn,
+                    WeightsBySlug: vr.Weights.ToDictionary(
+                        kv => StationSlug.WithEaPrefix(kv.Key), kv => kv.Value, StringComparer.Ordinal))
+                : null)).ToList();
 
         // Top-level model summaries / feature spec rows surface ALL locations'
         // active versions on /specs.html. Per-loc Models page recomputes with

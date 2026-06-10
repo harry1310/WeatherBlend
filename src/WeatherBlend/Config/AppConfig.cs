@@ -128,9 +128,38 @@ public sealed class LocationConfig
     /// </summary>
     public OverviewConfig Overview { get; set; } = new();
 
+    /// <summary>
+    /// Optional on-site rainfall calibration (Membury village, 2026-06-10).
+    /// Weights map this location's EA gauge 3f forecasts onto a manual
+    /// gauge AT the place of interest; the rain pages render a "village"
+    /// composite section when present. Keys are rainfall station NAMES
+    /// (matching <see cref="RainfallConfig.Stations"/>) — slugified at
+    /// descriptor-build time the same way RainStationSlugs are.
+    /// </summary>
+    public VillageRainConfig? VillageRain { get; set; }
+
     /// <summary>True iff <paramref name="tab"/> appears in <see cref="Tabs"/> (case-insensitive).</summary>
     public bool HasTab(string tab) =>
         Tabs.Any(t => string.Equals(t, tab, StringComparison.OrdinalIgnoreCase));
+}
+
+/// <summary>
+/// On-site rainfall calibration weights — see <see cref="LocationConfig.VillageRain"/>.
+/// Provenance: MemburyDailyTruth/membury_true_rainfall_study.py (NNLS through
+/// origin, daily 09:00Z rain-day vs the manual village gauge).
+/// </summary>
+public sealed class VillageRainConfig
+{
+    /// <summary>Human-facing section label, e.g. "Membury village".</summary>
+    public string Label { get; set; } = "";
+
+    /// <summary>Date the weights were last fitted (yyyy-MM-dd) — surfaced
+    /// in the section's provenance line.</summary>
+    public string FittedOn { get; set; } = "";
+
+    /// <summary>Station NAME → weight. Applied to each gauge's 3f
+    /// per-hour quantities and summed.</summary>
+    public Dictionary<string, double> Weights { get; set; } = new();
 }
 
 public sealed class OverviewConfig

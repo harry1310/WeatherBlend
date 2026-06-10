@@ -1676,6 +1676,109 @@ public class SitePagesTests
         html.Should().Contain($"&quot;todayX&quot;:{System.Text.Json.JsonSerializer.Serialize(generatedAt.ToOADate())}");
     }
 
+    // ---- Membury village composite (true-rainfall study 2026-06-10) ----
+
+    private static RainfallAmountPredictionRow[] VillageGaugeRows(
+        string stationSlug, DateTime generatedAt, DateTime validDay, double medianMmPerHr)
+        => Enumerable.Range(0, 24).Select(h => new RainfallAmountPredictionRow
+        {
+            LocationName = "membury_devon",
+            TruthStation = stationSlug,
+            ModelVersion = "v3f",
+            PredictionMadeAtUtc = generatedAt,
+            ValidTimeUtc = validDay.AddHours(h),
+            LeadHours = 24,
+            Pi = 0.5, MuLog = 0.0, SigmaLog = 0.5,
+            MeanMmPerHr = medianMmPerHr * 1.5, MedianMmPerHr = medianMmPerHr,
+            P2_5MmPerHr = 0.0, P10MmPerHr = 0.0, P50MmPerHr = medianMmPerHr * 0.75,
+            P90MmPerHr = medianMmPerHr * 2.5, P97_5MmPerHr = medianMmPerHr * 5.0,
+            PExceed0_1 = 0.4, PExceed1 = 0.2, PExceed5 = 0.05, PExceed10 = 0.01,
+            Precip3aVersion = "v3a",
+        }).ToArray();
+
+    private static SitePages.LocationDescriptor MemburyWithVillageCalibration(
+        IReadOnlyDictionary<string, double> weights)
+        => new(
+            Name: "membury_devon",
+            DisplayName: "Membury",
+            RainStationSlugs: new[] { "ea_chards_snowdon_hill", "ea_goren", "ea_raymonds_hill" },
+            IsPrimary: false,
+            Tabs: new[] { "overview", "rain" },
+            OverviewFirstVisibleHourUtc: 0,
+            OverviewLastVisibleHourUtcExclusive: 24,
+            VillageRain: new SitePages.VillageRainSpec("Membury village", "2026-06-10", weights));
+
+    [Fact]
+    public void RenderVillageRainfallSection_composes_weighted_gauges()
+    {
+        var generatedAt = new DateTime(2026, 6, 10, 3, 0, 0, DateTimeKind.Utc);
+        var validDay = generatedAt.Date.AddDays(1);
+        var weights = new Dictionary<string, double>
+        {
+            ["ea_chards_snowdon_hill"] = 0.309,
+            ["ea_goren"] = 0.513,
+            ["ea_raymonds_hill"] = 0.133,
+        };
+        var medians = new Dictionary<string, double>
+        {
+            ["ea_chards_snowdon_hill"] = 1.0,
+            ["ea_goren"] = 2.0,
+            ["ea_raymonds_hill"] = 3.0,
+        };
+        var rows = weights.Keys
+            .SelectMany(s => VillageGaugeRows(s, generatedAt, validDay, medians[s]))
+            .ToArray();
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            RainfallAmountPredictions = rows,
+        };
+
+        var html = SitePages.RenderVillageRainfallSection(
+            input, MemburyWithVillageCalibration(weights), 24,
+            validDay.ToOADate(), validDay.AddDays(1).ToOADate());
+
+        html.Should().Contain("data-station=\"membury_devon_village\"");
+        html.Should().Contain("Membury village");
+        html.Should().Contain("fitted 2026-06-10");
+        // Composite hourly median = Σ w·median, same fold order as the
+        // renderer (it iterates the same weights dictionary).
+        var expectedMedian = weights.Sum(kv => kv.Value * medians[kv.Key]);
+        html.Should().Contain(System.Text.Json.JsonSerializer.Serialize(expectedMedian));
+        // Threshold probabilities don't combine across gauges — the village
+        // section must not render the exceedance grid.
+        html.Should().NotContain("Exceedance probabilities");
+    }
+
+    [Fact]
+    public void RenderVillageRainfallSection_requires_every_weighted_gauge()
+    {
+        // A composite missing a half-weight member would silently read ~half
+        // the real rate — absent gauge means NO section, not a partial one.
+        var generatedAt = new DateTime(2026, 6, 10, 3, 0, 0, DateTimeKind.Utc);
+        var validDay = generatedAt.Date.AddDays(1);
+        var weights = new Dictionary<string, double>
+        {
+            ["ea_chards_snowdon_hill"] = 0.309,
+            ["ea_goren"] = 0.513,
+            ["ea_raymonds_hill"] = 0.133,
+        };
+        var rows = VillageGaugeRows("ea_chards_snowdon_hill", generatedAt, validDay, 1.0)
+            .Concat(VillageGaugeRows("ea_goren", generatedAt, validDay, 2.0))
+            .ToArray();   // raymonds hill missing
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            RainfallAmountPredictions = rows,
+        };
+
+        var html = SitePages.RenderVillageRainfallSection(
+            input, MemburyWithVillageCalibration(weights), 24,
+            validDay.ToOADate(), validDay.AddDays(1).ToOADate());
+
+        html.Should().BeEmpty();
+    }
+
     [Fact]
     public void RenderIndex_shows_rock_damp_badge_only_for_greasy_hours()
     {

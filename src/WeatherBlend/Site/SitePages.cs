@@ -151,12 +151,25 @@ public static partial class SitePages
         bool IsPrimary,
         IReadOnlyList<string> Tabs,
         int OverviewFirstVisibleHourUtc,
-        int OverviewLastVisibleHourUtcExclusive)
+        int OverviewLastVisibleHourUtcExclusive,
+        VillageRainSpec? VillageRain = null)
     {
         /// <summary>True iff <paramref name="tab"/> is in <see cref="Tabs"/> (case-insensitive).</summary>
         public bool HasTab(string tab) =>
             Tabs.Any(t => string.Equals(t, tab, StringComparison.OrdinalIgnoreCase));
     }
+
+    /// <summary>
+    /// Render-layer view of <c>LocationConfig.VillageRain</c> — the on-site
+    /// rainfall calibration weights, keyed by EA-prefixed station SLUG
+    /// (RenderSiteCommand slugifies the config's station-name keys). The
+    /// rain pages compose the weighted per-gauge 3f forecasts into one
+    /// "village" section when this is non-null.
+    /// </summary>
+    public sealed record VillageRainSpec(
+        string Label,
+        string FittedOn,
+        IReadOnlyDictionary<string, double> WeightsBySlug);
 
     /// <summary>
     /// First-pick location for legacy "single-location render" sites. Returns

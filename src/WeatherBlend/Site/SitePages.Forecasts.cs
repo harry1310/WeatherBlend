@@ -655,6 +655,15 @@ public static partial class SitePages
             s.Append(RenderRainfallAmountSection(input, station, lead, pageXMin, pageXMax));
         }
 
+        // "Village" composite — the calibrated combination of this
+        // location's gauge 3f forecasts into a best estimate of rain AT
+        // the place of interest (config villageRain; Membury weights from
+        // the 2026-06-10 true-rainfall study). Once per page, after the
+        // per-gauge sections it composes; renders nothing unless EVERY
+        // weighted gauge has 3f rows at this lead.
+        if (activeLocation is not null)
+            s.Append(RenderVillageRainfallSection(input, activeLocation, lead, pageXMin, pageXMax));
+
         // Per-NWP precip rate (mm/h) — point forecast at Bonehill, hoisted
         // out of the per-station loop because PrecipGfs/PrecipEcmwf/etc are
         // identical across rainfall stations. Source: input.NwpPrecipRates
