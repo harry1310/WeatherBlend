@@ -451,7 +451,18 @@ public sealed class DryWindowTrainCommand
 
         var modelsRoot = _cfg.Storage.ModelsPath;
         var daytime = _cfg.DryWindow.BuildDaytimeWindow();
-        var windows = new[] { 3, 4, 6 };
+        // 3p windows — every hour length 2..6 (extended from {3,4,6}
+        // 2026-06-10 for the overview "Will it stay dry?" calculator: more
+        // selectable lengths). SUPERSET of 3b's {3,4,6}: the copula MC
+        // computes any window length from the same per-station Σ + 3o
+        // marginals — no extra training, just two more thresholds over the
+        // same draws. The window_2h / window_5h composites are 3p-ONLY in
+        // the manifest (3b stays {3,4,6}); predict, verify, the site pages
+        // and the calculator all enumerate windows dynamically from the
+        // manifest / prediction rows, and the dry-window page skips phases
+        // with no rows per window, so the new sections render 3p-only
+        // without code changes downstream.
+        var windows = new[] { 2, 3, 4, 5, 6 };
         var leads = new[] { 24, 48, 72 };
         var rngSeed = 42;
 
@@ -611,7 +622,7 @@ public sealed class DryWindowTrainCommand
                         "Phase 3p — parameter-free Gaussian copula MC over Phase 3o's hourly P(wet) marginals. No LightGBM, no learned weights; predict reads 3o's live prediction parquet at inference time and runs MC.",
                         "Single empirical Σ per station from train-split observed_wet daytime sequences. Σ structure is lead-independent (truth doesn't move with forecast horizon); pooling per-lead truth sequences gives a tighter estimate.",
                         $"3o champion bound at training time: {v3o}. Re-run dry-window train --feature-set copula-mc to rebind to a newer 3o champion.",
-                        "Cross-window monotonicity P(N=3) ≥ P(N=4) ≥ P(N=6) is guaranteed by computing all windows from a SINGLE shared correlated-Bernoulli sequence per MC sample.",
+                        "Cross-window monotonicity P(N=2) ≥ P(N=3) ≥ … ≥ P(N=6) is guaranteed by computing all windows from a SINGLE shared correlated-Bernoulli sequence per MC sample.",
                         "Brier numbers are blank in training_metadata — verify scores live predictions vs EA truth as cycles produce 3p rows.",
                     },
                 };

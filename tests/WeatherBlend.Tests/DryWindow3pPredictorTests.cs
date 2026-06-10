@@ -43,6 +43,33 @@ public class DryWindow3pPredictorTests
     }
 
     [Fact]
+    public void ProbDryWindow_windows_2_to_6_are_monotone_and_all_returned()
+    {
+        // The production window set since 2026-06-10 ({3,4,6} → every hour
+        // 2..6, feeding the overview "Will it stay dry?" calculator's length
+        // menu). All five must come back from ONE call, and because every
+        // window thresholds the same correlated-Bernoulli draws, the
+        // monotonicity P(≥2h) ≥ P(≥3h) ≥ … ≥ P(≥6h) is EXACT (not just
+        // statistical) — the property the widget's length menu relies on
+        // (a longer ask can never look more likely).
+        var q = new[] { 0.1, 0.3, 0.5, 0.7, 0.2, 0.1, 0.4, 0.6, 0.2 };
+        var L = IdentityCholesky(q.Length);
+        var windows = new[] { 2, 3, 4, 5, 6 };
+
+        var probs = DryWindow3pPredictor.ProbDryWindow(
+            q, L, windows, new Random(42), nSamples: 5000);
+
+        probs.Keys.Should().BeEquivalentTo(windows);
+        for (int i = 1; i < windows.Length; i++)
+            probs[windows[i]].Should().BeLessThanOrEqualTo(probs[windows[i - 1]],
+                $"P(dry ≥ {windows[i]}h) cannot exceed P(dry ≥ {windows[i - 1]}h) under shared draws");
+        // Mid-range q day: the extremes shouldn't saturate, so the ordering
+        // is exercised on strictly interior values.
+        probs[2].Should().BeInRange(0.05, 0.999);
+        probs[6].Should().BeInRange(0.0, probs[2]);
+    }
+
+    [Fact]
     public void ProbDryWindowWithStats_quantiles_are_monotone()
     {
         var q = new[] { 0.2, 0.3, 0.4, 0.5, 0.4, 0.3, 0.2, 0.1, 0.1 };

@@ -29,9 +29,11 @@ namespace WeatherBlend.Train.DryWindow;
 ///      Bernoullis with marginal P(X_h = 1) = q_h (the copula property).
 ///   5. dry_h = NOT X_h; count longest contiguous dry run; threshold by N.
 ///
-/// Cross-window monotonicity P(L=3) ≥ P(L=4) ≥ P(L=6) is guaranteed by
+/// Cross-window monotonicity P(L=2) ≥ P(L=3) ≥ … ≥ P(L=6) is guaranteed by
 /// computing all windows from one shared correlated-Bernoulli sequence per
-/// sample.
+/// sample. (Windows 2..6 since 2026-06-10 — any length ≤ the daytime span
+/// works; the per-window manifest composites are minted by
+/// DryWindowTrainCommand.RunPhase3pAsync.)
 ///
 /// Bake-off Brier 0.1064 aggregate across 9 (station, lead) Bonehill cells
 /// on post-JMA-backfill data (see project_phase2_dry_window_bakeoff_2026-05-25).
@@ -55,7 +57,7 @@ public static class DryWindow3pPredictor
     /// Single copula-MC pass yielding P(longest dry run ≥ L) for every window
     /// in <paramref name="windowHours"/>. All windows share the same correlated-
     /// Bernoulli draws per sample, preserving exact cross-window monotonicity
-    /// P(L=3) ≥ P(L=4) ≥ P(L=6).
+    /// (shorter window ⇒ ≥ probability).
     /// </summary>
     /// <param name="qHourly">Daytime hourly P(wet) from 3o, length matches the
     /// fitted Σ dimension (typically 9 — the daytime window). Caller is
