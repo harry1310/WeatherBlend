@@ -1258,6 +1258,282 @@ public sealed class PrecipCrossLeadBakeoffCommand
         return outv;
     }
 
+    // ===================== Phase 1 producer: fit + emit LEAD_POLICY.json =====================
+    //
+    // docs/PRECIP_LEAD_POLICY_PLAN.md Phase 1. Combines the band-eval
+    // methodology (RunPolicyBandAsync) with the SELECT/SCORE date split
+    // (RunPolicyEvalSplitAsync), then applies the locked governance gates and
+    // emits data/models/precipitation/LEAD_POLICY.json:
+    //   * margin gate 0.75%: a NEW deviation from the production bucket model
+    //     enters only when its held-out SCORE Brier beats the bucket baseline
+    //     by ≥ MarginPct;
+    //   * hysteresis 0.5%: an INCUMBENT band entry (from the existing
+    //     LEAD_POLICY.json) is only displaced — by a different candidate or by
+    //     reversion to baseline — when the challenger beats it by ≥
+    //     HysteresisPct on SCORE. Equivalently an incumbent re-qualifies at
+    //     (MarginPct − HysteresisPct); a fresh entry needs the full margin.
+    //   * truth-settled guard: if the SCORE window's pooled EA truth coverage
+    //     is below 70% of expected hours, SKIP the update entirely and keep
+    //     the last-good policy (the 2026-06 EA outage failure mode).
+    //   * 3c is SINGLES-ONLY (locked 2026-06-09: its blend winners flip pair
+    //     per band — overfit noise); 3o may use equal-weight pairs.
+    // Choices are made on the SELECT slice and graded on SCORE, so no
+    // candidate is gated on its own selection data. Absent bands in the
+    // artifact mean "production bucket" — an empty policy is a no-op.
+
+    public async Task<int> RunFitLeadPolicyAsync(
+        string? startDateStr, string? cutoffStr, CancellationToken ct)
+    {
+        await Task.Yield();
+        var location = _cfg.Location;
+        var modelsRoot = _cfg.Storage.ModelsPath;
+        var studyRoot = Path.Combine(Path.GetDirectoryName(modelsRoot)!, "models_study");
+        var thresholds = new PrecipLeadPolicy.ThresholdsBlock();   // locked defaults
+
+        var windowStart = DateOnly.TryParse(startDateStr, out var d0)
+            ? d0.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc)
+            : new DateTime(2026, 3, 19, 0, 0, 0, DateTimeKind.Utc);
+        var studyCutoff = DateOnly.TryParse(cutoffStr, out var dc)
+            ? dc.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc)
+            : new DateTime(2026, 3, 15, 0, 0, 0, DateTimeKind.Utc);
+        var asOf = DateTime.UtcNow;
+        var windowEnd = asOf;
+        var splitDate = windowEnd.Date.AddDays(-thresholds.HoldoutDays);
+        if (splitDate <= windowStart.AddDays(7))
+        {
+            _log.LogError("fit-lead-policy: SELECT slice would be <7 days ({S:yyyy-MM-dd}..{Split:yyyy-MM-dd}) — widen --start.",
+                windowStart, splitDate);
+            return 2;
+        }
+
+        int[] cands = { 24, 48, 72, 96, 120 };
+        var taus = Enumerable.Range(0, (117 - 12) / 3 + 1).Select(i => 12 + 3 * i).ToArray();
+        var pairs = new List<(int Lo, int Hi)>();
+        for (int i = 0; i < cands.Length; i++)
+            for (int j = i + 1; j < cands.Length; j++) pairs.Add((cands[i], cands[j]));
+
+        _log.LogInformation(
+            "fit-lead-policy — window {S:yyyy-MM-dd}..{E:yyyy-MM-dd}, SELECT<{Split:yyyy-MM-dd}≤SCORE ({Hold}d holdout), " +
+            "study cutoff {Cut:yyyy-MM-dd}, margin {M}%, hysteresis {H}%",
+            windowStart, windowEnd, splitDate, thresholds.HoldoutDays, studyCutoff,
+            thresholds.MarginPct, thresholds.HysteresisPct);
+
+        // ---- scan-once live forecast cache (same shape as the band eval) ----
+        var fcPart = Path.Combine(Path.GetDirectoryName(modelsRoot)!, "scratch", "policy_fit", "fc", "p");
+        Directory.CreateDirectory(fcPart);
+        var fcPath = Path.Combine(Path.GetDirectoryName(modelsRoot)!, "scratch", "policy_fit", "fc");
+        static string Esc(string p) => p.Replace('\\', '/').Replace("'", "''");
+        using (var conn = new DuckDBConnection("DataSource=:memory:"))
+        {
+            conn.Open();
+            using var c = conn.CreateCommand();
+            c.CommandText =
+                $"COPY (SELECT * FROM read_parquet('{Esc(Path.Combine(_cfg.Storage.ForecastsPath, "location=bonehill_rocks", "**", "*.parquet"))}', hive_partitioning=false, union_by_name=true) " +
+                $"WHERE (RunTimeSource IS NULL OR RunTimeSource <> 'offset_day') AND ValidTimeUtc BETWEEN TIMESTAMP '{windowStart:yyyy-MM-dd HH:mm:ss}' AND TIMESTAMP '{windowEnd:yyyy-MM-dd HH:mm:ss}') " +
+                $"TO '{Esc(Path.Combine(fcPart, "fc.parquet"))}' (FORMAT PARQUET);";
+            c.ExecuteNonQuery();
+        }
+
+        var canon = TempFeatureBuilder.CanonicalModelOrder.ToList();
+        var ml = new MLContext(seed: 42);
+        var emptyUa = System.Array.Empty<(DateTime, double[])>();
+        var oroBySlug = OroStaticFeatures.LoadAll(Path.Combine(Path.GetDirectoryName(_cfg.Storage.ForecastsPath)!, "static", "orographic"));
+        var gauges = location.Rainfall.Stations.Select(s => (Slug: StationSlug.WithEaPrefix(s.Name), Friendly: s.Name)).ToList();
+        var truth = new Dictionary<string, IReadOnlyList<(DateTime, double)>>();
+        var rain = new Dictionary<string, Dictionary<DateTime, double>>();
+        var m3c = new Dictionary<string, Dictionary<int, (ITransformer Model, BlenderSpec Spec)>>();
+        var m3o = new Dictionary<string, Dictionary<int, (ITransformer Model, BlenderSpec Spec)>>();
+        foreach (var (slug, friendly) in gauges)
+        {
+            truth[slug] = LoadHourlyTruth(_cfg.Storage.RainfallPath, location.Name, friendly, windowStart, windowEnd, ct);
+            rain[slug] = PrecipRichFeatureBuilder.LoadHourlyRain(_cfg.Storage.RainfallPath, location.Name, friendly, null, ct);
+            foreach (var (dir, dst) in new[] {
+                (Path.Combine(studyRoot, "precipitation", slug, "vstudy_phase3c_noua"), m3c),
+                (Path.Combine(studyRoot, "precipitation", slug, "vstudy_phase3o_noua"), m3o) })
+            {
+                if (!Directory.Exists(dir)) continue;
+                var specs = ModelArtifact.LoadBlenderSpecs(dir);
+                var byLead = new Dictionary<int, (ITransformer, BlenderSpec)>();
+                foreach (var lead in cands)
+                    if (specs.TryGetValue(lead, out var sp))
+                        byLead[lead] = (ModelArtifact.LoadLeadModel(ml, dir, lead, out _), sp);
+                dst[slug] = byLead;
+            }
+        }
+        if (m3c.Count == 0 && m3o.Count == 0)
+        {
+            _log.LogError("fit-lead-policy: no study bundles under {Root} — run precip-policy-retrain first.", studyRoot);
+            return 2;
+        }
+        var anySpec3o = m3o.Values.FirstOrDefault()?.Values.FirstOrDefault().Spec;
+        var aux = anySpec3o is null ? new() : PrecipRichOroFeatureBuilder.LoadAuxNwpMeansLive(fcPath, location.Name, anySpec3o, windowStart, windowEnd, ct);
+
+        // ---- truth-settled guard (BEFORE any scoring) ----
+        // Pooled EA hourly truth in the SCORE window must cover ≥70% of the
+        // expected hours, else this run keeps the last-good policy. Guards the
+        // EA-outage failure mode: scoring a half-empty SCORE slice would gate
+        // policy changes on noise.
+        var expectedScoreHours = (windowEnd - splitDate).TotalHours * gauges.Count;
+        var actualScoreHours = gauges.Sum(g => truth[g.Slug].Count(t => t.Item1 >= splitDate));
+        var coverage = expectedScoreHours <= 0 ? 0.0 : actualScoreHours / expectedScoreHours;
+        if (coverage < 0.70)
+        {
+            _log.LogWarning(
+                "fit-lead-policy: SCORE-window truth coverage {Cov:P0} < 70% (EA latency/outage?) — " +
+                "SKIPPING the policy update, last-good LEAD_POLICY.json stays.", coverage);
+            return 0;
+        }
+        _log.LogInformation("fit-lead-policy: SCORE-window truth coverage {Cov:P0} — proceeding.", coverage);
+
+        // ---- score every candidate + pair at every τ, split SELECT/SCORE ----
+        var selSq = new Dictionary<string, double>(); var scoSq = new Dictionary<string, double>();
+        var selN = new Dictionary<string, int>(); var scoN = new Dictionary<string, int>();
+        void Add(Dictionary<string, double> sq, Dictionary<string, int> n, string ptk, string series, double err2)
+            => sq[$"{ptk}|{series}"] = sq.GetValueOrDefault($"{ptk}|{series}") + err2;
+
+        foreach (var tau in taus)
+        {
+            ct.ThrowIfCancellationRequested();
+            var pivot = QueryLatestForecastRows(fcPath, location.Name, windowStart, windowEnd, asOf, tau, ct);
+            foreach (var (slug, friendly) in gauges)
+            {
+                if (!Phase3oStationIndex.TryGetValue(slug, out var stIdx)) stIdx = -1;
+                oroBySlug.TryGetValue(slug, out var oro);
+                foreach (var (phase, store) in new[] { ("3c", m3c), ("3o", m3o) })
+                {
+                    if (!store.TryGetValue(slug, out var byLead) || !cands.All(byLead.ContainsKey)) continue;
+                    if (phase == "3o" && (oro is null || stIdx < 0)) continue;
+                    var ptk = $"{phase}|{tau}";
+                    foreach (var (V, mm) in truth[slug])
+                    {
+                        if (!pivot.TryGetValue(V, out var pv) || !pv.Precip.Any(p => p.HasValue)) continue;
+                        var preds = new double[cands.Length];
+                        var ok = true;
+                        for (int i = 0; i < cands.Length; i++)
+                        {
+                            var ms = byLead[cands[i]];
+                            double? p = phase == "3c"
+                                ? Predict3c(ml, ms.Model, ms.Spec, canon, V, tau, pv, rain[slug], emptyUa)
+                                : Predict3o(ml, ms.Model, ms.Spec, canon, V, tau, pv, rain[slug], emptyUa, oro!, aux, stIdx);
+                            if (p is null) { ok = false; break; }
+                            preds[i] = p.Value;
+                        }
+                        if (!ok) continue;
+                        var y = mm >= WetThresholdMm ? 1.0 : 0.0;
+                        var (sq, n) = V < splitDate ? (selSq, selN) : (scoSq, scoN);
+                        n[ptk] = n.GetValueOrDefault(ptk) + 1;
+                        for (int i = 0; i < cands.Length; i++)
+                            Add(sq, n, ptk, $"s{cands[i]}", (preds[i] - y) * (preds[i] - y));
+                        foreach (var (lo, hi) in pairs)
+                        {
+                            var bl = 0.5 * (preds[Array.IndexOf(cands, lo)] + preds[Array.IndexOf(cands, hi)]);
+                            Add(sq, n, ptk, $"b{lo}x{hi}", (bl - y) * (bl - y));
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- per-band decisions + gates ----
+        var incumbent = PrecipLeadPolicy.TryLoad(modelsRoot);
+        var policy = new PrecipLeadPolicy
+        {
+            FittedAtUtc = asOf,
+            Location = location.Name,
+            WindowStartUtc = windowStart,
+            WindowEndUtc = windowEnd,
+            StudyCutoffUtc = studyCutoff,
+            SelectScoreSplitUtc = splitDate,
+            Thresholds = thresholds,
+        };
+        const int MinScoreN = 300;   // a band decided on fewer held-out rows is noise — stay on baseline
+
+        Console.WriteLine();
+        Console.WriteLine("=== fit-lead-policy: 6h-band decisions (SELECT picks, SCORE grades; [base] *final) ===");
+        foreach (var phase in new[] { "3c", "3o" })
+        {
+            // ONE asymmetry between the phases (Harry, 2026-06-10): both run
+            // the same gates ("the fit chooses, the gates protect" — singles
+            // CAN deviate for either phase), but blends are 3o-only. 3c's
+            // winning pair flips in nearly every band across refits — that's
+            // selection noise, not signal — while its single-model deviations
+            // pass the same SELECT/SCORE discipline as everything else.
+            var allowBlend = phase == "3o";
+            var entries = new List<PrecipLeadPolicy.BandEntry>();
+            Console.WriteLine();
+            Console.WriteLine($"### {phase}{(allowBlend ? "" : "   (singles only — locked)")}");
+            Console.WriteLine($"  {"band",9} {"Nsco",6} {"baseline",13} {"SELECT pick",16} {"SCORE",8} {"decision",18}");
+            for (int lo = 12; lo < 120; lo += 6)
+            {
+                int hi = lo + 6;
+                var tin = taus.Where(t => t >= lo && t < hi).ToArray();
+                double SelB(string s) { var n = tin.Sum(t => selN.GetValueOrDefault($"{phase}|{t}")); return n == 0 ? double.NaN : tin.Sum(t => selSq.GetValueOrDefault($"{phase}|{t}|{s}")) / n; }
+                double ScoB(string s) { var n = tin.Sum(t => scoN.GetValueOrDefault($"{phase}|{t}")); return n == 0 ? double.NaN : tin.Sum(t => scoSq.GetValueOrDefault($"{phase}|{t}|{s}")) / n; }
+                int nSco = tin.Sum(t => scoN.GetValueOrDefault($"{phase}|{t}"));
+
+                var baseLead = PrecipLeadPolicy.BucketModelFor(lo);
+                var baseSco = ScoB($"s{baseLead}");
+                if (nSco < MinScoreN || double.IsNaN(baseSco))
+                {
+                    Console.WriteLine($"  {lo + "-" + hi + "h",9} {nSco,6} (insufficient SCORE rows — baseline)");
+                    continue;
+                }
+
+                // Candidate set: singles always; pairs when the phase allows.
+                var candidates = new List<(string Series, string Kind, List<int> Leads)>();
+                foreach (var m in cands) candidates.Add(($"s{m}", "single", new List<int> { m }));
+                if (allowBlend)
+                    foreach (var (l, h) in pairs) candidates.Add(($"b{l}x{h}", "blend", new List<int> { l, h }));
+
+                // 1. Pick on SELECT.
+                var pick = candidates.OrderBy(c => SelB(c.Series)).First();
+                // 2. Hysteresis vs incumbent: a different challenger must beat the
+                //    incumbent on SCORE by HysteresisPct or the incumbent stays.
+                var inc = incumbent?.Lookup(phase, lo);
+                string IncSeries(PrecipLeadPolicy.BandEntry e) =>
+                    e.Kind == "blend" ? $"b{e.Leads[0]}x{e.Leads[1]}" : $"s{e.Leads[0]}";
+                if (inc is not null)
+                {
+                    var incSco = ScoB(IncSeries(inc));
+                    if (!double.IsNaN(incSco)
+                        && IncSeries(inc) != pick.Series
+                        && !(ScoB(pick.Series) <= incSco * (1 - thresholds.HysteresisPct / 100.0)))
+                        pick = candidates.First(c => c.Series == IncSeries(inc));
+                }
+                // 3. Margin gate vs baseline on SCORE. Incumbents re-qualify at
+                //    (margin − hysteresis) so a sub-threshold wobble can't churn them out.
+                var pickSco = ScoB(pick.Series);
+                var isIncumbentPick = inc is not null && IncSeries(inc) == pick.Series;
+                var requiredPct = isIncumbentPick
+                    ? Math.Max(0.0, thresholds.MarginPct - thresholds.HysteresisPct)
+                    : thresholds.MarginPct;
+                var isBaselinePick = pick.Kind == "single" && pick.Leads[0] == baseLead;
+                var passes = !isBaselinePick && pickSco <= baseSco * (1 - requiredPct / 100.0);
+
+                var deltaPct = 100.0 * (baseSco - pickSco) / baseSco;
+                var decision = passes
+                    ? (pick.Kind == "blend" ? $"blend {pick.Leads[0]}+{pick.Leads[1]}" : $"m{pick.Leads[0]}")
+                    : $"baseline m{baseLead}";
+                Console.WriteLine($"  {lo + "-" + hi + "h",9} {nSco,6} {$"m{baseLead} {baseSco:F4}",13} {$"{pick.Series} sel",16} {pickSco,8:F4} {decision,18}{(passes ? $"  (+{deltaPct:F2}%)" : "")}");
+
+                if (passes)
+                    entries.Add(new PrecipLeadPolicy.BandEntry
+                    {
+                        LeadLo = lo, LeadHi = hi, Kind = pick.Kind, Leads = pick.Leads,
+                        BaselineBrier = baseSco, PolicyBrier = pickSco,
+                        DeltaPct = deltaPct, ScoreN = nSco,
+                    });
+            }
+            if (entries.Count > 0) policy.Phases[phase] = entries;
+        }
+
+        policy.Save(modelsRoot);
+        Console.WriteLine();
+        Console.WriteLine($"LEAD_POLICY.json written → {PrecipLeadPolicy.PathFor(modelsRoot)} " +
+                          $"({policy.Phases.Sum(p => p.Value.Count)} deviation band(s); absent bands = production buckets)");
+        return 0;
+    }
+
     // ===================== forecast pivot (copied from PrecipPredictCommand) =====================
 
     private sealed record PivotedRow(

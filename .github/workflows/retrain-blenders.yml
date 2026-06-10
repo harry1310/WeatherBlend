@@ -60,6 +60,11 @@ on:
         required: false
         default: ""
         type: string
+      fit_lead_policy:
+        description: "After training, refit + push LEAD_POLICY.json (per-lead 3c/3o model policy — docs/PRECIP_LEAD_POLICY_PLAN.md). Mints walk-forward study bundles on the runner (~50-70 min extra), runs precip-fit-lead-policy (margin/hysteresis/truth gates), pushes the artifact to R2. QUARTERLY cadence by design (Cloudflare sets this on the first Sunday of Jan/Apr/Jul/Oct once that tick is wired); set manually otherwise. Requires 3c AND 3o in `phases` (their pulls feed the study)."
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   # Distinct group from previous-runs-refresh / collect / backfill so
@@ -71,10 +76,12 @@ concurrency:
 jobs:
   retrain:
     runs-on: ubuntu-latest
-    # 120 min ceiling PER LOCATION job. Core sweep fits in 30-60 min; the
-    # precipitation replay regen for the dry-window MC phases adds ~15-25 min,
-    # plus padding for a slow R2 pull or runner cold-start.
-    timeout-minutes: 120
+    # 180 min ceiling PER LOCATION job. Core sweep fits in 30-60 min; the
+    # precipitation replay regen for the dry-window MC phases adds ~15-25 min;
+    # fit_lead_policy=true (quarterly) adds ~50-70 min of study minting +
+    # band scoring on the bonehill job only; plus padding for a slow R2
+    # pull or runner cold-start.
+    timeout-minutes: 180
     strategy:
       # One job per location. SERIAL (max-parallel: 1) is load-bearing: every
       # job pushes the shared data/models/MANIFEST.json, so a parallel job 2
@@ -510,6 +517,62 @@ jobs:
         run: |
           rclone copy ./data/models "r2:${R2_BUCKET}/data/models" \
             --fast-list --transfers 16 --checkers 32 --s3-no-check-bucket
+
+      - name: Fit per-lead precip policy (study retrain + gated LEAD_POLICY.json)
+        # Phase 3 of docs/PRECIP_LEAD_POLICY_PLAN.md — QUARTERLY, behind the
+        # fit_lead_policy input (default false: weekly Sunday retrains never
+        # touch the policy; no churn). Bonehill-only (the policy is the
+        # Bonehill pooled study) and requires BOTH 3c + 3o resolved in this
+        # dispatch — their sync pulls (full forecasts incl. live rows, EA
+        # rainfall, static orographic) are exactly the study's inputs.
+        #
+        # Sequence: walk-forward study bundles at a ROLLING cutoff (today−84d:
+        # ~9 weeks SELECT + the 21-day settled SCORE holdout), then the
+        # producer (margin 0.75% / hysteresis 0.5% / truth-settled guard —
+        # all enforced inside precip-fit-lead-policy, which exits 0 and keeps
+        # the last-good artifact when truth coverage is short). The incumbent
+        # LEAD_POLICY.json is pulled first so hysteresis has its reference.
+        # The production bundles trained above are NOT the study subjects —
+        # the policy's structure is learned on the cutoff replicas and
+        # applied to the full-data bundles (see the plan doc's Phase 1).
+        id: fit_lead_policy
+        if: >-
+          steps.gate.outputs.proceed == 'true'
+          && inputs.fit_lead_policy
+          && matrix.location == 'bonehill_rocks'
+          && steps.phases.outputs.run_3c == 'true'
+          && steps.phases.outputs.run_3o == 'true'
+        continue-on-error: true
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          rclone copyto "r2:${R2_BUCKET}/data/models/precipitation/LEAD_POLICY.json" \
+            ./data/models/precipitation/LEAD_POLICY.json --s3-no-check-bucket \
+            || echo "::notice::No incumbent LEAD_POLICY.json on R2 — first fit, hysteresis has no reference."
+          CUTOFF=$(date -ud '84 days ago' +%F)
+          START=$(date -ud '80 days ago' +%F)
+          echo "Study cutoff=$CUTOFF, scoring window start=$START"
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            precip-policy-retrain --as-of "$CUTOFF"
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            precip-fit-lead-policy --start "$START" --cutoff "$CUTOFF"
+
+      - name: Push LEAD_POLICY.json to R2
+        # Separate explicit push (not part of the models sync above, which
+        # runs BEFORE the fit). Only on a successful fit — a failed fit
+        # leaves the incumbent artifact untouched on R2.
+        if: steps.fit_lead_policy.outcome == 'success'
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          if [ -f ./data/models/precipitation/LEAD_POLICY.json ]; then
+            rclone copyto ./data/models/precipitation/LEAD_POLICY.json \
+              "r2:${R2_BUCKET}/data/models/precipitation/LEAD_POLICY.json" \
+              --s3-no-check-bucket
+            echo "Pushed LEAD_POLICY.json to R2."
+          else
+            echo "::warning::fit step succeeded but no LEAD_POLICY.json on disk (truth guard skip keeps last-good) — nothing pushed."
+          fi
 
       - name: Upload run logs
         if: failure()

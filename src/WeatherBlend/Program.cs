@@ -737,6 +737,28 @@ public static class Program
         }, pesStartOpt, pesSplitOpt);
         root.AddCommand(policyEvalSplit);
 
+        // precip-fit-lead-policy — Phase 1 PRODUCER (docs/PRECIP_LEAD_POLICY_PLAN.md):
+        // band eval + SELECT/SCORE + margin/hysteresis/truth gates → emits
+        // data/models/precipitation/LEAD_POLICY.json. Quarterly in production
+        // (Phase 3 wiring); run ad-hoc here against existing models_study bundles
+        // (precip-policy-retrain mints them).
+        var fitPolicyStartOpt = new Option<string?>(
+            name: "--start", description: "Live OOS window start (yyyy-MM-dd). Default 2026-03-19.",
+            getDefaultValue: () => null);
+        var fitPolicyCutoffOpt = new Option<string?>(
+            name: "--cutoff", description: "Study-bundle train cutoff for provenance (yyyy-MM-dd). Default 2026-03-15.",
+            getDefaultValue: () => null);
+        var fitPolicy = new Command(
+            "precip-fit-lead-policy",
+            "Fit + emit LEAD_POLICY.json (per-6h-band 3c/3o model policy; margin+hysteresis+truth gates)")
+            { fitPolicyStartOpt, fitPolicyCutoffOpt };
+        fitPolicy.SetHandler(async (start, cutoff) =>
+        {
+            var cmd = host.Services.GetRequiredService<PrecipCrossLeadBakeoffCommand>();
+            Environment.ExitCode = await cmd.RunFitLeadPolicyAsync(start, cutoff, CancellationToken.None);
+        }, fitPolicyStartOpt, fitPolicyCutoffOpt);
+        root.AddCommand(fitPolicy);
+
         // precip-ifs-cycle-bakeoff — 4-way IFS-cycle comparison for 3d
         // (Both / Oper / Scda / None) on a constant row/eval set. Trains
         // in memory, persists nothing; writes data/reports/ifs_cycle_bakeoff_3d.md.

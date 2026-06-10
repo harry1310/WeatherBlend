@@ -117,9 +117,15 @@ public class PrecipPredictSmokeTests
 
         var rows = await ParquetSerializer.DeserializeAsync<PrecipPredictionRow>(predParquet);
         rows.Should().NotBeEmpty();
+        // Lead 12 (today's hours, m24 fed the lead-12 pivot — the per-lead
+        // policy plan's short-lead cell, 2026-06-10) is emitted by the 3c/3o
+        // paths only; 3a stays on the trained day buckets.
+        var expectedLeads = phaseTag == "3c"
+            ? new[] { 12, 24, 48, 72, 96, 120 }
+            : new[] { 24, 48, 72, 96, 120 };
         rows.Select(r => r.LeadHours).Distinct().OrderBy(l => l).Should().BeEquivalentTo(
-            new[] { 24, 48, 72, 96, 120 },
-            $"Phase {phaseTag} predict should score every trained lead bucket");
+            expectedLeads,
+            $"Phase {phaseTag} predict should score every trained lead bucket (+ lead 12 where the phase serves it)");
         rows.Should().AllSatisfy(r =>
         {
             r.LocationName.Should().Be(locationName);

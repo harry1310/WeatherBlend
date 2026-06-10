@@ -1,8 +1,12 @@
 # Per-lead precip policy (3c/3o) — design & work plan
 
-**Status:** planned (not started). Drafted 2026-06-09 during commit freeze; commit
-post-freeze. Eval harness already exists (uncommitted) in
-`PrecipCrossLeadBakeoffCommand` — see "Assets already built".
+**Status:** IMPLEMENTING (2026-06-10, local during freeze). Decisions locked with
+Harry 2026-06-10: thresholds = margin 0.75% / hysteresis 0.5% / 21-day settled
+holdout / quarterly Jan-Apr-Jul-Oct first Sunday; lead-12 ships for 3c+3o only;
+4a gets its OWN full cross-lead study first (same 6h-band best-model/blend
+methodology, Python-side — per-lead BART states fed fresher input; nothing
+encoded for 4a until that study reports), and the 4b mint stays ≥24h until 4a
+resolves. Phase 0 validator run + producer + predict consumption in progress.
 
 ## Goal
 
@@ -56,6 +60,31 @@ This plan subsumes that idea rather than competing with it.
   clears a margin (≈0.5–1%) on a held-out SCORE slice.
 - **Same-window select=score is mildly optimistic** on marginal picks → the
   producer MUST use a SELECT/SCORE date split before emitting.
+
+## Progress log (2026-06-10, local during freeze)
+
+- **Phase 0 RUN** (`precip-policy-eval-split`, SELECT<05-05≤SCORE): 3c no-change
+  CONFIRMED (no SELECT-picked deviation survives SCORE at any τ). 3o's m48 core
+  is real (SCORE-best at 7/8 grid points τ36–90, up to +3.7%) but per-τ SELECT
+  picks are unstable — band-pooled selection + gates (below) is the governance.
+- **Phase 1 SHIPPED (local)**: `Train/PrecipLeadPolicy.cs` (artifact model,
+  TryLoad-null-safe, atomic Save, BucketModelFor) + `precip-fit-lead-policy`
+  verb (RunFitLeadPolicyAsync in PrecipCrossLeadBakeoffCommand). First run:
+  truth coverage 77% (guard passed), 7 deviations emitted — 3o: blend 24+72 @
+  12-18/18-24/72-78, blend 48+72 @ 36-42 (+2.2%) and 78-84 (+4.5%), blend
+  72+120 @ 114-120; 3c: m72 @ 42-48 (+2.1%) — NOTE: single-model (respects the
+  no-blend lock) but deviates from the strict "3c no change" reading; Harry to
+  adjudicate whether 3c deviations are admissible at all.
+- **Phase 2 BUILT (local)**: lead-12 bucket (today's hours) targeted for 3c+3o
+  (3a filters it; 3d/4a paths untouched); per-target ResolveModelLeads (policy
+  band by ACTUAL τ → equal-weight members; default = bucket model, lead-12 →
+  m24); per-lead model cache; blend members reuse the composed row only under
+  identical spec layout; conformal tags only on plain bucket rows; UA at lead
+  12 degrades to the NaN block (no exact-pressure rows at that lead). Smoke in
+  progress.
+- **4a sibling study** (Harry 2026-06-10): WP `scripts/run_4a_crosslead_study.py`
+  — cutoff study BART bundles (4 stations × 5 leads) + live-at-τ scoring +
+  same band/gate report. Nothing encoded for 4a until it reports.
 
 ## Work plan
 

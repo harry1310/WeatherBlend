@@ -36,6 +36,18 @@ public sealed class PrecipPredictCommand
     private static readonly int[] DefaultLeads = Leads.Full;
 
     /// <summary>
+    /// Lead buckets actually targeted per cycle: the standard day buckets
+    /// PLUS the lead-12 bucket (TODAY's hours, 2026-06-10 — the short-lead
+    /// cell of docs/PRECIP_LEAD_POLICY_PLAN.md). Lead 12 is served by the
+    /// 3c/3o paths ONLY (3a filters it out): no bundle carries a lead-12
+    /// model — training data is day-granular previous_day_N — so lead-12
+    /// targets run the lead-24 model (or the policy's pick) on input the
+    /// lead-12 pivot cycle-selects (RunTime ≤ Valid − 12, i.e. fresher than
+    /// the model's nominal lead; the cross-lead freshness finding).
+    /// </summary>
+    private static readonly int[] TargetLeads = new[] { 12 }.Concat(Leads.Full).ToArray();
+
+    /// <summary>
     /// Phases this command's predict path knows how to dispatch (L2 of the
     /// two-layer phase gating in <see cref="RunStationAsync"/>). Of the
     /// active precipitation phases in phases.yaml, these are the ones
@@ -154,14 +166,24 @@ public sealed class PrecipPredictCommand
 
         var predictionMadeAt = DateTime.UtcNow;
         var anchor = PredictAnchor.Compute(predictionMadeAt, forDate);
-        var targets = BuildHourlyTargets(anchor, DefaultLeads);
+        var targets = BuildHourlyTargets(anchor, TargetLeads);
+
+        // LEAD_POLICY.json (docs/PRECIP_LEAD_POLICY_PLAN.md): optional per-6h-
+        // band model deviations for 3c/3o. Null (absent / unreadable) means
+        // "production bucket models" everywhere — predict must never break on
+        // a policy problem, so any load failure degrades to today's behaviour.
+        var leadPolicy = PrecipLeadPolicy.TryLoad(modelsRoot);
+        if (leadPolicy is not null)
+            _log.LogInformation(
+                "Lead policy loaded (fitted {Fit:yyyy-MM-dd}, {N} deviation band(s)); absent bands use bucket models.",
+                leadPolicy.FittedAtUtc, leadPolicy.Phases.Sum(p => p.Value.Count));
 
         _log.LogInformation("Anchor {Anchor:yyyy-MM-dd HH:mm}Z (for-date={ForDate}) — stations=[{Stations}] — {Count} targets across leads {Leads}",
             anchor,
             forDate?.ToString("yyyy-MM-dd") ?? "live",
             string.Join(", ", stationsToRun),
             targets.Length,
-            string.Join(",", DefaultLeads));
+            string.Join(",", TargetLeads));
 
         // One forecast pivot per lead bucket — each call enforces the lead-bucket
         // training constraint (RunTime ≤ Valid - L) so every row passed to the
@@ -170,7 +192,7 @@ public sealed class PrecipPredictCommand
         // filter, "latest cycle wins" would feed the lead-24 model rows at
         // actual lead < 24h once we predict for valid times within 24h of anchor.
         var perLeadValid = new Dictionary<int, IReadOnlyDictionary<DateTime, PivotedRow>>();
-        foreach (var lead in DefaultLeads)
+        foreach (var lead in TargetLeads)
         {
             var leadTargets = targets.Where(t => t.Lead == lead).ToArray();
             if (leadTargets.Length == 0) continue;
@@ -192,7 +214,7 @@ public sealed class PrecipPredictCommand
             foreach (var version in ResolveRequestedVersions(modelsRoot, station, modelVersion))
             {
                 var wrote = await RunStationAsync(
-                    modelsRoot, station, version, predictionMadeAt, anchor, targets, perLeadValid, location, ct);
+                    modelsRoot, station, version, predictionMadeAt, anchor, targets, perLeadValid, leadPolicy, location, ct);
                 anyWritten |= wrote;
             }
         }
@@ -222,6 +244,7 @@ public sealed class PrecipPredictCommand
         DateTime anchor,
         (int Lead, DateTime Valid)[] targets,
         IReadOnlyDictionary<int, IReadOnlyDictionary<DateTime, PivotedRow>> perLeadValid,
+        PrecipLeadPolicy? leadPolicy,
         LocationConfig location,
         CancellationToken ct)
     {
@@ -326,7 +349,7 @@ public sealed class PrecipPredictCommand
         {
             return await RunStationAsOroAsync(
                 modelsRoot, station, versionDir, metadata, climatology,
-                predictionMadeAt, anchor, targets, perLeadValid, location, ct);
+                predictionMadeAt, anchor, targets, perLeadValid, leadPolicy, location, ct);
         }
 
         // Phase 3d (exact-runtime) takes a separate predict path: different
@@ -374,6 +397,23 @@ public sealed class PrecipPredictCommand
         var specs = ModelArtifact.LoadBlenderSpecs(versionDir);
         var canonOrder = TempFeatureBuilder.CanonicalModelOrder.ToList();
 
+        // Lead-12 targets (today's hours) are a 3c-only product on this path —
+        // 3a's short-lead skill is unstudied, 3o/3d have their own paths. See
+        // TargetLeads. Policy lookups below also no-op for 3a (no "3a" key in
+        // LEAD_POLICY.json by construction).
+        var is3c = string.Equals(metadata.Phase, "3c", StringComparison.Ordinal);
+        var phaseTargets = is3c ? targets : targets.Where(t => t.Lead != 12).ToArray();
+
+        // Per-lead model cache — policy blends run two bundle models per
+        // target, and the old load-per-target pattern would double that cost.
+        var modelCache = new Dictionary<int, ITransformer>();
+        ITransformer ModelFor(int modelLead)
+        {
+            if (!modelCache.TryGetValue(modelLead, out var m))
+                modelCache[modelLead] = m = ModelArtifact.LoadLeadModel(ml, versionDir, modelLead, out _);
+            return m;
+        }
+
         // Pre-load live upper-air per lead for any lead whose schema carries the
         // UA block (3c-with-UA, 2026-06-02). Mirrors the training exact_ua ASOF:
         // freshest exact lead-L pressure ≤ target valid. One DuckDB scan per UA
@@ -383,10 +423,16 @@ public sealed class PrecipPredictCommand
         var uaByLead = new Dictionary<int, IReadOnlyList<(DateTime ValidTimeUa, double[] PerModelCol)>>();
         if (isRich)
         {
-            foreach (var lead in targets.Select(t => t.Lead).Distinct())
+            foreach (var lead in phaseTargets.Select(t => t.Lead).Distinct())
             {
-                if (!specs.TryGetValue(lead, out var s) || !s.FeatureNames.Contains("t850_mean")) continue;
-                var lv = targets.Where(t => t.Lead == lead).Select(t => t.Valid).ToList();
+                // No bundle carries a lead-12 spec (no native m12 model) — use
+                // the m24 spec to decide whether the UA block is on, but pull
+                // the exact-pressure ASOF rows AT the target lead so the input
+                // stays τ-appropriate. An empty lead-12 UA tree just yields
+                // the NaN UA block the model tolerates.
+                var specLead = lead == 12 ? 24 : lead;
+                if (!specs.TryGetValue(specLead, out var s) || !s.FeatureNames.Contains("t850_mean")) continue;
+                var lv = phaseTargets.Where(t => t.Lead == lead).Select(t => t.Valid).ToList();
                 uaByLead[lead] = PrecipFeatureBuilder.LoadUpperAirLive(
                     _cfg.Storage.ForecastsPath, location.Name, lead, lv.Min().AddDays(-2), lv.Max(), ct);
                 _log.LogInformation("Station {Station} lead {Lead}h: loaded {N} live upper-air rows (exact pressure ASOF).",
@@ -394,7 +440,7 @@ public sealed class PrecipPredictCommand
             }
         }
 
-        foreach (var (lead, valid) in targets)
+        foreach (var (lead, valid) in phaseTargets)
         {
             if (!perLeadValid.TryGetValue(lead, out var perValid)
                 || !perValid.TryGetValue(valid, out var pivot))
@@ -409,10 +455,16 @@ public sealed class PrecipPredictCommand
                     station, lead, valid);
                 continue;
             }
-            if (!specs.TryGetValue(lead, out var spec))
+            // Which bundle model lead(s) serve this target: the lead policy's
+            // pick for (phase, τ) when one exists (3c — though 3c is locked
+            // singles-only at fit time), else the bucket default (lead 12 →
+            // m24; every other bucket → its own model). Missing model files
+            // degrade to the default — policy can never break predict.
+            var modelLeads = ResolveModelLeads(leadPolicy, metadata.Phase, lead, valid, anchor, specs);
+            if (!specs.TryGetValue(modelLeads[0], out var spec))
             {
-                _log.LogWarning("Station {Station} lead {Lead}h: no BlenderSpec in feature_schema.json for this lead; skipping.",
-                    station, lead);
+                _log.LogWarning("Station {Station} lead {Lead}h: no BlenderSpec for model lead {M}h in feature_schema.json; skipping.",
+                    station, lead, modelLeads[0]);
                 continue;
             }
 
@@ -489,8 +541,27 @@ public sealed class PrecipPredictCommand
                     truthMmHour: 0.0);
             }
 
-            var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
-            var pWet = PrecipOccurrenceTrainer.PredictVectorProbability(ml, loadedModel, spec, new[] { row });
+            // Primary member predicts on the composed row; extra members (an
+            // equal-weight policy blend) reuse the SAME row — admissible only
+            // when their spec has identical model membership + feature layout,
+            // which per-lead 3c specs share. A layout mismatch drops the extra
+            // member (single-model fallback) rather than mis-composing.
+            var pVals = new List<double>(modelLeads.Length)
+            {
+                PrecipOccurrenceTrainer.PredictVectorProbability(ml, ModelFor(modelLeads[0]), spec, new[] { row })[0],
+            };
+            foreach (var extra in modelLeads.Skip(1))
+            {
+                if (specs.TryGetValue(extra, out var specX)
+                    && specX.FeatureCount == spec.FeatureCount
+                    && specX.Models.SequenceEqual(spec.Models, StringComparer.OrdinalIgnoreCase))
+                    pVals.Add(PrecipOccurrenceTrainer.PredictVectorProbability(ml, ModelFor(extra), specX, new[] { row })[0]);
+                else
+                    _log.LogWarning(
+                        "Station {Station} lead {Lead}h: policy blend member m{Extra}h has an incompatible spec layout — using the remaining member(s) only.",
+                        station, lead, extra);
+            }
+            var pWet = new[] { pVals.Average() };
 
             var climPWet = climatology.Predict(valid);
 
@@ -533,7 +604,13 @@ public sealed class PrecipPredictCommand
                 PrecipMax  = NanToNull(row.Features[spreadStart + 2]),
                 PrecipAgreementWet01 = NanToNull(row.Features[spreadStart + 3]),
                 FeatureVectorHash = FeatureHashing.HashFloats(row.Features),
-                ConformalSetTag = ModelArtifact.PredictConformalIfPresent(versionDir, lead, pWet[0]),
+                // Conformal tags are calibrated per (bundle, lead) on that
+                // lead's val distribution — only attach when this row ran the
+                // plain bucket model. Policy blends / lead-12 m24 rows get no
+                // tag rather than a falsely-calibrated one.
+                ConformalSetTag = modelLeads.Length == 1 && modelLeads[0] == lead
+                    ? ModelArtifact.PredictConformalIfPresent(versionDir, lead, pWet[0])
+                    : null,
             });
 
             _log.LogInformation(
@@ -573,6 +650,30 @@ public sealed class PrecipPredictCommand
     // The mapping is also persisted in metadata.Hyperparameters["phase3o_station_index"]
     // for cross-check.
 
+    /// <summary>
+    /// Which bundle model lead(s) serve a (bucket, valid) target. Order of
+    /// precedence:
+    ///   1. LEAD_POLICY.json deviation for (phase, τ) — τ is the target's
+    ///      ACTUAL lead (valid − anchor), so a band boundary can fall inside
+    ///      a day bucket (each hourly target resolves its own band);
+    ///   2. the bucket default: the bucket's own model, except lead 12 which
+    ///      has no native model and defaults to m24 (the short-lead cell —
+    ///      m24 fed the lead-12 pivot's fresher input).
+    /// A policy entry referencing a model lead this bundle doesn't carry
+    /// degrades to the default — predict never breaks on a policy problem.
+    /// </summary>
+    private static int[] ResolveModelLeads(
+        PrecipLeadPolicy? policy, string phase, int bucketLead, DateTime valid, DateTime anchor,
+        IReadOnlyDictionary<int, BlenderSpec> specs)
+    {
+        var fallback = new[] { bucketLead == 12 ? 24 : bucketLead };
+        if (policy is null) return fallback;
+        var tau = (valid - anchor).TotalHours;
+        var entry = policy.Lookup(phase, tau);
+        if (entry is null || entry.Leads.Count == 0) return fallback;
+        return entry.Leads.All(specs.ContainsKey) ? entry.Leads.ToArray() : fallback;
+    }
+
     /// <summary>Train-time canonical station-index mapping for Phase 3o.
     /// Must stay in lockstep with <c>PrecipTrainCommand.BonehillStationOrder3o</c>.
     /// Keyed by station slug (with ea_ prefix).</summary>
@@ -595,6 +696,7 @@ public sealed class PrecipPredictCommand
         DateTime anchor,
         (int Lead, DateTime Valid)[] targets,
         IReadOnlyDictionary<int, IReadOnlyDictionary<DateTime, PivotedRow>> perLeadValid,
+        PrecipLeadPolicy? leadPolicy,
         LocationConfig location,
         CancellationToken ct)
     {
@@ -683,7 +785,11 @@ public sealed class PrecipPredictCommand
         var uaByLead = new Dictionary<int, IReadOnlyList<(DateTime ValidTimeUa, double[] PerModelCol)>>();
         foreach (var lead in targets.Select(t => t.Lead).Distinct())
         {
-            if (!specs.TryGetValue(lead, out var s) || !s.FeatureNames.Contains("t850_mean")) continue;
+            // Lead 12 has no bundle spec — gate the UA load on the m24 spec
+            // but pull the exact-pressure ASOF rows at the target lead (an
+            // empty lead-12 UA tree yields the tolerated NaN block).
+            var specLead = lead == 12 ? 24 : lead;
+            if (!specs.TryGetValue(specLead, out var s) || !s.FeatureNames.Contains("t850_mean")) continue;
             var lv = targets.Where(t => t.Lead == lead).Select(t => t.Valid).ToList();
             uaByLead[lead] = PrecipFeatureBuilder.LoadUpperAirLive(
                 _cfg.Storage.ForecastsPath, location.Name, lead, lv.Min().AddDays(-2), lv.Max(), ct);
@@ -700,14 +806,27 @@ public sealed class PrecipPredictCommand
         var hourlyRain = PrecipRichFeatureBuilder.LoadHourlyRain(
             _cfg.Storage.RainfallPath, location.Name, friendly, minValidTime: null, ct);
 
+        // Per-lead model cache — policy blends run two bundle models per
+        // target (e.g. 3o's blend(24,48) zone); load each at most once.
+        var modelCache = new Dictionary<int, ITransformer>();
+        ITransformer ModelFor(int modelLead)
+        {
+            if (!modelCache.TryGetValue(modelLead, out var m))
+                modelCache[modelLead] = m = ModelArtifact.LoadLeadModel(ml, versionDir, modelLead, out _);
+            return m;
+        }
+
         var predictions = new List<PrecipPredictionRow>();
         foreach (var (lead, valid) in targets)
         {
             ct.ThrowIfCancellationRequested();
-            if (!specs.TryGetValue(lead, out var spec))
+            // Policy / bucket-default model resolution — see ResolveModelLeads.
+            // 3o serves the lead-12 targets (default m24 on the lead-12 pivot).
+            var modelLeads = ResolveModelLeads(leadPolicy, metadata.Phase, lead, valid, anchor, specs);
+            if (!specs.TryGetValue(modelLeads[0], out var spec))
             {
-                _log.LogWarning("Station {Station} lead {Lead}h: no BlenderSpec for lead in 3o bundle; skipping.",
-                    station, lead);
+                _log.LogWarning("Station {Station} lead {Lead}h: no BlenderSpec for model lead {M}h in 3o bundle; skipping.",
+                    station, lead, modelLeads[0]);
                 continue;
             }
             if (!perLeadValid.TryGetValue(lead, out var perValid)
@@ -816,8 +935,26 @@ public sealed class PrecipPredictCommand
                 TruthMmHour = 0.0f,
             };
 
-            var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
-            var pWet = PrecipOccurrenceTrainer.PredictVectorProbability(ml, loadedModel, spec, new[] { fullRow });
+            // Primary member + any equal-weight policy blend members. 3o's
+            // per-lead specs share model membership + layout (one pooled spec
+            // per lead from the same builder), so the composed row is reused;
+            // a layout mismatch drops the extra member instead of mis-composing.
+            var pVals = new List<double>(modelLeads.Length)
+            {
+                PrecipOccurrenceTrainer.PredictVectorProbability(ml, ModelFor(modelLeads[0]), spec, new[] { fullRow })[0],
+            };
+            foreach (var extra in modelLeads.Skip(1))
+            {
+                if (specs.TryGetValue(extra, out var specX)
+                    && specX.FeatureCount == spec.FeatureCount
+                    && specX.Models.SequenceEqual(spec.Models, StringComparer.OrdinalIgnoreCase))
+                    pVals.Add(PrecipOccurrenceTrainer.PredictVectorProbability(ml, ModelFor(extra), specX, new[] { fullRow })[0]);
+                else
+                    _log.LogWarning(
+                        "Station {Station} lead {Lead}h: policy blend member m{Extra}h has an incompatible spec layout — using the remaining member(s) only.",
+                        station, lead, extra);
+            }
+            var pWet = new[] { pVals.Average() };
             var climPWet = climatology.Predict(valid);
 
             var perModelPrecip = new double?[PrecipPredictionRow.PerModelFieldCount];
@@ -854,10 +991,14 @@ public sealed class PrecipPredictCommand
                 PrecipMax  = NanToNull(features[spreadStart + 2]),
                 PrecipAgreementWet01 = NanToNull(features[spreadStart + 3]),
                 FeatureVectorHash = FeatureHashing.HashFloats(features),
-                ConformalSetTag = ModelArtifact.PredictConformalIfPresent(versionDir, lead, pWet[0]),
+                // Per-lead conformal tags only apply to the plain bucket model
+                // (same rationale as the 3c path).
+                ConformalSetTag = modelLeads.Length == 1 && modelLeads[0] == lead
+                    ? ModelArtifact.PredictConformalIfPresent(versionDir, lead, pWet[0])
+                    : null,
             });
-            _log.LogInformation("Station {Station} lead {Lead}h → P(wet) {P:0.000} (clim {Clim:0.000}, phase=3o)",
-                station, lead, pWet[0], climPWet);
+            _log.LogInformation("Station {Station} lead {Lead}h → P(wet) {P:0.000} (clim {Clim:0.000}, phase=3o, models=[{M}])",
+                station, lead, pWet[0], climPWet, string.Join("+", modelLeads));
         }
 
         if (predictions.Count == 0)
