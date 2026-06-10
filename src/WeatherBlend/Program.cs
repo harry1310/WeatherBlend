@@ -225,6 +225,8 @@ public static class Program
                 // exploratory only.
                 services.AddTransient<Exact12hBakeoffCommand>();
                 services.AddTransient<PrecipExactBakeoffCommand>();
+                services.AddTransient<PrecipCrossLeadBakeoffCommand>();
+                services.AddTransient<WindFloorBakeoffCommand>();
                 services.AddTransient<PrecipIfsCycleBakeoffCommand>();
                 services.AddTransient<Phase3cDataWindowBakeoffCommand>();
                 // Live S3 collect — refreshes the five exact-runtime sources
@@ -541,6 +543,199 @@ public static class Program
             await cmd.RunAsync(lead, includeUkv, station, CancellationToken.None);
         }, precipLeadOpt, precipUkvOpt, precipStationOpt);
         root.AddCommand(precipBakeoff);
+
+        // precip-crosslead-bakeoff — EXPERIMENT: score the 24h-trained 3c/3o
+        // P(wet) bundles on LIVE inputs at leads 12/18/24 to test whether
+        // fresher NWP inputs beat the lead-24 inputs the model trained on.
+        var crossLeadStartOpt = new Option<string?>(
+            name: "--start",
+            description: "Window start date (yyyy-MM-dd) for scored valid-times. Default 2026-04-15.",
+            getDefaultValue: () => null);
+        var crossLeadNoUaOpt = new Option<bool>(
+            name: "--no-ua",
+            description: "Disable upper-air (NaN block, identical across all leads) so 12/18/24 compare on the same feature set. Our live exact-pressure archive has no 18h-lead snapshot, so by default 18h silently loses UA; this removes that confound.",
+            getDefaultValue: () => false);
+        var crossLeadBakeoff = new Command(
+            "precip-crosslead-bakeoff",
+            "Score 24h-trained 3c/3o on live inputs at leads 12/18/24 vs EA gauge truth")
+            { crossLeadStartOpt, crossLeadNoUaOpt };
+        crossLeadBakeoff.SetHandler(async (start, noUa) =>
+        {
+            var cmd = host.Services.GetRequiredService<PrecipCrossLeadBakeoffCommand>();
+            await cmd.RunAsync(start, useUpperAir: !noUa, CancellationToken.None);
+        }, crossLeadStartOpt, crossLeadNoUaOpt);
+        root.AddCommand(crossLeadBakeoff);
+
+        // precip-ua-construction-bakeoff — EXPERIMENT (staged step 2): does feeding the
+        // existing 24h-trained 3c model nearest-lead valid-exact UA (B) beat strict-lead24
+        // forward-filled UA (A), under realistic morning-predict availability? Predict-only.
+        var uaStartOpt = new Option<string?>(
+            name: "--start",
+            description: "Window start date (yyyy-MM-dd). Default 2026-04-15.",
+            getDefaultValue: () => null);
+        var uaBakeoff = new Command(
+            "precip-ua-construction-bakeoff",
+            "A/B test: strict-lead24-forward-filled UA vs nearest-lead valid-exact UA on the 24h-trained 3c model")
+            { uaStartOpt };
+        uaBakeoff.SetHandler(async (start) =>
+        {
+            var cmd = host.Services.GetRequiredService<PrecipCrossLeadBakeoffCommand>();
+            await cmd.RunUaConstructionAsync(start, CancellationToken.None);
+        }, uaStartOpt);
+        root.AddCommand(uaBakeoff);
+
+        // precip-model-crossover-bakeoff — EXPERIMENT: lead-24 model vs lead-48 model on the
+        // SAME input across input-lead τ ∈ {24..54}, to find where the lead-48 model starts
+        // beating the lead-24 model inside the 24-47h window it currently serves.
+        var xoverStartOpt = new Option<string?>(
+            name: "--start",
+            description: "Window start date (yyyy-MM-dd). Default 2026-04-15.",
+            getDefaultValue: () => null);
+        var xoverTausOpt = new Option<string?>(
+            name: "--taus",
+            description: "Comma-separated input-lead lower bounds to sweep (e.g. 24,36,48,60,72,96,120). Default 24,30,36,42,48,54.",
+            getDefaultValue: () => null);
+        var xoverModelAOpt = new Option<int>(
+            name: "--model-a",
+            description: "First model's lead (default 24).",
+            getDefaultValue: () => 24);
+        var xoverModelBOpt = new Option<int>(
+            name: "--model-b",
+            description: "Second model's lead (default 48).",
+            getDefaultValue: () => 48);
+        var xoverBakeoff = new Command(
+            "precip-model-crossover-bakeoff",
+            "Compare two 3c per-lead models on identical inputs across input-leads")
+            { xoverStartOpt, xoverTausOpt, xoverModelAOpt, xoverModelBOpt };
+        xoverBakeoff.SetHandler(async (start, tausCsv, modelA, modelB) =>
+        {
+            var taus = string.IsNullOrWhiteSpace(tausCsv)
+                ? null
+                : (IReadOnlyList<int>)tausCsv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Select(x => int.Parse(x, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+            var cmd = host.Services.GetRequiredService<PrecipCrossLeadBakeoffCommand>();
+            await cmd.RunModelCrossoverAsync(start, taus, modelA, modelB, CancellationToken.None);
+        }, xoverStartOpt, xoverTausOpt, xoverModelAOpt, xoverModelBOpt);
+        root.AddCommand(xoverBakeoff);
+
+        // wind-floor-bakeoff — EXPERIMENT: does the 2024-09-01 UKMO floor help or hurt
+        // the ERA5-truth wind + wind_gust blenders? Floored vs no-floor on a common OOS holdout.
+        var wfbTestStartOpt = new Option<string?>(
+            name: "--test-start", description: "Held-out OOS test window start (yyyy-MM-dd). Default 2026-03-01.",
+            getDefaultValue: () => null);
+        var wfbTargetsOpt = new Option<string?>(
+            name: "--targets", description: "Comma-separated targets to bake off: wind, wind_gust, cloud_cover. Default all.",
+            getDefaultValue: () => null);
+        var wfbBakeoff = new Command(
+            "wind-floor-bakeoff",
+            "EXPERIMENT: floored vs no-floor wind/gust/cloud on a common OOS holdout (Bonehill, ERA5 truth)")
+            { wfbTestStartOpt, wfbTargetsOpt };
+        wfbBakeoff.SetHandler(async (testStart, targets) =>
+        {
+            var cmd = host.Services.GetRequiredService<WindFloorBakeoffCommand>();
+            await cmd.RunAsync(testStart, targets, CancellationToken.None);
+        }, wfbTestStartOpt, wfbTargetsOpt);
+        root.AddCommand(wfbBakeoff);
+
+        // precip-policy-blend-crossover — STUDY: bracketing pair (mA,mB) + 50/50 blend per τ,
+        // study bundles (no-UA, OOS), 3c+3o, Bonehill pooled. Tests whether a blend beats either
+        // single near the bucket boundary and where the upper model takes over.
+        var blendStartOpt = new Option<string?>(
+            name: "--start", description: "Live scoring window start (yyyy-MM-dd). Default 2026-03-19.",
+            getDefaultValue: () => null);
+        var blendTausOpt = new Option<string?>(
+            name: "--taus", description: "Comma-separated target-leads τ to sweep (e.g. 42,44,46,47,48,49,50,52,54). Default 36,42,45,47,48,49,51,54,60.",
+            getDefaultValue: () => null);
+        var blendModelAOpt = new Option<int>(
+            name: "--model-a", description: "Lower bracket model lead (default 24).", getDefaultValue: () => 24);
+        var blendModelBOpt = new Option<int>(
+            name: "--model-b", description: "Upper bracket model lead (default 48).", getDefaultValue: () => 48);
+        var blendBakeoff = new Command(
+            "precip-policy-blend-crossover",
+            "STUDY: bracketing-pair + 50/50 blend Brier per τ on study bundles (Bonehill 3c+3o, OOS)")
+            { blendStartOpt, blendTausOpt, blendModelAOpt, blendModelBOpt };
+        blendBakeoff.SetHandler(async (start, tausCsv, modelA, modelB) =>
+        {
+            var taus = string.IsNullOrWhiteSpace(tausCsv)
+                ? null
+                : (IReadOnlyList<int>)tausCsv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Select(x => int.Parse(x, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+            var cmd = host.Services.GetRequiredService<PrecipCrossLeadBakeoffCommand>();
+            await cmd.RunPolicyBlendCrossoverAsync(start, taus, modelA, modelB, CancellationToken.None);
+        }, blendStartOpt, blendTausOpt, blendModelAOpt, blendModelBOpt);
+        root.AddCommand(blendBakeoff);
+
+        // precip-policy-band — STUDY: all-candidate + best equal-weight top-2 blend per τ, then
+        // aggregate into 3h & 6h bands → the per-lead-band policy (Bonehill 3c+3o, OOS).
+        var bandStartOpt = new Option<string?>(
+            name: "--start", description: "Live scoring window start (yyyy-MM-dd). Default 2026-03-19.",
+            getDefaultValue: () => null);
+        var bandTausOpt = new Option<string?>(
+            name: "--taus", description: "Comma-separated target-leads τ to sweep. Default 12,15,...,120 (3h-spaced).",
+            getDefaultValue: () => null);
+        var bandBakeoff = new Command(
+            "precip-policy-band",
+            "STUDY: per-lead-band (3h & 6h) best model/blend policy on study bundles (Bonehill 3c+3o, OOS)")
+            { bandStartOpt, bandTausOpt };
+        bandBakeoff.SetHandler(async (start, tausCsv) =>
+        {
+            var taus = string.IsNullOrWhiteSpace(tausCsv)
+                ? null
+                : (IReadOnlyList<int>)tausCsv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Select(x => int.Parse(x, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+            var cmd = host.Services.GetRequiredService<PrecipCrossLeadBakeoffCommand>();
+            await cmd.RunPolicyBandAsync(start, taus, CancellationToken.None);
+        }, bandStartOpt, bandTausOpt);
+        root.AddCommand(bandBakeoff);
+
+        // precip-policy-retrain — STUDY: mint local no-UA, cutoff-trained 3c+3o
+        // bundles (Bonehill) under data/models_study/ for the per-lead policy study.
+        var policyAsOfOpt = new Option<string?>(
+            name: "--as-of",
+            description: "Max training ValidTime (yyyy-MM-dd); live window stays OOS. Default 2026-03-15.",
+            getDefaultValue: () => null);
+        var policyRetrain = new Command(
+            "precip-policy-retrain",
+            "STUDY: retrain no-UA cutoff 3c+3o bundles (Bonehill) into data/models_study/")
+            { policyAsOfOpt };
+        policyRetrain.SetHandler(async (asOf) =>
+        {
+            var cmd = host.Services.GetRequiredService<PrecipCrossLeadBakeoffCommand>();
+            await cmd.RunPolicyRetrainAsync(asOf, CancellationToken.None);
+        }, policyAsOfOpt);
+        root.AddCommand(policyRetrain);
+
+        // precip-policy-eval — STUDY: score study bundles (no-UA, cutoff) per target-lead τ ×
+        // candidate model on live OOS inputs → which model is best at each lead (Bonehill, 3c+3o).
+        var policyEvalStartOpt = new Option<string?>(
+            name: "--start",
+            description: "Live scoring window start (yyyy-MM-dd). Default 2026-03-19.",
+            getDefaultValue: () => null);
+        var policyEval = new Command(
+            "precip-policy-eval",
+            "STUDY: per-lead best-model eval of models_study bundles on live OOS inputs (Bonehill 3c+3o)")
+            { policyEvalStartOpt };
+        policyEval.SetHandler(async (start) =>
+        {
+            var cmd = host.Services.GetRequiredService<PrecipCrossLeadBakeoffCommand>();
+            await cmd.RunPolicyEvalAsync(start, CancellationToken.None);
+        }, policyEvalStartOpt);
+        root.AddCommand(policyEval);
+
+        // precip-policy-eval-split — STUDY v2: full bidirectional matrix (all models at every lead)
+        // + SELECT/SCORE split + per-lead blend, on live OOS inputs.
+        var pesStartOpt = new Option<string?>(name: "--start", description: "Live window start (yyyy-MM-dd). Default 2026-03-19.", getDefaultValue: () => null);
+        var pesSplitOpt = new Option<string?>(name: "--split", description: "SELECT/SCORE boundary date (yyyy-MM-dd). Default 2026-05-05.", getDefaultValue: () => null);
+        var policyEvalSplit = new Command(
+            "precip-policy-eval-split",
+            "STUDY v2: full model×lead matrix + SELECT/SCORE split + per-lead blend (Bonehill 3c+3o, OOS)")
+            { pesStartOpt, pesSplitOpt };
+        policyEvalSplit.SetHandler(async (start, split) =>
+        {
+            var cmd = host.Services.GetRequiredService<PrecipCrossLeadBakeoffCommand>();
+            await cmd.RunPolicyEvalSplitAsync(start, split, CancellationToken.None);
+        }, pesStartOpt, pesSplitOpt);
+        root.AddCommand(policyEvalSplit);
 
         // precip-ifs-cycle-bakeoff — 4-way IFS-cycle comparison for 3d
         // (Both / Oper / Scda / None) on a constant row/eval set. Trains

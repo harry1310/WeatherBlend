@@ -89,7 +89,8 @@ public static class PrecipRichOroFeatureBuilder
         OroStaticFeatures oro,
         int stationIndex,
         BlenderSpec richOroSpec,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        DateTime? maxValidTime = null)
     {
         // The rich spec is what the underlying builder consumes. Reuse the
         // rich-oro spec's model membership to materialise a matching rich
@@ -117,7 +118,7 @@ public static class PrecipRichOroFeatureBuilder
         // for the explicit exemption.
         var richRows = PrecipRichFeatureBuilder.BuildForLead(
             forecastsPath, rainfallPath, locationName, stationName, richSpec,
-            minValidTime: null, ct);
+            minValidTime: null, ct: ct, maxValidTime: maxValidTime);
         if (richRows.Count == 0) return richRows;
 
         var aux = LoadAuxNwpMeans(forecastsPath, locationName, richSpec, ct);

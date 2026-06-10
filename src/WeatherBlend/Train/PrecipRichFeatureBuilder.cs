@@ -252,7 +252,8 @@ ORDER BY 1;
         string stationName,
         BlenderSpec spec,
         DateTime? minValidTime = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        DateTime? maxValidTime = null)
     {
         var hourlyRain = LoadHourlyRain(rainfallPath, locationName, stationName, minValidTime, ct);
         if (hourlyRain.Count == 0) return new List<BinaryTrainingRow>();
@@ -319,6 +320,8 @@ exact_ua AS (
         sb.AppendLine($"      AND Model IN {modelInClause}");
         if (minValidTime.HasValue)
             sb.AppendLine($"      AND ValidTimeUtc >= TIMESTAMP '{minValidTime.Value:yyyy-MM-dd HH:mm:ss}'");
+        if (maxValidTime.HasValue)
+            sb.AppendLine($"      AND ValidTimeUtc <= TIMESTAMP '{maxValidTime.Value:yyyy-MM-dd HH:mm:ss}'");
         sb.AppendLine("),");
         sb.AppendLine("pivoted AS (");
         sb.AppendLine("    SELECT ValidTimeUtc,");
