@@ -534,7 +534,7 @@ public static partial class SitePages
         /// this location at every trained lead. Powers the per-lead wind
         /// page's speed CI ribbon (BlendSpeedCi95Lo/Hi) and the per-hour
         /// direction circles (BlendDirection + Ci95Lo/Hi). Empty until the
-        /// WP predict-wind-direction workflow has pushed parquets to R2 +
+        /// WP predict-wind workflow has pushed parquets to R2 +
         /// sync-render-inputs has pulled them locally.</summary>
         public IReadOnlyList<WindDirectionForecastPoint> WindDirectionPredictions { get; init; }
             = Array.Empty<WindDirectionForecastPoint>();

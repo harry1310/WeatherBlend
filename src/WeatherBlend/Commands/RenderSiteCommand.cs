@@ -1256,7 +1256,7 @@ ORDER BY LocationName, ModelVersion, LeadHours, ValidTimeUtc";
     }
 
     /// <summary>Pulls every <c>wind_mvn</c> direction prediction row in the
-    /// rendering window. WP's predict-wind-direction.yml writes them to
+    /// rendering window. WP's predict-wind.yml writes them to
     /// <c>data/predictions/wind_direction/{location}/model_version=*_wind_mvn/date=*/predictions.parquet</c>
     /// — note the location segment in the path differs from the WB element
     /// predictions tree.</summary>
@@ -1270,7 +1270,7 @@ ORDER BY LocationName, ModelVersion, LeadHours, ValidTimeUtc";
         conn.Open();
         if (!ParquetReader.HasColumn(conn, glob, "BlendDirection"))
         {
-            _log.LogInformation("wind_mvn (wind_direction) predictions tree empty — direction circles + speed CI ribbon will empty-state until predict-wind-direction runs.");
+            _log.LogInformation("wind_mvn (wind_direction) predictions tree empty — direction circles + speed CI ribbon will empty-state until predict-wind runs.");
             return Array.Empty<SitePages.WindDirectionForecastPoint>();
         }
         // CI80 columns added 2026-05-28; parquets predating that revision

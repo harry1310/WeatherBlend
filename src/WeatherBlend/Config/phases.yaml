@@ -199,7 +199,7 @@ targets:
       # train/predict_wind_speed_pi.py, so one model owns the q50 point
       # AND a calibrated 90% band; ML.NET LightGbm has no quantile
       # objective). Trains in retrain-python, predicts in
-      # predict-wind-direction (Hop C). The .NET WindSpeedLgbBlender /
+      # predict-wind (Hop C). The .NET WindSpeedLgbBlender /
       # PredictPipeline were removed at the flip.
       - id: "wind_speed_lgb"
         role: challenger

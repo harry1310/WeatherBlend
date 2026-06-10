@@ -151,7 +151,14 @@ public static partial class SitePages
             var color = i == 0 ? NwpPalette.Blend
                 : i == 1 ? NwpPalette.BlendChallenger
                 : NwpPalette.BlendExactChallenger;
-            var label = i == 0 ? $"Blend ({phase} champion)" : $"Blend ({phase} challenger)";
+            // Role-first labels (2026-06-10 user ask): every line read
+            // "Blend (…)" which hid which was which. wind_blend is the
+            // composed 50/50 of the other two, so it gets "Blend"; the
+            // rest are Champion / Challenger by registry order (champion
+            // is first in phases.yaml, enforced one-per-target).
+            var label = phase == "wind_blend" ? $"Blend ({phase})"
+                : i == 0 ? $"Champion ({phase})"
+                : $"Challenger ({phase})";
             blendSeries.Add(new LineSeries(label, color,
                 rows.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.SpeedMs * MsToMph)).ToList()));
         }
@@ -288,7 +295,7 @@ public static partial class SitePages
 
         if (mvnAtLead.Count == 0)
         {
-            s.Append(Ci, $"<p><em>No +{lead}h wind_mvn direction predictions available yet. The MVN bundle is trained on Dunkeswell SYNOP truth; circles will populate once predict-wind-direction has run for this cycle.</em></p>");
+            s.Append(Ci, $"<p><em>No +{lead}h wind_mvn direction predictions available yet. The MVN bundle is trained on Dunkeswell SYNOP truth; circles will populate once predict-wind has run for this cycle.</em></p>");
             return s.ToString();
         }
 

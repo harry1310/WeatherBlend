@@ -47,7 +47,7 @@ runs:
       #   - champion `wind` live parquet (version via the wind MANIFEST)
       #     (predictions/wind/model_version={champion}/date=...)
       #   - wind_speed_lgb live parquet — PYTHON-written since the
-      #     2026-06-10 cutover (WP's predict-wind-direction workflow, Hop C,
+      #     2026-06-10 cutover (WP's predict-wind workflow, Hop C,
       #     pushed to R2 and pulled back here by sync-render-inputs; carries
       #     CQR band sidecar columns the .NET reader ignores)
       #     (predictions/wind/model_version=*_wind_speed_lgb/date=...)
@@ -59,7 +59,7 @@ runs:
       #   2 — no locations configured — FATAL.
       #   3 — every location fell through (either champion or lgb parquet
       #       missing). Expected until the first Python wind_speed_lgb
-      #       retrain lands a bundle on R2 (then predict-wind-direction
+      #       retrain lands a bundle on R2 (then predict-wind
       #       starts producing the lgb parquet this step consumes).
       shell: bash
       run: |

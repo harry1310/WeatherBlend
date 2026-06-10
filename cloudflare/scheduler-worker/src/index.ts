@@ -423,10 +423,11 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
   }
 
   // Hop C — collect → 4a predict + Python wind predicts. Both predict-4a
-  // and predict-wind-direction (WeatherProbabilistic) consume the
+  // and predict-wind (WeatherProbabilistic; renamed from
+  // predict-wind-direction 2026-06-10) consume the
   // Open-Meteo forecasts collect.yml just pushed to R2; they have no
   // dependency on each other so they fire in parallel. predict-4a runs
-  // BART per-cell precip; predict-wind-direction runs BOTH Python wind
+  // BART per-cell precip; predict-wind runs BOTH Python wind
   // models — wind_mvn (MLP MVN, direction-only since 2026-06-09) and
   // wind_speed_lgb (quantile-LGB + cross-conformal CQR speed point +
   // 90% band, moved from .NET 2026-06-10) — as steps in one job, so no
@@ -439,10 +440,10 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
     const results = await Promise.allSettled([
       dispatchWorkflow(env, "predict-4a.yml",
                         "harry1310/WeatherProbabilistic"),
-      dispatchWorkflow(env, "predict-wind-direction.yml",
+      dispatchWorkflow(env, "predict-wind.yml",
                         "harry1310/WeatherProbabilistic"),
     ]);
-    for (const [idx, wf] of (["predict-4a.yml", "predict-wind-direction.yml"] as const).entries()) {
+    for (const [idx, wf] of (["predict-4a.yml", "predict-wind.yml"] as const).entries()) {
       const r = results[idx];
       if (r.status === "fulfilled") {
         console.log(`predict chain: collect success → dispatched ${wf}`);
