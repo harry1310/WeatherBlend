@@ -202,7 +202,16 @@ public static class ElementTrainerHarness
             trainFeatures: firstLeadTrainFeatures,
             featureNames: specsPerLead.TryGetValue(firstLeadElement, out var spEl)
                 ? spEl.FeatureNames.ToList() : Array.Empty<string>(),
-            locationName: inputs.LocationName);
+            locationName: inputs.LocationName,
+            // ONE-TIME bypass for the humidity rich-feature change (2026-06-10,
+            // humidity-aifs-bakeoff): +6 cross-variable ensemble means, 17→23
+            // features, so FeaturesEffectiveDelta != 0 on the next retrain.
+            // REVERT once the Sunday 2026-06-14 retrain mints the 23-feature
+            // baseline (same lifecycle as the radiation/cloud bypass removed
+            // in 05accea).
+            tolerances: inputs.Target.CliName == "humidity"
+                ? RetrainGuard.Defaults with { AllowFeaturesEffectiveChange = true }
+                : null);
         if (!guardResultEl.Passed)
         {
             log.LogError(

@@ -13,13 +13,29 @@ namespace WeatherBlend.Train.Element.Humidity;
 /// (no UKMO), 4 at lead 48/72 (no UKMO + no MF). Best-single is picked over the
 /// per-model rh slots (the spec's first N FeatureNames).
 ///
-/// Layout per N active models: N rh + N dp + 3 spread (rh) + 4 calendar = 2N + 7.
-/// For N=5 → 17 features. For N=4 → 15.
+/// Layout per N active models: N rh + N dp + 3 spread (rh) + 4 calendar
+/// + 6 cross-variable ensemble means = 2N + 13. For N=5 → 23 features.
+///
+/// The 6 aux means (temp / dew-point depression / cloud low/mid/high / wind)
+/// were added 2026-06-10 after the humidity-aifs-bakeoff: the 17-feature
+/// blend LOST to raw AIFS at every lead (the live bundle's own test slices
+/// agreed); +aux beats AIFS at 24/48h (−1.3/−2.6%) and closes 72h to +0.6%.
+/// Same pattern the radiation blender productionised 2026-06-04. They sit
+/// at the END of the feature vector so every earlier offset (spread at 2N,
+/// calendar at 2N+3) is unchanged for pre-change bundles, and ComposeRow is
+/// schema-gated on "temp_mean" so predict keeps working against old
+/// 17-feature bundles until the next retrain mints the new layout.
 /// </summary>
 public static class HumidityFeatureBuilder
 {
     public const string SpecTarget = "humidity";
     public const string SpecFeatureSet = "default";
+
+    /// <summary>Cross-variable NWP-ensemble means appended to the feature
+    /// vector (see class doc). Order is load-bearing — ComposeRow fills the
+    /// tail slots positionally.</summary>
+    public static readonly string[] RichAuxNames =
+        { "temp_mean", "dewdep_mean", "cloud_low_mean", "cloud_mid_mean", "cloud_high_mean", "wind_mean" };
 
     public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours)
     {
@@ -39,6 +55,7 @@ public static class HumidityFeatureBuilder
         foreach (var m in orderedModels) names.Add($"dp_{TempFeatureBuilder.ShortName(m)}");
         names.AddRange(new[] { "rh_mean", "rh_std", "rh_range" });
         names.AddRange(new[] { "hour_sin", "hour_cos", "doy_sin", "doy_cos" });
+        names.AddRange(RichAuxNames);
 
         return new BlenderSpec
         {
@@ -80,7 +97,8 @@ public static class HumidityFeatureBuilder
 
         var sql = $@"
 WITH latest AS (
-    SELECT ValidTimeUtc, Model, RelativeHumidity2m, DewPoint2m,
+    SELECT ValidTimeUtc, Model, RelativeHumidity2m, DewPoint2m, Temperature2m,
+           CloudCoverLow, CloudCoverMid, CloudCoverHigh, WindSpeed10m,
            ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, Model ORDER BY RunTimeUtc DESC) AS rn
     FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
     WHERE LocationName = '{locationName}'
@@ -93,7 +111,13 @@ WITH latest AS (
 pivoted AS (
     SELECT ValidTimeUtc,
         {pivotRh},
-        {pivotDp}
+        {pivotDp},
+        AVG(Temperature2m)              AS temp_mean,
+        AVG(Temperature2m - DewPoint2m) AS dewdep_mean,
+        AVG(CloudCoverLow)              AS cloud_low_mean,
+        AVG(CloudCoverMid)              AS cloud_mid_mean,
+        AVG(CloudCoverHigh)             AS cloud_high_mean,
+        AVG(WindSpeed10m)               AS wind_mean
     FROM latest WHERE rn = 1 GROUP BY ValidTimeUtc
 ),
 era5 AS (
@@ -101,7 +125,9 @@ era5 AS (
     FROM read_parquet('{eraGlob}', hive_partitioning = false, union_by_name = true)
     WHERE LocationName = '{locationName}' AND RelativeHumidity2m IS NOT NULL
 )
-SELECT p.ValidTimeUtc, {selectRh}, {selectDp}, e.truth
+SELECT p.ValidTimeUtc, {selectRh}, {selectDp},
+       p.temp_mean, p.dewdep_mean, p.cloud_low_mean, p.cloud_mid_mean, p.cloud_high_mean, p.wind_mean,
+       e.truth
 FROM pivoted p JOIN era5 e USING (ValidTimeUtc)
 WHERE ({requiredNotNull})
   AND {anyNotNull}
@@ -111,28 +137,40 @@ ORDER BY p.ValidTimeUtc;";
         cmd.CommandText = sql;
         using var r = cmd.ExecuteReader();
 
+        int nAux = RichAuxNames.Length;
         var rows = new List<RegressionTrainingRow>();
         var rh = new double[n];
         var dp = new double[n];
+        var aux = new double[nAux];
         while (r.Read())
         {
             ct.ThrowIfCancellationRequested();
             var valid = r.GetDateTime(0);
             for (int i = 0; i < n; i++) rh[i] = r.IsDBNull(1 + i) ? double.NaN : r.GetDouble(1 + i);
             for (int i = 0; i < n; i++) dp[i] = r.IsDBNull(1 + n + i) ? double.NaN : r.GetDouble(1 + n + i);
-            var truth = r.GetDouble(1 + 2 * n);
-            rows.Add(ComposeRow(spec, valid, rh, dp, truth));
+            for (int i = 0; i < nAux; i++) aux[i] = r.IsDBNull(1 + 2 * n + i) ? double.NaN : r.GetDouble(1 + 2 * n + i);
+            var truth = r.GetDouble(1 + 2 * n + nAux);
+            rows.Add(ComposeRow(spec, valid, rh, dp, truth, aux));
         }
         return rows;
     }
 
     public static RegressionTrainingRow ComposeRow(
         BlenderSpec spec, DateTime validTimeUtc,
-        IReadOnlyList<double> rh, IReadOnlyList<double> dp, double era5Rh)
+        IReadOnlyList<double> rh, IReadOnlyList<double> dp, double era5Rh,
+        IReadOnlyList<double>? aux = null)
     {
         var n = spec.Models.Count;
         if (rh.Count != n) throw new ArgumentException($"Expected {n} RH values", nameof(rh));
         if (dp.Count != n) throw new ArgumentException($"Expected {n} dewpoint values", nameof(dp));
+        // Schema-gated aux block: pre-2026-06-10 bundles have no temp_mean in
+        // their saved spec and keep the legacy 2N+7 layout; new bundles
+        // require the 6 aux means.
+        var hasAux = spec.FeatureNames.Contains("temp_mean");
+        if (hasAux && (aux is null || aux.Count != RichAuxNames.Length))
+            throw new ArgumentException(
+                $"Spec carries the aux block but {(aux is null ? "no" : aux.Count.ToString())} aux values were supplied.",
+                nameof(aux));
 
         // Spread over RH (NaN-safe).
         double sum = 0, sumSq = 0, min = double.MaxValue, max = double.MinValue;
@@ -165,6 +203,9 @@ ORDER BY p.ValidTimeUtc;";
         features[2 * n + 4] = (float)Math.Cos(hourAngle);
         features[2 * n + 5] = (float)Math.Sin(doyAngle);
         features[2 * n + 6] = (float)Math.Cos(doyAngle);
+        if (hasAux)
+            for (int i = 0; i < RichAuxNames.Length; i++)
+                features[2 * n + 7 + i] = (float)aux![i];
 
         return new RegressionTrainingRow
         {

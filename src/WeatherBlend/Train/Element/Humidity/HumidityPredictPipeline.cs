@@ -77,7 +77,37 @@ public static class HumidityPredictPipeline
                 continue;
             }
 
-            var row = HumidityFeatureBuilder.ComposeRow(spec, valid, rh, dp, era5Rh: float.NaN);
+            // Aux ensemble means (schema-gated: only post-2026-06-10 bundles
+            // carry temp_mean in their saved spec). NaN-safe means over THIS
+            // spec's model set — mirrors the trainer's SQL AVG over the
+            // spec-filtered `latest` rows.
+            double[]? aux = null;
+            if (spec.FeatureNames.Contains("temp_mean"))
+            {
+                double MeanOf(Func<int, float> get)
+                {
+                    double s = 0; int k = 0;
+                    for (int i = 0; i < N; i++)
+                    {
+                        var ci = canonOrder.IndexOf(spec.Models[i]);
+                        var x = get(ci);
+                        if (float.IsNaN(x)) continue;
+                        s += x; k++;
+                    }
+                    return k == 0 ? double.NaN : s / k;
+                }
+                aux = new[]
+                {
+                    MeanOf(ci => p.Temp[ci]),
+                    MeanOf(ci => float.IsNaN(p.Temp[ci]) || float.IsNaN(p.Dp[ci]) ? float.NaN : p.Temp[ci] - p.Dp[ci]),
+                    MeanOf(ci => p.CloudLow[ci]),
+                    MeanOf(ci => p.CloudMid[ci]),
+                    MeanOf(ci => p.CloudHigh[ci]),
+                    MeanOf(ci => p.Wind[ci]),
+                };
+            }
+
+            var row = HumidityFeatureBuilder.ComposeRow(spec, valid, rh, dp, era5Rh: float.NaN, aux);
             var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
             var yhat = TempTrainer.PredictVector(ml, loadedModel, spec, new[] { row })[0];
 
@@ -120,7 +150,9 @@ public static class HumidityPredictPipeline
         return output;
     }
 
-    private sealed record Pivoted(float[] Rh, float[] Dp, DateTime?[] RunTimes);
+    private sealed record Pivoted(
+        float[] Rh, float[] Dp, DateTime?[] RunTimes,
+        float[] Temp, float[] CloudLow, float[] CloudMid, float[] CloudHigh, float[] Wind);
 
     private static Dictionary<DateTime, Pivoted> QueryPivot(
         string forecastsPath, string locationName, DateTime asOf,
@@ -131,11 +163,13 @@ public static class HumidityPredictPipeline
         var sql = $@"
 WITH latest AS (
     SELECT ValidTimeUtc, Model, RunTimeUtc, RelativeHumidity2m, DewPoint2m,
+           Temperature2m, CloudCoverLow, CloudCoverMid, CloudCoverHigh, WindSpeed10m,
            ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, Model ORDER BY RunTimeUtc DESC) AS rn
     FROM read_parquet('{fcGlob}', hive_partitioning=false, union_by_name=true)
     WHERE {live}
 )
-SELECT ValidTimeUtc, Model, RunTimeUtc, RelativeHumidity2m, DewPoint2m
+SELECT ValidTimeUtc, Model, RunTimeUtc, RelativeHumidity2m, DewPoint2m,
+       Temperature2m, CloudCoverLow, CloudCoverMid, CloudCoverHigh, WindSpeed10m
 FROM latest WHERE rn = 1
 ORDER BY ValidTimeUtc, Model;";
 
@@ -147,7 +181,8 @@ ORDER BY ValidTimeUtc, Model;";
         var slotByModel = TempFeatureBuilder.CanonicalModelOrder
             .Select((id, i) => (id, i)).ToDictionary(x => x.id, x => x.i);
 
-        var working = new Dictionary<DateTime, (float[] Rh, float[] Dp, DateTime?[] Rt)>();
+        static float[] NaNs() => Enumerable.Repeat(float.NaN, 8).ToArray();
+        var working = new Dictionary<DateTime, Pivoted>();
         using var r = cmd.ExecuteReader();
         while (r.Read())
         {
@@ -157,16 +192,19 @@ ORDER BY ValidTimeUtc, Model;";
             if (!slotByModel.TryGetValue(model, out var idx)) continue;
             if (!working.TryGetValue(valid, out var slot))
             {
-                slot = (
-                    Enumerable.Repeat(float.NaN, 8).ToArray(),
-                    Enumerable.Repeat(float.NaN, 8).ToArray(),
-                    new DateTime?[8]);
+                slot = new Pivoted(NaNs(), NaNs(), new DateTime?[8], NaNs(), NaNs(), NaNs(), NaNs(), NaNs());
                 working[valid] = slot;
             }
-            slot.Rt[idx]  = r.GetDateTime(2);
-            slot.Rh[idx] = r.IsDBNull(3) ? float.NaN : (float)r.GetDouble(3);
-            slot.Dp[idx] = r.IsDBNull(4) ? float.NaN : (float)r.GetDouble(4);
+            float Col(int i) => r.IsDBNull(i) ? float.NaN : (float)r.GetDouble(i);
+            slot.RunTimes[idx]  = r.GetDateTime(2);
+            slot.Rh[idx]        = Col(3);
+            slot.Dp[idx]        = Col(4);
+            slot.Temp[idx]      = Col(5);
+            slot.CloudLow[idx]  = Col(6);
+            slot.CloudMid[idx]  = Col(7);
+            slot.CloudHigh[idx] = Col(8);
+            slot.Wind[idx]      = Col(9);
         }
-        return working.ToDictionary(kv => kv.Key, kv => new Pivoted(kv.Value.Rh, kv.Value.Dp, kv.Value.Rt));
+        return working;
     }
 }
