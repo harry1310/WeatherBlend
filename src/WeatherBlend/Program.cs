@@ -227,6 +227,7 @@ public static class Program
                 services.AddTransient<PrecipExactBakeoffCommand>();
                 services.AddTransient<PrecipCrossLeadBakeoffCommand>();
                 services.AddTransient<WindFloorBakeoffCommand>();
+                services.AddTransient<HumidityAifsBakeoffCommand>();
                 services.AddTransient<PrecipIfsCycleBakeoffCommand>();
                 services.AddTransient<Phase3cDataWindowBakeoffCommand>();
                 // Live S3 collect — refreshes the five exact-runtime sources
@@ -636,6 +637,23 @@ public static class Program
             await cmd.RunAsync(testStart, targets, CancellationToken.None);
         }, wfbTestStartOpt, wfbTargetsOpt);
         root.AddCommand(wfbBakeoff);
+
+        // humidity-aifs-bakeoff — EXPERIMENT: why the humidity blend loses to raw
+        // AIFS at every lead, and which fix wins: AIFS-dense training window
+        // (≥2025-02-17), +6 cross-variable ensemble-mean features, or both.
+        var habTestStartOpt = new Option<string?>(
+            name: "--test-start", description: "Held-out OOS test window start (yyyy-MM-dd). Default 2026-03-01.",
+            getDefaultValue: () => null);
+        var habBakeoff = new Command(
+            "humidity-aifs-bakeoff",
+            "EXPERIMENT: humidity blend vs raw AIFS — control / aifs-dense window / rich features / both, common OOS")
+            { habTestStartOpt };
+        habBakeoff.SetHandler(async (testStart) =>
+        {
+            var cmd = host.Services.GetRequiredService<HumidityAifsBakeoffCommand>();
+            Environment.ExitCode = await cmd.RunAsync(testStart, CancellationToken.None);
+        }, habTestStartOpt);
+        root.AddCommand(habBakeoff);
 
         // precip-policy-blend-crossover — STUDY: bracketing pair (mA,mB) + 50/50 blend per τ,
         // study bundles (no-UA, OOS), 3c+3o, Bonehill pooled. Tests whether a blend beats either
