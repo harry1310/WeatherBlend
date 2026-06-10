@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
 using WeatherBlend.Evaluate.Temp;
+using WeatherBlend.Models;
 using WeatherBlend.Train.Common;
 
 namespace WeatherBlend.Train.Element.Common;
@@ -201,15 +202,7 @@ public static class ElementTrainerHarness
             trainFeatures: firstLeadTrainFeatures,
             featureNames: specsPerLead.TryGetValue(firstLeadElement, out var spEl)
                 ? spEl.FeatureNames.ToList() : Array.Empty<string>(),
-            locationName: inputs.LocationName,
-            // ONE-TIME bypass for two intentional feature-count changes productionised
-            // 2026-06-04: shortwave-radiation gained cloud_mean/rh_mean (25→27 feats);
-            // cloud-cover gained cape_mean at the 24h lead (13→14 feats). The guard's
-            // FeaturesEffectiveDelta=0 would abort the first retrain that sees either
-            // jump. Allow it for these two targets so Sunday's retrain mints the new
-            // baselines; once they land (n→n passes) this should be REVERTED — it
-            // currently masks any future radiation/cloud schema drift.
-            tolerances: ResolveElementTolerances(inputs.Target.CliName));
+            locationName: inputs.LocationName);
         if (!guardResultEl.Passed)
         {
             log.LogError(
@@ -223,9 +216,17 @@ public static class ElementTrainerHarness
         // cloud_cover) so this is functionally equivalent to a single-version
         // write today, but the promote helper future-proofs against a
         // challenger ever being added.
+        // Pass the target's current phase lineup so PromoteStationVersion can
+        // evict renamed/retired phases left stranded in Active (e.g. the
+        // pre-rename `lean-wind`/`lean-cloud-cover`/… tags that ComposeActive's
+        // exact-string match otherwise preserved forever). Union in PhaseTag
+        // defensively so the phase being promoted is never treated as retired.
+        var knownPhases = new HashSet<string>(StringComparer.Ordinal) { inputs.Target.PhaseTag };
+        if (ActivePhasePolicy.ByTarget.TryGetValue(inputs.Target.ModelDirName, out var lineup))
+            foreach (var p in lineup) knownPhases.Add(p);
         ModelArtifact.PromoteStationVersion(
             modelsRoot, inputs.Target.ModelDirName, inputs.LocationName,
-            versionName, newPhase: inputs.Target.PhaseTag);
+            versionName, newPhase: inputs.Target.PhaseTag, knownPhases: knownPhases);
 
         log.LogInformation("Element ({Target}) artefacts → {Dir}", inputs.Target.CliName, versionDir);
         log.LogInformation(
@@ -278,30 +279,6 @@ public static class ElementTrainerHarness
             if (string.Equals(spec.Models[i], modelId, StringComparison.OrdinalIgnoreCase))
                 return spec.FeatureNames[i];
         throw new InvalidOperationException($"Model '{modelId}' not in spec.Models for {spec}.");
-    }
-
-    /// <summary>
-    /// Element-blender RetrainGuard tolerances. Base: shortwave-radiation / cloud-cover
-    /// get the one-time feature-count allowance (see the note at the guard call site).
-    /// On top, <c>WB_GUARD_ROWS_DELTA_OVERRIDE</c> (same env TrainCommand's 2c step uses)
-    /// relaxes the row-count band for a deliberate, permanent training-window change —
-    /// e.g. dropping the UKMO clean-window floor, or moving UKMO required→optional, which
-    /// legitimately grow the row count past the default ±30%. Empty/invalid → default ±30%.
-    /// Set it ONLY for the single run that resets the baseline; leave empty afterwards.
-    /// </summary>
-    private static GuardTolerances? ResolveElementTolerances(string cliName)
-    {
-        GuardTolerances? baseTol = cliName is "shortwave-radiation" or "cloud-cover"
-            ? RetrainGuard.Defaults with { AllowFeaturesEffectiveChange = true }
-            : null;
-        var raw = Environment.GetEnvironmentVariable("WB_GUARD_ROWS_DELTA_OVERRIDE");
-        if (string.IsNullOrWhiteSpace(raw)
-            || !double.TryParse(raw, System.Globalization.NumberStyles.Float,
-                                System.Globalization.CultureInfo.InvariantCulture, out var pct)
-            || pct <= 0)
-            return baseTol;
-        // Carry AllowFeaturesEffectiveChange from baseTol; relax rows + NaN bands.
-        return (baseTol ?? RetrainGuard.Defaults) with { RowsDeltaPct = pct, NanPctAbsolute = 1.0 };
     }
 
     /// <summary>Pairwise-NaN-aware MAE: skip pairs where prediction or truth is NaN.</summary>

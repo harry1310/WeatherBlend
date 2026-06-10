@@ -362,4 +362,66 @@ public class ModelArtifactStationTests
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
     }
+
+    [Fact]
+    public void PromoteStationVersion_evicts_retired_phase_but_keeps_current_sibling()
+    {
+        // Reproduces the 2026-06-09 stale-element bug: a pre-rename `lean-wind`
+        // version stranded in Active because ComposeActive's exact phase-string
+        // match treated it as a different phase and preserved it forever.
+        // Passing the target's current phase lineup (knownPhases) must evict the
+        // retired `lean-wind` while preserving the legitimate `wind_speed_lgb`
+        // sibling (a different but CURRENT phase).
+        var root = FreshRoot();
+        try
+        {
+            var lineup = new HashSet<string>(StringComparer.Ordinal)
+                { "wind", "wind_speed_lgb", "wind_blend" };
+
+            // Old stranded state: lean-wind promoted with no lineup (legacy).
+            SeedBundle(root, "wind", "bonehill_rocks", "v1_lean-wind", "lean-wind");
+            ModelArtifact.PromoteStationVersion(
+                root, "wind", "bonehill_rocks", "v1_lean-wind", "lean-wind");
+
+            // Current sibling phase lands — lean-wind is retired (not in lineup) → evicted.
+            SeedBundle(root, "wind", "bonehill_rocks", "v2_wind_speed_lgb", "wind_speed_lgb");
+            ModelArtifact.PromoteStationVersion(
+                root, "wind", "bonehill_rocks", "v2_wind_speed_lgb", "wind_speed_lgb",
+                knownPhases: lineup);
+
+            // Champion `wind` retrains — wind_speed_lgb is a CURRENT sibling, preserved.
+            SeedBundle(root, "wind", "bonehill_rocks", "v3_wind", "wind");
+            ModelArtifact.PromoteStationVersion(
+                root, "wind", "bonehill_rocks", "v3_wind", "wind",
+                knownPhases: lineup);
+
+            ModelArtifact.ResolveStationActive(root, "wind", "bonehill_rocks")
+                .Should().BeEquivalentTo("v2_wind_speed_lgb", "v3_wind");
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void PromoteStationVersion_without_knownPhases_preserves_retired_phase()
+    {
+        // Backward-compat guard: every non-element caller passes no lineup, so the
+        // retired-phase eviction must stay OFF for them — a different-phase entry
+        // is preserved exactly as before (this is the pre-fix behaviour, retained
+        // for precipitation / temperature / dry-window).
+        var root = FreshRoot();
+        try
+        {
+            SeedBundle(root, "wind", "bonehill_rocks", "v1_lean-wind", "lean-wind");
+            ModelArtifact.PromoteStationVersion(
+                root, "wind", "bonehill_rocks", "v1_lean-wind", "lean-wind");
+
+            SeedBundle(root, "wind", "bonehill_rocks", "v2_wind", "wind");
+            ModelArtifact.PromoteStationVersion(
+                root, "wind", "bonehill_rocks", "v2_wind", "wind");  // no knownPhases
+
+            ModelArtifact.ResolveStationActive(root, "wind", "bonehill_rocks")
+                .Should().BeEquivalentTo("v1_lean-wind", "v2_wind");
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
 }

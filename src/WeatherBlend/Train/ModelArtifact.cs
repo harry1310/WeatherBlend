@@ -817,7 +817,8 @@ public static class ModelArtifact
     /// pass their location as the station key.
     /// </summary>
     public static void PromoteStationVersion(
-        string modelsRoot, string target, string station, string newVersionName, string newPhase)
+        string modelsRoot, string target, string station, string newVersionName, string newPhase,
+        IReadOnlySet<string>? knownPhases = null)
     {
         var newLeadSet = TryReadVersionLeads(Path.Combine(modelsRoot, target, station, newVersionName));
         var newLocation = TryReadVersionLocation(Path.Combine(modelsRoot, target, station, newVersionName));
@@ -850,7 +851,8 @@ public static class ModelArtifact
             if (!entry.Versions.Contains(newVersionName)) entry.Versions.Add(newVersionName);
             entry.Active = ComposeActive(entry.Active, newVersionName, newPhase, newLeadSet,
                 phaseOfVersion: v => TryReadVersionPhase(Path.Combine(modelsRoot, target, station, v)),
-                leadsOfVersion: v => TryReadVersionLeads(Path.Combine(modelsRoot, target, station, v)));
+                leadsOfVersion: v => TryReadVersionLeads(Path.Combine(modelsRoot, target, station, v)),
+                knownPhases: knownPhases);
         });
     }
 
@@ -898,15 +900,39 @@ public static class ModelArtifact
         string newPhase,
         IReadOnlyList<int>? newLeadSet,
         Func<string, string?> phaseOfVersion,
-        Func<string, IReadOnlyList<int>?> leadsOfVersion)
+        Func<string, IReadOnlyList<int>?> leadsOfVersion,
+        IReadOnlySet<string>? knownPhases = null)
     {
         var preserved = new List<string>(existing.Count + 1);
         foreach (var v in existing)
         {
             if (string.Equals(v, newVersionName, StringComparison.Ordinal)) continue;  // dedupe later
             var phase = phaseOfVersion(v);
-            if (phase is null || !string.Equals(phase, newPhase, StringComparison.Ordinal))
+            if (phase is null)
             {
+                // Unreadable metadata → never silently retire something we
+                // can't introspect (same conservative rule as the lead-set
+                // unknown case below).
+                preserved.Add(v);
+                continue;
+            }
+            // Retired-phase eviction (2026-06-09): when the caller supplies the
+            // target's current phase lineup (knownPhases), an Active version
+            // whose readable phase is NOT in that lineup is a renamed/retired
+            // phase — e.g. the pre-rename `lean-wind` stranded when `wind`
+            // superseded its tag, which `ComposeActive`'s exact-string match
+            // treated as a different phase and preserved across 20+ retrains.
+            // Such a version can never be champion (ResolveStationChampionVersion
+            // only walks the lineup) and isn't a valid challenger, so drop it
+            // outright rather than let it accumulate. Scoped to callers that
+            // pass knownPhases (element + wind targets); null leaves every other
+            // target's prior conservative behaviour untouched.
+            if (knownPhases is not null && !knownPhases.Contains(phase))
+                continue;
+            if (!string.Equals(phase, newPhase, StringComparison.Ordinal))
+            {
+                // A different CURRENT phase (legit champion/challenger sibling,
+                // e.g. wind + wind_speed_lgb) — preserve.
                 preserved.Add(v);
                 continue;
             }
