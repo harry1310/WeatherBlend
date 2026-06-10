@@ -249,7 +249,6 @@ public static class Program
                 services.AddTransient<IElementBlender, RadiationBlender>();
                 services.AddTransient<IElementBlender, CloudBlender>();
                 services.AddTransient<IElementBlender, WindGustBlender>();
-                services.AddTransient<IElementBlender, WindSpeedLgbBlender>();
             })
             .Build();
 

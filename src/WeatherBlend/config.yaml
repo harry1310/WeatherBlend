@@ -544,19 +544,11 @@ blenders:
           requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless]
           optionalModels: [gem_seamless, ecmwf_aifs025_single]
 
-    # Wind speed (Dunkeswell-truth LightGBM, Phase 3 of WIND_BLENDER_PLAN
-    # 2026-05-27). Sibling phase to the ERA5-truth `wind` blender above —
-    # same physical target but trained on Dunkeswell SYNOP obs and with
-    # the 29-feature lean+ORO+spread set. Production scope is the 6 NWPs
-    # the bake-off picked: GFS / ECMWF IFS025 / ICON / GEM / JMA required;
-    # UKMO optional under the same UkmoCleanWindowStart floor the existing
-    # wind blender uses. AIFS excluded (no 2024 Dunkeswell-window rows);
-    # MF excluded everywhere for wind (no MF wind on Open-Meteo Previous
-    # Runs). Trained at leads {24, 48, 72} only, no per-lead overrides.
-    - target: wind_speed_lgb
-      featureSet: default
-      requiredModels: [gfs_seamless, ecmwf_ifs025, icon_seamless, jma_seamless]
-      optionalModels: [gem_seamless, ukmo_seamless]
+    # NOTE: the wind_speed_lgb blender spec lived here until 2026-06-10 —
+    # the model moved to Python (Option B CQR cutover) and its NWP scope is
+    # now pinned in WeatherProbabilistic's train_wind_speed_pi.py
+    # (REQUIRED_MODELS gfs/ecmwf/icon/jma + optional gem/ukmo, mirroring
+    # the spec it replaced).
 
     # Wind gust (2026-05-27): only 4 production NWPs publish gust on
     # Open-Meteo Previous Runs (audited). GFS / ICON / GEM required; UKMO

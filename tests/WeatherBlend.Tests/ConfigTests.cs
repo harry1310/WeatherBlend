@@ -188,7 +188,10 @@ public class ConfigTests
         var bound = new AppConfig();
         cfg.Bind(bound);
 
-        bound.Blenders.Items.Should().HaveCount(12);
+        // wind_speed_lgb dropped 2026-06-10 — the model moved to Python
+        // (Option B CQR cutover); its NWP scope is pinned in
+        // WeatherProbabilistic's train_wind_speed_pi.py now.
+        bound.Blenders.Items.Should().HaveCount(11);
         var keys = bound.Blenders.Items.Select(b => $"{b.Target}/{b.FeatureSet}").ToArray();
         keys.Should().Contain(new[]
         {
@@ -196,7 +199,7 @@ public class ConfigTests
             "precipitation/lean", "precipitation/rich",
             "dry_window/base", "dry_window/shape",
             "wind/default", "humidity/default", "cloud/default", "radiation/default",
-            "wind_speed_lgb/default", "wind_gust/default",
+            "wind_gust/default",
         });
 
         // Lean temp (2026-06-01 minimal-required policy): only gfs+ecmwf
@@ -296,10 +299,12 @@ public class ConfigTests
         var bound = new AppConfig();
         cfg.Bind(bound);
 
+        // (wind_speed_lgb left this list 2026-06-10 — Python-trained now; its
+        // required set never included gem anyway.)
         var elementBlenders = new[]
         {
             ("wind", "default"), ("humidity", "default"), ("cloud", "default"),
-            ("radiation", "default"), ("wind_speed_lgb", "default"), ("wind_gust", "default"),
+            ("radiation", "default"), ("wind_gust", "default"),
         };
         int[] leads = { 24, 48, 72, 96, 120 };
         foreach (var (target, featureSet) in elementBlenders)

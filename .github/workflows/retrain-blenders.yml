@@ -398,12 +398,6 @@ jobs:
         id: train_wind
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_wind == 'true'
         continue-on-error: true
-        # WB_GUARD_ROWS_DELTA_OVERRIDE — one-time row-band relax for the floor-drop
-        # window change (see ElementTrainerHarness.ResolveElementTolerances). Empty
-        # by default → ±30%; set via the guard_rows_delta dispatch input for the
-        # single run that resets the baseline, then leave empty.
-        env:
-          WB_GUARD_ROWS_DELTA_OVERRIDE: ${{ github.event.inputs.guard_rows_delta }}
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target wind
@@ -428,10 +422,6 @@ jobs:
         id: train_cloud
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_cloud_cover == 'true'
         continue-on-error: true
-        # WB_GUARD_ROWS_DELTA_OVERRIDE — one-time row-band relax for the UKMO
-        # required→optional window change (rows grow back to ~2024-02).
-        env:
-          WB_GUARD_ROWS_DELTA_OVERRIDE: ${{ github.event.inputs.guard_rows_delta }}
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target cloud-cover
@@ -444,29 +434,15 @@ jobs:
         id: train_wind_gust
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_wind_gust_lgb == 'true'
         continue-on-error: true
-        # WB_GUARD_ROWS_DELTA_OVERRIDE — one-time row-band relax for the floor-drop.
-        env:
-          WB_GUARD_ROWS_DELTA_OVERRIDE: ${{ github.event.inputs.guard_rows_delta }}
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target wind-gust
 
-      - name: Train element wind-speed-lgb
-        # Phase 3 of WIND_BLENDER_PLAN — LightGBM trained on Dunkeswell SYNOP
-        # truth (MIDAS Open 01383), 29-feature lean+ORO+spread set.
-        # Sibling phase to `wind` under the same ModelDirName, so bundles
-        # coexist under data/models/wind/{location}/v..._wind_speed_lgb/.
-        # Phase id is wind_speed_lgb in phases.yaml so the gate matches.
-        id: train_wind_speed_lgb
-        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_wind_speed_lgb == 'true'
-        continue-on-error: true
-        # WB_GUARD_ROWS_DELTA_OVERRIDE — one-time row-band relax for the floor-drop
-        # (~2.5x rows: Feb–Dec 2024 vs autumn-only). Largest delta of the four.
-        env:
-          WB_GUARD_ROWS_DELTA_OVERRIDE: ${{ github.event.inputs.guard_rows_delta }}
-        run: |
-          dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target wind-speed-lgb
+      # NOTE: wind_speed_lgb trained here until 2026-06-10 — it moved to
+      # Python (Option B cutover: quantile-LGB + cross-conformal CQR in
+      # WeatherProbabilistic's train_wind_speed_pi.py, retrain-python.yml).
+      # phases.yaml's impl: python flip removes it from this workflow's
+      # dotnet fanout automatically.
 
       - name: Mint Phase 4b bundle (4a + 3o mean)
         # Reads the latest 4a + 3o bundles already pulled from R2 at job
@@ -504,7 +480,6 @@ jobs:
             [radiation]="${{ steps.train_radiation.outcome }}"
             [cloud]="${{ steps.train_cloud.outcome }}"
             [wind_gust_lgb]="${{ steps.train_wind_gust.outcome }}"
-            [wind_speed_lgb]="${{ steps.train_wind_speed_lgb.outcome }}"
           )
           failed=()
           succeeded=()

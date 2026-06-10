@@ -889,7 +889,14 @@ public static partial class SitePages
         double? Ukmo,
         double? Gem,
         double? Aifs,
-        string LocationName);
+        string LocationName,
+        // CQR 90% prediction-band bounds (m/s) — only on rows from the
+        // Python wind_speed_lgb parquet (BandLoMs/BandHiMs sidecar columns,
+        // 2026-06-10 cutover); null for the champion `wind` / `wind_blend`
+        // phases and pre-cutover parquets. Defaulted so existing positional
+        // constructions keep compiling.
+        double? BandLoMs = null,
+        double? BandHiMs = null);
 
     /// <summary>One row from a wind_direction (<c>wind_mvn</c>) parquet.
     /// Powers the per-lead wind page's speed CI ribbon (CI lo/hi

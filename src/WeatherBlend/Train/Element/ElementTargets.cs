@@ -51,23 +51,17 @@ public static class ElementTargets
         Units: "m/s",
         PhaseTag: "wind_gust_lgb");
 
-    // Phase 3 of WIND_BLENDER_PLAN — same physical target as Wind (10m wind
-    // speed) but trained on Dunkeswell SYNOP obs instead of ERA5. Sibling
-    // PhaseTag under ModelDirName='wind' so the bundle lives alongside the
-    // ERA5-truth `wind` champion in data/models/wind/{location}/v{ts}/ and
-    // both end up promoted into the same Stations.{loc}.Active list with
-    // distinct phase suffixes. The two coexist for now; future Phase 3.B
-    // wires a parallel predict pipeline that consumes _wind_speed_lgb
-    // bundles for the WindBlend mint step.
-    public static readonly ElementTarget WindSpeedLgb = new(
-        CliName: "wind-speed-lgb",
-        ModelDirName: "wind",
-        Display: "10 m wind speed (Dunkeswell-truth LGB)",
-        Units: "m/s",
-        PhaseTag: "wind_speed_lgb");
-
+    // NOTE: wind_speed_lgb (the Dunkeswell-SYNOP-truth sibling phase under
+    // ModelDirName='wind') is NOT an ElementTarget any more — it moved to
+    // Python 2026-06-10 (Option B cutover: quantile-LGB + cross-conformal
+    // CQR in WeatherProbabilistic's train/predict_wind_speed_pi.py, which
+    // emits the same ElementPredictionRow parquet plus a CQR band sidecar).
+    // Its versions still appear in the wind MANIFEST Active list (promoted
+    // by the Python trainer as challenger); ElementPredictCommand skips
+    // them via HandledElementPhases, and WindBlendPredictCommand consumes
+    // the Python-written predictions by model_version glob.
     public static readonly IReadOnlyList<ElementTarget> All =
-        new[] { Wind, Humidity, ShortwaveRadiation, CloudCover, WindGust, WindSpeedLgb };
+        new[] { Wind, Humidity, ShortwaveRadiation, CloudCover, WindGust };
 
     public static ElementTarget? TryFromCli(string cliName)
         => All.FirstOrDefault(t => string.Equals(t.CliName, cliName, StringComparison.OrdinalIgnoreCase));

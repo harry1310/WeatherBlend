@@ -160,8 +160,10 @@ public static class CoverageGuard
                     {
                         // Composed-at-predict phases (retrain: none, e.g. wind_blend)
                         // have no trained bundle / manifest entry — the manifest-based
-                        // check doesn't apply. Their failure is downstream of inputs
-                        // the guard DOES cover (wind_speed_lgb), so skip cleanly.
+                        // check doesn't apply. Their inputs are guarded elsewhere
+                        // (champion wind here; wind_speed_lgb in its own Python
+                        // predict workflow since the 2026-06-10 cutover), so skip
+                        // cleanly.
                         if (!pe.IsRetrained) continue;
 
                         var versionsOfPhase = active

@@ -114,10 +114,9 @@ for p in "${phases[@]}"; do
     3p|4b)
       need_forecasts=1; need_rainfall=1; need_orographic=1; need_models=1 ;;
 
-    # Phase 3 wind_speed_lgb (Slice A, 2026-05-28). Dunkeswell SYNOP truth
-    # via MIDAS Open station 01383 + static orographic JSON for ORO_LEAN.
-    wind_speed_lgb)
-      need_forecasts=1; need_midas=1; need_orographic=1; need_models=1 ;;
+    # wind_speed_lgb moved to Python 2026-06-10 (Option B CQR cutover) — its
+    # pull declaration now lives in WeatherProbabilistic's
+    # scripts/sync_train_data.sh. A request here exits 3 loudly below.
 
     all)
       need_forecasts=1; need_era5=1; need_metar=1; need_rainfall=1

@@ -12,9 +12,12 @@ namespace WeatherBlend.Commands;
 /// blenders that predict 10 m speed against different truth:
 ///   * champion <c>wind</c> (LightGBM, ERA5 WindSpeed10m truth) — the element
 ///     blender, lands at <c>predictions/wind/model_version={champion}/...</c>.
-///   * <c>wind_speed_lgb</c> (LightGBM, Dunkeswell SYNOP truth, ERA5-free) —
-///     produced by <see cref="Train.Element.Wind.WindSpeedLgbPredictPipeline"/>,
-///     lands at <c>predictions/wind/model_version=v..._wind_speed_lgb/...</c>.
+///   * <c>wind_speed_lgb</c> (quantile-LGB + CQR, Dunkeswell SYNOP truth,
+///     ERA5-free) — Python since 2026-06-10 (WeatherProbabilistic's
+///     predict_wind_speed_pi.py, synced from R2 by sync-render-inputs),
+///     lands at <c>predictions/wind/model_version=v..._wind_speed_lgb/...</c>
+///     with extra CQR band columns (BandLoMs/BandHiMs/ConformalQ) that
+///     union_by_name lets this reader ignore.
 ///
 /// Inner-joins both on (ValidTime, Lead): <c>final = 0.5·champion + 0.5·lgb</c>.
 /// The cross-truth bake-off (2026-06-09) showed the 50/50 mean beats either

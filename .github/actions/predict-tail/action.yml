@@ -41,22 +41,26 @@ runs:
         dotnet run --project src/WeatherBlend --no-build -c Release -- phase4b-predict || code=$?
         if [ "$code" != "0" ] && [ "$code" != "3" ]; then exit "$code"; fi
 
-    - name: Synthesise wind_blend (sigmoid composition of wind_speed_lgb + wind_mvn)
-      # Phase 3 Slice C of WIND_BLENDER_PLAN. Reads:
-      #   - WB's wind_speed_lgb live parquet
+    - name: Synthesise wind_blend (50/50 mean of champion wind + wind_speed_lgb)
+      # Equal-weight mean since 2026-06-09 (cross-truth bake-off; replaced
+      # the sigmoid lgb+mvn composition — MVN is direction-only now). Reads:
+      #   - champion `wind` live parquet (version via the wind MANIFEST)
+      #     (predictions/wind/model_version={champion}/date=...)
+      #   - wind_speed_lgb live parquet — PYTHON-written since the
+      #     2026-06-10 cutover (WP's predict-wind-direction workflow, Hop C,
+      #     pushed to R2 and pulled back here by sync-render-inputs; carries
+      #     CQR band sidecar columns the .NET reader ignores)
       #     (predictions/wind/model_version=*_wind_speed_lgb/date=...)
-      #   - WP's wind_mvn live parquet
-      #     (predictions/wind_direction/{loc}/model_version=*_wind_mvn/date=...)
       # and writes the blended speed at
       #   predictions/wind/model_version=v_wind_blend_live/date=...
       #
       # Same exit-code shape as phase4b-predict:
       #   0 — at least one location blended successfully.
       #   2 — no locations configured — FATAL.
-      #   3 — every location fell through (either lgb or mvn parquet
-      #       missing). Expected before the first Sunday wind_mvn retrain
-      #       lands a bundle on R2 (then predict-wind-direction starts
-      #       producing parquets that this step can consume).
+      #   3 — every location fell through (either champion or lgb parquet
+      #       missing). Expected until the first Python wind_speed_lgb
+      #       retrain lands a bundle on R2 (then predict-wind-direction
+      #       starts producing the lgb parquet this step consumes).
       shell: bash
       run: |
         code=0

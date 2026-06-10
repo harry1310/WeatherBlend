@@ -1205,10 +1205,22 @@ ORDER BY LocationName, ValidTimeUtc";
             return Array.Empty<SitePages.WindForecastPoint>();
         }
         var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
+        // CQR band sidecar (BandLoMs/BandHiMs) — written only by the Python
+        // wind_speed_lgb predictor (2026-06-10 cutover). union_by_name fills
+        // NULLs on the champion/blend parquets that lack the columns, but a
+        // tree with NO band-carrying file at all (e.g. before the first
+        // Python predict cycle) would fail the SELECT — so probe first and
+        // select typed NULLs in that case. Never break the chart for a
+        // missing band: the page falls back to the plain point line.
+        var hasBand = ParquetReader.HasColumn(conn, glob, "BandLoMs");
+        var bandCols = hasBand
+            ? "BandLoMs, BandHiMs"
+            : "CAST(NULL AS DOUBLE) AS BandLoMs, CAST(NULL AS DOUBLE) AS BandHiMs";
         var sql = $@"
 WITH ranked AS (
     SELECT LocationName, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
            BlendValue, ModelGfs, ModelEcmwf, ModelIcon, ModelMf, ModelUkmo, ModelGem, ModelAifs,
+           {bandCols},
            ROW_NUMBER() OVER (PARTITION BY LocationName, ModelVersion, LeadHours, ValidTimeUtc
                               ORDER BY PredictionMadeAtUtc DESC) AS rn
     FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
@@ -1219,7 +1231,8 @@ WITH ranked AS (
       AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 )
 SELECT LocationName, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
-       BlendValue, ModelGfs, ModelEcmwf, ModelIcon, ModelMf, ModelUkmo, ModelGem, ModelAifs
+       BlendValue, ModelGfs, ModelEcmwf, ModelIcon, ModelMf, ModelUkmo, ModelGem, ModelAifs,
+       BandLoMs, BandHiMs
 FROM ranked
 WHERE rn = 1
 ORDER BY LocationName, ModelVersion, LeadHours, ValidTimeUtc";
@@ -1236,7 +1249,9 @@ ORDER BY LocationName, ModelVersion, LeadHours, ValidTimeUtc";
             Ukmo:           r.IsDBNull(10) ? null : (double?)r.GetDouble(10),
             Gem:            r.IsDBNull(11) ? null : (double?)r.GetDouble(11),
             Aifs:           r.IsDBNull(12) ? null : (double?)r.GetDouble(12),
-            LocationName:   r.GetString(0)),
+            LocationName:   r.GetString(0),
+            BandLoMs:       r.IsDBNull(13) ? null : (double?)r.GetDouble(13),
+            BandHiMs:       r.IsDBNull(14) ? null : (double?)r.GetDouble(14)),
             _log, "Wind predictions tree empty.", ct);
     }
 

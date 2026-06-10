@@ -52,8 +52,13 @@ public sealed class ElementPredictCommand
     private static readonly HashSet<string> HandledElementPhases =
         new(StringComparer.Ordinal)
         {
+            // wind_speed_lgb is NOT here (2026-06-10 cutover): it's Python-
+            // predicted (WeatherProbabilistic predict_wind_speed_pi.py, Hop C)
+            // but still promoted into the wind MANIFEST Active list, so the
+            // skip below must treat it like wind_blend — another runtime owns
+            // its predict path.
             "wind", "humidity", "shortwave_radiation", "cloud_cover",
-            "wind_gust_lgb", "wind_speed_lgb",
+            "wind_gust_lgb",
         };
 
     public ElementPredictCommand(ILogger<ElementPredictCommand> log, AppConfig cfg)
@@ -137,17 +142,14 @@ public sealed class ElementPredictCommand
             _log.LogInformation("--- Version {V} (phase={Phase}) ---", version, phase);
 
             // Dispatch by PHASE rather than target.CliName so sibling phases
-            // sharing a ModelDirName (e.g. `wind` ERA5-truth + `wind_speed_lgb`
-            // Dunkeswell-truth, both under data/models/wind/) route to their
-            // own pipeline. Phase is stamped on training_metadata.json by
-            // each trainer, so this lookup is exact: each Active version
-            // identifies its own predict path. Fallback to target.CliName
-            // covers legacy bundles where Phase wasn't populated.
+            // sharing a ModelDirName (e.g. wind_gust_lgb under wind_gust)
+            // route to their own pipeline. Phase is stamped on
+            // training_metadata.json by each trainer, so this lookup is
+            // exact: each Active version identifies its own predict path.
+            // Fallback to target.CliName covers legacy bundles where Phase
+            // wasn't populated.
             List<ElementPredictionRow> predictions = (phase, target.CliName) switch
             {
-                ("wind_speed_lgb", _) => WindSpeedLgbPredictPipeline.PredictForCycle(
-                    _log, location.Name, _cfg.Storage.ForecastsPath,
-                    versionDir, metadata.Version, anchor, predictionMadeAt, DefaultLeads, ct),
                 ("wind_gust_lgb", _) => WindGustPredictPipeline.PredictForCycle(
                     _log, location.Name, _cfg.Storage.ForecastsPath,
                     versionDir, metadata.Version, anchor, predictionMadeAt, DefaultLeads, ct),

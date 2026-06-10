@@ -193,23 +193,25 @@ targets:
         locations: ["bonehill_rocks"]
       # Phase 2/3 of WIND_BLENDER_PLAN, 2026-05-27 production-scope lock.
       # Both ship as CHALLENGERS to the existing ERA5-truth element
-      # blender above. wind_speed_lgb is a separate LightGBM trained on
-      # Dunkeswell SYNOP truth (see WB-side WindSpeedLgbBlender). wind_blend
-      # is the sigmoid composition of wind_speed_lgb + wind_mvn speed
-      # magnitude — no training, minted by WindBlendMintCommand in
-      # predict-tail (same flow as 4b minting from 4a + 3o).
+      # blender above. wind_speed_lgb is the Dunkeswell-SYNOP-truth wind
+      # speed model — Python since 2026-06-10 (Option B cutover:
+      # quantile-LGB + cross-conformal CQR in WeatherProbabilistic's
+      # train/predict_wind_speed_pi.py, so one model owns the q50 point
+      # AND a calibrated 90% band; ML.NET LightGbm has no quantile
+      # objective). Trains in retrain-python, predicts in
+      # predict-wind-direction (Hop C). The .NET WindSpeedLgbBlender /
+      # PredictPipeline were removed at the flip.
       - id: "wind_speed_lgb"
         role: challenger
-        impl: dotnet
+        impl: python
         locations: ["bonehill_rocks"]
       - id: "wind_blend"
         role: challenger
         impl: dotnet
         locations: ["bonehill_rocks"]
-        # Composed live at predict time (wind-blend-predict: sigmoid of
-        # wind_speed_lgb + wind_mvn). No trainer / no bundle yet — exclude
-        # from the train fanout. Flip to (remove retrain / set blenders) once
-        # a wind-blend-mint lands, like 4b.
+        # Composed live at predict time (wind-blend-predict: equal-weight
+        # mean of champion wind + wind_speed_lgb). No trainer / no bundle —
+        # exclude from the train fanout.
         retrain: none
   humidity:
     phases:

@@ -35,12 +35,13 @@ public static partial class SitePages
               <hgroup>
                 <h2>Wind +{lead}h</h2>
                 <p>Blender speed forecasts on top — champion (ERA5-truth), wind_speed_lgb
-                   (Dunkeswell-truth), and wind_blend (their equal-weight mean), plus the
-                   wind_gust_lgb gust line. Raw per-NWP inputs below. Per-hour direction
-                   circles at the bottom show the latest day this lead predicts;
-                   each wedge spans the wind_mvn 80% direction credible arc
-                   (calibrated on validation). wind_mvn is direction-only — its speed
-                   output was retired 2026-06-09.</p>
+                   (Dunkeswell-truth, with its shaded 90% prediction band — conformal-
+                   calibrated quantile regression), and wind_blend (their equal-weight
+                   mean), plus the wind_gust_lgb gust line. Raw per-NWP inputs below.
+                   Per-hour direction circles at the bottom show the latest day this
+                   lead predicts; each wedge spans the wind_mvn 80% direction credible
+                   arc (calibrated on validation). wind_mvn is direction-only — its
+                   speed output was retired 2026-06-09.</p>
               </hgroup>
             """);
 
@@ -155,10 +156,33 @@ public static partial class SitePages
                 rows.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.SpeedMs * MsToMph)).ToList()));
         }
 
-        // MVN speed line + CI95 ribbon removed 2026-06-09 (MVN is direction-only
-        // now; the speed product is the wind_blend phase line above). A future CQR
-        // confidence band on wind_speed_lgb will reintroduce a speed envelope here.
+        // CQR 90% prediction band on wind_speed_lgb (2026-06-10 cutover: the
+        // Python quantile-LGB + cross-conformal predictor writes BandLoMs /
+        // BandHiMs sidecar columns on the lgb parquet). Replaces the MVN
+        // speed CI ribbon removed 2026-06-09. Fallback contract: rows
+        // without band columns (champion / wind_blend phases, or any cycle
+        // before the first Python predict) simply contribute no band points
+        // — the point lines render unchanged, the chart never breaks.
         var ribbons = Array.Empty<RibbonSpec>();
+        if (byPhase.TryGetValue("wind_speed_lgb", out var lgbRows))
+        {
+            var bandPts = lgbRows
+                .Where(r => r.BandLoMs.HasValue && r.BandHiMs.HasValue)
+                .ToList();
+            if (bandPts.Count > 0)
+            {
+                // Same teal as the lgb challenger line family, faint fill.
+                blendSeries.Add(new LineSeries("wind_speed_lgb 90% lo", "rgba(0, 137, 123, 0.35)",
+                    bandPts.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.BandLoMs!.Value * MsToMph)).ToList()));
+                blendSeries.Add(new LineSeries("wind_speed_lgb 90% hi", "rgba(0, 137, 123, 0.35)",
+                    bandPts.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.BandHiMs!.Value * MsToMph)).ToList()));
+                ribbons = new[]
+                {
+                    new RibbonSpec("wind_speed_lgb 90% lo", "wind_speed_lgb 90% hi",
+                        "rgba(0, 137, 123, 0.14)"),
+                };
+            }
+        }
 
         // wind_gust_lgb gust line — pulled from input.WindGustByValidMs
         // (already collapsed to freshest PredictionMadeAtUtc per ValidTime

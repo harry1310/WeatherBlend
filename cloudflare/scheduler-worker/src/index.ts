@@ -422,14 +422,17 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
     );
   }
 
-  // Hop C — collect → 4a predict + wind_mvn predict. Both predict-4a
+  // Hop C — collect → 4a predict + Python wind predicts. Both predict-4a
   // and predict-wind-direction (WeatherProbabilistic) consume the
   // Open-Meteo forecasts collect.yml just pushed to R2; they have no
   // dependency on each other so they fire in parallel. predict-4a runs
-  // BART per-cell precip; predict-wind-direction runs the MLP MVN for
-  // wind direction + speed CIs. Phase 2 of WIND_BLENDER_PLAN added the
-  // wind-direction dispatch here (2026-05-28). Both gated on
-  // collect success — a failed collect leaves stale data.
+  // BART per-cell precip; predict-wind-direction runs BOTH Python wind
+  // models — wind_mvn (MLP MVN, direction-only since 2026-06-09) and
+  // wind_speed_lgb (quantile-LGB + cross-conformal CQR speed point +
+  // 90% band, moved from .NET 2026-06-10) — as steps in one job, so no
+  // extra dispatch is needed here. Phase 2 of WIND_BLENDER_PLAN added
+  // the wind-direction dispatch (2026-05-28). Both gated on collect
+  // success — a failed collect leaves stale data.
   // Path check uses the leading slash so `s3-collect.yml` (Hop D)
   // doesn't also match here.
   if ((wfRun.path ?? "").endsWith("/collect.yml") && conclusion === "success") {
