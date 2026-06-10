@@ -63,12 +63,19 @@ crons = [
   "5 3,9,15,21 * * *",
   "0 12 * * *",
   "30 9 * * MON,THU",
-  # Watchdog — hourly at HH:00. Scans every cron above, computes
-  # whether a slot was expected in (HH-1:00, HH:00], and verifies the
-  # GH workflow actually ran. Re-dispatches anything missing.
-  # Recovers from dropped Cloudflare cron ticks (free-tier delivery is
-  # best-effort; the 2026-05-27 15:05Z s3-collect miss motivated this).
-  # Handled by handleWatchdog in src/index.ts; intentionally NOT in
+  # Watchdog — hourly at HH:00. Two passes:
+  #  (1) cron coverage: for every cron above, was a slot expected in
+  #      (HH-1:00, HH:00] and did the GH workflow actually run?
+  #      Recovers dropped Cloudflare cron ticks (free-tier delivery is
+  #      best-effort; the 2026-05-27 15:05Z s3-collect miss).
+  #  (2) chain coverage (CHAIN_EDGES in src/index.ts): for every webhook
+  #      hop A-F, did the latest completed worker-dispatched upstream
+  #      get its downstream? Recovers dropped workflow_run deliveries /
+  #      swallowed hop dispatches (the 2026-06-10 15:26Z predict→3f drop
+  #      that left the site on its 09:44Z render for 10 hours). Only the
+  #      FIRST broken link in a chain is redispatched — its completion
+  #      re-chains the rest through the normal hops.
+  # Handled by runWatchdog in src/index.ts; intentionally NOT in
   # WORKFLOW_FOR_CRON because it dispatches conditionally per cron in
   # the registry, not a single workflow.
   #

@@ -82,6 +82,78 @@ const WORKFLOW_FOR_CRON: Record<string, Dispatch[]> = {
   "30 9 * * MON,THU":   [{ workflow: "verify.yml" }],
 };
 
+const WP_REPO = "harry1310/WeatherProbabilistic";
+
+/** One webhook chain hop the watchdog backstops. Mirrors a hop in
+ * handleWorkflowRun EXACTLY — same upstream, same conclusion gating,
+ * same downstream (incl. F.1's success→predict-3f / otherwise→render
+ * fork). The hops themselves stay the primary mechanism (they fire
+ * within seconds); this registry only exists so a silently dropped
+ * webhook delivery or a swallowed dispatch error is recovered on the
+ * next hourly watchdog tick instead of stalling the chain until the
+ * next cycle (2026-06-10: predict completed 15:26Z, the F.1 dispatch
+ * never happened, and the site sat on its 09:44Z render for 10 hours).
+ */
+interface ChainEdge {
+  /** Hop label from the handleWorkflowRun comment block ("C", "F.1", …). */
+  hop: string;
+  upstream: { workflow: string; repo?: string };
+  /** Expected downstream when the upstream run concluded "success". */
+  onSuccess: Dispatch | null;
+  /** Expected downstream on any other completion (failure / cancelled —
+   * the hops treat both alike). null = the hop expects nothing then. */
+  otherwise: Dispatch | null;
+  /** Minutes the live chain gets to fire before the watchdog calls the
+   * missing downstream a drop. Normal hop latency is seconds; the grace
+   * just avoids racing a webhook that's mid-flight at tick time. */
+  graceMin: number;
+  /** Hop only applies when the upstream run completed on a Sunday (UTC)
+   * — the weekly retrain hops. */
+  sundayOnly?: boolean;
+}
+
+/** Ordered UPSTREAM-FIRST within each chain: the pass below walks this
+ * list top-down and suppresses any edge whose upstream is itself being
+ * recovered this tick, so a multi-hop outage dispatches ONLY the first
+ * broken link — its (Bot-dispatched) completion then re-chains the
+ * rest through the normal hops. */
+const CHAIN_EDGES: ChainEdge[] = [
+  // Hop A — Sunday retrain entry. Success-gated like the live hop.
+  { hop: "A", upstream: { workflow: "previous-runs-refresh.yml" },
+    onSuccess: { workflow: "retrain-python.yml", repo: WP_REPO, inputs: { force: "true" } },
+    otherwise: null, graceMin: 15, sundayOnly: true },
+  // Hop B — python → blenders, any completion (partial retrains still sweep).
+  { hop: "B", upstream: { workflow: "retrain-python.yml", repo: WP_REPO },
+    onSuccess: { workflow: "retrain-blenders.yml", inputs: { force: "true" } },
+    otherwise: { workflow: "retrain-blenders.yml", inputs: { force: "true" } },
+    graceMin: 15, sundayOnly: true },
+  // Hop C — collect success fans out to BOTH Python predicts. Two edges,
+  // deliberately not suppressed against each other: parallel branches,
+  // not links of one chain.
+  { hop: "C", upstream: { workflow: "collect.yml" },
+    onSuccess: { workflow: "predict-4a.yml", repo: WP_REPO },
+    otherwise: null, graceMin: 10 },
+  { hop: "C", upstream: { workflow: "collect.yml" },
+    onSuccess: { workflow: "predict-wind.yml", repo: WP_REPO },
+    otherwise: null, graceMin: 10 },
+  // Hop D — s3-collect → predict, any completion.
+  { hop: "D", upstream: { workflow: "s3-collect.yml" },
+    onSuccess: { workflow: "predict.yml" },
+    otherwise: { workflow: "predict.yml" }, graceMin: 10 },
+  // Hop F.1 — predict success → predict-3f; failure → render-site bypass.
+  { hop: "F.1", upstream: { workflow: "predict.yml" },
+    onSuccess: { workflow: "predict-3f.yml", repo: WP_REPO },
+    otherwise: { workflow: "render-site.yml" }, graceMin: 10 },
+  // Hop F — predict-3f → render-site, any completion.
+  { hop: "F", upstream: { workflow: "predict-3f.yml", repo: WP_REPO },
+    onSuccess: { workflow: "render-site.yml" },
+    otherwise: { workflow: "render-site.yml" }, graceMin: 10 },
+  // Hop E — verify success → render-site.
+  { hop: "E", upstream: { workflow: "verify.yml" },
+    onSuccess: { workflow: "render-site.yml" },
+    otherwise: null, graceMin: 10 },
+];
+
 /** Watchdog cron — fires hourly at HH:00. For each registered cron in
  * WORKFLOW_FOR_CRON, it computes whether a slot was expected in the
  * preceding hour and verifies the GH workflow actually ran. Recovers
@@ -110,8 +182,9 @@ export interface Env {
 export default {
   async scheduled(event: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     // Watchdog tick — separate code path because it doesn't map to a
-    // single workflow dispatch. Scans every registered cron, checks
-    // whether the preceding hour's slots actually fired on GH, and
+    // single workflow dispatch. Scans every registered cron (did the
+    // preceding hour's slots actually fire on GH?) and every chain
+    // edge (did each completed upstream get its downstream?), and
     // dispatches anything that's missing.
     if (event.cron === WATCHDOG_CRON) {
       await runWatchdog(env, event.scheduledTime, /*lookbackMin*/ 60, /*dryRun*/ false);
@@ -513,6 +586,11 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
         console.log(`render chain: predict ${conclusion} → dispatched render-site (predict-3f bypassed)`);
       }
     } catch (e) {
+      // Swallowed by design (a hop failure must not break the webhook
+      // response) — the hourly watchdog's CHAIN_EDGES pass is the
+      // backstop that re-fires a hop lost here (2026-06-10 incident:
+      // this exact hop dropped after the 15:16Z predict and the site
+      // sat stale for 10 hours).
       console.error(`Hop F.1: failed to dispatch downstream after predict: ${e}`);
     }
   }
@@ -781,7 +859,8 @@ function bytesToHex(bytes: Uint8Array): string {
 // ---- workflow dispatch ----------------------------------------------------
 
 // ============================================================================
-// Watchdog — recover from dropped Cloudflare cron ticks
+// Watchdog — recover from dropped Cloudflare cron ticks AND dropped
+// webhook chain hops (CHAIN_EDGES above)
 // ============================================================================
 
 /** Tolerance applied to the "did this fire?" check. Cloudflare can
@@ -875,9 +954,55 @@ async function runWatchdog(
     }
   }
 
+  // ---- Chain-edge pass (2026-06-10) -----------------------------------
+  // The cron pass above covers dropped Cloudflare cron ticks; this pass
+  // covers dropped WEBHOOK hops — a workflow_run delivery that never
+  // arrived, or a dispatch the hop's catch block swallowed. For each
+  // registered edge: find the newest COMPLETED worker-dispatched run of
+  // the upstream inside this window, work out what the live hop should
+  // have dispatched for its conclusion, and check a downstream run was
+  // created after it. `recovering` is the only-first-broken-link
+  // mechanism: it is seeded with this tick's cron redispatches and grows
+  // as edges fire, and any edge whose upstream OR downstream is already
+  // in it is skipped — the recovered run's own completion webhook
+  // re-chains everything below it.
+  const recovering = new Set<string>(
+    missed.map((m) => `${m.repo}/${m.dispatch.workflow}`),
+  );
+  const missedEdges: MissedEdge[] = [];
+  for (const edge of CHAIN_EDGES) {
+    const upRepo = edge.upstream.repo ?? env.GH_REPO;
+    const upKey = `${upRepo}/${edge.upstream.workflow}`;
+    if (recovering.has(upKey)) continue;   // upstream being recovered — its completion re-chains
+    const up = await ghLatestCompletedDispatchRun(await getToken(), upRepo, edge.upstream.workflow);
+    if (up === null) continue;
+    if (!up.botTriggered) continue;        // manual runs never chain — watchdog must not "fix" that
+    if (up.completedAtMs <= lookbackMs) continue;   // older than this tick's window
+    if (scheduledTime - up.completedAtMs < edge.graceMin * 60_000) continue;  // hop may be mid-flight
+    if (edge.sundayOnly && new Date(up.completedAtMs).getUTCDay() !== 0) continue;
+    const target = up.conclusion === "success" ? edge.onSuccess : edge.otherwise;
+    if (target === null) continue;         // hop expects nothing for this conclusion
+    const downRepo = target.repo ?? env.GH_REPO;
+    const downKey = `${downRepo}/${target.workflow}`;
+    if (recovering.has(downKey)) continue; // already dispatched this tick (e.g. render via two paths)
+    const latestDown = await ghLatestWorkflowDispatchRun(await getToken(), downRepo, target.workflow);
+    if (latestDown !== null && latestDown.createdAtMs >= up.completedAtMs - WATCHDOG_TOLERANCE_MS)
+      continue;                            // healthy — downstream fired after the upstream completed
+    recovering.add(downKey);
+    missedEdges.push({
+      hop: edge.hop,
+      upstreamKey: upKey,
+      upstreamCompletedAtMs: up.completedAtMs,
+      dispatch: target,
+      repo: downRepo,
+      lastDownstreamMs: latestDown?.createdAtMs ?? null,
+    });
+  }
+
   const window = `(${new Date(lookbackMs).toISOString()}, ${new Date(beforeMs).toISOString()}]`;
-  if (missed.length === 0) {
-    const ok = `watchdog: all ${Object.keys(WORKFLOW_FOR_CRON).length} cron schedules covered for window ${window}.`;
+  if (missed.length === 0 && missedEdges.length === 0) {
+    const ok = `watchdog: all ${Object.keys(WORKFLOW_FOR_CRON).length} cron schedules + ` +
+      `${CHAIN_EDGES.length} chain hops covered for window ${window}.`;
     console.log(ok);
     return ok;
   }
@@ -886,35 +1011,62 @@ async function runWatchdog(
   // if a redispatch itself fails. Format mirrors scheduled()'s log
   // line so tail-grep'ing on "missed tick" finds them.
   const lines: string[] = [];
+  const verb = dryRun ? "would redispatch" : "redispatching";
   for (const m of missed) {
     const latest = m.lastRunCreatedAtMs === null
       ? "no prior runs"
       : `latest=${new Date(m.lastRunCreatedAtMs).toISOString()}`;
-    const verb = dryRun ? "would redispatch" : "redispatching";
     const line =
       `watchdog: missed tick cron='${m.expr}' → ${m.repo}/${m.dispatch.workflow} ` +
       `expected=${new Date(m.expectedFireMs).toISOString()} ${latest} (${m.reason}); ${verb}`;
     console.log(line);
     lines.push(line);
   }
-
-  if (dryRun) {
-    return `watchdog: dry-run found ${missed.length} missed slot(s) in ${window}\n` + lines.join("\n");
+  for (const m of missedEdges) {
+    const latest = m.lastDownstreamMs === null
+      ? "no prior runs"
+      : `latest=${new Date(m.lastDownstreamMs).toISOString()}`;
+    const line =
+      `watchdog: dropped chain hop ${m.hop} — ${m.upstreamKey} completed ` +
+      `${new Date(m.upstreamCompletedAtMs).toISOString()} but ${m.repo}/${m.dispatch.workflow} ` +
+      `never followed (${latest}); ${verb}`;
+    console.log(line);
+    lines.push(line);
   }
 
+  const total = missed.length + missedEdges.length;
+  if (dryRun) {
+    return `watchdog: dry-run found ${total} miss(es) in ${window}\n` + lines.join("\n");
+  }
+
+  const toDispatch = [
+    ...missed.map((m) => ({ repo: m.repo, dispatch: m.dispatch, label: `cron ${m.expr}` })),
+    ...missedEdges.map((m) => ({ repo: m.repo, dispatch: m.dispatch, label: `hop ${m.hop}` })),
+  ];
   const results = await Promise.allSettled(
-    missed.map((m) => dispatchWorkflow(env, m.dispatch.workflow, m.repo, m.dispatch.inputs)),
+    toDispatch.map((d) => dispatchWorkflow(env, d.dispatch.workflow, d.repo, d.dispatch.inputs)),
   );
   const failures = results
-    .map((r, i) => ({ r, m: missed[i] }))
+    .map((r, i) => ({ r, d: toDispatch[i] }))
     .filter((x) => x.r.status === "rejected");
   if (failures.length > 0) {
     const messages = failures.map(
-      (f) => `${f.m.repo}/${f.m.dispatch.workflow}: ${(f.r as PromiseRejectedResult).reason}`,
+      (f) => `${f.d.repo}/${f.d.dispatch.workflow} (${f.d.label}): ${(f.r as PromiseRejectedResult).reason}`,
     );
     throw new Error(`watchdog redispatches failed: ${messages.join("; ")}`);
   }
-  return `watchdog: redispatched ${missed.length} missed slot(s) in ${window}\n` + lines.join("\n");
+  return `watchdog: redispatched ${total} miss(es) in ${window}\n` + lines.join("\n");
+}
+
+/** One dropped-chain-hop detection — the upstream completed but the
+ * downstream the live hop should have dispatched never appeared. */
+interface MissedEdge {
+  hop: string;
+  upstreamKey: string;
+  upstreamCompletedAtMs: number;
+  dispatch: Dispatch;
+  repo: string;
+  lastDownstreamMs: number | null;
 }
 
 /** Most-recent workflow_dispatch-event run for a workflow, regardless
@@ -952,6 +1104,50 @@ async function ghLatestWorkflowDispatchRun(
   if (runs.length === 0) return null;
   const r = runs[0];
   return { createdAtMs: Date.parse(r.created_at), status: r.status, conclusion: r.conclusion };
+}
+
+/** Newest COMPLETED workflow_dispatch run for a workflow, with the
+ * fields the chain-edge pass gates on. Scans the 5 most recent dispatch
+ * runs so a newer in-progress run doesn't hide the completed one the
+ * edge should anchor on. `completedAtMs` uses `updated_at`, which GH
+ * stamps at completion for completed runs. `botTriggered` mirrors
+ * handleWorkflowRun's chain-fire gate (triggering_actor.type === "Bot")
+ * so the watchdog never chains off a manual `gh workflow run`. */
+async function ghLatestCompletedDispatchRun(
+  installationToken: string,
+  repo: string,
+  workflowFile: string,
+): Promise<{ completedAtMs: number; conclusion: string | null; botTriggered: boolean } | null> {
+  const url = `https://api.github.com/repos/${repo}/actions/workflows/${workflowFile}/runs` +
+    `?event=workflow_dispatch&per_page=5`;
+  const response = await fetch(url, {
+    headers: {
+      "Authorization": `Bearer ${installationToken}`,
+      "Accept": "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "weatherblend-scheduler",
+    },
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`workflow runs lookup failed for ${repo}/${workflowFile}: ${response.status} — ${body}`);
+  }
+  const data = (await response.json()) as {
+    workflow_runs?: {
+      status: string;
+      conclusion: string | null;
+      updated_at: string;
+      triggering_actor?: { login?: string; type?: string } | null;
+    }[];
+  };
+  // Runs come newest-first; the first completed one is the edge anchor.
+  const done = (data.workflow_runs ?? []).find((r) => r.status === "completed");
+  if (!done) return null;
+  return {
+    completedAtMs: Date.parse(done.updated_at),
+    conclusion: done.conclusion,
+    botTriggered: done.triggering_actor?.type === "Bot",
+  };
 }
 
 async function dispatchWorkflow(
