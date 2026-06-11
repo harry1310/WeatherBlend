@@ -388,6 +388,11 @@ jobs:
       # cloud cover) ---- Each is a first-class phases.yaml target now, so
       # it gates on its own location-aware run flag exactly like every
       # other model — no hardcoded location or phases== check.
+      # --location added to every element step 2026-06-11: the steps
+      # predated multi-location elements and trained the DEFAULT (primary)
+      # location, which only worked because every element was Bonehill-only
+      # — the first Sennen wind train loaded 0 rows (the matrix job syncs
+      # only ITS location's trees) and exited 3.
 
       - name: Train element wind
         id: train_wind
@@ -395,7 +400,7 @@ jobs:
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target wind
+            train --target wind --location ${{ matrix.location }}
 
       - name: Train element humidity
         id: train_humidity
@@ -403,7 +408,7 @@ jobs:
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target humidity
+            train --target humidity --location ${{ matrix.location }}
 
       - name: Train element shortwave-radiation
         id: train_radiation
@@ -411,7 +416,7 @@ jobs:
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target shortwave-radiation
+            train --target shortwave-radiation --location ${{ matrix.location }}
 
       - name: Train element cloud-cover
         id: train_cloud
@@ -419,7 +424,7 @@ jobs:
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target cloud-cover
+            train --target cloud-cover --location ${{ matrix.location }}
 
       - name: Train element wind-gust
         # 4-NWP production-scope gust blender (gfs/icon/gem required + ukmo
@@ -431,7 +436,7 @@ jobs:
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target wind-gust
+            train --target wind-gust --location ${{ matrix.location }}
 
       # NOTE: wind_speed_lgb trained here until 2026-06-10 — it moved to
       # Python (Option B cutover: quantile-LGB + cross-conformal CQR in
