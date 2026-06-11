@@ -228,6 +228,18 @@ public sealed class MarineConfig
     /// <summary>Pinned marine grid cell longitude.</summary>
     public double Longitude { get; set; }
 
+    /// <summary>
+    /// Optional separate coordinate for the era5_ocean TRUTH fetch. ERA5's
+    /// wave grid is 0.5° — far coarser than the forecast models — and at
+    /// Sennen the cell nearest the forecast point sits SE of Land's End,
+    /// SHELTERED from the W/NW Atlantic swell a west-facing cliff actually
+    /// receives (validated vs the Sevenstones buoy 2026-06-11: −0.31 m bias
+    /// in the dominant SW-W/W-NW bins, vs ~0.00 for the cell west of the
+    /// peninsula). Null = fall back to Latitude/Longitude.
+    /// </summary>
+    public double? TruthLatitude { get; set; }
+    public double? TruthLongitude { get; set; }
+
     /// <summary>Wave models to collect (Open-Meteo Marine API model ids).</summary>
     public List<ModelConfig> Models { get; set; } = new();
 

@@ -198,6 +198,18 @@ locations:
     marine:
       latitude: 50.0417
       longitude: -5.7083
+      # era5_ocean truth cell — pinned SEPARATELY from the forecast point.
+      # ERA5's wave grid is 0.5°; the cell nearest the forecast point
+      # ((50.0, -5.5), SE of Land's End) is sheltered from W/NW Atlantic
+      # swell and under-read the Sevenstones buoy by -0.31 m in the
+      # dominant SW-W/W-NW direction bins (2026-06-11 truth-cell check,
+      # WP scripts/wave_truth_cell_check.py). This coordinate snaps to
+      # (50.0, -6.0), west of the peninsula: bias ~0.00 in those bins,
+      # MAE 0.299 vs 0.362, r 0.953 vs 0.940. Easterly-bin over-read vs
+      # the buoy is expected (both sensors shelter differently in E'lies)
+      # and easterly sea is offshore/flat at the cliff anyway.
+      truthLatitude: 50.0
+      truthLongitude: -6.0
       models:
         - id: "meteofrance_wave"
           displayName: "Météo-France MFWAM"

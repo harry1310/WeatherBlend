@@ -126,20 +126,26 @@ public sealed class MarineClient
         DateOnly endDate,
         CancellationToken ct)
     {
+        // Truth uses its own pinned cell where configured — ERA5's 0.5° wave
+        // grid needs a different (more exposed) cell than the forecast point
+        // at Sennen; see MarineConfig.TruthLatitude.
         var root = await GetAsync(location, Era5OceanModel, string.Join(",", Era5OceanVariables),
-            $"start_date={startDate:yyyy-MM-dd}&end_date={endDate:yyyy-MM-dd}", ct);
+            $"start_date={startDate:yyyy-MM-dd}&end_date={endDate:yyyy-MM-dd}", ct, useTruthCell: true);
         return ParseWaveTruth(root, location.Name);
     }
 
     private async Task<JsonElement> GetAsync(
-        LocationConfig location, string modelId, string hourly, string extraQuery, CancellationToken ct)
+        LocationConfig location, string modelId, string hourly, string extraQuery, CancellationToken ct,
+        bool useTruthCell = false)
     {
         var marine = location.Marine
             ?? throw new InvalidOperationException(
                 $"Location '{location.Name}' has no marine: config block — caller should gate on Marine != null.");
+        var lat = useTruthCell ? marine.TruthLatitude ?? marine.Latitude : marine.Latitude;
+        var lon = useTruthCell ? marine.TruthLongitude ?? marine.Longitude : marine.Longitude;
         var qs =
-            $"latitude={marine.Latitude.ToString(System.Globalization.CultureInfo.InvariantCulture)}" +
-            $"&longitude={marine.Longitude.ToString(System.Globalization.CultureInfo.InvariantCulture)}" +
+            $"latitude={lat.ToString(System.Globalization.CultureInfo.InvariantCulture)}" +
+            $"&longitude={lon.ToString(System.Globalization.CultureInfo.InvariantCulture)}" +
             $"&hourly={Uri.EscapeDataString(hourly)}" +
             $"&models={Uri.EscapeDataString(modelId)}" +
             "&timezone=UTC" +
