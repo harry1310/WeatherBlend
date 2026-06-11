@@ -158,18 +158,51 @@ runs:
               # window.
               EXTRA="$DATE_WINDOW_INCLUDES" ;;
             data/models)
-              # Phase 4a's per-cell BART artefacts — state_lead_*.rds (~452 MiB)
-              # + arrays_lead_*.npz (~21 MiB) — are consumed ONLY by
-              # WeatherProbabilistic's predict-4a workflow (its own bundle pull).
-              # Neither the .NET predict step nor RenderSiteCommand here opens an
-              # R .rds or numpy .npz, so excluding them drops ~474 MiB — most of
-              # data/models, and most of this sync's runtime.
-              EXTRA="--exclude **/*.rds --exclude **/*.npz"
-              # 5,851 small files at 53 files/s with 16 transfers = HTTP round-
-              # trips, not bandwidth. Doubling concurrency to halve the wall-
-              # clock. R2 doesn't rate-limit at this scale (verified by other
-              # workflows using --transfers 32 on bigger trees, e.g.
-              # archive-backfill).
+              # Manifest-driven ACTIVE-ONLY pull (2026-06-11). The old
+              # whole-tree-minus-artefacts copy was 233 MiB and grows by a
+              # full bundle generation every retrain because R2 never prunes
+              # old version dirs (it was ~111 MiB when first annotated here;
+              # two manual retrains this week alone re-doubled the predict
+              # sync to 502s). Predict + render only ever open ACTIVE
+              # bundles' artefacts, and version dir names are TIMESTAMPED
+              # AND GLOBALLY UNIQUE, so one include list built from every
+              # target's MANIFEST Active arrays covers all tree shapes
+              # (station-keyed, location-keyed, dry_window's window_Nh
+              # level) without per-target path logic. This bounds the pull
+              # at ~one bundle generation regardless of R2 growth.
+              #
+              # **/training_metadata.json is pulled for EVERY version (tiny
+              # files): the charts render recently-RETIRED versions still
+              # inside the predictions window and GetPhaseByVersion needs
+              # their Phase stamps — metadata is the one artefact consumers
+              # read for non-Active versions.
+              #
+              # rds/npz excludes kept for the Active dirs themselves (4a's
+              # BART state lives inside Active bundle dirs and only
+              # WeatherProbabilistic's own workflows read it).
+              echo "::group::sync ${tree} (manifests first)"
+              rclone copy "r2:${R2_BUCKET}/${tree}" "./${tree}" \
+                --include '**/MANIFEST.json' --include '**/LEAD_POLICY.json' \
+                --fast-list --checkers 16
+              echo "::endgroup::"
+              ACTIVE_VERSIONS=$(jq -r '.Stations[]?.Active[]?' ${tree}/*/MANIFEST.json 2>/dev/null | sort -u)
+              if [ -z "$ACTIVE_VERSIONS" ]; then
+                # No manifests yet (fresh deploy) — fall back to the old
+                # whole-tree-minus-artefacts behaviour rather than pulling
+                # nothing and starving predict.
+                echo "::warning::no Active versions found in any models MANIFEST — falling back to full models pull."
+                EXTRA="--exclude **/*.rds --exclude **/*.npz"
+              else
+                # Excludes FIRST: rclone filters are first-match-wins, so the
+                # rds/npz rules must outrank the Active-dir includes or 4a's
+                # BART state inside an Active dir would be pulled after all.
+                EXTRA="--exclude **/*.rds --exclude **/*.npz --include **/training_metadata.json"
+                for v in $ACTIVE_VERSIONS; do
+                  EXTRA="$EXTRA --include **/$v/**"
+                done
+                echo "models pull scoped to $(echo "$ACTIVE_VERSIONS" | wc -l) Active version dirs (+ all training_metadata.json)."
+              fi
+              # Round-trip-bound (many small files) — high concurrency.
               TRANSFERS=32
               CHECKERS=64 ;;
           esac
