@@ -228,6 +228,7 @@ public static class Program
                 services.AddTransient<PrecipCrossLeadBakeoffCommand>();
                 services.AddTransient<WindFloorBakeoffCommand>();
                 services.AddTransient<HumidityAifsBakeoffCommand>();
+                services.AddTransient<DumpOroFeaturesCommand>();
                 services.AddTransient<PrecipIfsCycleBakeoffCommand>();
                 services.AddTransient<Phase3cDataWindowBakeoffCommand>();
                 // Live S3 collect — refreshes the five exact-runtime sources
@@ -654,6 +655,27 @@ public static class Program
             Environment.ExitCode = await cmd.RunAsync(testStart, CancellationToken.None);
         }, habTestStartOpt);
         root.AddCommand(habBakeoff);
+
+        // dump-oro-features — reference fixture for WeatherProbabilistic's
+        // rich-oro bit-parity test (test_rich_oro_python_vs_csharp). See the
+        // command's class doc for the regenerate-then-test-in-same-tree-state
+        // contract. Defaults = the canonical Bellever 24h fixture cell.
+        var dofStationOpt = new Option<string>("--station", () => "Bellever Dartmoor",
+            "Rainfall station friendly name");
+        var dofLeadOpt = new Option<int>("--lead", () => 24, "Lead hours");
+        var dofMinValidOpt = new Option<string>("--min-valid-time", () => "2024-01-01",
+            "Min ValidTimeUtc floor (yyyy-MM-dd) — the Python twin passes the same value");
+        var dofStationIndexOpt = new Option<int>("--station-index", () => 0,
+            "oro_station_id — MUST match PrecipTrainCommand.BonehillStationOrder3o (Bellever=0)");
+        var dumpOro = new Command("dump-oro-features",
+            "Dump C# rich-oro feature rows (no-UA, 68 features) as the WP parity-test fixture")
+            { dofStationOpt, dofLeadOpt, dofMinValidOpt, dofStationIndexOpt };
+        dumpOro.SetHandler(async (string station, int lead, string minValid, int stationIndex) =>
+        {
+            var cmd = host.Services.GetRequiredService<DumpOroFeaturesCommand>();
+            Environment.ExitCode = await cmd.RunAsync(station, lead, minValid, stationIndex, CancellationToken.None);
+        }, dofStationOpt, dofLeadOpt, dofMinValidOpt, dofStationIndexOpt);
+        root.AddCommand(dumpOro);
 
         // precip-policy-blend-crossover — STUDY: bracketing pair (mA,mB) + 50/50 blend per τ,
         // study bundles (no-UA, OOS), 3c+3o, Bonehill pooled. Tests whether a blend beats either
