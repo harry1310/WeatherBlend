@@ -95,6 +95,15 @@ public sealed class VariablesConfig
 
     /// <summary>Variables pulled from the ERA5 archive endpoint as training truth.</summary>
     public List<string> Era5 { get; set; } = new();
+
+    /// <summary>Wave variables pulled per wave model from the Marine API
+    /// (live + offset-day + hindcast). Sennen sea-state Phase 0, 2026-06-11.</summary>
+    public List<string> Marine { get; set; } = new();
+
+    /// <summary>Marine variables only <c>best_match</c> serves (secondary
+    /// swell, sea_level_height_msl, sea_surface_temperature) — "undefined"
+    /// on per-model requests, so they ride on the best_match pull only.</summary>
+    public List<string> MarineSite { get; set; } = new();
 }
 
 public sealed class LocationConfig
@@ -106,6 +115,17 @@ public sealed class LocationConfig
     public double ElevationMeters { get; set; }
     public MetarConfig Metar { get; set; } = new();
     public RainfallConfig Rainfall { get; set; } = new();
+
+    /// <summary>
+    /// Optional marine (sea-state) collection block — Sennen sea-state
+    /// Phase 0, 2026-06-11. Present only on sea-cliff locations; null means
+    /// no marine collection (collect + backfill gate on it). Holds the
+    /// PINNED marine grid cell — a different coordinate from the site
+    /// itself, because the marine grid resolves coastal land points to its
+    /// nearest sea cell and we want that choice explicit + stable in config
+    /// rather than implicit in API snapping.
+    /// </summary>
+    public MarineConfig? Marine { get; set; }
 
     /// <summary>
     /// Per-location nav tabs surfaced on the site (Phase D, 2026-05-20). Each
@@ -194,6 +214,50 @@ public sealed class ModelConfig
     public string DisplayName { get; set; } = "";
 }
 
+/// <summary>
+/// Marine collection config for one location — see <see cref="LocationConfig.Marine"/>.
+/// <see cref="Models"/> lists the per-model wave sources (MFWAM, ECMWF WAM, …);
+/// the <c>best_match</c> pull that carries the site extras (tide, SST,
+/// secondary swell) is implicit — every marine location gets it.
+/// </summary>
+public sealed class MarineConfig
+{
+    /// <summary>Pinned marine grid cell latitude (NOT the site latitude).</summary>
+    public double Latitude { get; set; }
+
+    /// <summary>Pinned marine grid cell longitude.</summary>
+    public double Longitude { get; set; }
+
+    /// <summary>Wave models to collect (Open-Meteo Marine API model ids).</summary>
+    public List<ModelConfig> Models { get; set; } = new();
+
+    /// <summary>Wave buoys providing verification truth (realtime via the
+    /// open Cefas WaveNet API each collect cycle; QC'd archive via EMODnet
+    /// ERDDAP through <c>backfill --source buoys</c>).</summary>
+    public List<BuoyConfig> Buoys { get; set; } = new();
+}
+
+/// <summary>One wave buoy — see <see cref="MarineConfig.Buoys"/>.</summary>
+public sealed class BuoyConfig
+{
+    /// <summary>Storage slug — the <c>source=</c> partition under
+    /// data/truth/waves and the Source column value (e.g. "sevenstones_62107").</summary>
+    public string Slug { get; set; } = "";
+
+    public string DisplayName { get; set; } = "";
+
+    /// <summary>Cefas WaveNet station id — numeric for third-party stations
+    /// ("4" = Sevenstones), alphanumeric for Cefas-owned ("SWSCILLYWN").</summary>
+    public string WavenetId { get; set; } = "";
+
+    /// <summary>WaveNet source discriminator: "EXT" (Met Office / CCO
+    /// stations mirrored into WaveNet) or "INT" (Cefas-owned).</summary>
+    public string WavenetSource { get; set; } = "EXT";
+
+    /// <summary>WMO/Copernicus platform code on EMODnet ERDDAP (e.g. "6200107").</summary>
+    public string PlatformCode { get; set; } = "";
+}
+
 public sealed class StorageConfig
 {
     public string ForecastsPath { get; set; } = "data/forecasts";
@@ -203,6 +267,8 @@ public sealed class StorageConfig
     public string PredictionsPath { get; set; } = "data/predictions";
     public string ReportsPath { get; set; } = "data/reports";
     public string MetOfficeObsPath { get; set; } = "data/truth/met_office_obs";
+    public string MarinePath { get; set; } = "data/marine";
+    public string WavesPath { get; set; } = "data/truth/waves";
 
     /// <summary>
     /// Root of the trained-model artefact tree

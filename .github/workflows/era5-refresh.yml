@@ -101,11 +101,36 @@ jobs:
             --start ${{ steps.window.outputs.start }} \
             --end   ${{ steps.window.outputs.end }}
 
+      - name: Refresh ERA5 ocean-wave truth
+        # era5_ocean via the Marine API (Sennen sea-state Phase 0,
+        # 2026-06-11) — same release cadence as ERA5 proper, same rolling
+        # window. No-op for locations without a marine: config block, and
+        # the writer regenerates complete per-day files from the API so no
+        # R2 pre-pull is needed (unpublished days are skipped by the
+        # all-null canary, mirroring WriteEra5Async).
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            backfill --source era5-waves \
+            --start ${{ steps.window.outputs.start }} \
+            --end   ${{ steps.window.outputs.end }}
+
       - name: Push ERA5 tree to R2
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
           rclone copy ./data/truth/era5 "r2:${R2_BUCKET}/data/truth/era5" --fast-list --transfers 16 --checkers 32 --progress
+
+      - name: Push wave-truth tree to R2
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          # --s3-no-check-bucket: first writes to a brand-new R2 prefix 403
+          # without it (IAM token lacks CreateBucket).
+          if [ -d ./data/truth/waves ]; then
+            rclone copy ./data/truth/waves "r2:${R2_BUCKET}/data/truth/waves" --fast-list --transfers 16 --checkers 32 --progress --s3-no-check-bucket
+          else
+            echo "No data/truth/waves tree produced this run — nothing to push."
+          fi
 
       - name: Upload logs as artifact
         if: failure()

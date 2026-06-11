@@ -29,6 +29,8 @@ public sealed class BackfillCommand
     private readonly Era5Client _era5;
     private readonly OgimetClient _ogimet;
     private readonly EaHydrologyClient _rainfall;
+    private readonly MarineClient _marine;
+    private readonly BuoyClient _buoys;
     private readonly ILogger<BackfillCommand> _log;
 
     public BackfillCommand(
@@ -37,6 +39,8 @@ public sealed class BackfillCommand
         Era5Client era5,
         OgimetClient ogimet,
         EaHydrologyClient rainfall,
+        MarineClient marine,
+        BuoyClient buoys,
         ILogger<BackfillCommand> log)
     {
         _cfg = cfg;
@@ -44,6 +48,8 @@ public sealed class BackfillCommand
         _era5 = era5;
         _ogimet = ogimet;
         _rainfall = rainfall;
+        _marine = marine;
+        _buoys = buoys;
         _log = log;
     }
 
@@ -68,14 +74,24 @@ public sealed class BackfillCommand
         if (src is "era5" or "all")          errors += await BackfillEra5Async(start, end, locations, ct);
         if (src is "metar" or "all")         errors += await BackfillMetarAsync(start, end, locations, ct);
         if (src is "rainfall" or "all")      errors += await BackfillRainfallAsync(start, end, locations, ct);
+        // era5-waves IS in "all" (it's truth, refreshed like era5 — but a
+        // no-op for locations without a marine: block, so "all" stays cheap).
+        if (src is "era5-waves" or "all")    errors += await BackfillEra5WavesAsync(start, end, locations, ct);
         // hist-forecast is deliberately NOT part of "all": it's a one-off gap-fill
         // for the upper-air (…hPa) history the Previous Runs API can't serve.
         // Recent pressure accrues forward via the live collector (reported rows).
         if (src is "hist-forecast")          errors += await BackfillHistoricalForecastAsync(start, end, model, locations, ct);
+        // marine (wave-model hindcast) is likewise NOT in "all": one-off
+        // lead-unlabelled gap-fill; per-lead rows accrue via collect.
+        if (src is "marine")                 errors += await BackfillMarineAsync(start, end, model, locations, ct);
+        // buoys (EMODnet QC'd archive) also NOT in "all": one-off backfill +
+        // occasional manual re-pull to upgrade non-QC realtime rows in place;
+        // realtime accrues via collect. ERDDAP floor is 2018-01-01.
+        if (src is "buoys")                  errors += await BackfillBuoysAsync(start, end, locations, ct);
 
-        if (src is not ("previous-runs" or "era5" or "metar" or "rainfall" or "hist-forecast" or "all"))
+        if (src is not ("previous-runs" or "era5" or "metar" or "rainfall" or "era5-waves" or "hist-forecast" or "marine" or "buoys" or "all"))
         {
-            _log.LogError("Unknown source '{Source}'. Use: previous-runs | era5 | metar | rainfall | hist-forecast | all", source);
+            _log.LogError("Unknown source '{Source}'. Use: previous-runs | era5 | metar | rainfall | era5-waves | hist-forecast | marine | buoys | all", source);
             return 2;
         }
 
@@ -247,6 +263,161 @@ public sealed class BackfillCommand
                 }
                 await Task.Delay(TimeSpan.FromSeconds(2), ct);
                 cursor = chunkEnd.AddDays(1);
+            }
+        }
+        return errors;
+    }
+
+    // ---- ERA5-ocean wave truth (monthly chunks, marine locations only) -----------
+    //
+    // models=era5_ocean via the Marine API — the weather archive-api snaps
+    // coastal points to LAND cells and returns null waves, so this is the one
+    // honest ERA5-wave route (probed 2026-06-11). Gapless back to ≥2020 at the
+    // Sennen cell. Same 2s polite delay as era5 (one small call per month).
+
+    private async Task<int> BackfillEra5WavesAsync(DateOnly start, DateOnly end, IReadOnlyList<LocationConfig> locations, CancellationToken ct)
+    {
+        var errors = 0;
+        foreach (var location in locations)
+        {
+            if (location.Marine is null)
+            {
+                _log.LogInformation("era5-waves backfill: location={Name} has no marine block — skipping", location.Name);
+                continue;
+            }
+            _log.LogInformation("era5-waves backfill: location={Name} marine cell ({Lat:0.0000}, {Lon:0.0000})",
+                location.Name, location.Marine.Latitude, location.Marine.Longitude);
+            var cursor = start;
+            while (cursor <= end)
+            {
+                var chunkEnd = cursor.AddMonths(1).AddDays(-1);
+                if (chunkEnd > end) chunkEnd = end;
+                try
+                {
+                    var rows = await _marine.FetchWaveTruthAsync(location, cursor, chunkEnd, ct);
+                    await ParquetWriter.WriteWaveTruthAsync(_cfg.Storage.WavesPath, rows, ct);
+                    _log.LogInformation("  era5-waves/{Name} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd}: {Rows} rows",
+                        location.Name, cursor, chunkEnd, rows.Count);
+                }
+                catch (Exception ex)
+                {
+                    errors++;
+                    _log.LogError(ex, "  era5-waves/{Name} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} FAILED",
+                        location.Name, cursor, chunkEnd);
+                }
+                await Task.Delay(TimeSpan.FromSeconds(2), ct);
+                cursor = chunkEnd.AddDays(1);
+            }
+        }
+        return errors;
+    }
+
+    // ---- Marine hindcast (per wave model, monthly chunks) ------------------------
+    //
+    // Lead-unlabelled best-available rows (RunTimeSource=hist_forecast) — the
+    // marine archive serves no previous_day columns, so per-lead history only
+    // accrues forward via collect. Per-model archive starts vary (MFWAM
+    // ≥2022-01 … GFS Wave live-only): pre-archive chunks parse to 0 rows,
+    // which is expected and logged, not an error. best_match is included
+    // implicitly (it alone serves tide/SST/secondary-swell history).
+
+    private async Task<int> BackfillMarineAsync(DateOnly start, DateOnly end, string? modelFilter, IReadOnlyList<LocationConfig> locations, CancellationToken ct)
+    {
+        var errors = 0;
+        foreach (var location in locations)
+        {
+            if (location.Marine is null)
+            {
+                _log.LogInformation("marine backfill: location={Name} has no marine block — skipping", location.Name);
+                continue;
+            }
+            var modelIds = location.Marine.Models.Select(m => m.Id)
+                .Append(MarineClient.BestMatchModel)
+                .Where(id => modelFilter is null || string.Equals(id, modelFilter, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (modelIds.Count == 0)
+            {
+                _log.LogError("--model '{M}' not in location {Name}'s marine models. Available: [{Avail}]",
+                    modelFilter, location.Name,
+                    string.Join(", ", location.Marine.Models.Select(m => m.Id).Append(MarineClient.BestMatchModel)));
+                errors++;
+                continue;
+            }
+            _log.LogInformation("marine backfill: location={Name} marine cell ({Lat:0.0000}, {Lon:0.0000}) — {N} model(s)",
+                location.Name, location.Marine.Latitude, location.Marine.Longitude, modelIds.Count);
+            foreach (var modelId in modelIds)
+            {
+                var vars = modelId == MarineClient.BestMatchModel
+                    ? _cfg.Variables.Marine.Concat(_cfg.Variables.MarineSite).ToList()
+                    : _cfg.Variables.Marine;
+                var cursor = start;
+                while (cursor <= end)
+                {
+                    var chunkEnd = cursor.AddMonths(1).AddDays(-1);
+                    if (chunkEnd > end) chunkEnd = end;
+                    try
+                    {
+                        var rows = await _marine.FetchHindcastAsync(location, modelId, vars, cursor, chunkEnd, ct);
+                        await ParquetWriter.WriteMarineHindcastAsync(_cfg.Storage.MarinePath, rows, ct);
+                        _log.LogInformation("  marine/{Name}/{Model} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd}: {Rows} rows",
+                            location.Name, modelId, cursor, chunkEnd, rows.Count);
+                    }
+                    catch (Exception ex)
+                    {
+                        errors++;
+                        _log.LogError(ex, "  marine/{Name}/{Model} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} FAILED",
+                            location.Name, modelId, cursor, chunkEnd);
+                    }
+                    await Task.Delay(TimeSpan.FromSeconds(_cfg.Http.PreviousRunsBackfillDelaySeconds), ct);
+                    cursor = chunkEnd.AddDays(1);
+                }
+            }
+        }
+        return errors;
+    }
+
+    // ---- Buoy archive (EMODnet ERDDAP, yearly chunks per buoy) --------------------
+    //
+    // QC'd Copernicus INSTAC mirror, CC-BY-SA, no auth. One request per
+    // (buoy, variable, year) — missing combinations 404 and are skipped by
+    // the client. The merge-dedup writer means re-pulling a window upgrades
+    // any non-QC realtime rows already on disk for the same timestamps.
+
+    private async Task<int> BackfillBuoysAsync(DateOnly start, DateOnly end, IReadOnlyList<LocationConfig> locations, CancellationToken ct)
+    {
+        var errors = 0;
+        foreach (var location in locations)
+        {
+            if (location.Marine is null || location.Marine.Buoys.Count == 0)
+            {
+                _log.LogInformation("buoys backfill: location={Name} has no buoys configured — skipping", location.Name);
+                continue;
+            }
+            foreach (var buoy in location.Marine.Buoys)
+            {
+                _log.LogInformation("buoys backfill: location={Name} buoy={Slug} (platform {Platform})",
+                    location.Name, buoy.Slug, buoy.PlatformCode);
+                var cursor = start;
+                while (cursor <= end)
+                {
+                    var chunkEnd = cursor.AddYears(1).AddDays(-1);
+                    if (chunkEnd > end) chunkEnd = end;
+                    try
+                    {
+                        var rows = await _buoys.FetchArchiveAsync(location.Name, buoy, cursor, chunkEnd, ct);
+                        await ParquetWriter.WriteWaveTruthAsync(_cfg.Storage.WavesPath, rows, ct);
+                        _log.LogInformation("  buoys/{Name}/{Slug} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd}: {Rows} rows",
+                            location.Name, buoy.Slug, cursor, chunkEnd, rows.Count);
+                    }
+                    catch (Exception ex)
+                    {
+                        errors++;
+                        _log.LogError(ex, "  buoys/{Name}/{Slug} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd} FAILED",
+                            location.Name, buoy.Slug, cursor, chunkEnd);
+                    }
+                    await Task.Delay(TimeSpan.FromSeconds(2), ct);
+                    cursor = chunkEnd.AddDays(1);
+                }
             }
         }
         return errors;

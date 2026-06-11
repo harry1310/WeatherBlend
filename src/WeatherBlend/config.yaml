@@ -184,6 +184,59 @@ locations:
         - id: "eb6c1930-b131-4d71-9ce2-3616abd6ea39_382133"
           name: "St Erth"
 
+    # Sea-state collection (Sennen sea-state Phase 0, 2026-06-11 — see
+    # docs/SENNEN_SEA_STATE_PLAN.md). The coordinate is the PINNED marine
+    # grid cell, ~4 km SSW of the cliff: probing the marine API with the
+    # cliff coordinate resolves to this cell (50.041664, -5.7083282,
+    # elevation 0.0, real data). Pinned explicitly so an OM grid change
+    # can't silently move our sea point. best_match is pulled implicitly
+    # alongside these models — it alone serves the site extras
+    # (variables.marineSite: tide height, SST, secondary swell).
+    # Hindcast archive starts vary per model (MFWAM ≥2022-01, EWAM +
+    # meteofrance_wave ≥2023-01, GWAM + ECMWF WAM by 2024-06, GFS Wave
+    # live-only) — pre-archive backfill chunks log 0 rows, expected.
+    marine:
+      latitude: 50.0417
+      longitude: -5.7083
+      models:
+        - id: "meteofrance_wave"
+          displayName: "Météo-France MFWAM"
+        - id: "ecmwf_wam025"
+          displayName: "ECMWF WAM 0.25°"
+        - id: "gwam"
+          displayName: "DWD GWAM (global)"
+        - id: "ewam"
+          displayName: "DWD EWAM (Europe 0.05°)"
+        - id: "ncep_gfswave025"
+          displayName: "NOAA GFS Wave 0.25°"
+      # Verification-truth buoys (researched + endpoints verified 2026-06-11).
+      # Sevenstones is the primary: the only fully Atlantic-exposed sensor
+      # within ~30 km, directly up-swell (due W) of the cliff, 69 m water —
+      # effectively the deep-water incident wave field. Reports Hs/Tz/SST
+      # only (no direction/Tp). SW Scilly adds the directional suite from
+      # deep open water (67 km SW — lag-match swell arrival when verifying).
+      # Penzance is a Mount's Bay (S-facing) waverider: BLIND to W/NW
+      # groundswell, kept as the southerly-swell / windsea cross-check.
+      # Realtime = open WaveNet JSON API (no auth, non-QC'd, ≤10-90 min
+      # latency); archive = EMODnet ERDDAP (CC-BY-SA, QC'd, floor 2018-01,
+      # mirror lags days-weeks). Directions on waveriders are PEAK direction.
+      buoys:
+        - slug: "sevenstones_62107"
+          displayName: "Sevenstones Light Vessel"
+          wavenetId: "4"
+          wavenetSource: "EXT"
+          platformCode: "6200107"
+        - slug: "sw_scilly_6201054"
+          displayName: "SW Isles of Scilly WaveNet"
+          wavenetId: "SWSCILLYWN"
+          wavenetSource: "INT"
+          platformCode: "6201054"
+        - slug: "penzance_6201000"
+          displayName: "Penzance Waverider"
+          wavenetId: "200"
+          wavenetSource: "EXT"
+          platformCode: "6201000"
+
 # NWP models to collect via Open-Meteo.
 # Open-Meteo exposes many models through one API with a consistent schema.
 # See https://open-meteo.com/en/docs for the full list.
@@ -305,6 +358,30 @@ variables:
     - wind_direction_850hPa
     - wind_direction_500hPa
     - relative_humidity_850hPa
+  # Wave variables pulled per wave model (live + offset-day + hindcast) for
+  # locations with a marine: block. height/period/direction × total /
+  # wind-wave / swell — the swell triple is the run-up driver for the
+  # wetting-elevation product.
+  marine:
+    - wave_height
+    - wave_period
+    - wave_direction
+    - wind_wave_height
+    - wind_wave_period
+    - wind_wave_direction
+    - swell_wave_height
+    - swell_wave_period
+    - swell_wave_direction
+  # Marine variables ONLY best_match serves ("undefined" on per-model
+  # requests) — ride on the best_match pull. sea_level_height_msl is the
+  # tide+surge curve (hindcast ≥mid-2023); cross-check vs Newlyn harmonics
+  # before the site chip trusts it.
+  marineSite:
+    - secondary_swell_wave_height
+    - secondary_swell_wave_period
+    - secondary_swell_wave_direction
+    - sea_level_height_msl
+    - sea_surface_temperature
 
 # How far ahead to pull each run.
 forecastDays: 7
@@ -322,6 +399,13 @@ storage:
   predictionsPath: "data/predictions"
   reportsPath: "data/reports"
   metOfficeObsPath: "data/truth/met_office_obs"
+  # Sea-state trees (Sennen sea-state Phase 0, 2026-06-11):
+  #   marine/  wave-model forecasts (live + offset_day + hindcast), the
+  #            sea-state sibling of forecasts/
+  #   truth/waves/  era5_ocean reanalysis (training truth) + wave buoys
+  #            (verification truth), distinguished by source= partition
+  marinePath: "data/marine"
+  wavesPath: "data/truth/waves"
 
 # Met Office DataHub benchmark capture.
 # Global Spot forecasts are written into the standard forecasts tree under

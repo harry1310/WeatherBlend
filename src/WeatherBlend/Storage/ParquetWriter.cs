@@ -203,6 +203,132 @@ public static class ParquetWriter
         }
     }
 
+    /// <summary>
+    /// Marine live-forecast writer — the sea-state sibling of
+    /// <see cref="WriteForecastsAsync"/>. All rows share location/model/run
+    /// (caller fetches per model per cycle).
+    /// Path: location=.../model=.../date=&lt;run_date&gt;/run=&lt;HH&gt;.parquet
+    /// </summary>
+    public static async Task WriteMarineForecastsAsync(
+        string basePath,
+        IReadOnlyList<MarineForecastRow> rows,
+        CancellationToken ct = default)
+    {
+        if (rows.Count == 0) return;
+
+        var first = rows[0];
+        var dir = Path.Combine(
+            basePath,
+            $"location={first.LocationName}",
+            $"model={first.Model}",
+            $"date={first.RunTimeUtc:yyyy-MM-dd}");
+        Directory.CreateDirectory(dir);
+
+        var file = Path.Combine(dir, $"run={first.RunTimeUtc:HH}.parquet");
+        await ParquetSerializer.SerializeAsync(rows, file, cancellationToken: ct);
+    }
+
+    /// <summary>
+    /// Marine offset-day writer — previous_runs.parquet per valid-date, same
+    /// layout as <see cref="WritePreviousRunsAsync"/>. Overwrite, not merge:
+    /// every fetch regenerates the full live window (past_days + today) from
+    /// the API, so the freshest fetch is also the most complete and the
+    /// collect workflow needs no R2 pre-pull for this tree.
+    /// </summary>
+    public static async Task WriteMarinePreviousRunsAsync(
+        string basePath,
+        IReadOnlyList<MarineForecastRow> rows,
+        CancellationToken ct = default)
+    {
+        if (rows.Count == 0) return;
+
+        foreach (var group in rows.GroupBy(r => new { r.LocationName, r.Model, Date = r.ValidTimeUtc.Date }))
+        {
+            var dir = Path.Combine(
+                basePath,
+                $"location={group.Key.LocationName}",
+                $"model={group.Key.Model}",
+                $"date={group.Key.Date:yyyy-MM-dd}");
+            Directory.CreateDirectory(dir);
+
+            var file = Path.Combine(dir, "previous_runs.parquet");
+            await ParquetSerializer.SerializeAsync(
+                group.OrderBy(r => r.ValidTimeUtc).ThenBy(r => r.LeadHours).ToList(),
+                file, cancellationToken: ct);
+        }
+    }
+
+    /// <summary>
+    /// Marine hindcast writer — hist_forecast.parquet per valid-date,
+    /// mirroring <see cref="WriteHistoricalForecastAsync"/>: a separate file
+    /// so lead-unlabelled hindcast can never clobber offset-day rows.
+    /// </summary>
+    public static async Task WriteMarineHindcastAsync(
+        string basePath,
+        IReadOnlyList<MarineForecastRow> rows,
+        CancellationToken ct = default)
+    {
+        if (rows.Count == 0) return;
+
+        foreach (var group in rows.GroupBy(r => new { r.LocationName, r.Model, Date = r.ValidTimeUtc.Date }))
+        {
+            var dir = Path.Combine(
+                basePath,
+                $"location={group.Key.LocationName}",
+                $"model={group.Key.Model}",
+                $"date={group.Key.Date:yyyy-MM-dd}");
+            Directory.CreateDirectory(dir);
+
+            var file = Path.Combine(dir, "hist_forecast.parquet");
+            await ParquetSerializer.SerializeAsync(
+                group.OrderBy(r => r.ValidTimeUtc).ToList(),
+                file, cancellationToken: ct);
+        }
+    }
+
+    /// <summary>
+    /// Wave-truth writer (era5_ocean reanalysis + buoy observations).
+    /// Partitioned by location/source/date; merges with any existing
+    /// partition file deduping on ValidTimeUtc (last-write-wins) so buoy
+    /// realtime re-fetches and era5 refresh overlaps stay idempotent.
+    /// Skips days where WaveHeight is null for every hour (the era5_ocean
+    /// unpublished-day scaffold, mirroring WriteEra5Async's canary).
+    /// Path: location=.../source=&lt;source&gt;/date=&lt;yyyy-MM-dd&gt;/data.parquet
+    /// </summary>
+    public static async Task WriteWaveTruthAsync(
+        string basePath,
+        IReadOnlyList<WaveTruthRow> rows,
+        CancellationToken ct = default)
+    {
+        if (rows.Count == 0) return;
+
+        foreach (var group in rows.GroupBy(r => new { r.LocationName, r.Source, Date = r.ValidTimeUtc.Date }))
+        {
+            if (group.All(r => r.WaveHeight is null)) continue;
+
+            var dir = Path.Combine(
+                basePath,
+                $"location={group.Key.LocationName}",
+                $"source={group.Key.Source}",
+                $"date={group.Key.Date:yyyy-MM-dd}");
+            Directory.CreateDirectory(dir);
+
+            var file = Path.Combine(dir, "data.parquet");
+            var existing = File.Exists(file)
+                ? (await ParquetSerializer.DeserializeAsync<WaveTruthRow>(file, cancellationToken: ct)).ToList()
+                : new List<WaveTruthRow>();
+
+            var merged = existing
+                .Concat(group)
+                .GroupBy(r => r.ValidTimeUtc)
+                .Select(g => g.Last())
+                .OrderBy(r => r.ValidTimeUtc)
+                .ToList();
+
+            await ParquetSerializer.SerializeAsync(merged, file, cancellationToken: ct);
+        }
+    }
+
     public static async Task WriteObservationsAsync(
         string basePath,
         IReadOnlyList<ObservationRow> rows,

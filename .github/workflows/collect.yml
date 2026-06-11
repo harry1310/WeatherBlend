@@ -95,10 +95,16 @@ jobs:
             RECENT_INCLUDES="$RECENT_INCLUDES --include **/date=$d/**"
           done
 
-          mkdir -p data/truth/metar data/truth/rainfall data/truth/met_office_obs
+          mkdir -p data/truth/metar data/truth/rainfall data/truth/met_office_obs data/truth/waves
           rclone copy "r2:${R2_BUCKET}/data/truth/metar"           ./data/truth/metar           --fast-list --transfers 16 --checkers 32 --progress $RECENT_INCLUDES
           rclone copy "r2:${R2_BUCKET}/data/truth/rainfall"        ./data/truth/rainfall        --fast-list --transfers 16 --checkers 32 --progress $RECENT_INCLUDES
           rclone copy "r2:${R2_BUCKET}/data/truth/met_office_obs"  ./data/truth/met_office_obs  --fast-list --transfers 16 --checkers 32 --progress $RECENT_INCLUDES
+          # waves: buoy realtime (WriteWaveTruthAsync) is read-modify-write
+          # like the three above — without the pre-pull, a cycle's partial
+          # day-file would overwrite R2's completer one (Sennen sea-state
+          # Phase 0, 2026-06-11). The marine forecast tree needs NO pull:
+          # its writers regenerate complete files from the API every cycle.
+          rclone copy "r2:${R2_BUCKET}/data/truth/waves"           ./data/truth/waves           --fast-list --transfers 16 --checkers 32 --progress $RECENT_INCLUDES
 
       - name: Build
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo

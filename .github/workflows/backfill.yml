@@ -14,11 +14,11 @@ on:
   workflow_dispatch:
     inputs:
       source:
-        description: "previous-runs | era5 | metar | rainfall | hist-forecast | all"
+        description: "previous-runs | era5 | metar | rainfall | era5-waves | hist-forecast | marine | buoys | all"
         required: true
         default: "all"
         type: choice
-        options: [previous-runs, era5, metar, rainfall, hist-forecast, all]
+        options: [previous-runs, era5, metar, rainfall, era5-waves, hist-forecast, marine, buoys, all]
       start:
         description: "Start date (yyyy-MM-dd, UTC)"
         required: true
@@ -93,6 +93,19 @@ jobs:
           # partitions — otherwise it's all new files. Cheap insurance.
           mkdir -p data/truth/rainfall
           rclone copy "r2:${R2_BUCKET}/data/truth/rainfall" ./data/truth/rainfall --fast-list --transfers 16 --checkers 32 --progress
+
+      - name: Pull waves merge-target from R2 (for buoys/era5-waves/all)
+        if: ${{ inputs.source == 'buoys' || inputs.source == 'era5-waves' || inputs.source == 'all' }}
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          # WriteWaveTruthAsync is read-modify-write (merge + dedup by
+          # ValidTimeUtc), same pattern as METAR/rainfall — pull the subtree
+          # so a buoys archive chunk overlapping collect's realtime rows (or
+          # an era5-waves window overlapping existing days) merges instead of
+          # clobbering. Tree is small (one location, few sources).
+          mkdir -p data/truth/waves
+          rclone copy "r2:${R2_BUCKET}/data/truth/waves" ./data/truth/waves --fast-list --transfers 16 --checkers 32 --progress
 
       - name: Build
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo

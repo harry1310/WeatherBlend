@@ -79,6 +79,36 @@ public static class Program
                 })
                 .AddStandardResilienceHandler();
 
+                // Marine API (waves) — same Open-Meteo infrastructure as the
+                // forecast endpoints, same resilience profile as OpenMeteoClient
+                // (hindcast backfill chunks can be as slow as previous-runs ones).
+                services.AddHttpClient<MarineClient>(c =>
+                {
+                    c.Timeout = TimeSpan.FromSeconds(cfg.Http.TimeoutSeconds);
+                    c.DefaultRequestHeaders.UserAgent.ParseAdd(cfg.Http.UserAgent);
+                })
+                .AddStandardResilienceHandler(opts =>
+                {
+                    opts.AttemptTimeout.Timeout = TimeSpan.FromSeconds(60);
+                    opts.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(180);
+                    opts.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(240);
+                });
+
+                // Wave buoys — Cefas WaveNet (realtime) + EMODnet ERDDAP
+                // (archive). Non-critical truth sources; ERDDAP year-chunk
+                // CSVs can be slow, so give them the wide attempt timeout.
+                services.AddHttpClient<BuoyClient>(c =>
+                {
+                    c.Timeout = TimeSpan.FromSeconds(120);
+                    c.DefaultRequestHeaders.UserAgent.ParseAdd(cfg.Http.UserAgent);
+                })
+                .AddStandardResilienceHandler(opts =>
+                {
+                    opts.AttemptTimeout.Timeout = TimeSpan.FromSeconds(90);
+                    opts.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(270);
+                    opts.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(540);
+                });
+
                 services.AddHttpClient<EaHydrologyClient>(c =>
                 {
                     c.Timeout = TimeSpan.FromSeconds(cfg.Http.TimeoutSeconds);
@@ -285,11 +315,11 @@ public static class Program
             getDefaultValue: () => DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-1)));
         var sourceOpt = new Option<string>(
             name: "--source",
-            description: "previous-runs | era5 | metar | rainfall | hist-forecast | all",
+            description: "previous-runs | era5 | metar | rainfall | era5-waves | hist-forecast | marine | buoys | all",
             getDefaultValue: () => "all");
         var modelOpt = new Option<string?>(
             name: "--model",
-            description: "Optional: backfill only this Open-Meteo model id (previous-runs / hist-forecast only). Defaults to all configured models.",
+            description: "Optional: backfill only this Open-Meteo model id (previous-runs / hist-forecast / marine only). Defaults to all configured models.",
             getDefaultValue: () => null);
         var locationOpt = new Option<string?>(
             name: "--location",

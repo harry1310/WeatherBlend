@@ -19,6 +19,8 @@ public sealed class CollectCommand
     private readonly EaHydrologyClient _rainfall;
     private readonly MetOfficeSpotClient _metOfficeSpot;
     private readonly MetOfficeObservationsClient _metOfficeObs;
+    private readonly MarineClient _marine;
+    private readonly BuoyClient _buoys;
     private readonly ILogger<CollectCommand> _log;
 
     public CollectCommand(
@@ -28,6 +30,8 @@ public sealed class CollectCommand
         EaHydrologyClient rainfall,
         MetOfficeSpotClient metOfficeSpot,
         MetOfficeObservationsClient metOfficeObs,
+        MarineClient marine,
+        BuoyClient buoys,
         ILogger<CollectCommand> log)
     {
         _cfg = cfg;
@@ -36,6 +40,8 @@ public sealed class CollectCommand
         _rainfall = rainfall;
         _metOfficeSpot = metOfficeSpot;
         _metOfficeObs = metOfficeObs;
+        _marine = marine;
+        _buoys = buoys;
         _log = log;
     }
 
@@ -59,6 +65,7 @@ public sealed class CollectCommand
         var forecastErrors = 0;
         var metarErrors    = 0;
         var rainfallErrors = 0;
+        var marineErrors   = 0;
 
         // Temporary EA-rainfall bypass. The EA Hydrology readings API
         // (/id/measures/.../readings.json) can hang server-side for minutes
@@ -160,9 +167,25 @@ public sealed class CollectCommand
                     _log.LogError(ex, "  {Loc}/EA {Station}: FAILED", location.Name, st.Name);
                 }
             }
+            // Marine (sea-state) — locations with a marine: block only
+            // (Sennen). NON-CRITICAL like Met Office below: nothing
+            // downstream consumes waves yet (Phase 0 = accumulate only), so
+            // a marine-API hiccup must not fail the cycle or starve the
+            // predict chain. Logged loudly; promote to fatal when the wave
+            // blender ships. The offset-day pull is the one that matters
+            // long-term — per-lead rows can NEVER be backfilled (the marine
+            // hindcast archive has no previous_day columns), so every missed
+            // cycle is per-lead training data lost for good.
+            if (location.Marine is not null)
+                marineErrors += await CollectMarineAsync(location, ct);
         }
 
         var metOfficeErrors = await CollectMetOfficeAsync(ct);
+
+        if (marineErrors > 0)
+            _log.LogWarning(
+                "  Marine: {N} pull(s) FAILED — non-critical, NOT failing the cycle (see ERR lines above)",
+                marineErrors);
 
         // Met Office Spot + Land Obs are NON-CRITICAL and deliberately excluded
         // from the exit code. Spot is a skill-page comparison line (not a blender
@@ -179,6 +202,76 @@ public sealed class CollectCommand
 
         if (forecastErrors > 0 || metarErrors > 0 || rainfallErrors > 0) return 1;
         return 0;
+    }
+
+    /// <summary>
+    /// One marine cycle for one location: per wave model a live pull
+    /// (current forecast, synthesised run time) + an offset-day pull
+    /// (previous_day1..7 over past_days=2 — the per-lead archive that only
+    /// exists if we capture it at collect time). best_match is pulled
+    /// implicitly on top of the configured models; its live pull carries
+    /// the site extras (tide / SST / secondary swell) and its offset pull
+    /// sticks to the standard wave variables like everyone else's.
+    /// </summary>
+    private async Task<int> CollectMarineAsync(LocationConfig location, CancellationToken ct)
+    {
+        var errors = 0;
+        var marine = location.Marine!;
+        var waveVars = _cfg.Variables.Marine;
+        var modelIds = marine.Models.Select(m => m.Id)
+            .Append(MarineClient.BestMatchModel)
+            .ToList();
+
+        foreach (var modelId in modelIds)
+        {
+            ct.ThrowIfCancellationRequested();
+            var liveVars = modelId == MarineClient.BestMatchModel
+                ? waveVars.Concat(_cfg.Variables.MarineSite).ToList()
+                : waveVars;
+            try
+            {
+                var rows = await _marine.FetchLiveAsync(location, modelId, liveVars, _cfg.ForecastDays, ct);
+                await ParquetWriter.WriteMarineForecastsAsync(_cfg.Storage.MarinePath, rows, ct);
+                _log.LogInformation("  {Loc}/marine {Model} live: wrote {Rows} rows", location.Name, modelId, rows.Count);
+            }
+            catch (Exception ex)
+            {
+                errors++;
+                _log.LogError(ex, "  {Loc}/marine {Model} live: FAILED", location.Name, modelId);
+            }
+
+            try
+            {
+                var rows = await _marine.FetchOffsetDaysAsync(location, modelId, waveVars, pastDays: 2, ct);
+                await ParquetWriter.WriteMarinePreviousRunsAsync(_cfg.Storage.MarinePath, rows, ct);
+                _log.LogInformation("  {Loc}/marine {Model} offset-days: wrote {Rows} rows", location.Name, modelId, rows.Count);
+            }
+            catch (Exception ex)
+            {
+                errors++;
+                _log.LogError(ex, "  {Loc}/marine {Model} offset-days: FAILED", location.Name, modelId);
+            }
+        }
+
+        // Buoy realtime (WaveNet, last ~24h per station, non-QC'd). The
+        // writer merges + dedups on ValidTimeUtc, and collect.yml pre-pulls
+        // the recent waves window from R2, so overlapping cycles and later
+        // QC'd archive re-pulls are both safe.
+        foreach (var buoy in marine.Buoys)
+        {
+            try
+            {
+                var rows = await _buoys.FetchRealtimeAsync(location.Name, buoy, ct);
+                await ParquetWriter.WriteWaveTruthAsync(_cfg.Storage.WavesPath, rows, ct);
+                _log.LogInformation("  {Loc}/buoy {Slug}: wrote {Rows} rows", location.Name, buoy.Slug, rows.Count);
+            }
+            catch (Exception ex)
+            {
+                errors++;
+                _log.LogError(ex, "  {Loc}/buoy {Slug}: FAILED", location.Name, buoy.Slug);
+            }
+        }
+        return errors;
     }
 
     private async Task<int> CollectMetOfficeAsync(CancellationToken ct)
