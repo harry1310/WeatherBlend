@@ -48,27 +48,16 @@ jobs:
       # EA rainfall, MO DataHub Spot + Land Obs). ERA5 is NOT collected here —
       # it's a separate daily job (era5-refresh.yml).
 
-      - name: Install rclone
-        run: |
-          curl -fsSL https://rclone.org/install.sh | sudo bash
-          rclone version
-
-      - name: Configure rclone for R2
-        env:
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-        run: |
-          mkdir -p ~/.config/rclone
-          cat > ~/.config/rclone/rclone.conf <<EOF
-          [r2]
-          type = s3
-          provider = Cloudflare
-          access_key_id = ${R2_ACCESS_KEY_ID}
-          secret_access_key = ${R2_SECRET_ACCESS_KEY}
-          endpoint = ${R2_ENDPOINT}
-          acl = private
-          EOF
+      # rclone install + R2 remote config via the shared composite action
+      # (.github/actions/setup-r2) — same call shape as verify.yml. The
+      # workflow-level RCLONE_* hang-guard env still applies: workflow env
+      # is inherited by composite-action steps and by every rclone
+      # invocation below.
+      - uses: ./.github/actions/setup-r2
+        with:
+          access_key_id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          secret_access_key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          endpoint: ${{ secrets.R2_ENDPOINT }}
 
       - name: Pull existing METAR + rainfall + Met Office obs from R2
         env:
@@ -81,10 +70,27 @@ jobs:
           # WriteMetOfficeObservationsAsync — each reads the day's parquet,
           # merges new rows, dedupes by timestamp, rewrites. Those subtrees we
           # pull; everything else is wasted IO.
+          #
+          # Date-windowed since 2026-06-10 (incident review): each collector's
+          # read-modify-write only touches a ~3-day rolling window, yet this
+          # step was copying the FULL truth trees (4,056 metar + 14,029
+          # rainfall + 67 met_office_obs files) every cycle, 4x/day. A 7-day
+          # window (3-day collector reach + margin) pulls a few dozen files
+          # instead. Same pattern as s3-collect.yml's 5-day forecast filter.
+          # The includes are UNROOTED (**/date=.../**) on purpose: these
+          # trees have location=/station= (or geohash=) parent segments
+          # between the copy root and the date= partitions, so a rooted
+          # /date=... include would match nothing.
+          RECENT_INCLUDES=""
+          for i in $(seq 0 7); do
+            d=$(date -u -d "$i days ago" +%Y-%m-%d)
+            RECENT_INCLUDES="$RECENT_INCLUDES --include **/date=$d/**"
+          done
+
           mkdir -p data/truth/metar data/truth/rainfall data/truth/met_office_obs
-          rclone copy "r2:${R2_BUCKET}/data/truth/metar"           ./data/truth/metar           --fast-list --transfers 16 --checkers 32 --progress
-          rclone copy "r2:${R2_BUCKET}/data/truth/rainfall"        ./data/truth/rainfall        --fast-list --transfers 16 --checkers 32 --progress
-          rclone copy "r2:${R2_BUCKET}/data/truth/met_office_obs"  ./data/truth/met_office_obs  --fast-list --transfers 16 --checkers 32 --progress
+          rclone copy "r2:${R2_BUCKET}/data/truth/metar"           ./data/truth/metar           --fast-list --transfers 16 --checkers 32 --progress $RECENT_INCLUDES
+          rclone copy "r2:${R2_BUCKET}/data/truth/rainfall"        ./data/truth/rainfall        --fast-list --transfers 16 --checkers 32 --progress $RECENT_INCLUDES
+          rclone copy "r2:${R2_BUCKET}/data/truth/met_office_obs"  ./data/truth/met_office_obs  --fast-list --transfers 16 --checkers 32 --progress $RECENT_INCLUDES
 
       - name: Build
         run: dotnet build src/WeatherBlend/WeatherBlend.csproj -c Release --nologo

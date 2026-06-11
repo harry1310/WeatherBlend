@@ -77,18 +77,37 @@ jobs:
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
+          # Date-windowed since 2026-06-10 (incident review): VerifyCommand's
+          # rolling windows are 14d (temp) / 30d (precip, dry-window,
+          # elements), so a 90-day pull is conservative margin for
+          # truth-settling lag + any as_of replay, while dropping the
+          # ever-growing multi-year tail these three trees were copying on
+          # every run. The predictions tree partitions uniformly as
+          # .../model_version=<v>/date=<yyyy-MM-dd>/predictions.parquet
+          # (every .NET predict command + the Python predictors — see
+          # PredictionParquetWriter call sites and predict_4a/3f/wind_*.py),
+          # and the era5 / rainfall truth trees as
+          # location=...[/station=...]/date=<yyyy-MM-dd>/, so one UNROOTED
+          # **/date=$d/** include set fits all three (rooted /date=...
+          # would miss the parent segments — see s3-collect.yml's note).
+          RECENT_INCLUDES=""
+          for i in $(seq 0 90); do
+            d=$(date -u -d "$i days ago" +%Y-%m-%d)
+            RECENT_INCLUDES="$RECENT_INCLUDES --include **/date=$d/**"
+          done
+
           # Predictions: the thing we're verifying.
           mkdir -p data/predictions
-          rclone copy "r2:${R2_BUCKET}/data/predictions" ./data/predictions --fast-list --transfers 16 --checkers 32 --progress
+          rclone copy "r2:${R2_BUCKET}/data/predictions" ./data/predictions --fast-list --transfers 16 --checkers 32 --progress $RECENT_INCLUDES
 
-          # ERA5 truth: join key for temperature verify. Pulling the whole tree is fine at PoC scale.
+          # ERA5 truth: join key for temperature verify.
           mkdir -p data/truth/era5
-          rclone copy "r2:${R2_BUCKET}/data/truth/era5" ./data/truth/era5 --fast-list --transfers 16 --checkers 32 --progress
+          rclone copy "r2:${R2_BUCKET}/data/truth/era5" ./data/truth/era5 --fast-list --transfers 16 --checkers 32 --progress $RECENT_INCLUDES
 
           # EA rainfall truth: join key for precipitation verify. 15-min readings
           # aggregated to hourly inside the verify command (HAVING COUNT(*)=4).
           mkdir -p data/truth/rainfall
-          rclone copy "r2:${R2_BUCKET}/data/truth/rainfall" ./data/truth/rainfall --fast-list --transfers 16 --checkers 32 --progress
+          rclone copy "r2:${R2_BUCKET}/data/truth/rainfall" ./data/truth/rainfall --fast-list --transfers 16 --checkers 32 --progress $RECENT_INCLUDES
 
           # Model metadata (training_metadata.json + MANIFEST.json) for the drift
           # threshold reference. verify reads ONLY the json metadata + reports —
