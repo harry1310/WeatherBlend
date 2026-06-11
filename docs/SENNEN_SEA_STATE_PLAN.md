@@ -201,9 +201,20 @@ the over-pull).
 2. Is a buoy 20+ km away honest enough truth for Sennen's cliff base, or
    is ERA5-ocean's wave cell closer in spirit? (Probably: train ERA5,
    verify buoy, display the caveat — but check correlation in Phase 1.)
-3. sea_level_height_msl vs Newlyn harmonics: how good is OM's tide signal
-   at the pinned cell? (It's a model, datum = MSL; Newlyn constituents are
-   the gold standard 8 km away.) Check before the chip trusts it.
+3. ~~sea_level_height_msl vs Newlyn~~ RESOLVED 2026-06-11
+   (scripts/tide_sanity_check.py, 28 days vs the EA Newlyn gauge E72239):
+   correlation 0.9989, RMSE 8.6 cm after removing the constant offset,
+   amplitude ratio 1.049, daily high-water error 8 cm. Phase: OM runs
+   ~30 min EARLIER than Newlyn — plausibly real geography (the tide
+   reaches Land's End before Mount's Bay; our point is the Sennen cell,
+   the gauge is Newlyn), not an error. VERDICT: the OM tide curve is
+   good enough to drive the chip — no harmonics module needed.
+   ONE FLAG: the mean datum offset is −0.69 m (OM below Newlyn mAOD),
+   bigger than the ~−0.2 m that MSL-vs-OD bookkeeping predicts. It is
+   CONSTANT over the window, and the chip's thresholds are calibrated
+   empirically against real sessions anyway, so it's absorbed — but pin
+   down its origin (likely the EA feed's local datum vs true mAOD)
+   before quoting absolute heights anywhere.
 4. Free-tier rate limits at our cadence: collect adds ~12 marine calls per
    cycle (6 sources × live + offset) — trivial vs the weather pull. The
    backfill (~390 calls) runs once, throttled like previous-runs.
