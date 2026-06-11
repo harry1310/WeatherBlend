@@ -390,23 +390,53 @@ public sealed class DryWindowPredictCommand
 
         // 3o's live predictions for the anchor cycle. ONE parquet covers
         // all hourly P(wet) the MC needs; load once, slice by target_date.
-        Dictionary<DateTime, double> hourly;
-        try
+        Dictionary<DateTime, double>? TryLoadHourly(string version)
         {
-            hourly = DryWindow3pPredictor.LoadLivePredictionsHourly(
-                _cfg.Storage.PredictionsPath, stationSlug, v3o, anchorDate);
+            try
+            {
+                var h = DryWindow3pPredictor.LoadLivePredictionsHourly(
+                    _cfg.Storage.PredictionsPath, stationSlug, version, anchorDate);
+                return h.Count > 0 ? h : null;
+            }
+            catch
+            {
+                return null;
+            }
         }
-        catch (Exception ex)
+        var hourly = TryLoadHourly(v3o);
+        if (hourly is null)
         {
-            _log.LogWarning(ex, "{Key} {V}: cannot load 3o live predictions ({V3o}) for anchor {A:yyyy-MM-dd} — skipping " +
-                "(this is expected immediately after a fresh deploy until 3o has run at least once).",
-                stationSlug, versionName, v3o, anchorDate);
-            return false;
+            // Pinned-version fallback (2026-06-11). The bound 3o version is
+            // part of 3p's identity (the Σ was fitted on ITS marginals), but
+            // a mid-week 3o re-promotion makes the pin stale: predict writes
+            // 3o rows ONLY under the new version, so the first anchor with
+            // no old-version partition starves every 3p cell and trips the
+            // coverage guard (2026-06-11 03:15Z, run 27321393054 — 20
+            // breaches the night after the 3c/3o policy retrain). Fall back
+            // to the station's CURRENT Active 3o: marginals one retrain
+            // fresher than the Σ is a far smaller error than emitting
+            // nothing, and the weekly retrain re-pins within days. The
+            // warning keeps the inconsistency visible in run logs.
+            var current = ModelArtifact.ResolveStationActive(_cfg.Storage.ModelsPath, "precipitation", stationSlug)
+                .Where(v => v.EndsWith("_phase3o", StringComparison.Ordinal))
+                .OrderByDescending(v => v, StringComparer.Ordinal)
+                .FirstOrDefault();
+            if (current is not null && !string.Equals(current, v3o, StringComparison.Ordinal))
+            {
+                _log.LogWarning(
+                    "{Key} {V}: bound 3o version {V3o} has no live predictions for anchor {A:yyyy-MM-dd} — " +
+                    "falling back to the station's current Active 3o {Current} (re-promoted since this 3p " +
+                    "bundle trained; Σ/marginal mismatch is one retrain wide; the next 3p retrain re-pins).",
+                    stationSlug, versionName, v3o, anchorDate, current);
+                hourly = TryLoadHourly(current);
+            }
         }
-        if (hourly.Count == 0)
+        if (hourly is null)
         {
-            _log.LogWarning("{Key} {V}: 3o live predictions parquet for anchor {A:yyyy-MM-dd} is empty — skipping.",
-                stationSlug, versionName, anchorDate);
+            _log.LogWarning("{Key} {V}: no 3o live predictions for anchor {A:yyyy-MM-dd} under the bound " +
+                "version ({V3o}) or any current Active 3o — skipping (expected immediately after a fresh " +
+                "deploy until 3o has run at least once).",
+                stationSlug, versionName, anchorDate, v3o);
             return false;
         }
 

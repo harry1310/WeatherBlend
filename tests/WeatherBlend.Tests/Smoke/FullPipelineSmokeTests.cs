@@ -4,6 +4,7 @@ using WeatherBlend.Commands;
 using WeatherBlend.Models;
 using WeatherBlend.Storage;
 using WeatherBlend.Train;
+using WeatherBlend.Train.DryWindow;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -191,6 +192,34 @@ public class FullPipelineSmokeTests
                 $"model_version={bundle3p}",
                 $"date={predictAnchor:yyyy-MM-dd}", "predictions.parquet");
             File.Exists(pred3p).Should().BeTrue("3p predictions parquet must exist");
+
+            // ---- 5b. Stale-pin fallback (regression, 2026-06-11) ----
+            // A mid-week 3o re-promotion leaves 3p's bound precip_3o_version
+            // pointing at a version that no longer writes predictions; the
+            // first anchor with no old-version partition starved all 20 3p
+            // cells and tripped the coverage guard (run 27321393054, the
+            // night after the 3c/3o policy retrain). Predict must fall back
+            // to the station's CURRENT Active 3o. Simulate by re-pinning the
+            // bundle to a version that never predicted, then re-running.
+            var meta3pPath = Path.Combine(bundle3pDir, "training_metadata.json");
+            var meta3pJson = System.Text.Json.Nodes.JsonNode.Parse(
+                await File.ReadAllTextAsync(meta3pPath))!;
+            meta3pJson["Hyperparameters"]![DryWindow3pPredictor.Precip3oVersionKey] =
+                "v1900-01-01_000000_phase3o";
+            await File.WriteAllTextAsync(meta3pPath, meta3pJson.ToJsonString(
+                new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+            File.Delete(pred3p);
+
+            var rc3pFallback = await dryWindowPredict.RunAsync(
+                stationArg: "Bellever Dartmoor",
+                windowArg: "6",
+                modelVersion: "current",
+                forDate: DateOnly.FromDateTime(predictAnchor),
+                locationOverride: null, ct: default);
+            rc3pFallback.Should().Be(0,
+                "3p predict must survive a stale 3o pin by falling back to the current Active 3o");
+            File.Exists(pred3p).Should().BeTrue(
+                "3p predictions parquet must be re-emitted via the Active-3o fallback");
 
             // ---- 6. Fake Phase 4a per station + promote in manifest ----
             // 4b mint joins 4a.test_predictions × 3o.test_predictions on
