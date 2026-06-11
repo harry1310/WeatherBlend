@@ -34,7 +34,15 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 15 → 30 on 2026-06-11: Open-Meteo degradation (TLS retries, ~7s per
+    # normally-sub-second request) made the full model×location sweep blow
+    # a 15-min cap twice in one morning while every request was still
+    # SUCCEEDING. 30 min lets a slow-but-alive upstream complete; the
+    # weatherblend-data lock means a slow collect only delays the chain.
+    # Healthy runs are ~6-10 min — the cap is a backstop, not a target.
+    # Proper fix (tighter per-request client timeouts → fail fast +
+    # partial-push) is on the backlog.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
