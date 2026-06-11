@@ -1676,6 +1676,53 @@ public class SitePagesTests
         html.Should().Contain($"&quot;todayX&quot;:{System.Text.Json.JsonSerializer.Serialize(generatedAt.ToOADate())}");
     }
 
+    [Fact]
+    public void RenderRainfallAmountSection_chart_includes_recent_past_headline_does_not()
+    {
+        // 2026-06-11 (Harry): the 3f intensity chart started at "now" while
+        // every other rain-page chart shows ForecastChartHistoryDays of
+        // context — its left third rendered blank. The CHART must include
+        // in-window past hours; the HEADLINE (mm total / wettest hour) must
+        // stay future-of-now so it never counts already-fallen rain.
+        var generatedAt = new DateTime(2026, 6, 11, 12, 0, 0, DateTimeKind.Utc);
+        RainfallAmountPredictionRow Row(DateTime valid, double median) => new()
+        {
+            LocationName = "membury_devon",
+            TruthStation = Station,
+            ModelVersion = "v3f",
+            PredictionMadeAtUtc = generatedAt.AddHours(-13),
+            ValidTimeUtc = valid,
+            LeadHours = 24,
+            Pi = 0.5, MuLog = 0.0, SigmaLog = 0.5,
+            MeanMmPerHr = median * 1.5, MedianMmPerHr = median,
+            P2_5MmPerHr = 0.0, P10MmPerHr = 0.0, P50MmPerHr = median * 0.75,
+            P90MmPerHr = median * 2.5, P97_5MmPerHr = median * 5.0,
+            PExceed0_1 = 0.4, PExceed1 = 0.2, PExceed5 = 0.05, PExceed10 = 0.01,
+            Precip3aVersion = "v3a",
+        };
+        // One distinctive PAST hour (now − 6h) + two future hours.
+        var rows = new[]
+        {
+            Row(generatedAt.AddHours(-6), 7.77),
+            Row(generatedAt.AddHours(2), 1.0),
+            Row(generatedAt.AddHours(3), 2.0),
+        };
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            RainfallAmountPredictions = rows,
+        };
+        var xMin = generatedAt.AddDays(-1).ToOADate();
+        var xMax = generatedAt.AddDays(1).ToOADate();
+
+        var html = SitePages.RenderRainfallAmountSection(input, Station, 24, xMin, xMax);
+
+        // Past hour's median is plotted...
+        html.Should().Contain("7.77");
+        // ...but the headline total is the FUTURE sum only (1.0 + 2.0).
+        html.Should().Contain("<strong>3.0 mm total</strong>");
+    }
+
     // ---- Membury village composite (true-rainfall study 2026-06-10) ----
 
     private static RainfallAmountPredictionRow[] VillageGaugeRows(

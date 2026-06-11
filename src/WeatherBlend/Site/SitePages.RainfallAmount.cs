@@ -39,15 +39,22 @@ public static partial class SitePages
             .ToList();
         if (rows.Count == 0) return "";
 
-        // Restrict to "future of now" hours — the chart wants tomorrow's
-        // intensity, not last week's predictions. WindowStartUtc gives
-        // historical context for skill; for the predictions card we
-        // want anchor-onwards.
+        // The HEADLINE + exceedance table summarise what's COMING — they
+        // stay future-of-now ("0.4mm total" must not count this morning's
+        // already-fallen rain). The section also stays absent when a stale
+        // prediction tree has no future rows at all.
         var futureRows = rows.Where(r => r.ValidTimeUtc >= input.GeneratedAtUtc).ToList();
         if (futureRows.Count == 0) return "";
 
+        // The CHART shows the page's shared window INCLUDING the recent
+        // past (2026-06-11, Harry): every other chart on the rain page
+        // starts at xMin (now − ForecastChartHistoryDays) and this one
+        // started at "now", leaving its left third blank and the day's
+        // story truncated. Same x-window, freshest-cycle rows.
+        var chartRows = rows.Where(r => r.ValidTimeUtc.ToOADate() >= xMin).ToList();
+
         var headline = RenderRainfallAmountHeadline(futureRows);
-        var ribbon = RenderRainfallAmountRibbon(futureRows, lead, xMin, xMax, input.GeneratedAtUtc.ToOADate());
+        var ribbon = RenderRainfallAmountRibbon(chartRows, lead, xMin, xMax, input.GeneratedAtUtc.ToOADate());
         var exceedance = RenderRainfallAmountExceedance(futureRows);
         return $"""
             <section class="rainfall-amount" data-station="{Escape(stationSlug)}" data-lead="{lead}">
@@ -90,8 +97,12 @@ public static partial class SitePages
         var cal = location.VillageRain;
         if (cal is null || cal.WeightsBySlug.Count == 0) return "";
 
-        // Same freshest-per-(lead, valid) + future-only selection as the
-        // per-station section, per weighted gauge.
+        // Same freshest-per-(lead, valid) selection as the per-station
+        // section, per weighted gauge. Window = the page's shared x-axis
+        // (xMin includes the recent past — 2026-06-11, same fix as the
+        // per-station chart); the headline below re-restricts to
+        // future-of-now, and the all-gauges-required guard keys on having
+        // FUTURE rows so a stale tree still renders nothing.
         var byStation = new Dictionary<string, Dictionary<DateTime, RainfallAmountPredictionRow>>(StringComparer.Ordinal);
         foreach (var slug in cal.WeightsBySlug.Keys)
         {
@@ -99,9 +110,9 @@ public static partial class SitePages
                 .Where(r => string.Equals(r.TruthStation, slug, StringComparison.Ordinal))
                 .Where(r => r.LeadHours == lead)
                 .FreshestPerValid(r => r.ValidTimeUtc, r => r.PredictionMadeAtUtc)
-                .Where(r => r.ValidTimeUtc >= input.GeneratedAtUtc)
+                .Where(r => r.ValidTimeUtc.ToOADate() >= xMin)
                 .ToDictionary(r => r.ValidTimeUtc);
-            if (rows.Count == 0) return "";
+            if (!rows.Keys.Any(v => v >= input.GeneratedAtUtc)) return "";
             byStation[slug] = rows;
         }
 
@@ -154,7 +165,12 @@ public static partial class SitePages
         var weightsLine = string.Join(" + ", cal.WeightsBySlug
             .OrderByDescending(kv => kv.Value)
             .Select(kv => $"{kv.Value.ToString("0.00", Ci)}·{Escape(PrettyStation(kv.Key))}"));
-        var headline = RenderRainfallAmountHeadline(composite);
+        // Headline summarises what's COMING; the ribbon shows the full
+        // shared window incl. the recent past (mirrors the per-station
+        // section's futureRows/chartRows split).
+        var futureComposite = composite.Where(r => r.ValidTimeUtc >= input.GeneratedAtUtc).ToList();
+        if (futureComposite.Count == 0) return "";
+        var headline = RenderRainfallAmountHeadline(futureComposite);
         var ribbon = RenderRainfallAmountRibbon(composite, lead, xMin, xMax, input.GeneratedAtUtc.ToOADate());
         return $"""
             <section class="rainfall-amount village" data-station="{Escape(location.Name)}_village" data-lead="{lead}">
