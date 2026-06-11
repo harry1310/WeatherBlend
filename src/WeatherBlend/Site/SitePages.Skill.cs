@@ -70,8 +70,7 @@ public static partial class SitePages
                 .Where(p => p.LeadHours == leadHours
                             && versions.Contains(p.ModelVersion)
                             && p.ValidTimeUtc >= input.WindowStartUtc)
-                .GroupBy(p => p.ValidTimeUtc)
-                .Select(g => g.OrderByDescending(p => p.PredictionMadeAtUtc).First())
+                .FreshestPerValid(p => p.ValidTimeUtc, p => p.PredictionMadeAtUtc)
                 .OrderBy(p => p.ValidTimeUtc)
                 .Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.BlendTemperature))
                 .ToList();
@@ -593,8 +592,7 @@ public static partial class SitePages
         {
             var pts = filtered
                 .Where(p => p.LeadHours == lead)
-                .GroupBy(p => p.ValidTimeUtc)
-                .Select(g => g.OrderByDescending(p => p.PredictionMadeAtUtc).First())
+                .FreshestPerValid(p => p.ValidTimeUtc, p => p.PredictionMadeAtUtc)
                 .OrderBy(p => p.ValidTimeUtc)
                 .Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.BlendTemperature))
                 .ToList();
@@ -614,8 +612,7 @@ public static partial class SitePages
             .Where(m => m.ValidTimeUtc >= input.WindowStartUtc
                         && m.Temperature2m.HasValue
                         && m.LeadHours >= 24 && m.LeadHours < 48)
-            .GroupBy(m => m.ValidTimeUtc)
-            .Select(g => g.OrderBy(m => m.LeadHours).First())
+            .LatestPerValid(m => m.ValidTimeUtc, m => m.LeadHours)
             .OrderBy(m => m.ValidTimeUtc)
             .Select(m => (X: m.ValidTimeUtc.ToOADate(), Y: m.Temperature2m!.Value))
             .ToList();
@@ -850,8 +847,7 @@ public static partial class SitePages
             anyRendered = true;
 
             var latestPerLead = phaseRows
-                .GroupBy(r => (r.LeadHours, r.ValidTimeUtc))
-                .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
+                .FreshestPerValid(r => (r.LeadHours, r.ValidTimeUtc), r => r.PredictedAtUtc)
                 .ToList();
 
             var series = new List<LineSeries>();
@@ -886,8 +882,7 @@ public static partial class SitePages
                 .Where(m => m.ValidTimeUtc >= input.WindowStartUtc
                             && m.PrecipitationProbabilityPercent.HasValue
                             && m.LeadHours >= 24 && m.LeadHours < 48)
-                .GroupBy(m => m.ValidTimeUtc)
-                .Select(g => g.OrderBy(m => m.LeadHours).First())
+                .LatestPerValid(m => m.ValidTimeUtc, m => m.LeadHours)
                 .OrderBy(m => m.ValidTimeUtc)
                 .Select(m => (X: m.ValidTimeUtc.ToOADate(), Y: m.PrecipitationProbabilityPercent!.Value / 100.0))
                 .ToList();
@@ -992,8 +987,7 @@ public static partial class SitePages
 
                 // Latest prediction per (target_date, lead) within this phase bucket.
                 var latest = phaseRows
-                    .GroupBy(d => (d.TargetDateUtc, d.LeadHours))
-                    .Select(g => g.OrderByDescending(d => d.PredictedAtUtc).First())
+                    .FreshestPerValid(d => (d.TargetDateUtc, d.LeadHours), d => d.PredictedAtUtc)
                     .ToList();
 
                 // Drop rows for today and future target-dates: the Observed
@@ -1126,8 +1120,7 @@ public static partial class SitePages
                 .Where(r => r.LeadHours == leadHours
                          && PrecipPhases.Bucket(phaseByVersion, r.Version) == phase
                          && r.ValidTimeUtc >= minValidTimeUtc)
-                .GroupBy(r => r.ValidTimeUtc)
-                .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
+                .FreshestPerValid(r => r.ValidTimeUtc, r => r.PredictedAtUtc)
                 .OrderBy(r => r.ValidTimeUtc)
                 .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet))
                 .ToList();

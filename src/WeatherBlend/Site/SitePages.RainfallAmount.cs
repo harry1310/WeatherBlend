@@ -34,8 +34,7 @@ public static partial class SitePages
         var rows = input.RainfallAmountPredictions
             .Where(r => string.Equals(r.TruthStation, stationSlug, StringComparison.Ordinal))
             .Where(r => r.LeadHours == lead)
-            .GroupBy(r => r.ValidTimeUtc)
-            .Select(g => g.OrderByDescending(r => r.PredictionMadeAtUtc).First())
+            .FreshestPerValid(r => r.ValidTimeUtc, r => r.PredictionMadeAtUtc)
             .OrderBy(r => r.ValidTimeUtc)
             .ToList();
         if (rows.Count == 0) return "";
@@ -99,8 +98,7 @@ public static partial class SitePages
             var rows = input.RainfallAmountPredictions
                 .Where(r => string.Equals(r.TruthStation, slug, StringComparison.Ordinal))
                 .Where(r => r.LeadHours == lead)
-                .GroupBy(r => r.ValidTimeUtc)
-                .Select(g => g.OrderByDescending(r => r.PredictionMadeAtUtc).First())
+                .FreshestPerValid(r => r.ValidTimeUtc, r => r.PredictionMadeAtUtc)
                 .Where(r => r.ValidTimeUtc >= input.GeneratedAtUtc)
                 .ToDictionary(r => r.ValidTimeUtc);
             if (rows.Count == 0) return "";

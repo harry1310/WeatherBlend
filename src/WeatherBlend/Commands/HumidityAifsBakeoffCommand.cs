@@ -132,8 +132,8 @@ public sealed class HumidityAifsBakeoffCommand
     {
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
-        var fcGlob = Norm(Path.Combine(_cfg.Storage.ForecastsPath, "**", "*.parquet"));
-        var eraGlob = Norm(Path.Combine(_cfg.Storage.Era5Path, "**", "*.parquet"));
+        var fcGlob = SqlGlob.Escape(Path.Combine(_cfg.Storage.ForecastsPath, "**", "*.parquet"));
+        var eraGlob = SqlGlob.Escape(Path.Combine(_cfg.Storage.Era5Path, "**", "*.parquet"));
         var modelIn = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
         int n = spec.Models.Count;
         string Short(string m) => TempFeatureBuilder.ShortName(m);
@@ -270,6 +270,4 @@ ORDER BY p.ValidTimeUtc;";
         }
         return nn == 0 ? double.NaN : sum / nn;
     }
-
-    private static string Norm(string p) => p.Replace('\\', '/').Replace("'", "''");
 }

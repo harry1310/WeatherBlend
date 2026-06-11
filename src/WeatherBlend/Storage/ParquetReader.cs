@@ -31,10 +31,12 @@ public static class ParquetReader
     /// Normalises a filesystem path to a string ready to embed inside
     /// <c>read_parquet('...')</c>. Forward-slashes the separators (DuckDB
     /// treats backslashes as escape characters inside quoted strings) and
-    /// doubles up embedded single quotes.
+    /// doubles up embedded single quotes. Delegates to the shared
+    /// <see cref="Train.Common.SqlGlob"/> so the two transforms are defined
+    /// exactly once.
     /// </summary>
     public static string Glob(string path)
-        => path.Replace('\\', '/').Replace("'", "''");
+        => Train.Common.SqlGlob.Escape(path);
 
     /// <summary>
     /// Opens a fresh in-memory connection, executes <paramref name="sql"/>,

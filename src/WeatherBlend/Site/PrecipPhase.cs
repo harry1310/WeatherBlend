@@ -1,13 +1,17 @@
+using WeatherBlend.Models;
+
 namespace WeatherBlend.Site;
 
 /// <summary>
-/// One precipitation training phase ("3a" or "3c"). Holds the labels and chart
-/// palette colour shared by every page that buckets precipitation predictions
-/// by phase, so the same string literal can't drift out of sync between the
+/// One precipitation training phase. Holds the labels and chart palette
+/// colour shared by every page that buckets precipitation predictions by
+/// phase, so the same string literal can't drift out of sync between the
 /// SitePages render methods and the PrecipPredictCommand metadata check.
 ///
-/// Phase 3a_isotonic was removed 2026-04-29 — PAV calibration didn't move
-/// test Brier vs raw 3a, so the bucket no longer renders.
+/// Since 2026-06-10 the per-phase values live in phases.yaml's
+/// <c>display:</c> blocks; <see cref="PrecipPhases"/> materialises this
+/// record from <see cref="PhaseRegistry"/>, so adding a phase is a registry
+/// edit, not a code edit.
 /// </summary>
 /// <param name="Key">Stable identifier matching <c>training_metadata.Phase</c>.</param>
 /// <param name="LongTitle">Heading used on the precipitation page where space allows the full feature-count gloss.</param>
@@ -24,102 +28,52 @@ public sealed record PrecipPhase(
     string Color);
 
 /// <summary>
-/// The three precipitation phase buckets and helpers for mapping a prediction
+/// The precipitation phase buckets and helpers for mapping a prediction
 /// row's metadata phase onto one of them. Buckets are ordered for rendering:
-/// callers can iterate <see cref="All"/> directly to get the canonical order.
-/// Unknown tags bucket to <c>null</c> and are silently skipped.
+/// callers can iterate <see cref="All"/> directly — render order = registry
+/// order (champion-first, as phases.yaml declares them). Unknown tags bucket
+/// to <c>null</c> and are silently skipped.
 /// </summary>
 public static class PrecipPhases
 {
-    // Colors are aligned with the rolling-Brier panel on the rain skill
-    // page (purple champion, teal challenger, red exact-runtime, amber
-    // BART) so a phase reads the same colour wherever it appears: vs-truth
-    // eyeball, +24h phase comparison, rolling Brier per lead. Aligned
-    // 2026-05-10 — previously the phase comparison and rolling-Brier panels
-    // used different palettes, hard to scan top-to-bottom.
-    public static readonly PrecipPhase Phase3a = new(
-        Key: "3a",
-        LongTitle: "Phase 3a — lean (27 features)",
-        ShortTitle: "Phase 3a (lean)",
-        Description: "27-feature lean. Champion.",
-        ChampionVsChallengerLabel: "Phase 3a (champion)",
-        Color: "#7c4dff");
-
-    public static readonly PrecipPhase Phase3c = new(
-        Key: "3c",
-        LongTitle: "Phase 3c — rich (55 features)",
-        ShortTitle: "Phase 3c (rich)",
-        Description: "55-feature rich (adds humidity, pressure, EA persistence). Challenger.",
-        ChampionVsChallengerLabel: "Phase 3c (challenger)",
-        Color: "#26a69a");
-
-    public static readonly PrecipPhase Phase3d = new(
-        Key: "3d",
-        LongTitle: "Phase 3d — exact-runtime (lead 12 champion)",
-        ShortTitle: "Phase 3d (exact-runtime)",
-        Description: "Exact-runtime blender (GFS + IFS oper + AIFS + MO Global + UKV from raw S3). Champion at +12h, challenger at +24h. Per-station EA gauge truth.",
-        ChampionVsChallengerLabel: "Phase 3d (exact-runtime)",
-        Color: "#ef5350");
-
-    public static readonly PrecipPhase Phase4a = new(
-        Key: "4a",
-        LongTitle: "Phase 4a — dbarts BART (Bayesian additive regression trees)",
-        ShortTitle: "Phase 4a (BART)",
-        Description: "Bayesian Additive Regression Trees blender (R dbarts via rpy2). Same 22-feature 3a base + 3 synoptic flow features. Trained + predicted in WeatherProbabilistic, written to the same predictions tree as 3a/3c/3d.",
-        ChampionVsChallengerLabel: "Phase 4a (BART)",
-        Color: "#ffa726");
-
-    // Phase 3o: 3c-oro pooled across 4 Bonehill stations (Bellever +
-    // Bovey + Hexworthy + Princetown) with rich + 9 terrain features.
-    // Bonehill-only.
-    public static readonly PrecipPhase Phase3o = new(
-        Key: "3o",
-        LongTitle: "Phase 3o — rich + orographic (pooled, 4 Bonehill stations)",
-        ShortTitle: "Phase 3o (rich+oro)",
-        Description: "55-feature rich set plus 9 terrain features (elevation, slope, aspect, ruggedness, upwind gain, uplift, station id), trained pooled across the 4 Bonehill rainfall gauges to give the terrain features cross-station diversity. Replaces 3c on Bonehill (3c stays as a Membury reference).",
-        ChampionVsChallengerLabel: "Phase 3o (rich+oro)",
-        // Blue (material 600) — was #26a69a, identical to 3c's teal-green, so
-        // the two lines were indistinguishable on the rolling-Brier chart.
-        // Blue is well clear of 3c (teal), 3a (violet), 3d (red), 4a (amber).
-        Color: "#1e88e5");
-
-    // Phase 4b: arithmetic mean of Phase 4a (BART) + Phase 3o (rich+oro).
-    public static readonly PrecipPhase Phase4b = new(
-        Key: "4b",
-        LongTitle: "Phase 4b — 2-way mean of Phase 4a + Phase 3o",
-        ShortTitle: "Phase 4b (mean)",
-        Description: "Arithmetic mean of Phase 4a (BART) and Phase 3o (rich+oro). Not a trained model — synthesised at predict time from the freshest 4a and 3o rows per (ValidTime, LeadHours).",
-        ChampionVsChallengerLabel: "Phase 4b (mean)",
-        Color: "#ec407a");
+    private const string Target = "precipitation";
+    private const string FallbackGrey = "#9e9e9e";
 
     /// <summary>Light shade of Phase 4a's amber for the q05/q95 credible
     /// interval bracket lines on the BART panel — saturation difference
-    /// reads as "edges of the same uncertainty band". Material amber-200.</summary>
+    /// reads as "edges of the same uncertainty band". Material amber-200.
+    /// Stays a code constant: it's per-panel styling derived from 4a's
+    /// colour, not phase identity.</summary>
     public const string Phase4aBand = "#ffcc80";
+
+    /// <summary>
+    /// Canonical render order = phases.yaml order. Materialised once — the
+    /// registry is an immutable process-wide singleton.
+    /// </summary>
+    public static readonly IReadOnlyList<PrecipPhase> All =
+        PhaseRegistry.Default.AllPhases(Target).Select(ToPhase).ToList();
+
+    /// <summary>Phases that participate in the +24h overlay — currently all.</summary>
+    public static readonly IReadOnlyList<PrecipPhase> Comparable = All;
+
+    /// <summary>Phase 4a's card — the BART panel references it directly
+    /// (heading + credible-interval band styling).</summary>
+    public static PrecipPhase Phase4a => ByKey("4a");
 
     /// <summary>
     /// Look up a phase colour by key string. Used by render paths that
     /// receive a phase string directly (e.g. rolling Brier rows from the
     /// verify pipeline) rather than a typed <see cref="PrecipPhase"/>
-    /// reference. Returns a neutral grey when the phase isn't one of the
-    /// active four — silently keeps a stale row visible without misleading
-    /// the eye into matching it to a known phase.
+    /// reference. Returns a neutral grey when the phase isn't an active
+    /// registry phase — silently keeps a stale row visible without
+    /// misleading the eye into matching it to a known phase.
     /// </summary>
     public static string ColorFor(string phaseKey)
     {
         foreach (var p in All)
             if (string.Equals(phaseKey, p.Key, StringComparison.Ordinal)) return p.Color;
-        return "#9e9e9e";
+        return FallbackGrey;
     }
-
-    /// <summary>Canonical render order: 3a → 3c → 3d → 3o → 4a → 4b.</summary>
-    public static readonly IReadOnlyList<PrecipPhase> All = new[]
-    {
-        Phase3a, Phase3c, Phase3d, Phase3o, Phase4a, Phase4b,
-    };
-
-    /// <summary>Phases that participate in the +24h overlay — currently both.</summary>
-    public static readonly IReadOnlyList<PrecipPhase> Comparable = All;
 
     /// <summary>
     /// Bucket a precipitation version into its phase. Returns <c>null</c> when
@@ -139,5 +93,34 @@ public static class PrecipPhases
 
     /// <summary>True iff <paramref name="metadataPhase"/> matches the 3c key. Used by predict to enable rich-feature loading.</summary>
     public static bool IsRich(string? metadataPhase)
-        => string.Equals(metadataPhase, Phase3c.Key, StringComparison.OrdinalIgnoreCase);
+        => string.Equals(metadataPhase, "3c", StringComparison.OrdinalIgnoreCase);
+
+    private static PrecipPhase ByKey(string key)
+    {
+        foreach (var p in All)
+            if (string.Equals(p.Key, key, StringComparison.Ordinal)) return p;
+        // Defensive: only reachable if the phase is removed from phases.yaml
+        // while a render path still references it by name — render grey /
+        // generically-titled rather than crashing the whole site build.
+        return Fallback(key);
+    }
+
+    private static PrecipPhase ToPhase(PhaseEntry e)
+    {
+        // Display is enforced by PhaseWiringConsistencyTests for every
+        // registry phase; the fallback keeps rendering alive (grey/untitled)
+        // if a hand-edited yaml ever drops it.
+        var d = e.Display;
+        if (d is null) return Fallback(e.Id);
+        return new PrecipPhase(
+            Key: e.Id,
+            LongTitle: d.Title ?? $"Phase {e.Id}",
+            ShortTitle: d.ShortTitle ?? $"Phase {e.Id}",
+            Description: d.Description ?? "",
+            ChampionVsChallengerLabel: d.Label ?? d.ShortTitle ?? $"Phase {e.Id}",
+            Color: d.Color);
+    }
+
+    private static PrecipPhase Fallback(string key)
+        => new(key, $"Phase {key}", $"Phase {key}", "", $"Phase {key}", FallbackGrey);
 }

@@ -177,7 +177,12 @@ public sealed class RenderSiteCommand
         var phaseByVersion = _metadata.GetPhaseByVersion(
             predictionsAllLocs.Select(p => (Station: p.LocationName, Version: p.ModelVersion)),
             precipAllLocs.Select(p => (p.Station, p.Version)),
-            dryWindowAllLocs.Select(d => (d.Station, d.WindowHours, d.Version)));
+            dryWindowAllLocs.Select(d => (d.Station, d.WindowHours, d.Version)),
+            // Element keys are LOCATION-keyed (element bundles live under
+            // data/models/{element}/{location}/{version}). Wind is the only
+            // element tree whose page groups by phase today; pass more trees
+            // here if another element page grows phase lines.
+            windAllLocs.Select(p => (Station: p.LocationName, p.Version)));
         // Precip uses a longer 30-day rolling window than temp's because wet
         // hours are sparser — the verify command's defaults pin this rule
         // (PrecipVerifyCommand: 30d window vs TempVerifyCommand: 14d).
@@ -1530,75 +1535,32 @@ GROUP BY LocationName, ValidTimeUtc";
         return result;
     }
 
+    /// <summary>Per-NWP hourly precipitation probability (%) from the raw
+    /// forecast tree, deduped to freshest RunTime per (Model, ValidTime).
+    /// Feeds the rain-page PoP overlay panel.</summary>
     private IReadOnlyList<SitePages.NwpPrecipProbForecastPoint> QueryNwpPrecipProbabilities(
         DateTime start, DateTime end, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.ForecastsPath, "**", "*.parquet"));
-
-        var nwpFilter = WeatherBlend.Train.Common.Nwp.SqlInList();
-
-        var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
-
-        var sql = $@"
-WITH ranked AS (
-  SELECT Model, LocationName, RunTimeUtc, ValidTimeUtc, PrecipitationProbability,
-         row_number() OVER (PARTITION BY Model, LocationName, ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn
-  FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-  WHERE LocationName IN ({locFilter})
-    AND Model IN {nwpFilter}
-    AND PrecipitationProbability IS NOT NULL
-    AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
-    AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
-)
-SELECT Model, ValidTimeUtc, PrecipitationProbability, LocationName
-FROM ranked WHERE rn = 1 ORDER BY LocationName, Model, ValidTimeUtc";
-
-        return ParquetReader.Query(sql, r => new SitePages.NwpPrecipProbForecastPoint(
-            Model:               r.GetString(0),
-            ValidTimeUtc:        r.GetDateTime(1),
-            ProbabilityPercent:  r.GetDouble(2),
-            LocationName:        r.GetString(3)),
-            _log, "Per-NWP precipitation_probability tree empty — overlay panel will be absent.", ct);
-    }
+        => QueryNwpColumn(start, end, "PrecipitationProbability",
+            r => new SitePages.NwpPrecipProbForecastPoint(
+                Model:              r.GetString(0),
+                ValidTimeUtc:       r.GetDateTime(1),
+                ProbabilityPercent: r.GetDouble(2),
+                LocationName:       r.GetString(3)),
+            "Per-NWP precipitation_probability tree empty — overlay panel will be absent.", ct);
 
     /// <summary>Per-NWP precipitation rate (mm/h) from the raw forecast tree —
     /// hourly granularity, deduped to freshest RunTime per (Model, ValidTime).
-    /// Mirrors <see cref="QueryNwpPrecipProbabilities"/> in shape; only the
-    /// column projected (Precipitation rather than PrecipitationProbability)
-    /// and the model filter differ. Used by the lead-12 rain page's mm/h
-    /// chart where the prediction-row-based overlay is too sparse.</summary>
+    /// Used by the lead-12 rain page's mm/h chart where the
+    /// prediction-row-based overlay is too sparse.</summary>
     private IReadOnlyList<SitePages.NwpPrecipRateForecastPoint> QueryNwpPrecipRates(
         DateTime start, DateTime end, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.ForecastsPath, "**", "*.parquet"));
-
-        var nwpFilter = WeatherBlend.Train.Common.Nwp.SqlInList();
-
-        var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
-
-        var sql = $@"
-WITH ranked AS (
-  SELECT Model, LocationName, RunTimeUtc, ValidTimeUtc, Precipitation,
-         row_number() OVER (PARTITION BY Model, LocationName, ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn
-  FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-  WHERE LocationName IN ({locFilter})
-    AND Model IN {nwpFilter}
-    AND Precipitation IS NOT NULL
-    AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
-    AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
-)
-SELECT Model, ValidTimeUtc, Precipitation, LocationName
-FROM ranked WHERE rn = 1 ORDER BY LocationName, Model, ValidTimeUtc";
-
-        return ParquetReader.Query(sql, r => new SitePages.NwpPrecipRateForecastPoint(
-            Model:           r.GetString(0),
-            ValidTimeUtc:    r.GetDateTime(1),
-            PrecipMmPerHour: r.GetDouble(2),
-            LocationName:    r.GetString(3)),
-            _log, "Per-NWP precipitation rate tree empty — overlay panel will be absent.", ct);
-    }
+        => QueryNwpColumn(start, end, "Precipitation",
+            r => new SitePages.NwpPrecipRateForecastPoint(
+                Model:           r.GetString(0),
+                ValidTimeUtc:    r.GetDateTime(1),
+                PrecipMmPerHour: r.GetDouble(2),
+                LocationName:    r.GetString(3)),
+            "Per-NWP precipitation rate tree empty — overlay panel will be absent.", ct);
 
     /// <summary>Per-NWP 2m temperature (°C) from the raw forecast tree —
     /// same shape as the precip rate / PoP queries above. Used on the
@@ -1607,6 +1569,25 @@ FROM ranked WHERE rn = 1 ORDER BY LocationName, Model, ValidTimeUtc";
     /// {0,6,12,18}Z valid hours).</summary>
     private IReadOnlyList<SitePages.NwpTemperatureForecastPoint> QueryNwpTemperatures(
         DateTime start, DateTime end, CancellationToken ct)
+        => QueryNwpColumn(start, end, "Temperature2m",
+            r => new SitePages.NwpTemperatureForecastPoint(
+                Model:         r.GetString(0),
+                ValidTimeUtc:  r.GetDateTime(1),
+                Temperature2m: r.GetDouble(2),
+                LocationName:  r.GetString(3)),
+            "Per-NWP temperature tree empty — overlay panel will be absent.", ct);
+
+    /// <summary>
+    /// Shared body for the three per-NWP overlay queries above — they were
+    /// textually identical except the projected column. One row per
+    /// (Location, Model, ValidTime) inside the window: blender-input NWPs
+    /// only, NULL values dropped, freshest RunTime wins. The mapper reads
+    /// columns positionally: 0=Model, 1=ValidTimeUtc, 2=the projected value,
+    /// 3=LocationName.
+    /// </summary>
+    private IReadOnlyList<T> QueryNwpColumn<T>(
+        DateTime start, DateTime end, string column,
+        Func<System.Data.IDataReader, T> map, string emptyMessage, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.ForecastsPath, "**", "*.parquet"));
@@ -1617,24 +1598,19 @@ FROM ranked WHERE rn = 1 ORDER BY LocationName, Model, ValidTimeUtc";
 
         var sql = $@"
 WITH ranked AS (
-  SELECT Model, LocationName, RunTimeUtc, ValidTimeUtc, Temperature2m,
+  SELECT Model, LocationName, RunTimeUtc, ValidTimeUtc, {column},
          row_number() OVER (PARTITION BY Model, LocationName, ValidTimeUtc ORDER BY RunTimeUtc DESC) AS rn
   FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
   WHERE LocationName IN ({locFilter})
     AND Model IN {nwpFilter}
-    AND Temperature2m IS NOT NULL
+    AND {column} IS NOT NULL
     AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
     AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 )
-SELECT Model, ValidTimeUtc, Temperature2m, LocationName
+SELECT Model, ValidTimeUtc, {column}, LocationName
 FROM ranked WHERE rn = 1 ORDER BY LocationName, Model, ValidTimeUtc";
 
-        return ParquetReader.Query(sql, r => new SitePages.NwpTemperatureForecastPoint(
-            Model:          r.GetString(0),
-            ValidTimeUtc:   r.GetDateTime(1),
-            Temperature2m:  r.GetDouble(2),
-            LocationName:   r.GetString(3)),
-            _log, "Per-NWP temperature tree empty — overlay panel will be absent.", ct);
+        return ParquetReader.Query(sql, map, _log, emptyMessage, ct);
     }
 
     /// <summary>

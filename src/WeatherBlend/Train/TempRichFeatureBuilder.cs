@@ -2,6 +2,7 @@ using System.Text;
 using DuckDB.NET.Data;
 using WeatherBlend.Config;
 using WeatherBlend.Train.Common;
+using WeatherBlend.Train.Element.Common;
 
 namespace WeatherBlend.Train;
 
@@ -43,69 +44,42 @@ public static class TempRichFeatureBuilder
 
     /// <summary>Resolve the runtime <see cref="BlenderSpec"/> for rich temperature at a given lead.</summary>
     public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours)
-    {
-        var blender = blendersCfg.Get(SpecTarget, SpecFeatureSet);
-        var requiredSet = blender.RequiredForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var optionalSet = blender.OptionalForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        var overlap = requiredSet.Intersect(optionalSet, StringComparer.OrdinalIgnoreCase).ToArray();
-        if (overlap.Length > 0)
-            throw new InvalidOperationException(
-                $"BlenderConfig {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h has model(s) " +
-                $"listed as both required and optional: [{string.Join(",", overlap)}].");
-
-        var orderedRequired = TempFeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
-        var orderedOptional = TempFeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
-        var orderedModels = TempFeatureBuilder.CanonicalModelOrder
-            .Where(m => requiredSet.Contains(m) || optionalSet.Contains(m)).ToList();
-        if (orderedModels.Count == 0)
-            throw new InvalidOperationException($"No models active for {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h.");
-
-        // Layout (N = orderedModels.Count):
-        //   N per-model temps, 3 spread, 4 calendar  (= N+7, the lean block)
-        //   per-model secondaries (var-major × model): each non-wind-dir var = N cols,
-        //     wind_dir = 2N cols (sin+cos)
-        //   9 aggregates
-        var names = new List<string>();
-        foreach (var m in orderedModels) names.Add($"temp_{TempFeatureBuilder.ShortName(m)}");
-        names.AddRange(new[] { "temp_mean", "temp_std", "temp_range" });
-        names.AddRange(new[] { "hour_sin", "hour_cos", "doy_sin", "doy_cos" });
-
-        foreach (var (_, prefix) in SecondaryVars)
+        // Shared membership/guards/spec-field boilerplate in BlenderSpec.Build;
+        // only the rich layout below is specific to this builder.
+        => BlenderSpec.Build(blendersCfg, SpecTarget, SpecFeatureSet, leadHours, orderedModels =>
         {
-            if (prefix == "wind_dir")
+            // Layout (N = orderedModels.Count):
+            //   N per-model temps, 3 spread, 4 calendar  (= N+7, the lean block)
+            //   per-model secondaries (var-major × model): each non-wind-dir var = N cols,
+            //     wind_dir = 2N cols (sin+cos)
+            //   9 aggregates
+            var names = new List<string>();
+            foreach (var m in orderedModels) names.Add($"temp_{TempFeatureBuilder.ShortName(m)}");
+            names.AddRange(new[] { "temp_mean", "temp_std", "temp_range" });
+            names.AddRange(new[] { "hour_sin", "hour_cos", "doy_sin", "doy_cos" });
+
+            foreach (var (_, prefix) in SecondaryVars)
             {
-                foreach (var m in orderedModels) names.Add($"wind_dir_sin_{TempFeatureBuilder.ShortName(m)}");
-                foreach (var m in orderedModels) names.Add($"wind_dir_cos_{TempFeatureBuilder.ShortName(m)}");
+                if (prefix == "wind_dir")
+                {
+                    foreach (var m in orderedModels) names.Add($"wind_dir_sin_{TempFeatureBuilder.ShortName(m)}");
+                    foreach (var m in orderedModels) names.Add($"wind_dir_cos_{TempFeatureBuilder.ShortName(m)}");
+                }
+                else
+                {
+                    foreach (var m in orderedModels) names.Add($"{prefix}_{TempFeatureBuilder.ShortName(m)}");
+                }
             }
-            else
+            names.AddRange(new[]
             {
-                foreach (var m in orderedModels) names.Add($"{prefix}_{TempFeatureBuilder.ShortName(m)}");
-            }
-        }
-        names.AddRange(new[]
-        {
-            "dew_mean", "dew_std",
-            "rh_mean", "rh_std",
-            "cloud_mean",
-            "wind_speed_mean", "wind_speed_std",
-            "pressure_mean", "pressure_std",
+                "dew_mean", "dew_std",
+                "rh_mean", "rh_std",
+                "cloud_mean",
+                "wind_speed_mean", "wind_speed_std",
+                "pressure_mean", "pressure_std",
+            });
+            return names;
         });
-
-        return new BlenderSpec
-        {
-            Target = SpecTarget,
-            FeatureSet = SpecFeatureSet,
-            LeadHours = leadHours,
-            RequiredModels = orderedRequired,
-            OptionalModels = orderedOptional,
-            Models = orderedModels,
-            FeatureNames = names,
-            DataSource = BlenderDataSource.OpenMeteoPreviousRuns,
-            Tier = SpecFeatureSet,
-            UkvStrategy = null,
-        };
-    }
 
     /// <summary>
     /// Build training rows for one (target=temperature, feature-set=rich, lead) blender.
@@ -123,8 +97,8 @@ public static class TempRichFeatureBuilder
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
 
-        var fcGlob = NormaliseGlob(Path.Combine(forecastsPath, "**", "*.parquet"));
-        var eraGlob = NormaliseGlob(Path.Combine(era5Path, "**", "*.parquet"));
+        var fcGlob = SqlGlob.Escape(Path.Combine(forecastsPath, "**", "*.parquet"));
+        var eraGlob = SqlGlob.Escape(Path.Combine(era5Path, "**", "*.parquet"));
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
         var n = spec.Models.Count;
         // 2026-05-26: optional training-data cutoff (see PhaseRegistry).
@@ -244,36 +218,21 @@ public static class TempRichFeatureBuilder
         var features = new float[spec.FeatureCount];
 
         // Lean block: N temps + 3 spread + 4 calendar.
-        double sum = 0, sumSq = 0, min = double.MaxValue, max = double.MinValue;
-        int present = 0;
-        for (int i = 0; i < n; i++)
-        {
-            var x = temps[i];
-            if (double.IsNaN(x)) continue;
-            sum += x; sumSq += x * x;
-            if (x < min) min = x;
-            if (x > max) max = x;
-            present++;
-        }
-        var meanT  = present == 0 ? double.NaN : sum / present;
-        var var0   = present == 0 ? double.NaN : Math.Max(0.0, (sumSq / present) - (meanT * meanT));
-        var stdT   = double.IsNaN(var0) ? double.NaN : Math.Sqrt(var0);
-        var rangeT = present == 0 ? double.NaN : max - min;
+        var spread = InterModelSpread.From(temps);
 
         var v = validTimeUtc.Kind == DateTimeKind.Utc
             ? validTimeUtc
             : DateTime.SpecifyKind(validTimeUtc, DateTimeKind.Utc);
-        var hourAngle = 2.0 * Math.PI * v.Hour / 24.0;
-        var doyAngle  = 2.0 * Math.PI * (v.DayOfYear - 1) / 365.0;
+        var cal = CalendarFeatures.From(v);
 
         for (int i = 0; i < n; i++) features[i] = (float)temps[i];
-        features[n + 0] = (float)meanT;
-        features[n + 1] = (float)stdT;
-        features[n + 2] = (float)rangeT;
-        features[n + 3] = (float)Math.Sin(hourAngle);
-        features[n + 4] = (float)Math.Cos(hourAngle);
-        features[n + 5] = (float)Math.Sin(doyAngle);
-        features[n + 6] = (float)Math.Cos(doyAngle);
+        features[n + 0] = (float)spread.Mean;
+        features[n + 1] = (float)spread.Std;
+        features[n + 2] = (float)spread.Range;
+        features[n + 3] = cal.HourSin;
+        features[n + 4] = cal.HourCos;
+        features[n + 5] = cal.DoySin;
+        features[n + 6] = cal.DoyCos;
 
         // Per-model secondaries (var-major × model, in SecondaryVars order;
         // wind_dir expanded to sin+cos blocks).
@@ -347,7 +306,4 @@ public static class TempRichFeatureBuilder
             if (!double.IsNaN(values[i])) { sumSq += (values[i] - mean) * (values[i] - mean); n++; }
         return n == 0 ? double.NaN : Math.Sqrt(sumSq / n);
     }
-
-    private static string NormaliseGlob(string path)
-        => path.Replace('\\', '/').Replace("'", "''");
 }

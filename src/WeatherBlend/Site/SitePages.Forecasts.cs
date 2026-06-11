@@ -127,8 +127,7 @@ public static partial class SitePages
         // show history for context; the outer windowStart bounds it.
         var poolFuture = input.Predictions
             .Where(p => p.LeadHours == lead)
-            .GroupBy(p => p.ValidTimeUtc)
-            .Select(g => g.OrderByDescending(p => p.PredictionMadeAtUtc).First())
+            .FreshestPerValid(p => p.ValidTimeUtc, p => p.PredictionMadeAtUtc)
             .OrderBy(p => p.ValidTimeUtc)
             .ToList();
 
@@ -161,8 +160,7 @@ public static partial class SitePages
             .Where(p => input.PhaseByVersion.TryGetValue(p.ModelVersion, out var ph)
                         && orderedActivePhases.Contains(ph, StringComparer.Ordinal))
             .GroupBy(p => input.PhaseByVersion[p.ModelVersion])
-            .ToDictionary(g => g.Key, g => g.GroupBy(r => r.ValidTimeUtc)
-                                            .Select(gv => gv.OrderByDescending(r => r.PredictionMadeAtUtc).First())
+            .ToDictionary(g => g.Key, g => g.FreshestPerValid(r => r.ValidTimeUtc, r => r.PredictionMadeAtUtc)
                                             .OrderBy(r => r.ValidTimeUtc)
                                             .ToList());
         var blendSeries = new List<LineSeries>();
@@ -243,8 +241,7 @@ public static partial class SitePages
         // the page X axis. Empty (section omitted) until rock_surface predict
         // runs / syncs — and Membury never has it (Bonehill-only elements).
         var rockRows = input.RockSurfacePredictions
-            .GroupBy(r => r.ValidTimeUtc)
-            .Select(g => g.OrderBy(r => r.LeadHours).ThenByDescending(r => r.PredictedAtUtc).First())
+            .LatestPerValid(r => r.ValidTimeUtc, r => r.LeadHours, r => r.PredictedAtUtc)
             .OrderBy(r => r.ValidTimeUtc)
             .ToList();
         if (rockRows.Count > 0)
@@ -445,8 +442,7 @@ public static partial class SitePages
                 .Where(r => r.Station == station && r.LeadHours == lead)
                 .ToList();
             latestPerValidByStation[station] = stationLeadRows
-                .GroupBy(r => r.ValidTimeUtc)
-                .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
+                .FreshestPerValid(r => r.ValidTimeUtc, r => r.PredictedAtUtc)
                 .OrderBy(r => r.ValidTimeUtc)
                 .ToList();
             var stationChampPhase =
@@ -456,8 +452,7 @@ public static partial class SitePages
             championLatestPerValidByStation[station] = stationLeadRows
                 .Where(r => input.PhaseByVersion.TryGetValue(r.Version, out var ph)
                             && string.Equals(ph, stationChampPhase, StringComparison.Ordinal))
-                .GroupBy(r => r.ValidTimeUtc)
-                .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
+                .FreshestPerValid(r => r.ValidTimeUtc, r => r.PredictedAtUtc)
                 .OrderBy(r => r.ValidTimeUtc)
                 .ToList();
         }
@@ -576,8 +571,7 @@ public static partial class SitePages
                 .Where(r => input.PhaseByVersion.TryGetValue(r.Version, out var ph)
                             && orderedPrecipPhases.Contains(ph, StringComparer.Ordinal))
                 .GroupBy(r => input.PhaseByVersion[r.Version])
-                .ToDictionary(g => g.Key, g => g.GroupBy(r => r.ValidTimeUtc)
-                                                 .Select(gv => gv.OrderByDescending(r => r.PredictedAtUtc).First())
+                .ToDictionary(g => g.Key, g => g.FreshestPerValid(r => r.ValidTimeUtc, r => r.PredictedAtUtc)
                                                  .OrderBy(r => r.ValidTimeUtc)
                                                  .ToList());
             for (int i = 0; i < orderedPrecipPhases.Count; i++)
@@ -751,8 +745,7 @@ public static partial class SitePages
                         && r.LeadHours == lead
                         && input.PhaseByVersion.TryGetValue(r.Version, out var ph)
                         && string.Equals(ph, "4a", StringComparison.Ordinal))
-            .GroupBy(r => r.ValidTimeUtc)
-            .Select(g => g.OrderByDescending(r => r.PredictedAtUtc).First())
+            .FreshestPerValid(r => r.ValidTimeUtc, r => r.PredictedAtUtc)
             .OrderBy(r => r.ValidTimeUtc)
             .ToList();
         if (rows.Count == 0) return "";

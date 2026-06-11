@@ -8,9 +8,29 @@
 #     derives the run-list — defaults to "all impl=python phases"),
 #   - retrain-blenders.yml (slice 4) for the .NET phases.
 #
-# Adding a new phase = edit ONLY this file. Champion-first ordering per
-# target drives Models page sort order and the ActivePhasePolicy.Priority
-# scalar.
+# This file is the REGISTRY, not the whole wiring. Adding a new phase
+# touches, in practice:
+#   1. this file (the L1 gate — id / role / impl / locations / retrain,
+#      PLUS the per-phase `display:` presentation block — the old separate
+#      Site presentation tables (PrecipPhase.cs / TempPhase.cs /
+#      DryWindowPhase.cs) are now thin lookups over this file, so a new
+#      phase's colour/titles are part of this same entry);
+#   2. .github/workflows/retrain-blenders.yml — a train step gated on
+#      run_<id> (dotnet phases with a retrain step; python phases get the
+#      equivalent in WeatherProbabilistic's retrain-python.yml);
+#   3. scripts/sync_train_data.sh — a case-table entry declaring the data
+#      trees the phase trains on (it exits 3 on unknown ids);
+#   4. the predict handled-set (e.g. PrecipPredictCommand.HandledPrecipPhases
+#      / ElementPredictCommand.HandledElementPhases — the L2 gate) or a
+#      dedicated predict command for synthesised phases;
+#   5. possibly cloudflare/scheduler-worker (a new workflow hop if the
+#      phase predicts outside the existing chains).
+# PhaseWiringConsistencyTests (tests/WeatherBlend.Tests) enforces 1-4
+# against this registry, so a missing hook fails at PR time instead of on
+# the next Sunday retrain. Champion-first ordering per target drives
+# Models page sort order, the ActivePhasePolicy.Priority scalar, AND the
+# per-phase render order on the site (the old presentation tables' "canonical
+# render order" is now simply this file's order).
 #
 # Roles (one of):
 #   champion    — first-in-list per target; predict/site treat as Current
@@ -35,6 +55,30 @@
 #   wind_blend was added without it). The phases-consistency test
 #   (PhaseWiringConsistencyTests) enforces that every retrained dotnet phase
 #   has both a sync_train_data.sh entry and a retrain-blenders run step.
+#
+# display (REQUIRED on every phase — PhaseWiringConsistencyTests enforces it):
+#   per-phase presentation, consumed by the Site lookups (PrecipPhases /
+#   TempPhases / DryWindowPhases read this via PhaseRegistry):
+#     color                 — REQUIRED. SVG/chart colour for every line/series
+#                             keyed by this phase. The cross-target palette
+#                             convention: purple champion, teal rich
+#                             challenger, red exact-runtime, amber BART —
+#                             aligned 2026-05-10 so a phase reads the same
+#                             colour wherever it appears.
+#     title                 — long heading where space allows the full
+#                             feature-count gloss (precip / dry-window cards).
+#     shortTitle            — heading where the chart title also names the phase.
+#     description           — skill-line paragraph under the heading.
+#     label                 — series label for champion-vs-challenger overlays.
+#     startHourCurveVersion — dry-window MC phases only: on-disk model_version
+#                             of the phase's start-hour curve under
+#                             data/predictions/dry_window_start_hour/…; keep in
+#                             sync with DryWindowPredictCommand.Phase3pStartHourVersion.
+#   Targets without a phase-keyed render path (the element blenders, 3f,
+#   wind_*) carry a minimal block (color + shortTitle) so the "every phase
+#   has display" invariant stays uniform; their colours are not yet consumed
+#   anywhere. Python-side consumers (retrain-python.yml's yq) select
+#   id/impl/locations/retrain explicitly, so display is additive-safe.
 
 targets:
   temperature:
@@ -50,20 +94,36 @@ targets:
       # 2d ships as champion at lead 12h only (per-lead champion in
       # TemperatureManifest.ChampionByLead); 2b stays Current for 24/48/
       # 72/96/120 where 2d isn't trained. 2c keeps its challenger slot.
+      # Temperature display: colour-only — the temp pages key series colour
+      # by phase but render no per-phase cards, so titles aren't consumed.
+      # Palette mirrors the precipitation side (3a→2b purple, 3c→2c teal,
+      # 3d→2d red) so a reader cross-referencing the temp + rain skill pages
+      # doesn't have to remap colours in their head. Temperature has no
+      # equivalent of 4a (BART) yet, so the amber slot is reserved for
+      # whenever a fourth active temp phase appears.
       - id: "2b"
         role: champion
         impl: dotnet
         minValidTime: "2024-01-01"
+        display:
+          shortTitle: "Phase 2b (lean)"
+          color: "#7c4dff"   # purple — current champion (lean blender)
       - id: "2c"
         role: challenger
         impl: dotnet
         minValidTime: "2024-01-01"
+        display:
+          shortTitle: "Phase 2c (rich)"
+          color: "#26a69a"   # teal — rich-feature challenger
       - id: "2d"
         role: challenger
         impl: dotnet
         # Exact-runtime (raw S3 cycle archive) — bonehill_rocks only until
         # a Membury-cell S3 archive backfill lands.
         locations: ["bonehill_rocks"]
+        display:
+          shortTitle: "Phase 2d (exact-runtime)"
+          color: "#ef5350"   # red — exact-runtime, +12h champion
 
   precipitation:
     phases:
@@ -86,10 +146,25 @@ targets:
       # homogeneous, +0.36% CRPS vs 3a — see project_3f_stage1_membury_
       # bakeoff_2026-05-25.md). Promoted champion 2026-06-06: conservative on
       # the 0.1mm trace-precip threshold that made 3a over-read P(wet).
+      # Precipitation display: full card metadata (title/shortTitle/
+      # description/label) — the rain pages render per-phase sections.
+      # Colours are aligned with the rolling-Brier panel on the rain skill
+      # page (purple, teal, red exact-runtime, amber BART) so a phase reads
+      # the same colour wherever it appears: vs-truth eyeball, +24h phase
+      # comparison, rolling Brier per lead. Aligned 2026-05-10.
       - id: "3o"
         role: champion
         impl: dotnet
         locations: ["bonehill_rocks"]
+        display:
+          title: "Phase 3o — rich + orographic (pooled, 4 Bonehill stations)"
+          shortTitle: "Phase 3o (rich+oro)"
+          description: "55-feature rich set plus 9 terrain features (elevation, slope, aspect, ruggedness, upwind gain, uplift, station id), trained pooled across the 4 Bonehill rainfall gauges to give the terrain features cross-station diversity. Replaces 3c on Bonehill (3c stays as a Membury reference)."
+          label: "Phase 3o (rich+oro)"
+          # Blue (material 600) — was #26a69a, identical to 3c's teal-green, so
+          # the two lines were indistinguishable on the rolling-Brier chart.
+          # Blue is well clear of 3c (teal), 3a (violet), 3d (red), 4a (amber).
+          color: "#1e88e5"
       # 3c runs at THREE locations. Membury: the only rich-precip challenger
       # (3o was rejected there at the 2026-05-25 stage-1 bake-off), so it is
       # the champion-by-fallback for Membury. Bonehill: re-added 2026-05-31,
@@ -104,6 +179,12 @@ targets:
         impl: dotnet
         locations: ["bonehill_rocks", "membury_devon", "sennen_cove"]
         minValidTime: "2024-01-01"
+        display:
+          title: "Phase 3c — rich (55 features)"
+          shortTitle: "Phase 3c (rich)"
+          description: "55-feature rich (adds humidity, pressure, EA persistence). Challenger."
+          label: "Phase 3c (challenger)"
+          color: "#26a69a"
       # 3a (lean P(wet ≥ 0.1mm)) — demoted from champion 2026-06-06; remains
       # the universal fallback (no locations filter → trains at every
       # location), so any location without a richer bundle (Sennen, new
@@ -112,6 +193,12 @@ targets:
         role: challenger
         impl: dotnet
         minValidTime: "2024-01-01"
+        display:
+          title: "Phase 3a — lean (27 features)"
+          shortTitle: "Phase 3a (lean)"
+          description: "27-feature lean. Champion."
+          label: "Phase 3a (champion)"
+          color: "#7c4dff"
       - id: "3d"
         role: challenger
         impl: dotnet
@@ -119,6 +206,12 @@ targets:
         # a Membury-cell S3 archive backfill lands. Lead-12h specialist;
         # never a whole-cell champion, so it sits after 3a in the lineup.
         locations: ["bonehill_rocks"]
+        display:
+          title: "Phase 3d — exact-runtime (lead 12 champion)"
+          shortTitle: "Phase 3d (exact-runtime)"
+          description: "Exact-runtime blender (GFS + IFS oper + AIFS + MO Global + UKV from raw S3). Champion at +12h, challenger at +24h. Per-station EA gauge truth."
+          label: "Phase 3d (exact-runtime)"
+          color: "#ef5350"
       # 4a became per-cell on 2026-05-11 (lead-pooled flavour
       # retired). One BART per (station, lead), matching 3a's
       # architecture. Aligned-row bake-off 2026-05-10 showed per-cell
@@ -130,6 +223,15 @@ targets:
         # WeatherProbabilistic. retrain-python reads this filter.
         locations: ["bonehill_rocks"]
         minValidTime: "2024-01-01"
+        display:
+          title: "Phase 4a — dbarts BART (Bayesian additive regression trees)"
+          shortTitle: "Phase 4a (BART)"
+          description: "Bayesian Additive Regression Trees blender (R dbarts via rpy2). Same 22-feature 3a base + 3 synoptic flow features. Trained + predicted in WeatherProbabilistic, written to the same predictions tree as 3a/3c/3d."
+          label: "Phase 4a (BART)"
+          # The light amber-200 shade for 4a's q05/q95 credible-interval
+          # bracket lines is derived in code (PrecipPhases.Phase4aBand) —
+          # it's a per-panel styling constant, not a phase identity.
+          color: "#ffa726"
       # 4b: arithmetic mean of 4a + 3o + 3c (3-way since 2026-06-02 — 3c+UA
       # joined as a decorrelated member, ~−3% Brier vs the old 2-way). Mint
       # inner-joins the latest 4a + 3o + 3c test_predictions; live predict
@@ -139,6 +241,12 @@ targets:
         impl: dotnet
         # Bonehill-only — minted from 4a + 3o, both Bonehill-only.
         locations: ["bonehill_rocks"]
+        display:
+          title: "Phase 4b — 2-way mean of Phase 4a + Phase 3o"
+          shortTitle: "Phase 4b (mean)"
+          description: "Arithmetic mean of Phase 4a (BART) and Phase 3o (rich+oro). Not a trained model — synthesised at predict time from the freshest 4a and 3o rows per (ValidTime, LeadHours)."
+          label: "Phase 4b (mean)"
+          color: "#ec407a"
 
   rainfall_amount:
     # Membury-only NGBoost-LogNormal regressor over the wet hours of
@@ -156,6 +264,11 @@ targets:
         role: champion
         impl: python
         locations: ["membury_devon"]
+        # Minimal display: the rainfall-amount page isn't phase-keyed yet
+        # (single phase); colour reserved for a future overlay.
+        display:
+          shortTitle: "Phase 3f (NGBoost LogNormal)"
+          color: "#5c6bc0"
 
   dry_window:
     phases:
@@ -168,6 +281,12 @@ targets:
         impl: dotnet
         locations: ["bonehill_rocks"]
         minValidTime: "2024-01-01"
+        display:
+          title: "Phase 3b — lean (53 features)"
+          shortTitle: "Phase 3b (lean)"
+          description: "53-feature LightGBM. Champion."
+          label: "Phase 3b (champion)"
+          color: "#90a4ae"
       # 3p — Gaussian copula MC over 3o hourly P(wet) marginals.
       # Single empirical Σ per station from train-split observed_wet
       # daytime sequences (lead-independent — truth doesn't move with
@@ -178,6 +297,19 @@ targets:
         role: challenger
         impl: dotnet
         locations: ["bonehill_rocks"]
+        display:
+          title: "Phase 3p — Gaussian copula MC over Phase 3o hourly P(wet)"
+          shortTitle: "Phase 3p (copula MC/3o)"
+          description: "Gaussian copula MC over the rich+orographic Phase 3o's hourly P(wet) marginals. Single empirical Σ per station, fit on train-split observed daytime wet/dry binary sequences (daytime-shape autocorrelation is lead-independent for truth, so per-lead Σs pool into one). Captures within-day wet/dry autocorrelation that an iid sampler misses. Bake-off Brier 0.1064 aggregate on the 9 (station, lead) Bonehill cells."
+          label: "Phase 3p (copula MC/3o)"
+          color: "#7e57c2"
+          # On-disk model_version of 3p's start-hour curve under
+          # data/predictions/dry_window_start_hour/…. Keep in sync with
+          # DryWindowPredictCommand.Phase3pStartHourVersion. Only MC phases
+          # have a curve — the renderer routes each phase's "best start"
+          # column + start-hour chart via this key so phases never read
+          # each other's curve.
+          startHourCurveVersion: "v3-3p"
 
   # Element per-variable blenders — wind / humidity / shortwave radiation /
   # cloud cover — feed the UTCI / feels-like derivation. One lean blender
@@ -185,12 +317,19 @@ targets:
   # Bonehill-only: Membury element blenders aren't trained yet. Listed here
   # so the per-location retrain fan-out scopes them from the same registry
   # as every other model — no hardcoded location list in the workflow.
+  # Element-target display blocks are minimal (shortTitle + color): the
+  # wind/element pages aren't phase-colour-keyed through these lookups yet,
+  # but the "every registry phase has display" invariant stays uniform so
+  # a future phase-comparison chart needs no schema change.
   wind:
     phases:
       - id: "wind"
         role: champion
         impl: dotnet
         locations: ["bonehill_rocks"]
+        display:
+          shortTitle: "Wind (ERA5-truth element blender)"
+          color: "#039be5"
       # Phase 2/3 of WIND_BLENDER_PLAN, 2026-05-27 production-scope lock.
       # Both ship as CHALLENGERS to the existing ERA5-truth element
       # blender above. wind_speed_lgb is the Dunkeswell-SYNOP-truth wind
@@ -205,6 +344,9 @@ targets:
         role: challenger
         impl: python
         locations: ["bonehill_rocks"]
+        display:
+          shortTitle: "Wind speed (quantile-LGB + CQR band)"
+          color: "#8d6e63"
       - id: "wind_blend"
         role: challenger
         impl: dotnet
@@ -213,24 +355,36 @@ targets:
         # mean of champion wind + wind_speed_lgb). No trainer / no bundle —
         # exclude from the train fanout.
         retrain: none
+        display:
+          shortTitle: "Wind blend (wind + wind_speed_lgb mean)"
+          color: "#43a047"
   humidity:
     phases:
       - id: "humidity"
         role: champion
         impl: dotnet
         locations: ["bonehill_rocks"]
+        display:
+          shortTitle: "Humidity (element blender)"
+          color: "#00897b"
   shortwave_radiation:
     phases:
       - id: "shortwave_radiation"
         role: champion
         impl: dotnet
         locations: ["bonehill_rocks"]
+        display:
+          shortTitle: "Shortwave radiation (element blender)"
+          color: "#fdd835"
   cloud_cover:
     phases:
       - id: "cloud_cover"
         role: champion
         impl: dotnet
         locations: ["bonehill_rocks"]
+        display:
+          shortTitle: "Cloud cover (element blender)"
+          color: "#78909c"
 
   # Wind gust — separate target from wind (speed/direction), trained on
   # ERA5 WindGusts10m. Single champion phase: LightGBM over 4 production
@@ -244,6 +398,9 @@ targets:
         role: champion
         impl: dotnet
         locations: ["bonehill_rocks"]
+        display:
+          shortTitle: "Wind gust (LightGBM)"
+          color: "#f4511e"
 
   # Wind direction (Phase 2 of WIND_BLENDER_PLAN, locked 2026-05-27).
   # Single phase: a PyTorch MLP bivariate-normal trained in WP on
@@ -258,4 +415,7 @@ targets:
         role: champion
         impl: python
         locations: ["bonehill_rocks"]
+        display:
+          shortTitle: "Wind direction (MVN MLP)"
+          color: "#7b1fa2"
 

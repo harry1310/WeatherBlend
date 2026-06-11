@@ -1,6 +1,7 @@
 using DuckDB.NET.Data;
 using WeatherBlend.Config;
 using WeatherBlend.Train.Common;
+using WeatherBlend.Train.Element.Common;
 
 namespace WeatherBlend.Train.Element.Humidity;
 
@@ -38,39 +39,18 @@ public static class HumidityFeatureBuilder
         { "temp_mean", "dewdep_mean", "cloud_low_mean", "cloud_mid_mean", "cloud_high_mean", "wind_mean" };
 
     public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours)
-    {
-        var blender = blendersCfg.Get(SpecTarget, SpecFeatureSet);
-        var requiredSet = blender.RequiredForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var optionalSet = blender.OptionalForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        var orderedRequired = TempFeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
-        var orderedOptional = TempFeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
-        var orderedModels = TempFeatureBuilder.CanonicalModelOrder
-            .Where(m => requiredSet.Contains(m) || optionalSet.Contains(m)).ToList();
-        if (orderedModels.Count == 0)
-            throw new InvalidOperationException($"No models active for {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h.");
-
-        var names = new List<string>();
-        foreach (var m in orderedModels) names.Add($"rh_{TempFeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"dp_{TempFeatureBuilder.ShortName(m)}");
-        names.AddRange(new[] { "rh_mean", "rh_std", "rh_range" });
-        names.AddRange(new[] { "hour_sin", "hour_cos", "doy_sin", "doy_cos" });
-        names.AddRange(RichAuxNames);
-
-        return new BlenderSpec
+        // Shared membership/guards/spec-field boilerplate in BlenderSpec.Build;
+        // only the humidity layout below is builder-specific.
+        => BlenderSpec.Build(blendersCfg, SpecTarget, SpecFeatureSet, leadHours, orderedModels =>
         {
-            Target = SpecTarget,
-            FeatureSet = SpecFeatureSet,
-            LeadHours = leadHours,
-            RequiredModels = orderedRequired,
-            OptionalModels = orderedOptional,
-            Models = orderedModels,
-            FeatureNames = names,
-            DataSource = BlenderDataSource.OpenMeteoPreviousRuns,
-            Tier = SpecFeatureSet,
-            UkvStrategy = null,
-        };
-    }
+            var names = new List<string>();
+            foreach (var m in orderedModels) names.Add($"rh_{TempFeatureBuilder.ShortName(m)}");
+            foreach (var m in orderedModels) names.Add($"dp_{TempFeatureBuilder.ShortName(m)}");
+            names.AddRange(new[] { "rh_mean", "rh_std", "rh_range" });
+            names.AddRange(new[] { "hour_sin", "hour_cos", "doy_sin", "doy_cos" });
+            names.AddRange(RichAuxNames);
+            return names;
+        });
 
     public static List<RegressionTrainingRow> BuildForLead(
         string forecastsPath, string era5Path, string locationName, BlenderSpec spec, CancellationToken ct = default)
@@ -78,8 +58,8 @@ public static class HumidityFeatureBuilder
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
 
-        var fcGlob  = Norm(Path.Combine(forecastsPath, "**", "*.parquet"));
-        var eraGlob = Norm(Path.Combine(era5Path, "**", "*.parquet"));
+        var fcGlob  = SqlGlob.Escape(Path.Combine(forecastsPath, "**", "*.parquet"));
+        var eraGlob = SqlGlob.Escape(Path.Combine(era5Path, "**", "*.parquet"));
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
         var n = spec.Models.Count;
 
@@ -173,36 +153,21 @@ ORDER BY p.ValidTimeUtc;";
                 nameof(aux));
 
         // Spread over RH (NaN-safe).
-        double sum = 0, sumSq = 0, min = double.MaxValue, max = double.MinValue;
-        int present = 0;
-        for (int i = 0; i < n; i++)
-        {
-            var x = rh[i];
-            if (double.IsNaN(x)) continue;
-            sum += x; sumSq += x * x;
-            if (x < min) min = x;
-            if (x > max) max = x;
-            present++;
-        }
-        var mean  = present == 0 ? double.NaN : sum / present;
-        var var0  = present == 0 ? double.NaN : Math.Max(0.0, (sumSq / present) - (mean * mean));
-        var std   = double.IsNaN(var0) ? double.NaN : Math.Sqrt(var0);
-        var range = present == 0 ? double.NaN : max - min;
+        var spread = InterModelSpread.From(rh);
 
         var v = validTimeUtc.Kind == DateTimeKind.Utc ? validTimeUtc : DateTime.SpecifyKind(validTimeUtc, DateTimeKind.Utc);
-        var hourAngle = 2.0 * Math.PI * v.Hour / 24.0;
-        var doyAngle  = 2.0 * Math.PI * (v.DayOfYear - 1) / 365.0;
+        var cal = CalendarFeatures.From(v);
 
         var features = new float[spec.FeatureCount];
         for (int i = 0; i < n; i++) features[i] = (float)rh[i];
         for (int i = 0; i < n; i++) features[n + i] = (float)dp[i];
-        features[2 * n + 0] = (float)mean;
-        features[2 * n + 1] = (float)std;
-        features[2 * n + 2] = (float)range;
-        features[2 * n + 3] = (float)Math.Sin(hourAngle);
-        features[2 * n + 4] = (float)Math.Cos(hourAngle);
-        features[2 * n + 5] = (float)Math.Sin(doyAngle);
-        features[2 * n + 6] = (float)Math.Cos(doyAngle);
+        features[2 * n + 0] = (float)spread.Mean;
+        features[2 * n + 1] = (float)spread.Std;
+        features[2 * n + 2] = (float)spread.Range;
+        features[2 * n + 3] = cal.HourSin;
+        features[2 * n + 4] = cal.HourCos;
+        features[2 * n + 5] = cal.DoySin;
+        features[2 * n + 6] = cal.DoyCos;
         if (hasAux)
             for (int i = 0; i < RichAuxNames.Length; i++)
                 features[2 * n + 7 + i] = (float)aux![i];
@@ -214,6 +179,4 @@ ORDER BY p.ValidTimeUtc;";
             Label = (float)era5Rh,
         };
     }
-
-    private static string Norm(string p) => p.Replace('\\', '/').Replace("'", "''");
 }

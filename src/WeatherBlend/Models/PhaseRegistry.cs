@@ -9,8 +9,11 @@ namespace WeatherBlend.Models;
 /// is a thin static wrapper over <see cref="Default"/> for back-compat
 /// with code written before the YAML extraction.
 ///
-/// Adding a new phase: edit phases.yaml. The Models page, the retrain
-/// workflows, and predict/verify all see the change without code edits.
+/// Adding a new phase: start at phases.yaml, then follow the honest
+/// touch-list in its header comment (retrain workflow step, sync script
+/// case, predict handled-set; presentation now lives IN the yaml as the
+/// per-phase `display:` block) — PhaseWiringConsistencyTests enforces the
+/// wiring against this registry.
 ///
 /// Default loader looks at <c>{AppContext.BaseDirectory}/config/phases.yaml</c>
 /// (the file is copied to build output via the csproj). Tests should call
@@ -217,7 +220,8 @@ public sealed class PhaseRegistry
                         .ToArray();
                 var minValidTime = ParseMinValidTime(raw.MinValidTime, target, raw.Id);
                 var retrain = NormalizeRetrain(raw.Retrain, target, raw.Id);
-                entries.Add(new PhaseEntry(raw.Id, role, impl, locations, minValidTime, retrain));
+                var display = ParseDisplay(raw.Display, target, raw.Id);
+                entries.Add(new PhaseEntry(raw.Id, role, impl, locations, minValidTime, retrain, display));
             }
 
             // Sanity: at most one champion per target. Multiple champions
@@ -301,6 +305,39 @@ public sealed class PhaseRegistry
         return DateTime.SpecifyKind(dt, DateTimeKind.Utc);
     }
 
+    /// <summary>
+    /// Parse the optional <c>display:</c> block (2026-06-10 — replaced the
+    /// three hardcoded Site presentation tables, so a new phase's card/colour
+    /// is one more field on its registry entry instead of touch-point 5 on
+    /// the old list). When the block is present, <c>color</c> is mandatory —
+    /// it's the one field every consumer reads; the rest default sensibly in
+    /// the Site lookups. Absent block → null; the PhaseWiringConsistencyTests
+    /// assert every SHIPPED phase carries one (the loader stays lenient so
+    /// minimal test registries don't have to).
+    ///
+    /// Additive-only by design: WeatherProbabilistic's retrain-python.yml
+    /// reads this file via yq selecting id/impl/locations/retrain — extra
+    /// per-phase keys are invisible to it. Keep it that way (never rename
+    /// the existing fields).
+    /// </summary>
+    private static PhaseDisplay? ParseDisplay(RawPhaseDisplay? raw, string target, string phaseId)
+    {
+        if (raw is null) return null;
+        if (string.IsNullOrWhiteSpace(raw.Color))
+            throw new InvalidOperationException(
+                $"Target '{target}' phase '{phaseId}' has a display block without a color. " +
+                "color is the one display field every render path consumes — set it (e.g. \"#7c4dff\").");
+        return new PhaseDisplay(
+            Color: raw.Color.Trim(),
+            Title: NullIfBlank(raw.Title),
+            ShortTitle: NullIfBlank(raw.ShortTitle),
+            Description: NullIfBlank(raw.Description),
+            Label: NullIfBlank(raw.Label),
+            StartHourCurveVersion: NullIfBlank(raw.StartHourCurveVersion));
+
+        static string? NullIfBlank(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+    }
+
     /// <summary>Normalise the optional <c>retrain:</c> field to lowercase and
     /// validate it. Absent → null (= trained by the phase's impl engine).
     /// Allowed explicit values: <c>blenders</c>, <c>python</c>, <c>none</c>.</summary>
@@ -351,6 +388,22 @@ public sealed class PhaseRegistry
         /// the train fanouts. Stops a predict-only phase being treated as
         /// trainable, which broke the 2026-05-31 retrain.</summary>
         public string? Retrain { get; set; }
+
+        /// <summary>Optional presentation block (2026-06-10). YAML keys follow
+        /// CamelCaseNamingConvention: <c>display: { title, shortTitle,
+        /// description, label, color, startHourCurveVersion }</c>. See
+        /// <see cref="ParseDisplay"/>.</summary>
+        public RawPhaseDisplay? Display { get; set; }
+    }
+
+    private sealed class RawPhaseDisplay
+    {
+        public string? Color { get; set; }
+        public string? Title { get; set; }
+        public string? ShortTitle { get; set; }
+        public string? Description { get; set; }
+        public string? Label { get; set; }
+        public string? StartHourCurveVersion { get; set; }
     }
 }
 
@@ -361,7 +414,7 @@ public sealed class PhaseRegistry
 /// </summary>
 public sealed record PhaseEntry(
     string Id, PhaseRole Role, PhaseImpl Impl, IReadOnlyList<string> Locations,
-    DateTime? MinValidTime = null, string? Retrain = null)
+    DateTime? MinValidTime = null, string? Retrain = null, PhaseDisplay? Display = null)
 {
     /// <summary>
     /// True if this phase is produced by a retrain step (train or mint) and
@@ -388,6 +441,25 @@ public sealed record PhaseEntry(
         => Locations.Count == 0
            || Locations.Any(l => string.Equals(l, location, StringComparison.OrdinalIgnoreCase));
 }
+
+/// <summary>
+/// Per-phase presentation metadata from phases.yaml's <c>display:</c> block —
+/// what the three hardcoded Site presentation tables (PrecipPhases /
+/// TempPhases / DryWindowPhases) used to carry. Those classes are now thin
+/// lookups over this record, so adding a phase needs no Site-side edit.
+/// Only <see cref="Color"/> is mandatory (every render path consumes it);
+/// the title/label fields are used by targets that render per-phase cards
+/// (precipitation, dry_window) and default to a "Phase {id}" gloss when
+/// absent. <see cref="StartHourCurveVersion"/> is dry-window-MC-only: the
+/// on-disk model_version of the phase's start-hour curve.
+/// </summary>
+public sealed record PhaseDisplay(
+    string Color,
+    string? Title = null,
+    string? ShortTitle = null,
+    string? Description = null,
+    string? Label = null,
+    string? StartHourCurveVersion = null);
 
 /// <summary>
 /// Phase rendering / lifecycle role per phases.yaml.

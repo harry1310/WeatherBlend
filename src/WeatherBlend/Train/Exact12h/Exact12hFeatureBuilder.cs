@@ -245,8 +245,8 @@ public static class Exact12hFeatureBuilder
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
 
-        var fcGlob = NormaliseGlob(Path.Combine(forecastsPath, "**", "*.parquet"));
-        var eraGlob = NormaliseGlob(Path.Combine(era5Path, "**", "*.parquet"));
+        var fcGlob = SqlGlob.Escape(Path.Combine(forecastsPath, "**", "*.parquet"));
+        var eraGlob = SqlGlob.Escape(Path.Combine(era5Path, "**", "*.parquet"));
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
         var leadInClause  = "(" + string.Join(",", leadsSorted) + ")";
 
@@ -493,8 +493,6 @@ ORDER BY p.ValidTimeUtc;
             WindDirMean = (float)windDirMeanDeg,
         };
     }
-
-    private static string NormaliseGlob(string p) => p.Replace('\\', '/');
 
     /// <summary>
     /// UKV per-V-hour pick strategy. Two strategies coexist — temp 2d and

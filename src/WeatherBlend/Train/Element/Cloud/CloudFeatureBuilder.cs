@@ -23,42 +23,21 @@ public static class CloudFeatureBuilder
     public const string SpecFeatureSet = "default";
 
     public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours)
-    {
-        var blender = blendersCfg.Get(SpecTarget, SpecFeatureSet);
-        var requiredSet = blender.RequiredForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var optionalSet = blender.OptionalForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        var orderedRequired = TempFeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
-        var orderedOptional = TempFeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
-        var orderedModels = TempFeatureBuilder.CanonicalModelOrder
-            .Where(m => requiredSet.Contains(m) || optionalSet.Contains(m)).ToList();
-        if (orderedModels.Count == 0)
-            throw new InvalidOperationException($"No models active for {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h.");
-
-        var names = new List<string>();
-        foreach (var m in orderedModels) names.Add($"cc_{TempFeatureBuilder.ShortName(m)}");
-        names.AddRange(new[] { "cc_mean", "cc_std", "cc_range" });
-        names.AddRange(new[] { "hour_sin", "hour_cos", "doy_sin", "doy_cos" });
-        // Ensemble-mean CAPE at the 24h lead ONLY (productionised 2026-06-04 from the
-        // cloud-cape-bakeoff: cape_mean −1.7% MAE @24h, mean-only; flat/negative at
-        // 48/72h once the CAPE forecast decays). Lead-gated here; ComposeRow writes it
-        // only when the (loaded) spec carries it, so 48/72h + older bundles stay lean.
-        if (leadHours == 24) names.Add("cape_mean");
-
-        return new BlenderSpec
+        // Shared membership/guards/spec-field boilerplate in BlenderSpec.Build;
+        // only the cloud layout below is builder-specific.
+        => BlenderSpec.Build(blendersCfg, SpecTarget, SpecFeatureSet, leadHours, orderedModels =>
         {
-            Target = SpecTarget,
-            FeatureSet = SpecFeatureSet,
-            LeadHours = leadHours,
-            RequiredModels = orderedRequired,
-            OptionalModels = orderedOptional,
-            Models = orderedModels,
-            FeatureNames = names,
-            DataSource = BlenderDataSource.OpenMeteoPreviousRuns,
-            Tier = SpecFeatureSet,
-            UkvStrategy = null,
-        };
-    }
+            var names = new List<string>();
+            foreach (var m in orderedModels) names.Add($"cc_{TempFeatureBuilder.ShortName(m)}");
+            names.AddRange(new[] { "cc_mean", "cc_std", "cc_range" });
+            names.AddRange(new[] { "hour_sin", "hour_cos", "doy_sin", "doy_cos" });
+            // Ensemble-mean CAPE at the 24h lead ONLY (productionised 2026-06-04 from the
+            // cloud-cape-bakeoff: cape_mean −1.7% MAE @24h, mean-only; flat/negative at
+            // 48/72h once the CAPE forecast decays). Lead-gated here; ComposeRow writes it
+            // only when the (loaded) spec carries it, so 48/72h + older bundles stay lean.
+            if (leadHours == 24) names.Add("cape_mean");
+            return names;
+        });
 
     public static List<RegressionTrainingRow> BuildForLead(
         string forecastsPath, string era5Path, string locationName, BlenderSpec spec,
@@ -67,8 +46,8 @@ public static class CloudFeatureBuilder
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
 
-        var fcGlob  = Norm(Path.Combine(forecastsPath, "**", "*.parquet"));
-        var eraGlob = Norm(Path.Combine(era5Path, "**", "*.parquet"));
+        var fcGlob  = SqlGlob.Escape(Path.Combine(forecastsPath, "**", "*.parquet"));
+        var eraGlob = SqlGlob.Escape(Path.Combine(era5Path, "**", "*.parquet"));
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
         var n = spec.Models.Count;
         // No training-window floor by default: with UKMO demoted to optional (config,
@@ -140,35 +119,21 @@ ORDER BY p.ValidTimeUtc;";
         var n = spec.Models.Count;
         if (cc.Count != n) throw new ArgumentException($"Expected {n} cloud values", nameof(cc));
 
-        double sum = 0, sumSq = 0, min = double.MaxValue, max = double.MinValue;
-        int present = 0;
-        for (int i = 0; i < n; i++)
-        {
-            var x = cc[i];
-            if (double.IsNaN(x)) continue;
-            sum += x; sumSq += x * x;
-            if (x < min) min = x;
-            if (x > max) max = x;
-            present++;
-        }
-        var mean  = present == 0 ? double.NaN : sum / present;
-        var var0  = present == 0 ? double.NaN : Math.Max(0.0, (sumSq / present) - (mean * mean));
-        var std   = double.IsNaN(var0) ? double.NaN : Math.Sqrt(var0);
-        var range = present == 0 ? double.NaN : max - min;
+        // Spread over cloud cover (NaN-safe).
+        var spread = InterModelSpread.From(cc);
 
         var v = validTimeUtc.Kind == DateTimeKind.Utc ? validTimeUtc : DateTime.SpecifyKind(validTimeUtc, DateTimeKind.Utc);
-        var hourAngle = 2.0 * Math.PI * v.Hour / 24.0;
-        var doyAngle  = 2.0 * Math.PI * (v.DayOfYear - 1) / 365.0;
+        var cal = CalendarFeatures.From(v);
 
         var features = new float[spec.FeatureCount];
         for (int i = 0; i < n; i++) features[i] = (float)cc[i];
-        features[n + 0] = (float)mean;
-        features[n + 1] = (float)std;
-        features[n + 2] = (float)range;
-        features[n + 3] = (float)Math.Sin(hourAngle);
-        features[n + 4] = (float)Math.Cos(hourAngle);
-        features[n + 5] = (float)Math.Sin(doyAngle);
-        features[n + 6] = (float)Math.Cos(doyAngle);
+        features[n + 0] = (float)spread.Mean;
+        features[n + 1] = (float)spread.Std;
+        features[n + 2] = (float)spread.Range;
+        features[n + 3] = cal.HourSin;
+        features[n + 4] = cal.HourCos;
+        features[n + 5] = cal.DoySin;
+        features[n + 6] = cal.DoyCos;
         // CAPE mean — only when the (loaded) spec carries it (24h lead). Lean/48h/72h
         // bundles (FeatureCount == n+7) keep predicting unchanged. Schema-gated.
         if (spec.FeatureCount > n + 7)
@@ -181,6 +146,4 @@ ORDER BY p.ValidTimeUtc;";
             Label = (float)era5Cc,
         };
     }
-
-    private static string Norm(string p) => p.Replace('\\', '/').Replace("'", "''");
 }

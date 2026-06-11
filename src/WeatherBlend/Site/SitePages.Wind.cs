@@ -109,38 +109,23 @@ public static partial class SitePages
         // ValidTime (covers the case where two versions of the same phase
         // are both Active — newer cycle wins).
         //
-        // input.PhaseByVersion only carries entries for temperature /
-        // precipitation / dry_window bundles (see ModelMetadataRepository.
-        // GetPhaseByVersion) — it never reads element (wind / humidity /
-        // …) training_metadata. So for wind versions the dict lookup
-        // misses and we have to derive the phase from the version-string
-        // convention the trainers stamp:
-        //   * "v_wind_blend_live"            → wind_blend (minted, no bundle)
-        //   * "...{_wind_speed_lgb}"         → wind_speed_lgb
-        //   * "...{_wind_mvn}"               → wind_mvn
-        //   * bare "vYYYY-MM-DD_hhmmss"      → wind (champion, pre-VersionSuffix)
-        // Long-term we'd want GetPhaseByVersion to also read element
-        // bundle metadata.
-        static string DeriveWindPhase(string version)
-        {
-            if (version.StartsWith("v_wind_blend", StringComparison.Ordinal)
-                || version.Contains("_wind_blend", StringComparison.Ordinal))
-                return "wind_blend";
-            if (version.Contains("_wind_speed_lgb", StringComparison.Ordinal))
-                return "wind_speed_lgb";
-            if (version.Contains("_wind_mvn", StringComparison.Ordinal))
-                return "wind_mvn";
-            return "wind";
-        }
+        // input.PhaseByVersion resolves wind versions since 2026-06-10:
+        // ModelMetadataRepository.GetPhaseByVersion reads the element
+        // bundle metadata (plus the wind_blend composed-version map and a
+        // suffix fallback for bundles not yet synced) — the version-string
+        // sniffing that used to live here (DeriveWindPhase) moved there.
+        // The only case left for the page itself is a bare champion version
+        // with no bundle on disk AND no entry in the dict (test fixtures,
+        // pre-VersionSuffix bundles): default it to the champion "wind"
+        // phase so the line still renders.
         string PhaseOf(string version)
             => input.PhaseByVersion.TryGetValue(version, out var ph) && !string.IsNullOrEmpty(ph)
-               ? ph : DeriveWindPhase(version);
+               ? ph : "wind";
 
         var byPhase = atLead
             .GroupBy(p => PhaseOf(p.Version))
             .ToDictionary(g => g.Key, g => g
-                .GroupBy(r => r.ValidTimeUtc)
-                .Select(gv => gv.OrderByDescending(r => r.PredictedAtUtc).First())
+                .FreshestPerValid(r => r.ValidTimeUtc, r => r.PredictedAtUtc)
                 .OrderBy(r => r.ValidTimeUtc)
                 .ToList());
 

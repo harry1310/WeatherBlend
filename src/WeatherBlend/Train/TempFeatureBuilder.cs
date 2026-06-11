@@ -1,6 +1,7 @@
 using DuckDB.NET.Data;
 using WeatherBlend.Config;
 using WeatherBlend.Train.Common;
+using WeatherBlend.Train.Element.Common;
 
 namespace WeatherBlend.Train;
 
@@ -50,50 +51,22 @@ public static class TempFeatureBuilder
     /// the four cyclical calendar features) is computed here.
     /// </summary>
     public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours)
-    {
-        var blender = blendersCfg.Get(Target, FeatureSet);
-        var requiredSet = blender.RequiredForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var optionalSet = blender.OptionalForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        var overlap = requiredSet.Intersect(optionalSet, StringComparer.OrdinalIgnoreCase).ToArray();
-        if (overlap.Length > 0)
-            throw new InvalidOperationException(
-                $"BlenderConfig {Target}/{FeatureSet} at lead {leadHours}h has model(s) listed as both " +
-                $"required and optional: [{string.Join(",", overlap)}].");
-
-        var orderedRequired = CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
-        var orderedOptional = CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
-        var orderedModels = CanonicalModelOrder.Where(m => requiredSet.Contains(m) || optionalSet.Contains(m)).ToList();
-        if (orderedModels.Count == 0)
-            throw new InvalidOperationException($"No models active for {Target}/{FeatureSet} at lead {leadHours}h.");
-
-        var featureNames = new List<string>(orderedModels.Count + 7);
-        foreach (var m in orderedModels) featureNames.Add($"temp_{ShortName(m)}");
-        featureNames.Add("temp_mean");
-        featureNames.Add("temp_std");
-        featureNames.Add("temp_range");
-        featureNames.Add("hour_sin");
-        featureNames.Add("hour_cos");
-        featureNames.Add("doy_sin");
-        featureNames.Add("doy_cos");
-
-        return new BlenderSpec
+        // Membership / ordering / guards + the structured-spec fields
+        // (previous_runs DataSource, no UKV) are shared boilerplate —
+        // see BlenderSpec.Build. Only the feature names are temp-specific.
+        => BlenderSpec.Build(blendersCfg, Target, FeatureSet, leadHours, orderedModels =>
         {
-            Target = Target,
-            FeatureSet = FeatureSet,
-            LeadHours = leadHours,
-            RequiredModels = orderedRequired,
-            OptionalModels = orderedOptional,
-            Models = orderedModels,
-            FeatureNames = featureNames,
-            // Structured-spec fields (added 2026-05-07). Lean reads
-            // forecasts via Open-Meteo previous_runs API; UKV not used
-            // anywhere in the lean blender (UKV is exact-runtime only).
-            DataSource = BlenderDataSource.OpenMeteoPreviousRuns,
-            Tier = FeatureSet,
-            UkvStrategy = null,
-        };
-    }
+            var featureNames = new List<string>(orderedModels.Count + 7);
+            foreach (var m in orderedModels) featureNames.Add($"temp_{ShortName(m)}");
+            featureNames.Add("temp_mean");
+            featureNames.Add("temp_std");
+            featureNames.Add("temp_range");
+            featureNames.Add("hour_sin");
+            featureNames.Add("hour_cos");
+            featureNames.Add("doy_sin");
+            featureNames.Add("doy_cos");
+            return featureNames;
+        });
 
     /// <summary>
     /// Builds the training rows for one (target, featureSet, lead) blender.
@@ -111,8 +84,8 @@ public static class TempFeatureBuilder
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
 
-        var fcGlob = NormaliseGlob(Path.Combine(forecastsPath, "**", "*.parquet"));
-        var eraGlob = NormaliseGlob(Path.Combine(era5Path, "**", "*.parquet"));
+        var fcGlob = SqlGlob.Escape(Path.Combine(forecastsPath, "**", "*.parquet"));
+        var eraGlob = SqlGlob.Escape(Path.Combine(era5Path, "**", "*.parquet"));
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
         // Optional training-data cutoff (2026-05-26 — JMA-extension caused
         // pre-2024 NULL rows from other NWPs to dilute the LightGBM signal).
@@ -217,41 +190,24 @@ ORDER BY p.ValidTimeUtc;
                 nameof(perModelTemps));
 
         // Population std (N, not N-1) — matches numpy default; fine for a feature.
-        double sum = 0, sumSq = 0, min = double.MaxValue, max = double.MinValue;
-        int n = 0;
-        for (int i = 0; i < perModelTemps.Count; i++)
-        {
-            var x = perModelTemps[i];
-            if (double.IsNaN(x)) continue;
-            sum += x;
-            sumSq += x * x;
-            if (x < min) min = x;
-            if (x > max) max = x;
-            n++;
-        }
-        var mean = n == 0 ? double.NaN : sum / n;
-        var variance = n == 0 ? double.NaN : Math.Max(0.0, (sumSq / n) - (mean * mean));
-        var std = double.IsNaN(variance) ? double.NaN : Math.Sqrt(variance);
-        var range = n == 0 ? double.NaN : max - min;
+        var spread = InterModelSpread.From(perModelTemps);
 
         var v = validTimeUtc.Kind == DateTimeKind.Utc
             ? validTimeUtc
             : DateTime.SpecifyKind(validTimeUtc, DateTimeKind.Utc);
-
-        var hourAngle = 2.0 * Math.PI * v.Hour / 24.0;
-        var doyAngle = 2.0 * Math.PI * (v.DayOfYear - 1) / 365.0;
+        var cal = CalendarFeatures.From(v);
 
         var features = new float[spec.FeatureCount];
         for (int i = 0; i < perModelTemps.Count; i++)
             features[i] = (float)perModelTemps[i];
         var spreadStart = perModelTemps.Count;
-        features[spreadStart + 0] = (float)mean;
-        features[spreadStart + 1] = (float)std;
-        features[spreadStart + 2] = (float)range;
-        features[spreadStart + 3] = (float)Math.Sin(hourAngle);
-        features[spreadStart + 4] = (float)Math.Cos(hourAngle);
-        features[spreadStart + 5] = (float)Math.Sin(doyAngle);
-        features[spreadStart + 6] = (float)Math.Cos(doyAngle);
+        features[spreadStart + 0] = (float)spread.Mean;
+        features[spreadStart + 1] = (float)spread.Std;
+        features[spreadStart + 2] = (float)spread.Range;
+        features[spreadStart + 3] = cal.HourSin;
+        features[spreadStart + 4] = cal.HourCos;
+        features[spreadStart + 5] = cal.DoySin;
+        features[spreadStart + 6] = cal.DoyCos;
 
         return new RegressionTrainingRow
         {
@@ -261,7 +217,4 @@ ORDER BY p.ValidTimeUtc;
             WindDirMean = (float)windDirMeanDeg,
         };
     }
-
-    private static string NormaliseGlob(string path)
-        => path.Replace('\\', '/').Replace("'", "''");
 }

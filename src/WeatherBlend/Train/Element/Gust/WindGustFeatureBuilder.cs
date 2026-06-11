@@ -46,37 +46,16 @@ public static class WindGustFeatureBuilder
     public const double WindSpeedFloor = 0.5;
 
     public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours)
-    {
-        var blender = blendersCfg.Get(SpecTarget, SpecFeatureSet);
-        var requiredSet = blender.RequiredForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var optionalSet = blender.OptionalForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        var orderedRequired = TempFeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
-        var orderedOptional = TempFeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
-        var orderedModels = TempFeatureBuilder.CanonicalModelOrder
-            .Where(m => requiredSet.Contains(m) || optionalSet.Contains(m)).ToList();
-        if (orderedModels.Count == 0)
-            throw new InvalidOperationException($"No models active for {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h.");
-
-        var names = new List<string>();
-        foreach (var m in orderedModels) names.Add($"gust_{TempFeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"gust_ratio_{TempFeatureBuilder.ShortName(m)}");
-        names.AddRange(new[] { "gust_ratio_mean", "gust_ratio_std" });
-
-        return new BlenderSpec
+        // Shared membership/guards/spec-field boilerplate in BlenderSpec.Build;
+        // only the gust layout below is builder-specific.
+        => BlenderSpec.Build(blendersCfg, SpecTarget, SpecFeatureSet, leadHours, orderedModels =>
         {
-            Target = SpecTarget,
-            FeatureSet = SpecFeatureSet,
-            LeadHours = leadHours,
-            RequiredModels = orderedRequired,
-            OptionalModels = orderedOptional,
-            Models = orderedModels,
-            FeatureNames = names,
-            DataSource = BlenderDataSource.OpenMeteoPreviousRuns,
-            Tier = SpecFeatureSet,
-            UkvStrategy = null,
-        };
-    }
+            var names = new List<string>();
+            foreach (var m in orderedModels) names.Add($"gust_{TempFeatureBuilder.ShortName(m)}");
+            foreach (var m in orderedModels) names.Add($"gust_ratio_{TempFeatureBuilder.ShortName(m)}");
+            names.AddRange(new[] { "gust_ratio_mean", "gust_ratio_std" });
+            return names;
+        });
 
     public static List<RegressionTrainingRow> BuildForLead(
         string forecastsPath,
@@ -89,8 +68,8 @@ public static class WindGustFeatureBuilder
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
 
-        var fcGlob = NormaliseGlob(Path.Combine(forecastsPath, "**", "*.parquet"));
-        var eraGlob = NormaliseGlob(Path.Combine(era5Path, "**", "*.parquet"));
+        var fcGlob = SqlGlob.Escape(Path.Combine(forecastsPath, "**", "*.parquet"));
+        var eraGlob = SqlGlob.Escape(Path.Combine(era5Path, "**", "*.parquet"));
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
         var n = spec.Models.Count;
 
@@ -190,7 +169,11 @@ ORDER BY p.ValidTimeUtc;";
             ratios[i] = Math.Clamp(raw, RatioMin, RatioMax);
         }
 
-        // NaN-safe spread over present ratios.
+        // NaN-safe spread over present ratios. Deliberately NOT
+        // InterModelSpread: the accumulation here is over FLOAT ratios
+        // (x*x is a float multiply, the variance uses the float mean) and
+        // there's no min/max — funnelling through the double-based helper
+        // would change the trained feature bits.
         double sum = 0, sumSq = 0;
         int present = 0;
         for (int i = 0; i < n; i++)
@@ -222,6 +205,4 @@ ORDER BY p.ValidTimeUtc;";
             Label = (float)era5GustMs,
         };
     }
-
-    private static string NormaliseGlob(string path) => path.Replace('\\', '/').Replace("'", "''");
 }

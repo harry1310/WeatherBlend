@@ -151,8 +151,7 @@ public static partial class SitePages
 
                 // Latest prediction per (target_date, lead) within this phase bucket.
                 var latest = phaseRows
-                    .GroupBy(d => (d.TargetDateUtc, d.LeadHours))
-                    .Select(g => g.OrderByDescending(d => d.PredictedAtUtc).First())
+                    .FreshestPerValid(d => (d.TargetDateUtc, d.LeadHours), d => d.PredictedAtUtc)
                     .ToList();
 
                 var dates = latest.Select(d => d.TargetDateUtc).Distinct().OrderBy(d => d).ToList();
@@ -433,8 +432,7 @@ public static partial class SitePages
             // Dedupe to the latest run per start hour in case the freshest
             // anchor was predicted more than once into the same parquet.
             var points = cell.Curve
-                .GroupBy(p => p.StartHourUtc)
-                .Select(g => g.OrderByDescending(p => p.PredictedAtUtc).First())
+                .FreshestPerValid(p => p.StartHourUtc, p => p.PredictedAtUtc)
                 .OrderBy(p => p.StartHourUtc)
                 // Y pre-scaled to 0-100: the Chart.js path formats the raw
                 // value (no *100), so the points carry the percentage and

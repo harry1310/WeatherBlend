@@ -110,4 +110,77 @@ public sealed class BlenderSpec
            $"required=[{string.Join(",", RequiredModels)}], " +
            $"optional=[{string.Join(",", OptionalModels)}], " +
            $"features={FeatureCount})";
+
+    /// <summary>
+    /// Shared BuildSpec body for every blenders-config-driven builder
+    /// (Temp / TempRich / Precip / PrecipRich / DryWindow / Wind / WindGust /
+    /// Humidity / Radiation / Cloud). The ten per-builder BuildSpec methods
+    /// used to repeat this verbatim; each now keeps only its genuinely
+    /// different part — the feature-name composition — as
+    /// <paramref name="featureNamer"/>.
+    ///
+    /// What the factory owns:
+    ///   * model membership from <c>config.yaml</c>'s <c>blenders</c> section
+    ///     (required/optional per lead, via <see cref="BlendersConfig.Get"/>);
+    ///   * the required∩optional overlap guard — a model listed in both is a
+    ///     config bug that previously only half the builders caught; it now
+    ///     fires uniformly (config-error path only, no data-path change);
+    ///   * canonical ordering via <see cref="Nwp.BlenderModelIds"/> and the
+    ///     "no models active" guard;
+    ///   * the structured-spec defaults shared by all ten: every config-driven
+    ///     builder reads the Open-Meteo previous_runs tree
+    ///     (<see cref="BlenderDataSource.OpenMeteoPreviousRuns"/>), stamps
+    ///     <see cref="Tier"/> = base feature-set, and never uses UKV
+    ///     (UKV is exact-runtime only).
+    ///
+    /// <paramref name="featureSetLabel"/> overrides the stamped
+    /// <see cref="FeatureSet"/> only — the precip builders stamp
+    /// "lean-ua"/"rich-ua" for the experimental upper-air variants while
+    /// <see cref="Tier"/> stays the base set.
+    ///
+    /// Deliberate non-users of this factory:
+    ///   * Exact12hFeatureBuilder / PrecipExactFeatureBuilder — TierSpec-driven
+    ///     (not BlendersConfig), DataSource=ExactRuntimeS3, UkvStrategy set;
+    ///   * PrecipRichOroFeatureBuilder — derives its spec from PrecipRich's
+    ///     rather than from config.
+    /// </summary>
+    public static BlenderSpec Build(
+        WeatherBlend.Config.BlendersConfig blendersCfg,
+        string target,
+        string featureSet,
+        int leadHours,
+        Func<IReadOnlyList<string>, List<string>> featureNamer,
+        string? featureSetLabel = null)
+    {
+        var blender = blendersCfg.Get(target, featureSet);
+        var requiredSet = blender.RequiredForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var optionalSet = blender.OptionalForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var overlap = requiredSet.Intersect(optionalSet, StringComparer.OrdinalIgnoreCase).ToArray();
+        if (overlap.Length > 0)
+            throw new InvalidOperationException(
+                $"BlenderConfig {target}/{featureSet} at lead {leadHours}h has model(s) " +
+                $"listed as both required and optional: [{string.Join(",", overlap)}].");
+
+        var orderedRequired = Nwp.BlenderModelIds.Where(requiredSet.Contains).ToList();
+        var orderedOptional = Nwp.BlenderModelIds.Where(optionalSet.Contains).ToList();
+        var orderedModels = Nwp.BlenderModelIds
+            .Where(m => requiredSet.Contains(m) || optionalSet.Contains(m)).ToList();
+        if (orderedModels.Count == 0)
+            throw new InvalidOperationException($"No models active for {target}/{featureSet} at lead {leadHours}h.");
+
+        return new BlenderSpec
+        {
+            Target = target,
+            FeatureSet = featureSetLabel ?? featureSet,
+            LeadHours = leadHours,
+            RequiredModels = orderedRequired,
+            OptionalModels = orderedOptional,
+            Models = orderedModels,
+            FeatureNames = featureNamer(orderedModels),
+            DataSource = BlenderDataSource.OpenMeteoPreviousRuns,
+            Tier = featureSet,
+            UkvStrategy = null,
+        };
+    }
 }

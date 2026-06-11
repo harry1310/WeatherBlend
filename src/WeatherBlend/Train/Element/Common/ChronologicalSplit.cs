@@ -1,14 +1,22 @@
 namespace WeatherBlend.Train.Element.Common;
 
 /// <summary>
-/// Generic 70/15/15 chronological split over any row type with a
-/// <c>ValidTimeUtc</c> property accessor. Mirrors <see cref="TrainingDataset.Split"/>
-/// in shape but unbound from the temperature row class.
+/// Generic 70/15/15 chronological split over any row type with a time
+/// accessor. The single implementation behind
+/// <see cref="WeatherBlend.Train.Common.RegressionDataset.Split"/>,
+/// <see cref="WeatherBlend.Train.Common.BinaryDataset.Split"/> and
+/// <see cref="WeatherBlend.Train.Common.DryWindowDataset.Split"/> — those
+/// records keep their typed shapes (and label-count accessors) but delegate
+/// the slicing + invariants here so the rules can never drift apart.
 ///
-/// Strict invariants (matched to the temperature blender):
-///   - Input must already be ascending by valid time (asserted, not silently sorted).
+/// Strict invariants (matched to the original temperature blender):
+///   - Input must already be ascending by time (asserted, not silently sorted).
 ///   - All three partitions must be non-empty.
 ///   - Time boundaries between partitions must be strictly ordered.
+///
+/// <paramref name="timeFieldName"/> only feeds the exception text (the
+/// dry-window split is day-anchored on TargetDateUtc, everything else on
+/// ValidTimeUtc) so error messages keep naming the real field.
 /// </summary>
 public sealed record ChronologicalSplit<T>(
     IReadOnlyList<T> Train,
@@ -19,7 +27,8 @@ public sealed record ChronologicalSplit<T>(
         IReadOnlyList<T> rows,
         Func<T, DateTime> timeOf,
         double trainFrac = 0.70,
-        double valFrac = 0.15)
+        double valFrac = 0.15,
+        string timeFieldName = "ValidTimeUtc")
     {
         if (rows.Count < 10)
             throw new InvalidOperationException(
@@ -29,7 +38,7 @@ public sealed record ChronologicalSplit<T>(
         {
             if (timeOf(rows[i]) < timeOf(rows[i - 1]))
                 throw new InvalidOperationException(
-                    $"Rows must be ascending by ValidTimeUtc. " +
+                    $"Rows must be ascending by {timeFieldName}. " +
                     $"Row {i} = {timeOf(rows[i]):o} < row {i - 1} = {timeOf(rows[i - 1]):o}.");
         }
 
@@ -56,11 +65,4 @@ public sealed record ChronologicalSplit<T>(
 
         return new ChronologicalSplit<T>(train, val, test);
     }
-
-    public DateTime TrainStart(Func<T, DateTime> timeOf) => timeOf(Train[0]);
-    public DateTime TrainEnd  (Func<T, DateTime> timeOf) => timeOf(Train[^1]);
-    public DateTime ValStart  (Func<T, DateTime> timeOf) => timeOf(Val[0]);
-    public DateTime ValEnd    (Func<T, DateTime> timeOf) => timeOf(Val[^1]);
-    public DateTime TestStart (Func<T, DateTime> timeOf) => timeOf(Test[0]);
-    public DateTime TestEnd   (Func<T, DateTime> timeOf) => timeOf(Test[^1]);
 }

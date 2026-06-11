@@ -1,6 +1,7 @@
 using DuckDB.NET.Data;
 using WeatherBlend.Config;
 using WeatherBlend.Train.Common;
+using WeatherBlend.Train.Element.Common;
 
 namespace WeatherBlend.Train.Element.Radiation;
 
@@ -20,46 +21,25 @@ public static class RadiationFeatureBuilder
     public const string SpecFeatureSet = "default";
 
     public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours)
-    {
-        var blender = blendersCfg.Get(SpecTarget, SpecFeatureSet);
-        var requiredSet = blender.RequiredForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var optionalSet = blender.OptionalForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        var orderedRequired = TempFeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
-        var orderedOptional = TempFeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
-        var orderedModels = TempFeatureBuilder.CanonicalModelOrder
-            .Where(m => requiredSet.Contains(m) || optionalSet.Contains(m)).ToList();
-        if (orderedModels.Count == 0)
-            throw new InvalidOperationException($"No models active for {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h.");
-
-        var names = new List<string>();
-        foreach (var m in orderedModels) names.Add($"sw_{TempFeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"direct_{TempFeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"diffuse_{TempFeatureBuilder.ShortName(m)}");
-        names.AddRange(new[] { "sw_mean", "sw_std", "sw_range" });
-        names.AddRange(new[] { "hour_sin", "hour_cos", "doy_sin", "doy_cos" });
-        // Cross-variable RICH features (productionised 2026-06-04 after the
-        // radiation-rich-bakeoff: rich-mean beats lean at every lead, −0.9/−0.5/
-        // −2.5% at 24/48/72h). Cloud cover is the physical inverse-driver of SW;
-        // RH adds the haze/humidity attenuation signal. Ensemble means (AVG over
-        // present models), NaN-safe. ComposeRow writes these only when the loaded
-        // spec carries them, so older lean bundles keep predicting unchanged.
-        names.AddRange(new[] { "cloud_mean", "rh_mean" });
-
-        return new BlenderSpec
+        // Shared membership/guards/spec-field boilerplate in BlenderSpec.Build;
+        // only the radiation layout below is builder-specific.
+        => BlenderSpec.Build(blendersCfg, SpecTarget, SpecFeatureSet, leadHours, orderedModels =>
         {
-            Target = SpecTarget,
-            FeatureSet = SpecFeatureSet,
-            LeadHours = leadHours,
-            RequiredModels = orderedRequired,
-            OptionalModels = orderedOptional,
-            Models = orderedModels,
-            FeatureNames = names,
-            DataSource = BlenderDataSource.OpenMeteoPreviousRuns,
-            Tier = SpecFeatureSet,
-            UkvStrategy = null,
-        };
-    }
+            var names = new List<string>();
+            foreach (var m in orderedModels) names.Add($"sw_{TempFeatureBuilder.ShortName(m)}");
+            foreach (var m in orderedModels) names.Add($"direct_{TempFeatureBuilder.ShortName(m)}");
+            foreach (var m in orderedModels) names.Add($"diffuse_{TempFeatureBuilder.ShortName(m)}");
+            names.AddRange(new[] { "sw_mean", "sw_std", "sw_range" });
+            names.AddRange(new[] { "hour_sin", "hour_cos", "doy_sin", "doy_cos" });
+            // Cross-variable RICH features (productionised 2026-06-04 after the
+            // radiation-rich-bakeoff: rich-mean beats lean at every lead, −0.9/−0.5/
+            // −2.5% at 24/48/72h). Cloud cover is the physical inverse-driver of SW;
+            // RH adds the haze/humidity attenuation signal. Ensemble means (AVG over
+            // present models), NaN-safe. ComposeRow writes these only when the loaded
+            // spec carries them, so older lean bundles keep predicting unchanged.
+            names.AddRange(new[] { "cloud_mean", "rh_mean" });
+            return names;
+        });
 
     public static List<RegressionTrainingRow> BuildForLead(
         string forecastsPath, string era5Path, string locationName, BlenderSpec spec, CancellationToken ct = default)
@@ -67,8 +47,8 @@ public static class RadiationFeatureBuilder
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
 
-        var fcGlob  = Norm(Path.Combine(forecastsPath, "**", "*.parquet"));
-        var eraGlob = Norm(Path.Combine(era5Path, "**", "*.parquet"));
+        var fcGlob  = SqlGlob.Escape(Path.Combine(forecastsPath, "**", "*.parquet"));
+        var eraGlob = SqlGlob.Escape(Path.Combine(era5Path, "**", "*.parquet"));
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
         var n = spec.Models.Count;
 
@@ -151,37 +131,22 @@ ORDER BY p.ValidTimeUtc;";
         if (diffuse.Count != n) throw new ArgumentException($"Expected {n} diffuse values", nameof(diffuse));
 
         // Spread over SW (NaN-safe).
-        double sum = 0, sumSq = 0, min = double.MaxValue, max = double.MinValue;
-        int present = 0;
-        for (int i = 0; i < n; i++)
-        {
-            var x = sw[i];
-            if (double.IsNaN(x)) continue;
-            sum += x; sumSq += x * x;
-            if (x < min) min = x;
-            if (x > max) max = x;
-            present++;
-        }
-        var mean  = present == 0 ? double.NaN : sum / present;
-        var var0  = present == 0 ? double.NaN : Math.Max(0.0, (sumSq / present) - (mean * mean));
-        var std   = double.IsNaN(var0) ? double.NaN : Math.Sqrt(var0);
-        var range = present == 0 ? double.NaN : max - min;
+        var spread = InterModelSpread.From(sw);
 
         var v = validTimeUtc.Kind == DateTimeKind.Utc ? validTimeUtc : DateTime.SpecifyKind(validTimeUtc, DateTimeKind.Utc);
-        var hourAngle = 2.0 * Math.PI * v.Hour / 24.0;
-        var doyAngle  = 2.0 * Math.PI * (v.DayOfYear - 1) / 365.0;
+        var cal = CalendarFeatures.From(v);
 
         var features = new float[spec.FeatureCount];
         for (int i = 0; i < n; i++) features[i] = (float)sw[i];
         for (int i = 0; i < n; i++) features[n + i] = (float)direct[i];
         for (int i = 0; i < n; i++) features[2 * n + i] = (float)diffuse[i];
-        features[3 * n + 0] = (float)mean;
-        features[3 * n + 1] = (float)std;
-        features[3 * n + 2] = (float)range;
-        features[3 * n + 3] = (float)Math.Sin(hourAngle);
-        features[3 * n + 4] = (float)Math.Cos(hourAngle);
-        features[3 * n + 5] = (float)Math.Sin(doyAngle);
-        features[3 * n + 6] = (float)Math.Cos(doyAngle);
+        features[3 * n + 0] = (float)spread.Mean;
+        features[3 * n + 1] = (float)spread.Std;
+        features[3 * n + 2] = (float)spread.Range;
+        features[3 * n + 3] = cal.HourSin;
+        features[3 * n + 4] = cal.HourCos;
+        features[3 * n + 5] = cal.DoySin;
+        features[3 * n + 6] = cal.DoyCos;
         // RICH cross-variable means — written only when the (loaded) spec carries
         // them, so lean bundles (FeatureCount == 3N+7) keep predicting unchanged
         // and rich bundles (3N+9) get cloud_mean/rh_mean. Schema-gated, mirrors
@@ -199,6 +164,4 @@ ORDER BY p.ValidTimeUtc;";
             Label = (float)era5Sw,
         };
     }
-
-    private static string Norm(string p) => p.Replace('\\', '/').Replace("'", "''");
 }

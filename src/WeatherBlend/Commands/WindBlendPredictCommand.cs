@@ -47,6 +47,15 @@ public sealed class WindBlendPredictCommand
     /// under one model_version dir rather than scattering.</summary>
     public const string VersionTag = "v_wind_blend_live";
 
+    /// <summary>phases.yaml id of the composed phase this command mints.
+    /// wind_blend has NO bundle on disk (<c>retrain: none</c> — composed
+    /// live at predict time), so
+    /// <see cref="Storage.ModelMetadataRepository.GetPhaseByVersion"/>
+    /// can never resolve <see cref="VersionTag"/> from training metadata
+    /// and special-cases it via this constant instead. Keeping the
+    /// version → phase pair defined side by side here is the contract.</summary>
+    public const string PhaseTag = "wind_blend";
+
     public WindBlendPredictCommand(ILogger<WindBlendPredictCommand> log, AppConfig cfg)
     {
         _log = log;

@@ -64,7 +64,9 @@ public sealed class PrecipPredictCommand
     /// membership) catches the retired-phase case automatically — no
     /// hardcoded suffix-blocklist needed.
     /// </summary>
-    private static readonly HashSet<string> HandledPrecipPhases =
+    // internal (not private) so PhaseWiringConsistencyTests can assert the
+    // set stays a subset of phases.yaml's precipitation lineup.
+    internal static readonly HashSet<string> HandledPrecipPhases =
         new(StringComparer.Ordinal) { "3a", "3c", "3d", "3o" };
 
     public PrecipPredictCommand(ILogger<PrecipPredictCommand> log, AppConfig cfg)

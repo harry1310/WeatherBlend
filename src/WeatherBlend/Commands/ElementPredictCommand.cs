@@ -49,7 +49,9 @@ public sealed class ElementPredictCommand
     ///   3. Add a switch case in the dispatch below pointing at the
     ///      pipeline that owns the row build.
     /// </summary>
-    private static readonly HashSet<string> HandledElementPhases =
+    // internal (not private) so PhaseWiringConsistencyTests can assert the
+    // set stays a subset of phases.yaml's element-target lineups.
+    internal static readonly HashSet<string> HandledElementPhases =
         new(StringComparer.Ordinal)
         {
             // wind_speed_lgb is NOT here (2026-06-10 cutover): it's Python-

@@ -43,7 +43,7 @@ public static class DryWindowFeatureBuilder
         string rainfallPath, string locationName, string stationName,
         DateTime? minValidTime, CancellationToken ct)
     {
-        var glob = NormaliseGlob(Path.Combine(rainfallPath, "**", "*.parquet"));
+        var glob = SqlGlob.Escape(Path.Combine(rainfallPath, "**", "*.parquet"));
         var escStation  = stationName.Replace("'", "''");
         var escLocation = locationName.Replace("'", "''");
         var minObservedFilter = minValidTime.HasValue
@@ -238,9 +238,6 @@ ORDER BY 1";
             WindMax:  double.IsNegativeInfinity(windMax) ? double.NaN : windMax);
     }
 
-    private static string NormaliseGlob(string path)
-        => path.Replace('\\', '/').Replace("'", "''");
-
     // -----------------------------------------------------------------------
     // New canonical API (Phase 4 of unify-model-membership refactor).
     // Spec-driven, dynamic-shape vector via Common.DryWindowTrainingRow.Features.
@@ -261,59 +258,32 @@ ORDER BY 1";
     /// → 6N + 17.
     /// </summary>
     public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours, string phase)
-    {
-        var featureSet = "base";
-        var blender = blendersCfg.Get(SpecTarget, featureSet);
-        var requiredSet = blender.RequiredForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var optionalSet = blender.OptionalForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        var overlap = requiredSet.Intersect(optionalSet, StringComparer.OrdinalIgnoreCase).ToArray();
-        if (overlap.Length > 0)
-            throw new InvalidOperationException(
-                $"BlenderConfig {SpecTarget}/{featureSet} at lead {leadHours}h has model(s) " +
-                $"listed as both required and optional: [{string.Join(",", overlap)}].");
-
-        var orderedRequired = TempFeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
-        var orderedOptional = TempFeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
-        var orderedModels = TempFeatureBuilder.CanonicalModelOrder
-            .Where(m => requiredSet.Contains(m) || optionalSet.Contains(m)).ToList();
-        if (orderedModels.Count == 0)
-            throw new InvalidOperationException($"No models active for {SpecTarget}/{featureSet} at lead {leadHours}h.");
-
-        var names = new List<string>();
-        foreach (var m in orderedModels) names.Add($"precip_sum_{TempFeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"precip_max_hour_{TempFeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"wet_hour_count_{TempFeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"longest_dry_run_{TempFeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"has_dry_window_{TempFeatureBuilder.ShortName(m)}");
-        foreach (var m in orderedModels) names.Add($"prob_max_{TempFeatureBuilder.ShortName(m)}");
-        names.AddRange(new[]
+        // Shared membership/guards/spec-field boilerplate in BlenderSpec.Build.
+        // `phase` retained for API compatibility (see doc comment) — only the
+        // 53-feature base layout is supported.
+        => BlenderSpec.Build(blendersCfg, SpecTarget, "base", leadHours, orderedModels =>
         {
-            "precip_sum_mean", "precip_sum_std", "precip_sum_max",
-            "agreement_has_dry_window", "longest_dry_run_mean", "wet_hour_count_mean",
+            var names = new List<string>();
+            foreach (var m in orderedModels) names.Add($"precip_sum_{TempFeatureBuilder.ShortName(m)}");
+            foreach (var m in orderedModels) names.Add($"precip_max_hour_{TempFeatureBuilder.ShortName(m)}");
+            foreach (var m in orderedModels) names.Add($"wet_hour_count_{TempFeatureBuilder.ShortName(m)}");
+            foreach (var m in orderedModels) names.Add($"longest_dry_run_{TempFeatureBuilder.ShortName(m)}");
+            foreach (var m in orderedModels) names.Add($"has_dry_window_{TempFeatureBuilder.ShortName(m)}");
+            foreach (var m in orderedModels) names.Add($"prob_max_{TempFeatureBuilder.ShortName(m)}");
+            names.AddRange(new[]
+            {
+                "precip_sum_mean", "precip_sum_std", "precip_sum_max",
+                "agreement_has_dry_window", "longest_dry_run_mean", "wet_hour_count_mean",
+            });
+            names.AddRange(new[]
+            {
+                "rh_mean", "rh_min", "dew_depression_max",
+                "cloud_low_mean", "cloud_mid_mean", "cloud_high_mean",
+                "cape_max", "wind_mean", "wind_max",
+            });
+            names.AddRange(new[] { "doy_sin", "doy_cos" });
+            return names;
         });
-        names.AddRange(new[]
-        {
-            "rh_mean", "rh_min", "dew_depression_max",
-            "cloud_low_mean", "cloud_mid_mean", "cloud_high_mean",
-            "cape_max", "wind_mean", "wind_max",
-        });
-        names.AddRange(new[] { "doy_sin", "doy_cos" });
-
-        return new BlenderSpec
-        {
-            Target = SpecTarget,
-            FeatureSet = featureSet,
-            LeadHours = leadHours,
-            RequiredModels = orderedRequired,
-            OptionalModels = orderedOptional,
-            Models = orderedModels,
-            FeatureNames = names,
-            DataSource = BlenderDataSource.OpenMeteoPreviousRuns,
-            Tier = featureSet,
-            UkvStrategy = null,
-        };
-    }
 
     /// <summary>
     /// Build day-anchored training rows for one (station, lead, window) blender.
@@ -522,7 +492,7 @@ ORDER BY 1";
         string forecastsPath, string locationName, BlenderSpec spec,
         DateTime? minValidTime, CancellationToken ct)
     {
-        var glob = NormaliseGlob(Path.Combine(forecastsPath, "**", "*.parquet"));
+        var glob = SqlGlob.Escape(Path.Combine(forecastsPath, "**", "*.parquet"));
         var escLocation = locationName.Replace("'", "''");
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
         var minValidTimeFilter = minValidTime.HasValue

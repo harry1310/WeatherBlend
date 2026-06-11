@@ -196,11 +196,22 @@ public sealed class ModelMetadataRepository
     /// (<c>v..._phase3c</c> at all three precip stations) — phase is the same
     /// for all, so the second write wins identically and the resulting map is
     /// safe as a flat lookup.
+    ///
+    /// <paramref name="elementKeys"/> (2026-06-10) covers the element
+    /// blenders — (location, version) pairs from the element predictions
+    /// trees (today only the wind page groups by phase, so the renderer
+    /// passes its wind rows). Their bundles live under
+    /// <c>data/models/{ElementTarget.ModelDirName}/{location}/{version}/</c>;
+    /// the dir list is derived from <see cref="ElementTargets.All"/>, not a
+    /// hardcoded string list (a hardcoded phase list in render code silently
+    /// dropped a phase on 2026-05-05). Before this, the wind page sniffed
+    /// version-string suffixes itself (the deleted <c>DeriveWindPhase</c>).
     /// </summary>
     public IReadOnlyDictionary<string, string> GetPhaseByVersion(
         IEnumerable<(string Station, string Version)> temperatureKeys,
         IEnumerable<(string Station, string Version)> precipitationKeys,
-        IEnumerable<(string Station, int WindowHours, string Version)> dryWindowKeys)
+        IEnumerable<(string Station, int WindowHours, string Version)> dryWindowKeys,
+        IEnumerable<(string Station, string Version)> elementKeys)
     {
         var phases = new Dictionary<string, string>(StringComparer.Ordinal);
 
@@ -230,6 +241,66 @@ public sealed class ModelMetadataRepository
                 $"dry_window/{station}/{window}h/{version}");
             if (meta is not null && !string.IsNullOrWhiteSpace(meta.Phase))
                 phases[version] = meta.Phase;
+        }
+
+        foreach (var (station, version) in elementKeys.Distinct())
+        {
+            if (phases.ContainsKey(version)) continue;
+
+            // Composed phase: wind_blend is minted live at predict time
+            // under the fixed v_wind_blend_live version — it has NO bundle
+            // (phases.yaml `retrain: none`), so the metadata scan below can
+            // never resolve it. Map it explicitly from the constants the
+            // minter defines.
+            if (version.Contains("_wind_blend", StringComparison.Ordinal))
+            {
+                phases[version] = Commands.WindBlendPredictCommand.PhaseTag;
+                continue;
+            }
+
+            // Which element tree a version belongs to isn't part of the key,
+            // so probe every element model dir — version dir names are
+            // timestamped and unique, so at most one probe hits.
+            var resolved = false;
+            foreach (var target in Train.Element.ElementTargets.All)
+            {
+                var meta = TryLoadFromDir(
+                    Path.Combine(_modelsRoot, target.ModelDirName, station, version),
+                    $"{target.ModelDirName}/{station}/{version}");
+                if (meta is null || string.IsNullOrWhiteSpace(meta.Phase)) continue;
+                // Pre-rename bundles stamp "lean-{cli-name}" (e.g. lean-wind,
+                // lean-cloud-cover) — the same lineage as today's PhaseTag,
+                // renamed ~2026-05-24. Normalise so their still-in-window
+                // predictions stay on the champion line instead of silently
+                // dropping as an unknown phase (the version-string sniffing
+                // this scan replaced mapped them to the champion implicitly).
+                // Same legacy tag ModelArtifact.PromoteStationVersion evicts
+                // from Active lists.
+                phases[version] = string.Equals(meta.Phase, "lean-" + target.CliName, StringComparison.Ordinal)
+                    ? target.PhaseTag
+                    : meta.Phase;
+                resolved = true;
+                break;
+            }
+            if (resolved) continue;
+
+            // Conservative version-string fallback for element versions whose
+            // bundle metadata is not on disk at render time. That genuinely
+            // happens: the Python-owned wind bundles (wind_speed_lgb minted by
+            // WeatherProbabilistic, wind_mvn under data/models/wind_direction
+            // which is not an ElementTarget) sync to R2 on a different cadence
+            // from predictions, so a fresh predict cycle can land rows before
+            // its bundle is pullable. Without this the wind page would
+            // silently fold those rows into the wrong phase line. The suffix
+            // convention is what every trainer stamps (VersionSuffix =
+            // "_{phase}"); bare versions (no suffix) are left UNRESOLVED so a
+            // non-wind element version can't get mislabelled — the wind page
+            // defaults its own unresolved versions to the champion "wind"
+            // phase (pre-VersionSuffix bundles), see SitePages.Wind.PhaseOf.
+            if (version.Contains("_wind_speed_lgb", StringComparison.Ordinal))
+                phases[version] = "wind_speed_lgb";
+            else if (version.Contains("_wind_mvn", StringComparison.Ordinal))
+                phases[version] = "wind_mvn";
         }
 
         return phases;

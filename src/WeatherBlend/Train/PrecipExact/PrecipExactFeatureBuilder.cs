@@ -253,8 +253,8 @@ public static class PrecipExactFeatureBuilder
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
 
-        var fcGlob = NormaliseGlob(Path.Combine(forecastsPath, "**", "*.parquet"));
-        var rnGlob = NormaliseGlob(Path.Combine(rainfallPath, "**", "*.parquet"));
+        var fcGlob = SqlGlob.Escape(Path.Combine(forecastsPath, "**", "*.parquet"));
+        var rnGlob = SqlGlob.Escape(Path.Combine(rainfallPath, "**", "*.parquet"));
         var escStation = stationName.Replace("'", "''");
         var escLocation = locationName.Replace("'", "''");
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
@@ -492,6 +492,4 @@ ORDER BY p.ValidTimeUtc;
             TruthMmHour = (float)truthMmHour,
         };
     }
-
-    private static string NormaliseGlob(string p) => p.Replace('\\', '/');
 }

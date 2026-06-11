@@ -1,6 +1,7 @@
 using DuckDB.NET.Data;
 using WeatherBlend.Config;
 using WeatherBlend.Train.Common;
+using WeatherBlend.Train.Element.Common;
 
 namespace WeatherBlend.Train;
 
@@ -25,9 +26,6 @@ namespace WeatherBlend.Train;
 public static class PrecipFeatureBuilder
 {
     public const double WetThresholdMm = 0.1;
-
-    private static string NormaliseGlob(string path)
-        => path.Replace('\\', '/').Replace("'", "''");
 
     public const string SpecTarget = "precipitation";
     public const string SpecFeatureSet = "lean";
@@ -70,71 +68,44 @@ public static class PrecipFeatureBuilder
     };
 
     public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours, bool withUpperAir = false)
-    {
-        var blender = blendersCfg.Get(SpecTarget, SpecFeatureSet);
-        var requiredSet = blender.RequiredForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var optionalSet = blender.OptionalForLead(leadHours).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        var overlap = requiredSet.Intersect(optionalSet, StringComparer.OrdinalIgnoreCase).ToArray();
-        if (overlap.Length > 0)
-            throw new InvalidOperationException(
-                $"BlenderConfig {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h has model(s) " +
-                $"listed as both required and optional: [{string.Join(",", overlap)}].");
-
-        var orderedRequired = TempFeatureBuilder.CanonicalModelOrder.Where(m => requiredSet.Contains(m)).ToList();
-        var orderedOptional = TempFeatureBuilder.CanonicalModelOrder.Where(m => optionalSet.Contains(m)).ToList();
-        var orderedModels = TempFeatureBuilder.CanonicalModelOrder
-            .Where(m => requiredSet.Contains(m) || optionalSet.Contains(m)).ToList();
-        if (orderedModels.Count == 0)
-            throw new InvalidOperationException($"No models active for {SpecTarget}/{SpecFeatureSet} at lead {leadHours}h.");
-
-        // prob_* features removed 2026-04-28 — every prob_<model> had 0.000 gain at every
-        // lead in lean + rich precip (Open-Meteo's precipitation_probability adds nothing
-        // the trees can't infer from the precipitation rate). Old artefacts with prob_*
-        // in their feature_schema can't predict under this code — retrain required.
-        var n = orderedModels.Count;
-        var featureNames = new List<string>(n + 4 + 7 + 4);
-        foreach (var m in orderedModels) featureNames.Add($"precip_{TempFeatureBuilder.ShortName(m)}");
-        featureNames.AddRange(new[] { "precip_mean", "precip_std", "precip_max", "precip_agreement_wet_01" });
-        featureNames.AddRange(new[]
+        // Shared membership/guards/spec-field boilerplate in BlenderSpec.Build.
+        // The UA variant stamps FeatureSet "lean-ua" (Tier stays "lean").
+        => BlenderSpec.Build(blendersCfg, SpecTarget, SpecFeatureSet, leadHours, orderedModels =>
         {
-            "rh_mean", "dew_depression_mean",
-            "cloud_low_mean", "cloud_mid_mean", "cloud_high_mean",
-            "cape_mean", "wind_speed_mean",
-        });
-        featureNames.AddRange(new[] { "hour_sin", "hour_cos", "doy_sin", "doy_cos" });
+            // prob_* features removed 2026-04-28 — every prob_<model> had 0.000 gain at every
+            // lead in lean + rich precip (Open-Meteo's precipitation_probability adds nothing
+            // the trees can't infer from the precipitation rate). Old artefacts with prob_*
+            // in their feature_schema can't predict under this code — retrain required.
+            var n = orderedModels.Count;
+            var featureNames = new List<string>(n + 4 + 7 + 4);
+            foreach (var m in orderedModels) featureNames.Add($"precip_{TempFeatureBuilder.ShortName(m)}");
+            featureNames.AddRange(new[] { "precip_mean", "precip_std", "precip_max", "precip_agreement_wet_01" });
+            featureNames.AddRange(new[]
+            {
+                "rh_mean", "dew_depression_mean",
+                "cloud_low_mean", "cloud_mid_mean", "cloud_high_mean",
+                "cape_mean", "wind_speed_mean",
+            });
+            featureNames.AddRange(new[] { "hour_sin", "hour_cos", "doy_sin", "doy_cos" });
 
-        // Experimental upper-air block (2026-06-01; FULL set) — APPENDED last so
-        // baseline feature indices are untouched (ComposeRow's exact-count guard
-        // catches any miscount). Per exact model: the FULL UaPressureCols
-        // (RH850 + t700/t500 + winds, not just the temp-oriented curated 3),
-        // lead-matched and joined to offset_day rows by a leak-free backward
-        // ASOF (see BuildForLead) + ensemble t850_mean + rh850_mean. Full set
-        // because the curated 3 undersold precip (the 3d-full re-run jumped to
-        // ~−18% Brier once RH850/instability were added).
-        if (withUpperAir)
-        {
-            foreach (var (_, s) in UpperAirModels)
-                foreach (var (_, sh) in UaPressureCols)
-                    featureNames.Add($"{sh}_{s}");
-            featureNames.Add("t850_mean");
-            featureNames.Add("rh850_mean");
-        }
-
-        return new BlenderSpec
-        {
-            Target = SpecTarget,
-            FeatureSet = withUpperAir ? SpecFeatureSet + "-ua" : SpecFeatureSet,
-            LeadHours = leadHours,
-            RequiredModels = orderedRequired,
-            OptionalModels = orderedOptional,
-            Models = orderedModels,
-            FeatureNames = featureNames,
-            DataSource = BlenderDataSource.OpenMeteoPreviousRuns,
-            Tier = SpecFeatureSet,
-            UkvStrategy = null,
-        };
-    }
+            // Experimental upper-air block (2026-06-01; FULL set) — APPENDED last so
+            // baseline feature indices are untouched (ComposeRow's exact-count guard
+            // catches any miscount). Per exact model: the FULL UaPressureCols
+            // (RH850 + t700/t500 + winds, not just the temp-oriented curated 3),
+            // lead-matched and joined to offset_day rows by a leak-free backward
+            // ASOF (see BuildForLead) + ensemble t850_mean + rh850_mean. Full set
+            // because the curated 3 undersold precip (the 3d-full re-run jumped to
+            // ~−18% Brier once RH850/instability were added).
+            if (withUpperAir)
+            {
+                foreach (var (_, s) in UpperAirModels)
+                    foreach (var (_, sh) in UaPressureCols)
+                        featureNames.Add($"{sh}_{s}");
+                featureNames.Add("t850_mean");
+                featureNames.Add("rh850_mean");
+            }
+            return featureNames;
+        }, featureSetLabel: withUpperAir ? SpecFeatureSet + "-ua" : null);
 
     /// <summary>
     /// Builds the binary-classification training rows for one (station, lead).
@@ -154,8 +125,8 @@ public static class PrecipFeatureBuilder
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
 
-        var fcGlob = NormaliseGlob(Path.Combine(forecastsPath, "**", "*.parquet"));
-        var rnGlob = NormaliseGlob(Path.Combine(rainfallPath, "**", "*.parquet"));
+        var fcGlob = SqlGlob.Escape(Path.Combine(forecastsPath, "**", "*.parquet"));
+        var rnGlob = SqlGlob.Escape(Path.Combine(rainfallPath, "**", "*.parquet"));
         var escStation = stationName.Replace("'", "''");
         var escLocation = locationName.Replace("'", "''");
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
@@ -385,8 +356,7 @@ ORDER BY p.ValidTimeUtc;
         var v = validTimeUtc.Kind == DateTimeKind.Utc
             ? validTimeUtc
             : DateTime.SpecifyKind(validTimeUtc, DateTimeKind.Utc);
-        var hourAngle = 2.0 * Math.PI * v.Hour / 24.0;
-        var doyAngle  = 2.0 * Math.PI * (v.DayOfYear - 1) / 365.0;
+        var cal = CalendarFeatures.From(v);
 
         var features = new float[spec.FeatureCount];
         int idx = 0;
@@ -402,10 +372,10 @@ ORDER BY p.ValidTimeUtc;
         features[idx++] = (float)cloudHighMean;
         features[idx++] = (float)capeMean;
         features[idx++] = (float)windSpeedMean;
-        features[idx++] = (float)Math.Sin(hourAngle);
-        features[idx++] = (float)Math.Cos(hourAngle);
-        features[idx++] = (float)Math.Sin(doyAngle);
-        features[idx++] = (float)Math.Cos(doyAngle);
+        features[idx++] = cal.HourSin;
+        features[idx++] = cal.HourCos;
+        features[idx++] = cal.DoySin;
+        features[idx++] = cal.DoyCos;
         if (upperAir is not null)
             for (int i = 0; i < upperAir.Count; i++)
                 features[idx++] = (float)upperAir[i];
