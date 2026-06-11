@@ -3068,6 +3068,50 @@ public class SitePagesTests
     }
 
     [Fact]
+    public void RenderRainfallAmountSkillBlock_pools_same_asOf_lead_rows_across_versions()
+    {
+        // 2026-06-11 (Harry): during a 3f bundle transition verify scores
+        // BOTH the outgoing and incoming versions for the same window, so a
+        // sidecar carries two rows per (station, lead) — the rolling charts
+        // drew two Y-values per X (vertical cliffs). The block must pool
+        // n-weighted per (asOf, lead), not plot both.
+        var input = MakePrecipInput(new[] { ("v_3a", "3a") });
+        WeatherBlend.Models.VerifyHistoryRow Row(string version, int n, double crps) => new()
+        {
+            Station = Station,
+            ModelVersion = version,
+            Phase = "3f", LeadHours = 24, N = n,
+            BlendMetric = crps, DriftFlag = false,
+            Coverage80 = 0.90, PitMean = 0.50,
+            PitBins = new List<int> { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+            ExceedanceBriers = new Dictionary<string, double> { ["0.1"] = 0.06 },
+        };
+        var file = new WeatherBlend.Models.VerifyHistoryFile
+        {
+            Target = "rainfall_amount",
+            AsOfUtc = new DateTime(2026, 6, 8, 0, 0, 0, DateTimeKind.Utc),
+            WindowDays = 14, LatencyDays = 5, MetricLabel = "CRPS",
+            Rows = new()
+            {
+                Row("v2026-05-26_102409_phase3f", 140, 0.10),  // outgoing, settled sample
+                Row("v2026-05-31_125257_phase3f", 60, 0.30),   // incoming, young sample
+            },
+        };
+        var html = SitePages.RenderRainfallAmountSkillBlock(
+            input with { VerifyHistory = new[] { file } }, Station);
+
+        // One pooled point: n-weighted mean, same fold order as the pooler.
+        var expected = ((0.10 * 140.0) + (0.30 * 60.0)) / 200.0;
+        var json = System.Text.Json.JsonSerializer.Serialize(expected);
+        html.Should().Contain(json);
+        // The raw per-version values must NOT appear as separate chart points.
+        html.Should().NotContain("&quot;y&quot;:0.1,");
+        html.Should().NotContain("&quot;y&quot;:0.3,");
+        // Pooled PIT bins sum across versions (2 per bin), N pools to 200.
+        html.Should().Contain("N = 200");
+    }
+
+    [Fact]
     public void RenderRainfallAmountSkillBlock_clears_caveat_after_two_asOf_weeks()
     {
         // Caveat self-clears once ≥2 distinct asOf weeks are present —

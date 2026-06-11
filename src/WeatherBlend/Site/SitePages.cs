@@ -1404,6 +1404,17 @@ public static partial class SitePages
                     title: { display: !!cfg.xLabel, text: cfg.xLabel || '' },
                     ticks: {
                       autoSkip: true, maxTicksLimit: 8,
+                      // FORCED uniform tilt (2026-06-11, Harry): on the
+                      // wide-window long-lead pages Chart.js's fit logic was
+                      // neither rotating nor skipping — labels rendered flat
+                      // and overlapped into an unreadable smear. Don't trust
+                      // its discretion: pin min=max rotation so every label
+                      // is tilted 40° unconditionally (the classic readable
+                      // time-axis), and let autoSkipPadding keep a minimum
+                      // gap between the labels that remain.
+                      minRotation: 40,
+                      maxRotation: 40,
+                      autoSkipPadding: 12,
                       // Hour axis: force integer-spaced ticks so two adjacent
                       // ticks can't both round to the same "HH:00Z" label (the
                       // duplicate-label bug the SVG renderer had).
