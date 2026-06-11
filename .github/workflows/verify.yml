@@ -165,6 +165,25 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- verify $ARGS
           echo "exit=$?" >> "$GITHUB_OUTPUT"
 
+      - name: Verify temperature (Sennen)
+        # Sennen surfaced on the site 2026-06-11; 2b/2c trained at the
+        # 2026-06-07 Sunday retrain. Same shape + semantics as the Membury
+        # step above (markdown report only; exit not propagated — drift on
+        # a non-primary location is triaged from the site, mirroring the
+        # Membury precedent).
+        id: verify_run_sennen
+        run: |
+          AS_OF="${{ github.event.inputs.as_of }}"
+          WINDOW="${{ github.event.inputs.window_days }}"
+          DRIFT="${{ github.event.inputs.drift }}"
+          ARGS="--target temperature --location sennen_cove"
+          if [ -n "$AS_OF" ]; then ARGS="$ARGS --as-of $AS_OF"; fi
+          if [ -n "$WINDOW" ]; then ARGS="$ARGS --window-days $WINDOW"; fi
+          if [ -n "$DRIFT" ]; then ARGS="$ARGS --drift $DRIFT"; fi
+          set +e
+          dotnet run --project src/WeatherBlend --no-build -c Release -- verify $ARGS
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+
       - name: Verify precipitation
         # Independent exit code from the temperature verify. Uses the precip-specific
         # default window (30d) unless the workflow_dispatch window_days override is set.

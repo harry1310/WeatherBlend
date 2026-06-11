@@ -145,17 +145,21 @@ locations:
   # is access-gated (WeatherLink Pro+ / WeatherFile licence) so it's a future
   # live cross-check only, not a trainable source.
   #
-  # tabs: [] keeps Sennen OFF the live site until it has models — collect +
-  # backfill accumulate data now; the next Sunday auto-retrain trains temp
-  # 2b/2c + precip 3a off the backfilled history (unfiltered phases apply
-  # here), after which we add tabs to surface it.
+  # Surfaced on the site 2026-06-11 (Harry's ask): the 2026-06-07 Sunday
+  # retrain minted temp 2b/2c + the 2026-06-10 manual retrain refreshed
+  # precip 3c (Sennen's champion via the 3o→3c→3a fallback chain) for all
+  # three gauges, and predict has been emitting since. Same tab shape as
+  # Membury — no wind / dry-window / element models here, so those tabs
+  # stay off and the skill/models pages auto-filter to {temperature, rain}.
+  # Skill charts show their "no verify history yet" empty states until
+  # verify accumulates Sennen weeks.
   - name: "sennen_cove"
     displayName: "Sennen, Cornwall"
     latitude: 50.0786
     longitude: -5.7044
     elevationMeters: 35
 
-    tabs: []
+    tabs: [overview, temperature, rain, skill, models]
 
     overview:
       firstVisibleHourUtc: 6
