@@ -326,7 +326,13 @@ targets:
       - id: "wind"
         role: champion
         impl: dotnet
-        locations: ["bonehill_rocks"]
+        # sennen_cove added 2026-06-11 (Harry: "basic lean wind speed one
+        # for now") — the ERA5-truth element blender is location-generic
+        # and Sennen's ERA5 + previous-runs archives landed 2026-06-05.
+        # Feeds the sea-state wind-spray term. wind_speed_lgb / wind_mvn /
+        # wind_blend stay Bonehill-only (Dunkeswell-SYNOP truth doesn't
+        # transfer); direction for Sennen comes later per Harry.
+        locations: ["bonehill_rocks", "sennen_cove"]
         display:
           shortTitle: "Wind (ERA5-truth element blender)"
           color: "#039be5"
@@ -418,4 +424,24 @@ targets:
         display:
           shortTitle: "Wind direction (MVN MLP)"
           color: "#7b1fa2"
+
+  # Significant wave height at the location's pinned marine cell (Sennen
+  # sea-state Phase 2, 2026-06-11 — docs/SENNEN_SEA_STATE_PLAN.md).
+  # Quantile-LGB + split-CQR in WeatherProbabilistic
+  # (train/predict_wave_pi.py), RICH feature set per the 2026-06-11
+  # bake-off (0.095 m vs best single model 0.153 m; band coverage 0.91).
+  # V1 is ANY-LEAD (trained on the lead-unlabelled marine hindcast —
+  # per-lead wave history only started accruing 2026-06-11); per-lead
+  # calibration planned ~2026-09. The predict parquet also carries the
+  # Sea state tab's pass-through columns (tide height, swell period /
+  # direction, SST) so render needs no extra joins.
+  wave_height:
+    phases:
+      - id: "wave_height_lgb"
+        role: champion
+        impl: python
+        locations: ["sennen_cove"]
+        display:
+          shortTitle: "Wave height (quantile-LGB + CQR band)"
+          color: "#0277bd"
 
