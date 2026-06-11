@@ -139,9 +139,23 @@ runs:
           TRANSFERS=16
           CHECKERS=32
           case "$tree" in
-            data/forecasts|data/truth/rainfall|data/truth/era5|data/truth/metar)
+            data/forecasts|data/truth/rainfall|data/truth/era5|data/truth/metar|data/predictions)
               # Date-window-filtered trees — see the comment above the
               # DATE_WINDOW_INCLUDES builder for the per-tree rationale.
+              #
+              # data/predictions joined the windowed set 2026-06-11: it was
+              # left full-copy when it was "tens of MiB", but every cycle
+              # adds partitions and RETIRED model_version dirs keep theirs
+              # forever, so it had grown to ~77 MiB of tiny parquets at
+              # ~0.55 MiB/s (~140 s, round-trip-bound). Layout is
+              # model_version=*/date=<yyyy-MM-dd>/ everywhere (incl. the
+              # per-station precip/dry-window trees), so the same 40-day
+              # include applies verbatim; RenderSiteCommand reads
+              # predictions through the same windowDays-bounded queries as
+              # the other windowed trees, and verify (90-day depth) does
+              # its own pull in verify.yml. Old-version dirs fall out
+              # automatically because their newest partitions age past the
+              # window.
               EXTRA="$DATE_WINDOW_INCLUDES" ;;
             data/models)
               # Phase 4a's per-cell BART artefacts — state_lead_*.rds (~452 MiB)
