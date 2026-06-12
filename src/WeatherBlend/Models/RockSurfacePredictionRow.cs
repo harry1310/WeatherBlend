@@ -19,6 +19,7 @@ public sealed class RockSurfacePredictionRow
     {
         LocationName = "";
         ModelVersion = "";
+        Face = "";
         GreasinessStatus = "";
         TempModelVersion = "";
         WindModelVersion = "";
@@ -29,6 +30,13 @@ public sealed class RockSurfacePredictionRow
 
     public required string LocationName { get; init; }
     public required string ModelVersion { get; init; }
+
+    /// <summary>Crag face this row models (cliff-face mode, e.g. "west") —
+    /// each configured face is its own Force-Restore integration with the
+    /// direct beam projected onto its plane. Empty = whole-crag horizontal
+    /// mode (Bonehill). NOT <c>required</c>: rows written before this column
+    /// existed deserialize with the constructor's empty default.</summary>
+    public string Face { get; init; }
     public required DateTime PredictionMadeAtUtc { get; init; }
     public required DateTime ValidTimeUtc { get; init; }
 

@@ -1,7 +1,8 @@
 # Sennen rock surface temperature — sea-cliff extension plan
 
-Status: **S1 + S2 implemented 2026-06-12 (local); S3/S4 cliff physics next; Sennen
-output stays OFF the site (`enabled: false`) until S5 flips it.**
+Status: **S1 + S2 shipped 2026-06-12 (c5ca84b); S3 face-projected shortwave
+implemented 2026-06-13; S4 sea longwave next; Sennen output stays OFF the site
+(`enabled: false`) until S5 flips it.**
 Drafted 2026-06-12. Companion to docs/ROCK_SURFACE_TEMP_PLAN.md (the base
 Force-Restore module, live for Bonehill since 2026-06-05) and to
 docs/SENNEN_SEA_STATE_PLAN.md (which owns the salt-spray / wave-wetting side).
@@ -81,24 +82,38 @@ untouched; Sennen's override sets draft sea-cliff values + `enabled: false` so
 nothing emits (and therefore nothing renders) until the cliff physics lands.
 `enabled: false` exits 0 — an intentional skip, not the missing-input soft-skip.
 
-### S3 — cliff-face shortwave (the main new physics)
+### S3 — cliff-face shortwave (DONE 2026-06-13)
 
-Project the direct beam onto the face plane:
+Harry's faces (2026-06-13): **west, south-west, and south all matter** — three
+faces, each its own Force-Restore integration and margin series. Bearings are
+nominal (270/225/180, vertical) until real values arrive.
 
-- **Solar position** (elevation + azimuth per hour) from standard formulas —
-  lat/long/time only, no new data.
-- **Face geometry in config:** `faceAspectDeg` + `faceSlopeDeg` per location
-  (override block; 90° slope = vertical). OPEN: need the aspect/steepness of
-  the faces Harry cares about (e.g. "the main wall faces ~290°").
-- **Direct/diffuse split:** keep blending total shortwave (the trained element)
-  and split it by the NWP-mean direct fraction — `direct_radiation` /
-  `diffuse_radiation` are already collected for Sennen. Avoids training two
-  more blenders for a ratio NWPs agree on reasonably well.
-- **Face-incident SW** = direct·max(0, cos θ_face)/sin(solar elev) projection
-  + diffuse·Fsky. Sea-reflected shortwave is negligible (ocean albedo ~0.06
-  at high sun) — note and drop.
-- **Apply at forcing-assembly level** so the spin-up window (NWP-sourced SW)
-  gets the same projection as the forward (blended) window.
+As built:
+
+- **`Predict/Surface/SolarGeometry.cs`** — NOAA solar position (elevation +
+  azimuth; well under 1° error, no refraction) + `FaceIncidentSw`: direct
+  beam → direct-normal (÷ sin elev, capped at 1100 W/m² against low-sun
+  glitches; dropped entirely below 3° elevation) projected onto the face
+  plane, diffuse scaled by `fSky`. Sea-reflected shortwave neglected (ocean
+  albedo ~0.06). Slope 0 + fSky 1 reproduces GHI exactly, so whole-crag mode
+  is the degenerate case.
+- **Face geometry in config:** `faces:` list (name / aspectDeg / slopeDeg,
+  default 90 = vertical) on the per-location `rockSurface:` override —
+  replaces the global list wholesale. Empty list = whole-crag horizontal
+  mode (Bonehill, byte-identical to pre-S3 behaviour).
+- **Direct/diffuse split:** blended total shortwave × the NWP-mean direct
+  fraction (`DirectRadiation`/`DiffuseRadiation` added to the pipeline's NWP
+  query; unavailable split → 0 = all-diffuse, the conservative fallback).
+- **Applied at forcing-assembly level** — the spin-up (NWP-sourced) hours get
+  the same projection as the forward (blended) hours. Solar position is taken
+  at the half-hour midpoint (hourly SW is the preceding-hour mean,
+  Open-Meteo convention).
+- **Rows carry `Face`** (empty = whole-crag) and `ShortwaveDownWm2` becomes
+  the face-incident value that actually drove the row. The merge dedup key
+  gained LocationName + Face (same-instant per-face rows must coexist; also
+  fixes a latent cross-location collision — all locations share one per-date
+  file). Pinned by test: pre-face parquet deserialises with `Face = ""`, so
+  the deploy-day merge against an old day-file is safe.
 
 ### S4 — the sea in the longwave budget
 

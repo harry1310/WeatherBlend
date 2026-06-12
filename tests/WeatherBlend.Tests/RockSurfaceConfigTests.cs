@@ -51,6 +51,29 @@ public class RockSurfaceConfigTests
     }
 
     [Fact]
+    public void Faces_Override_ReplacesWholesale_AndDefaultsToEmpty()
+    {
+        var global = new RockSurfaceConfig();
+        global.Faces.Should().BeEmpty("no faces = whole-crag horizontal mode");
+
+        var o = new RockSurfaceOverrideConfig
+        {
+            Faces = new List<RockSurfaceFaceConfig>
+            {
+                new() { Name = "west", AspectDeg = 270 },
+                new() { Name = "south", AspectDeg = 180, SlopeDeg = 75 },
+            },
+        };
+
+        var resolved = global.ResolveFor(o);
+
+        resolved.Faces.Should().HaveCount(2);
+        resolved.Faces[0].SlopeDeg.Should().Be(90.0, "vertical wall is the default steepness");
+        resolved.Faces[1].SlopeDeg.Should().Be(75.0);
+        global.Faces.Should().BeEmpty("the global block must stay face-free for Bonehill");
+    }
+
+    [Fact]
     public void Override_DoesNotMutateGlobal()
     {
         var global = new RockSurfaceConfig();

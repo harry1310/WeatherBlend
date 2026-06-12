@@ -77,6 +77,13 @@ public sealed class RockSurfaceConfig
     /// regime before a strict Ts ≤ Td crossing.</summary>
     public double GreasyMarginC { get; set; } = 3.0;
 
+    /// <summary>Crag faces to model (cliff-face mode, SENNEN_ROCK_TEMP_PLAN.md
+    /// S3). Empty = whole-crag horizontal mode (Bonehill's all-aspect tor):
+    /// the blend shortwave drives the budget unmodified and rows carry an
+    /// empty <c>Face</c>. Non-empty = one Force-Restore integration per face,
+    /// with the direct beam projected onto each face plane.</summary>
+    public List<RockSurfaceFaceConfig> Faces { get; set; } = new();
+
     /// <summary>The effective config for one location: this global block with
     /// any fields the location's own <c>rockSurface:</c> block sets layered on
     /// top. Null/absent override (Bonehill, Membury) returns this instance
@@ -101,8 +108,27 @@ public sealed class RockSurfaceConfig
             Substeps       = o.Substeps       ?? Substeps,
             SpinupHours    = o.SpinupHours    ?? SpinupHours,
             GreasyMarginC  = o.GreasyMarginC  ?? GreasyMarginC,
+            Faces          = o.Faces          ?? Faces,
         };
     }
+}
+
+/// <summary>
+/// One crag face for the cliff-face rock-temp mode: a plane defined by the
+/// compass bearing it looks toward and its steepness. One (aspect, slope)
+/// pair per face is the same order of simplification as a single sky-view
+/// factor — real crags have corners and aspect spread.
+/// </summary>
+public sealed class RockSurfaceFaceConfig
+{
+    /// <summary>Stable identifier stamped on prediction rows (e.g. "west").</summary>
+    public string Name { get; set; } = "";
+
+    /// <summary>Compass bearing the face looks toward (deg, 0=N 90=E 180=S 270=W).</summary>
+    public double AspectDeg { get; set; }
+
+    /// <summary>Steepness: 0 = horizontal slab, 90 = vertical wall (default).</summary>
+    public double SlopeDeg { get; set; } = 90.0;
 }
 
 /// <summary>
@@ -128,4 +154,8 @@ public sealed class RockSurfaceOverrideConfig
     public int? Substeps { get; set; }
     public int? SpinupHours { get; set; }
     public double? GreasyMarginC { get; set; }
+
+    /// <summary>Replaces the global faces list WHOLESALE when set (faces are
+    /// location geometry — merging two locations' lists makes no sense).</summary>
+    public List<RockSurfaceFaceConfig>? Faces { get; set; }
 }

@@ -29,6 +29,14 @@ namespace WeatherBlend.Predict.Surface;
 ///  - DEW POINT (Td): NWP DewPoint2m directly throughout (mean across models),
 ///    per §4 — drives both the condensation margin and the clear-sky LW↓.
 ///
+/// CLIFF-FACE MODE (docs/SENNEN_ROCK_TEMP_PLAN.md S3): when the location's
+/// resolved <see cref="RockSurfaceConfig.Faces"/> is non-empty, the ODE runs
+/// once per face with the direct beam re-projected onto that face's plane
+/// (<see cref="SolarGeometry"/>; direct share = the NWP-mean direct fraction
+/// applied to the blended/NWP horizontal SW) and rows are stamped with the
+/// face name. Empty faces = whole-crag horizontal mode (Bonehill), SW
+/// unmodified, Face = "".
+///
 /// Derived, not trained (no bundle / manifest). Output version "v1".
 /// </summary>
 public static class RockSurfacePredictPipeline
@@ -108,11 +116,13 @@ public static class RockSurfacePredictPipeline
             return new List<RockSurfacePredictionRow>();
         }
 
-        // --- Assemble the contiguous hourly trajectory: spin-up (NWP) then
-        //     forward (blends). Td always NWP. Hold-forward across the rare NWP
-        //     gap so the Euler 1h cadence stays intact. ---
+        // --- Assemble the contiguous hourly BASE trajectory: spin-up (NWP)
+        //     then forward (blends). Horizontal SW and the NWP direct fraction
+        //     are kept separate so cliff-face mode can re-project the beam per
+        //     face below. Td always NWP. Hold-forward across the rare NWP gap
+        //     so the Euler 1h cadence stays intact. ---
         var forwardSet = new HashSet<DateTime>(forwardValids);
-        var forcing = new List<RockSurfacePhysics.ForcingHour>();
+        var baseHours = new List<BaseHour>();
         NwpMean? lastNwp = null;
         var gaps = 0;
         for (var t = spinupStart; t <= lastBlend; t = t.AddHours(1))
@@ -120,75 +130,98 @@ public static class RockSurfacePredictPipeline
             ct.ThrowIfCancellationRequested();
             if (nwp.TryGetValue(t, out var hourNwp)) lastNwp = hourNwp;
             var useNwp = lastNwp;
+            if (useNwp is null) { gaps++; continue; }
 
-            if (t >= firstBlend && forwardSet.Contains(t))
-            {
-                // Blend-driven reported hour. Td from NWP (hold-forward if absent).
-                if (useNwp is null) { gaps++; continue; }
-                forcing.Add(new RockSurfacePhysics.ForcingHour(
-                    ValidTimeUtc: t,
-                    AirTempC: temp[t].Value,
-                    DewPointC: useNwp.Td,
-                    CloudFrac: cloud[t] / 100.0,
-                    WindMs: EffWind(t),
-                    ShortwaveWm2: rad[t]));
-            }
-            else
-            {
+            baseHours.Add(t >= firstBlend && forwardSet.Contains(t)
+                // Blend-driven reported hour. Td (+ direct fraction) from NWP.
+                ? new BaseHour(t, temp[t].Value, useNwp.Td, cloud[t] / 100.0, EffWind(t), rad[t], useNwp.DirectFrac)
                 // Spin-up hour (incl. the sub-24h gap before the first blend hour).
-                if (useNwp is null) { gaps++; continue; }
-                forcing.Add(new RockSurfacePhysics.ForcingHour(
-                    ValidTimeUtc: t,
-                    AirTempC: useNwp.Ta,
-                    DewPointC: useNwp.Td,
-                    CloudFrac: useNwp.CloudPct / 100.0,
-                    WindMs: useNwp.WindMs,
-                    ShortwaveWm2: useNwp.ShortwaveWm2));
-            }
+                : new BaseHour(t, useNwp.Ta, useNwp.Td, useNwp.CloudPct / 100.0, useNwp.WindMs, useNwp.ShortwaveWm2, useNwp.DirectFrac));
         }
         if (gaps > 0)
             log.LogWarning("Rock-surface: {Gaps} hour(s) had no NWP forcing and were skipped — spin-up may be shorter than requested.", gaps);
-        if (forcing.Count == 0)
+        if (baseHours.Count == 0)
         {
             log.LogError("Rock-surface: forcing trajectory empty after assembly for {Loc}.", loc);
             return new List<RockSurfacePredictionRow>();
         }
 
-        // --- Integrate, then emit ONLY the blend-driven reported hours. ---
-        var integrated = RockSurfacePhysics.Integrate(forcing, cfg);
-        var rows = new List<RockSurfacePredictionRow>();
-        foreach (var h in integrated)
-        {
-            if (h.ValidTimeUtc < firstBlend || !forwardSet.Contains(h.ValidTimeUtc)) continue; // spin-up
-            var lead = temp[h.ValidTimeUtc].Lead;
-            var margin = h.MarginC;
-            rows.Add(new RockSurfacePredictionRow
-            {
-                LocationName = loc,
-                ModelVersion = OutputModelVersion,
-                PredictionMadeAtUtc = predictionMadeAtUtc,
-                ValidTimeUtc = h.ValidTimeUtc,
-                LeadHours = lead,
-                RockSurfaceTempC = h.RockTempC,
-                AirTempC = h.AirTempC,
-                DewPointC = h.DewPointC,
-                CondensationMarginC = margin,
-                GreasinessStatus = RockSurfacePhysics.Greasiness(margin, cfg.GreasyMarginC),
-                ShortwaveDownWm2 = rad[h.ValidTimeUtc],
-                CloudCoverPct = cloud[h.ValidTimeUtc],
-                WindSpeed10mMs = EffWind(h.ValidTimeUtc),
-                LongwaveDownWm2 = h.LongwaveDownWm2,
-                DeepTempC = h.DeepTempC,
-                TempModelVersion = tempV,
-                WindModelVersion = windV,
-                RadiationModelVersion = radV,
-                CloudModelVersion = cloudV,
-                DewPointSource = DewPointSourceTag,
-            });
-        }
+        // --- One integration per modelled surface: whole-crag horizontal when
+        //     no faces are configured (Bonehill — SW unmodified, Face = ""),
+        //     else one per configured face with the direct beam projected onto
+        //     its plane (S3). Solar position is evaluated at the half-hour
+        //     midpoint because the hourly SW value is the mean over the
+        //     PRECEDING hour (Open-Meteo convention). Emit ONLY the
+        //     blend-driven reported hours. ---
+        var surfaces = cfg.Faces.Count == 0
+            ? new List<RockSurfaceFaceConfig?> { null }
+            : cfg.Faces.Select(f => (RockSurfaceFaceConfig?)f).ToList();
 
-        return rows.OrderBy(r => r.ValidTimeUtc).ToList();
+        var rows = new List<RockSurfacePredictionRow>();
+        foreach (var face in surfaces)
+        {
+            var swByValid = new Dictionary<DateTime, double>(baseHours.Count);
+            var forcing = new List<RockSurfacePhysics.ForcingHour>(baseHours.Count);
+            foreach (var b in baseHours)
+            {
+                var sw = b.SwHorizontalWm2;
+                if (face is not null)
+                {
+                    var (elev, az) = SolarGeometry.SolarPosition(
+                        b.ValidTimeUtc.AddMinutes(-30), location.Latitude, location.Longitude);
+                    sw = SolarGeometry.FaceIncidentSw(
+                        b.SwHorizontalWm2, b.DirectFrac, elev, az, face.AspectDeg, face.SlopeDeg, cfg.FSky);
+                }
+                swByValid[b.ValidTimeUtc] = sw;
+                forcing.Add(new RockSurfacePhysics.ForcingHour(
+                    b.ValidTimeUtc, b.AirTempC, b.DewPointC, b.CloudFrac, b.WindMs, sw));
+            }
+
+            var integrated = RockSurfacePhysics.Integrate(forcing, cfg);
+            foreach (var h in integrated)
+            {
+                if (h.ValidTimeUtc < firstBlend || !forwardSet.Contains(h.ValidTimeUtc)) continue; // spin-up
+                var lead = temp[h.ValidTimeUtc].Lead;
+                var margin = h.MarginC;
+                rows.Add(new RockSurfacePredictionRow
+                {
+                    LocationName = loc,
+                    ModelVersion = OutputModelVersion,
+                    Face = face?.Name ?? "",
+                    PredictionMadeAtUtc = predictionMadeAtUtc,
+                    ValidTimeUtc = h.ValidTimeUtc,
+                    LeadHours = lead,
+                    RockSurfaceTempC = h.RockTempC,
+                    AirTempC = h.AirTempC,
+                    DewPointC = h.DewPointC,
+                    CondensationMarginC = margin,
+                    GreasinessStatus = RockSurfacePhysics.Greasiness(margin, cfg.GreasyMarginC),
+                    // Face mode: the FACE-INCIDENT shortwave that actually
+                    // drove this row's budget, not the horizontal blend value.
+                    ShortwaveDownWm2 = swByValid[h.ValidTimeUtc],
+                    CloudCoverPct = cloud[h.ValidTimeUtc],
+                    WindSpeed10mMs = EffWind(h.ValidTimeUtc),
+                    LongwaveDownWm2 = h.LongwaveDownWm2,
+                    DeepTempC = h.DeepTempC,
+                    TempModelVersion = tempV,
+                    WindModelVersion = windV,
+                    RadiationModelVersion = radV,
+                    CloudModelVersion = cloudV,
+                    DewPointSource = DewPointSourceTag,
+                });
+            }
+        }
+        if (surfaces.Count > 1)
+            log.LogInformation("Rock-surface: {N} faces integrated for {Loc}.", surfaces.Count, loc);
+
+        return rows.OrderBy(r => r.ValidTimeUtc).ThenBy(r => r.Face, StringComparer.Ordinal).ToList();
     }
+
+    /// <summary>One hour of the shared base trajectory: everything the
+    /// integrator needs except the per-face shortwave projection.</summary>
+    private readonly record struct BaseHour(
+        DateTime ValidTimeUtc, double AirTempC, double DewPointC,
+        double CloudFrac, double WindMs, double SwHorizontalWm2, double DirectFrac);
 
     private readonly record struct LeadValue(double Value, int Lead);
 
@@ -229,7 +262,12 @@ public static class RockSurfacePredictPipeline
                 g => g.OrderBy(r => r.LeadHours).ThenByDescending(r => r.PredictionMadeAtUtc).First().BlendValue);
     }
 
-    private sealed record NwpMean(double Ta, double Td, double CloudPct, double WindMs, double ShortwaveWm2);
+    /// <summary><paramref name="DirectFrac"/> = direct share of horizontal SW
+    /// (0..1, from the NWP-mean direct/diffuse split) — cliff-face mode applies
+    /// it to the blended GHI to recover the beam for the face projection.
+    /// 0 when the radiation split is unavailable (all-diffuse: the face then
+    /// receives only fSky-scaled diffuse, the conservative fallback).</summary>
+    private sealed record NwpMean(double Ta, double Td, double CloudPct, double WindMs, double ShortwaveWm2, double DirectFrac);
 
     /// <summary>
     /// Per-valid NWP best-estimate forcing, averaged across the canonical models.
@@ -249,6 +287,7 @@ public static class RockSurfacePredictPipeline
         var sql = $@"
 WITH ranked AS (
     SELECT ValidTimeUtc, Model, Temperature2m, DewPoint2m, CloudCover, WindSpeed10m, ShortwaveRadiation,
+           DirectRadiation, DiffuseRadiation,
            ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, Model ORDER BY LeadHours ASC, RunTimeUtc DESC) AS rn
     FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
     WHERE LocationName = '{locSql}'
@@ -265,7 +304,9 @@ SELECT ValidTimeUtc,
        avg(DewPoint2m)        AS td,
        avg(CloudCover)        AS cc,
        avg(WindSpeed10m)      AS v,
-       avg(ShortwaveRadiation) AS sw
+       avg(ShortwaveRadiation) AS sw,
+       avg(DirectRadiation)   AS dr,
+       avg(DiffuseRadiation)  AS df
 FROM ranked
 WHERE rn = 1
 GROUP BY ValidTimeUtc
@@ -293,7 +334,13 @@ ORDER BY ValidTimeUtc;";
             var v = Col(4); if (double.IsNaN(v)) v = 0;
             var sw = Col(5); if (double.IsNaN(sw)) sw = 0;
             if (double.IsNaN(ta)) continue; // air temp is load-bearing for spin-up
-            result[valid] = new NwpMean(ta, td, cc, v, sw);
+            // Direct fraction from the direct/diffuse split (face mode). NaN
+            // (no model carried the split) or zero-sum → 0 = all-diffuse.
+            var dr = Col(6); var df = Col(7);
+            var directFrac = !double.IsNaN(dr) && !double.IsNaN(df) && dr + df > 1e-9
+                ? Math.Clamp(dr / (dr + df), 0.0, 1.0)
+                : 0.0;
+            result[valid] = new NwpMean(ta, td, cc, v, sw, directFrac);
         }
         return result;
     }

@@ -173,15 +173,28 @@ locations:
       lastVisibleHourUtcExclusive: 21
 
     # Rock-surface override (sea-cliff extension, 2026-06-12 —
-    # docs/SENNEN_ROCK_TEMP_PLAN.md). DISABLED until the cliff-aware physics
-    # (S3 face-projected shortwave + S4 sea longwave) lands: Harry's call is
-    # no interim Bonehill-physics output for Sennen. fSky 0.5 is the DRAFT
-    # vertical-face value (~half the view hemisphere is sky, the rest is sea)
-    # — refine alongside S4 + the IR-gun calibration (S5). All other knobs
-    # inherit the global (Bonehill-calibrated) block.
+    # docs/SENNEN_ROCK_TEMP_PLAN.md). DISABLED until the remaining cliff
+    # physics (S4 sea longwave) lands + S5 flips it: Harry's call is no
+    # interim output for Sennen. fSky 0.5 is the DRAFT vertical-face value
+    # (~half the view hemisphere is sky, the rest is sea) — refine alongside
+    # S4 + the IR-gun calibration (S5). All other knobs inherit the global
+    # (Bonehill-calibrated) block.
+    #
+    # faces (S3, Harry 2026-06-13): the three aspects that matter — W / SW /
+    # S. Bearings are NOMINAL compass values (270/225/180) and slopeDeg
+    # defaults to 90 (vertical wall) — refine per-crag when Harry confirms
+    # real bearings/steepness. Each face is its own Force-Restore
+    # integration + margin series (rows stamped Face=name).
     rockSurface:
       enabled: false
       fSky: 0.5
+      faces:
+        - name: "west"
+          aspectDeg: 270
+        - name: "southwest"
+          aspectDeg: 225
+        - name: "south"
+          aspectDeg: 180
 
     # Culdrose (RNAS) is the nearest reliable METAR issuer (~32 km E); Newquay
     # (St Mawgan) is the fallback. Land's End (EGHC) is closer but doesn't issue

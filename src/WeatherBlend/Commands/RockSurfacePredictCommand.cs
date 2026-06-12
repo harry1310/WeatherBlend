@@ -88,12 +88,16 @@ public sealed class RockSurfacePredictCommand
 
     /// <summary>Dedup key includes ValidTimeUtc (one row per (Lead, ValidTime)
     /// per cycle), mirroring the feels-like writer — keying on Lead alone would
-    /// collapse the hourly trajectory to one row per lead.</summary>
+    /// collapse the hourly trajectory to one row per lead. LocationName + Face
+    /// are in the key too: all locations share one per-date file (no location
+    /// partition in the path), and the per-face rows of one run share a
+    /// PredictionMadeAtUtc — without them same-instant rows would collapse to
+    /// one survivor.</summary>
     internal static List<RockSurfacePredictionRow> MergeRows(
         IEnumerable<RockSurfacePredictionRow> existing,
         IEnumerable<RockSurfacePredictionRow> incoming)
         => PredictionParquetWriter.Merge(existing, incoming,
-            dedupKey:  r => (r.PredictionMadeAtUtc, r.LeadHours, r.ValidTimeUtc),
+            dedupKey:  r => (r.LocationName, r.Face, r.PredictionMadeAtUtc, r.LeadHours, r.ValidTimeUtc),
             freshness: r => r.PredictionMadeAtUtc,
             orderBy:   rows => rows.OrderBy(r => r.ValidTimeUtc).ThenBy(r => r.LeadHours));
 }
