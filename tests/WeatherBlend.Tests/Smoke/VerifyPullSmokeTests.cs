@@ -41,6 +41,7 @@ public class VerifyPullSmokeTests
         ("data/predictions",   "the predictions being scored"),
         ("data/truth/era5",    "temperature verify join key"),
         ("data/truth/rainfall","precipitation / dry-window verify join key"),
+        ("data/truth/waves",   "wave_height verify join key (buoy Hs)"),
         ("data/models",        "training_metadata.json + MANIFEST.json drift thresholds"),
         ("data/reports",       "existing verify_*.json sidecars (additive writes)"),
     };

@@ -342,6 +342,44 @@ public static partial class SitePages
         /// <summary>Rolling MAE per (version, lead) for the verify chart.</summary>
         public required IReadOnlyList<RollingMaePoint> RollingMae { get; init; }
 
+        /// <summary>
+        /// Met Office Spot rolling temperature MAE — the COMPARISON line on
+        /// the temp rolling-MAE chart. Computed fresh each render by
+        /// <c>RenderSiteCommand.ComputeSpotRollingMae</c> against the SAME
+        /// ERA5 truth + daily rolling windows as <see cref="RollingMae"/>,
+        /// so the lines are directly comparable. Spot rows are bucketed per
+        /// panel lead L into [L, nextPanelLead) — same idea as the eyeball
+        /// charts' "+24h lead" [24, 48) Spot trace. <c>Phase</c> on these
+        /// points carries the literal tag <c>"met_office_spot"</c>; the
+        /// renderer labels the series "Met Office Spot" and keeps it out of
+        /// champion/challenger, lead-policy and drift logic entirely.
+        /// Empty when the Spot capture tree hasn't landed yet.
+        /// </summary>
+        public IReadOnlyList<RollingMaePoint> SpotRollingMae { get; init; }
+            = Array.Empty<RollingMaePoint>();
+
+        /// <summary>
+        /// Met Office Spot rolling Brier per (station, lead) — comparison
+        /// line for the rain skill chart. Spot PoP/100 scored against the
+        /// same EA-gauge ≥ 0.1 mm/h wet/dry labels + 30-day rolling windows
+        /// the resident <see cref="RollingBrier"/> series use. Same lead
+        /// bucketing + isolation rules as <see cref="SpotRollingMae"/>.
+        /// </summary>
+        public IReadOnlyList<RollingBrierPoint> SpotRollingBrier { get; init; }
+            = Array.Empty<RollingBrierPoint>();
+
+        /// <summary>
+        /// Met Office Spot wind-speed MAE (m/s, converted to mph at draw
+        /// time like the resident series) replayed over the SAME (asOf,
+        /// windowDays, latencyDays) windows as this location's
+        /// <c>element_wind</c> verify sidecars, against the same ERA5
+        /// WindSpeed10m truth — each Spot point sits at the same X
+        /// (WindowEndUtc = sidecar AsOfUtc) and answers the same question
+        /// as the resident verify points. Comparison line only.
+        /// </summary>
+        public IReadOnlyList<RollingMaePoint> SpotWindRollingMae { get; init; }
+            = Array.Empty<RollingMaePoint>();
+
         /// <summary>Per-(station, version, lead, day) rolling Brier for the
         /// precipitation blender. Empty when the predict tree hasn't aged
         /// into rainfall truth yet — the rain skill page silently shows an
@@ -562,6 +600,14 @@ public static partial class SitePages
         public IReadOnlyList<WaveForecastPoint> WavePredictions { get; init; }
             = Array.Empty<WaveForecastPoint>();
 
+        /// <summary>Active wave_height bundle snapshot for this location's
+        /// Sea-state Models page (training_metadata.json + calibration.json
+        /// merged — see <c>RenderSiteCommand.LoadWaveModelCard</c>). Null
+        /// when the location has no wave bundle (every non-marine location)
+        /// or the models tree hasn't been synced — the page degrades to an
+        /// empty-state message.</summary>
+        public WaveModelCard? WaveModelCard { get; init; } = null;
+
         /// <summary>
         /// Structured weekly verify history loaded from
         /// <c>data/reports/verify_*.json</c>. One entry per (target, asOf)
@@ -605,6 +651,34 @@ public static partial class SitePages
         DateTime TrainedAtUtc,
         string MetricLabel,
         IReadOnlyDictionary<int, PerLeadMetric> PerLead);
+
+    /// <summary>
+    /// Sea-state Models page snapshot of the active wave_height bundle — the
+    /// renderer-neutral merge of the bundle's <c>training_metadata.json</c>
+    /// (version / trained-at / row counts / window / truth source) and
+    /// <c>calibration.json</c> (cal-slice MAE + band coverage + nominal
+    /// coverage + the any-lead note). Doesn't reuse <see cref="ModelSummary"/>
+    /// because the bundle is ANY-LEAD v1: it has no PerLead dict and its
+    /// headline numbers are calibration-slice, not per-lead test metrics.
+    /// All calibration fields nullable — a bundle synced without
+    /// calibration.json still renders its training half.
+    /// </summary>
+    public sealed record WaveModelCard(
+        string Version,
+        string Phase,
+        DateTime TrainedAtUtc,
+        int RowsTrain,
+        int RowsVal,
+        int RowsCal,
+        string WindowStart,
+        string WindowEnd,
+        int FeatureCount,
+        string TruthSource,
+        double? CalMae,
+        double? CalBandCoverage,
+        double? NominalCoverage,
+        string? LeadMode,
+        string? CalNote);
 
     /// <summary>One (lead → metric) entry, kept neutral so the Site layer doesn't import Train types.</summary>
     public sealed record PerLeadMetric(
@@ -866,7 +940,13 @@ public static partial class SitePages
         /// <summary>(ValidTime − RunTime) in hours. Used by the skill-page
         /// per-lead bucketing: chart's +Lh trace draws rows with
         /// LeadHours ∈ [L, L+24).</summary>
-        int LeadHours);
+        int LeadHours,
+        /// <summary>10 m wind speed in m/s, or null when the row didn't
+        /// carry it. Drives the Met Office Spot comparison line on the wind
+        /// skill page (scored vs the same ERA5 WindSpeed10m truth as the
+        /// element blenders). Defaulted so existing positional construction
+        /// sites (tests) compile unchanged.</summary>
+        double? WindSpeed10mMs = null);
 
     /// <summary>One row of the dry-window start-hour curve. Multiple rows
     /// share a (Station, WindowHours, LeadHours, TargetDateUtc) and differ

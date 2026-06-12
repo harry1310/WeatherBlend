@@ -152,7 +152,16 @@ public sealed class RenderSiteCommand
         var startHourAllLocs = QueryStartHourPredictions(windowStart, predictionEnd, ct);
         _log.LogInformation("Loaded {N} start-hour curve rows (all locations).", startHourAllLocs.Count);
 
-        var metOfficeSpotAllLocs = QueryMetOfficeSpotForecasts(windowStart, predictionEnd, ct);
+        // Spot loads with extra lookback beyond the render window: the wind
+        // skill chart's Spot comparison line replays each element_wind
+        // verify sidecar's (asOf − windowDays) scoring window, and a sidecar
+        // sitting at the left edge of the chart's 30-day axis reaches ~14+5
+        // days further back than windowStart. 21 days of margin covers the
+        // element verify defaults (window 14d, latency 5d) comfortably; the
+        // eyeball + rolling charts ignore the extra rows via their own
+        // window filters.
+        var spotLookbackStart = windowStart.AddDays(-SpotVerifyLookbackExtraDays);
+        var metOfficeSpotAllLocs = QueryMetOfficeSpotForecasts(spotLookbackStart, predictionEnd, ct);
         _log.LogInformation("Loaded {N} Met Office Spot forecast rows (all locations).", metOfficeSpotAllLocs.Count);
 
         var nwpPopAllLocs = QueryNwpPrecipProbabilities(windowStart, predictionEnd, ct);
@@ -331,9 +340,47 @@ public sealed class RenderSiteCommand
             var rolling = ComputeRollingMae(predictions, truth, phaseByVersion, rollingWindowDays);
             var rollingBrier = ComputeRollingBrier(precip, rainfall, phaseByVersion, precipRollingWindowDays);
 
+            // Met Office Spot comparison series (computed fresh each render,
+            // like the resident rolling metrics above, so the Spot lines get
+            // full history automatically). Same truth, same windows, same
+            // per-day cadence; Spot rows bucket per panel lead — see the
+            // Compute* docs. Never feeds champion/lead-policy/drift logic.
+            var spotRollingMae = ComputeSpotRollingMae(
+                metOfficeSpot, truth, Leads.ForecastsTempRain, rollingWindowDays);
+            var spotRollingBrier = ComputeSpotRollingBrier(
+                metOfficeSpot, rainfall, Leads.ForecastsTempRain, precipRollingWindowDays);
+
+            // Spot wind MAE replays this location's element_wind verify
+            // sidecar windows against ERA5 WindSpeed10m truth, so each Spot
+            // point shares its X (= sidecar AsOfUtc) and scoring window with
+            // the resident verify points on the wind skill chart. ERA5 wind
+            // is only loaded when there's something to replay.
+            var isPrimaryLoc = string.Equals(loc.Name, _cfg.Locations[0].Name, StringComparison.Ordinal);
+            var spotWindWindows = verifyHistory
+                .Where(f => string.Equals(f.Target, "element_wind", StringComparison.Ordinal))
+                .Where(f => f.Rows.Any(r => r.Station is null
+                    ? isPrimaryLoc   // pre-Phase-C sidecars carried no station — primary-loc fallback
+                    : string.Equals(r.Station, loc.Name, StringComparison.Ordinal)))
+                .Select(f => (f.AsOfUtc, f.WindowDays, f.LatencyDays))
+                .Distinct()
+                .ToList();
+            IReadOnlyList<SitePages.RollingMaePoint> spotWindRollingMae = Array.Empty<SitePages.RollingMaePoint>();
+            if (spotWindWindows.Count > 0 && metOfficeSpot.Any(m => m.WindSpeed10mMs.HasValue))
+            {
+                var windTruthStart = spotWindWindows.Min(w => w.AsOfUtc.AddDays(-w.WindowDays));
+                var windTruthEnd = spotWindWindows.Max(w => w.AsOfUtc);
+                var windTruth = _truth.GetEra5Hourly(loc.Name, windTruthStart, windTruthEnd, ct, "WindSpeed10m");
+                spotWindRollingMae = ComputeSpotWindVerifyMae(metOfficeSpot, spotWindWindows, windTruth, Leads.Short);
+            }
+
             // Per-loc model summaries (scoped to loc's stations).
             var locModelSummaries = LoadModelSummaries(predictions, precip, dryWindow, rainfallAmount, locStationSlugs, elementLocationFilter: loc.Name);
             var locFeatureSpecRows = LoadFeatureSpecRows(predictions, precip, dryWindow, rainfallAmount, locStationSlugs, locModelSummaries);
+
+            // Active wave_height bundle snapshot for the Sea-state Models
+            // page (Sennen today). Null for non-marine locations / unsynced
+            // model trees — the page renders its empty state.
+            var waveModelCard = LoadWaveModelCard(loc.Name);
 
             var locInputs = new SitePages.SiteInputs
             {
@@ -354,6 +401,9 @@ public sealed class RenderSiteCommand
                 LowCloudByValid = lowCloud,
                 RollingMae = rolling,
                 RollingBrier = rollingBrier,
+                SpotRollingMae = spotRollingMae,
+                SpotRollingBrier = spotRollingBrier,
+                SpotWindRollingMae = spotWindRollingMae,
                 PrecipPredictions = precip,
                 DryWindowPredictions = dryWindow,
                 RainfallAmountPredictions = rainfallAmount,
@@ -376,6 +426,7 @@ public sealed class RenderSiteCommand
                 WindPredictions = windPredictions,
                 WindDirectionPredictions = windDirectionPredictions,
                 WavePredictions = wavePredictions,
+                WaveModelCard = waveModelCard,
                 StartHourPredictions = startHour,
                 MetOfficeSpotForecasts = metOfficeSpot,
                 NwpPrecipProbabilities = nwpPop,
@@ -527,6 +578,10 @@ public sealed class RenderSiteCommand
                 await Write("models-dry-window.html", SitePages.RenderModels(locInputs, "dry_window"));
             if (loc.HasTab("wind"))
                 await Write("models-wind.html", SitePages.RenderModels(locInputs, "wind"));
+            if (loc.HasTab("sea_state"))
+                // Bespoke page (any-lead wave bundle has no per-lead card) —
+                // see SitePages.ModelsSeaState.cs.
+                await Write("models-sea-state.html", SitePages.RenderModelsSeaState(locInputs));
             if (loc.HasTab("element"))
                 await Write("models-elements.html", SitePages.RenderModels(locInputs, "element"));
         }
@@ -824,6 +879,94 @@ public sealed class RenderSiteCommand
     /// per-station migration).
     /// </summary>
 
+    /// <summary>
+    /// Snapshot of the location's active <c>wave_height</c> bundle for the
+    /// Sea-state Models page: <c>training_metadata.json</c> (version /
+    /// trained-at / row counts / window / truth source — the wave bundle is
+    /// any-lead so it has no PerLead dict and can't go through
+    /// <see cref="TryLoadSummary"/>) merged with <c>calibration.json</c>
+    /// (cal-slice MAE + band coverage, Python snake_case). Both parsed
+    /// tolerantly via JsonDocument; null when the location has no wave
+    /// manifest entry or the metadata file is missing/corrupt. A missing
+    /// calibration.json degrades to a card without the cal-slice rows.
+    /// </summary>
+    private SitePages.WaveModelCard? LoadWaveModelCard(string locationName)
+    {
+        try
+        {
+            IReadOnlyList<string> active;
+            try { active = ModelArtifact.ResolveStationActive(_cfg.Storage.ModelsPath, "wave_height", locationName); }
+            catch { return null; }
+            if (active.Count == 0) return null;
+            // Newest active version (vYYYY-MM-DD_HHmmss prefix → ordinal max).
+            var version = active.OrderByDescending(v => v, StringComparer.Ordinal).First();
+            var dir = Path.Combine(_cfg.Storage.ModelsPath, "wave_height", locationName, version);
+            var metaPath = Path.Combine(dir, ModelArtifact.TrainingMetadataFileName);
+            if (!File.Exists(metaPath)) return null;
+
+            using var meta = System.Text.Json.JsonDocument.Parse(File.ReadAllText(metaPath));
+            var m = meta.RootElement;
+            static string MStr(System.Text.Json.JsonElement root, string name) =>
+                root.TryGetProperty(name, out var el) && el.ValueKind == System.Text.Json.JsonValueKind.String
+                    ? el.GetString() ?? "" : "";
+            static int MInt(System.Text.Json.JsonElement root, string name) =>
+                root.TryGetProperty(name, out var el) && el.ValueKind == System.Text.Json.JsonValueKind.Number
+                    ? el.GetInt32() : 0;
+            var trainedAt = m.TryGetProperty("TrainedAtUtc", out var ta) && ta.TryGetDateTime(out var dt)
+                ? dt.ToUniversalTime() : DateTime.MinValue;
+
+            double? calMae = null, calCoverage = null, nominal = null;
+            string? leadMode = null, note = null;
+            var calPath = Path.Combine(dir, "calibration.json");
+            if (File.Exists(calPath))
+            {
+                try
+                {
+                    using var cal = System.Text.Json.JsonDocument.Parse(File.ReadAllText(calPath));
+                    var c = cal.RootElement;
+                    static double? CNum(System.Text.Json.JsonElement root, string name) =>
+                        root.TryGetProperty(name, out var el) && el.ValueKind == System.Text.Json.JsonValueKind.Number
+                            ? el.GetDouble() : null;
+                    static string? CStr(System.Text.Json.JsonElement root, string name) =>
+                        root.TryGetProperty(name, out var el) && el.ValueKind == System.Text.Json.JsonValueKind.String
+                            ? el.GetString() : null;
+                    calMae = CNum(c, "cal_mae");
+                    calCoverage = CNum(c, "cal_band_coverage");
+                    nominal = CNum(c, "coverage");
+                    leadMode = CStr(c, "lead_mode");
+                    note = CStr(c, "note");
+                }
+                catch (Exception ex)
+                {
+                    _log.LogWarning("Failed to parse wave calibration.json for {Loc}/{Version}: {Msg}",
+                        locationName, version, ex.Message);
+                }
+            }
+
+            return new SitePages.WaveModelCard(
+                Version: version,
+                Phase: MStr(m, "Phase"),
+                TrainedAtUtc: trainedAt,
+                RowsTrain: MInt(m, "RowsTrain"),
+                RowsVal: MInt(m, "RowsVal"),
+                RowsCal: MInt(m, "RowsCal"),
+                WindowStart: MStr(m, "WindowStart"),
+                WindowEnd: MStr(m, "WindowEnd"),
+                FeatureCount: MInt(m, "FeatureCount"),
+                TruthSource: MStr(m, "TruthSource"),
+                CalMae: calMae,
+                CalBandCoverage: calCoverage,
+                NominalCoverage: nominal,
+                LeadMode: leadMode,
+                CalNote: note);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning("Failed to load wave model card for {Loc}: {Msg}", locationName, ex.Message);
+            return null;
+        }
+    }
+
     private SitePages.ModelSummary? TryLoadSummary(string versionDir, string composite, string version, string metricLabel)
     {
         try
@@ -1050,6 +1193,182 @@ public sealed class RenderSiteCommand
                 var brier = inWindow.Sum(r => (r.Pred - r.Truth) * (r.Pred - r.Truth)) / inWindow.Count;
                 points.Add(new SitePages.RollingBrierPoint(
                     station, phase, lead, windowEnd, brier, inWindow.Count));
+            }
+        }
+        return points;
+    }
+
+    // ------------------------------------------------------------------
+    // Met Office Spot comparison-line scoring (2026-06-12). Spot is a
+    // reference product on the skill charts, NEVER a blender input or a
+    // champion/challenger — so its scoring lives here next to the resident
+    // rolling metrics (same truth, same windows, same cadence) and its
+    // output rides dedicated SiteInputs fields rather than joining the
+    // phase-keyed lists.
+    // ------------------------------------------------------------------
+
+    /// <summary>Extra days of Spot history loaded beyond the render window
+    /// so the wind chart's per-sidecar window replay (asOf − windowDays −
+    /// latency, reaching ~19d past the 30-day axis edge) has rows to score.
+    /// See the QueryMetOfficeSpotForecasts call site.</summary>
+    internal const int SpotVerifyLookbackExtraDays = 21;
+
+    /// <summary>Phase tag stamped on Spot comparison points. Display-only —
+    /// the renderers label these series "Met Office Spot" and no
+    /// phase-policy lookup ever sees the tag.</summary>
+    internal const string SpotPhaseTag = "met_office_spot";
+
+    /// <summary>
+    /// Lead bucket for the Spot comparison series on a per-lead rolling
+    /// chart: panel lead L covers Spot rows with LeadHours ∈ [L,
+    /// nextPanelLead) (the final panel takes [L, L+24)). Mirrors the
+    /// eyeball charts' "+24h lead bucket [24, 48)" convention and the
+    /// trained-lead bucket semantics of the resident series (a lead-24
+    /// prediction row's actual lead spreads 24..47h across the day's
+    /// hourly rows; Spot's own lead is synthesised per pull, so an exact
+    /// match would be dishonest precision). Each Spot forecast hour lands
+    /// in exactly one panel.
+    /// </summary>
+    internal static (int Lo, int Hi) SpotLeadBucket(IReadOnlyList<int> panelLeads, int index)
+        => (panelLeads[index],
+            index + 1 < panelLeads.Count ? panelLeads[index + 1] : panelLeads[index] + 24);
+
+    /// <summary>
+    /// Rolling MAE for the Met Office Spot temperature forecast — the
+    /// comparison line on the temp rolling-MAE chart. Pairs Spot rows
+    /// (deduped to the smallest lead per valid hour inside each panel's
+    /// bucket) with the SAME ERA5 truth dict the resident
+    /// <see cref="ComputeRollingMae"/> uses, then emits one point per
+    /// calendar day over the same backwards-sliding <paramref name="windowDays"/>
+    /// window. Leads with no Spot coverage emit nothing — the chart omits
+    /// the line there rather than faking it.
+    /// </summary>
+    internal static IReadOnlyList<SitePages.RollingMaePoint> ComputeSpotRollingMae(
+        IReadOnlyList<SitePages.MetOfficeSpotForecastPoint> spot,
+        IReadOnlyDictionary<DateTime, double> truthByTime,
+        IReadOnlyList<int> panelLeads,
+        int windowDays)
+    {
+        var points = new List<SitePages.RollingMaePoint>();
+        for (int i = 0; i < panelLeads.Count; i++)
+        {
+            var (lo, hi) = SpotLeadBucket(panelLeads, i);
+            var paired = spot
+                .Where(m => m.Temperature2m.HasValue
+                            && m.LeadHours >= lo && m.LeadHours < hi
+                            && truthByTime.ContainsKey(m.ValidTimeUtc))
+                .LatestPerValid(m => m.ValidTimeUtc, m => m.LeadHours)
+                .Select(m => (m.ValidTimeUtc,
+                              Err: Math.Abs(m.Temperature2m!.Value - truthByTime[m.ValidTimeUtc])))
+                .ToList();
+            if (paired.Count == 0) continue;
+
+            var minDate = paired.Min(r => r.ValidTimeUtc).Date;
+            var maxDate = paired.Max(r => r.ValidTimeUtc).Date;
+            for (var d = minDate; d <= maxDate; d = d.AddDays(1))
+            {
+                var windowEnd = d.AddDays(1).AddTicks(-1);
+                var windowStart = windowEnd.AddDays(-windowDays);
+                var inWindow = paired.Where(r => r.ValidTimeUtc >= windowStart && r.ValidTimeUtc <= windowEnd).ToList();
+                if (inWindow.Count == 0) continue;
+                points.Add(new SitePages.RollingMaePoint(
+                    SpotPhaseTag, panelLeads[i], windowEnd, inWindow.Average(r => r.Err), inWindow.Count));
+            }
+        }
+        return points;
+    }
+
+    /// <summary>
+    /// Rolling Brier for the Met Office Spot PoP — comparison line on the
+    /// rain skill chart. PoP arrives in percent [0, 100] → /100, scored
+    /// against the SAME per-station EA wet/dry labels (≥ 0.1 mm/h) and
+    /// the same 30-day rolling windows the resident
+    /// <see cref="ComputeRollingBrier"/> series use. NB the Met Office PoP
+    /// threshold is "any measurable precip" — slightly looser than the
+    /// 0.1 mm/h label; the chart copy already flags this on the eyeball
+    /// panel and the same caveat applies here.
+    /// </summary>
+    internal static IReadOnlyList<SitePages.RollingBrierPoint> ComputeSpotRollingBrier(
+        IReadOnlyList<SitePages.MetOfficeSpotForecastPoint> spot,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<DateTime, double>> rainfallByStation,
+        IReadOnlyList<int> panelLeads,
+        int windowDays)
+    {
+        const double WetThresholdMm = 0.1;
+        var points = new List<SitePages.RollingBrierPoint>();
+        foreach (var (station, byTime) in rainfallByStation)
+        {
+            for (int i = 0; i < panelLeads.Count; i++)
+            {
+                var (lo, hi) = SpotLeadBucket(panelLeads, i);
+                var paired = spot
+                    .Where(m => m.PrecipitationProbabilityPercent.HasValue
+                                && m.LeadHours >= lo && m.LeadHours < hi
+                                && byTime.ContainsKey(m.ValidTimeUtc))
+                    .LatestPerValid(m => m.ValidTimeUtc, m => m.LeadHours)
+                    .Select(m =>
+                    {
+                        var p = m.PrecipitationProbabilityPercent!.Value / 100.0;
+                        var t = byTime[m.ValidTimeUtc] >= WetThresholdMm ? 1.0 : 0.0;
+                        return (m.ValidTimeUtc, Sq: (p - t) * (p - t));
+                    })
+                    .ToList();
+                if (paired.Count == 0) continue;
+
+                var minDate = paired.Min(r => r.ValidTimeUtc).Date;
+                var maxDate = paired.Max(r => r.ValidTimeUtc).Date;
+                for (var d = minDate; d <= maxDate; d = d.AddDays(1))
+                {
+                    var windowEnd = d.AddDays(1).AddTicks(-1);
+                    var windowStart = windowEnd.AddDays(-windowDays);
+                    var inWindow = paired.Where(r => r.ValidTimeUtc >= windowStart && r.ValidTimeUtc <= windowEnd).ToList();
+                    if (inWindow.Count == 0) continue;
+                    points.Add(new SitePages.RollingBrierPoint(
+                        station, SpotPhaseTag, panelLeads[i], windowEnd, inWindow.Average(r => r.Sq), inWindow.Count));
+                }
+            }
+        }
+        return points;
+    }
+
+    /// <summary>
+    /// Met Office Spot wind-speed MAE replayed over each element_wind
+    /// verify sidecar's exact (asOf, windowDays, latencyDays) scoring
+    /// window, against the same ERA5 WindSpeed10m truth element-verify
+    /// scores the blenders on. The wind skill chart's resident points come
+    /// from those append-only weekly sidecars, so recomputing Spot here per
+    /// sidecar window gives it the same X positions (WindowEndUtc = AsOfUtc),
+    /// the same cadence, AND full history — without touching the verify
+    /// command or its drift logic. Sidecar windows that pre-date the loaded
+    /// Spot capture (started 2026-04-24) score on whatever rows exist; N on
+    /// the point carries the pair count as everywhere else.
+    /// </summary>
+    internal static IReadOnlyList<SitePages.RollingMaePoint> ComputeSpotWindVerifyMae(
+        IReadOnlyList<SitePages.MetOfficeSpotForecastPoint> spot,
+        IReadOnlyList<(DateTime AsOfUtc, int WindowDays, int LatencyDays)> verifyWindows,
+        IReadOnlyDictionary<DateTime, double> windTruthByTime,
+        IReadOnlyList<int> panelLeads)
+    {
+        var points = new List<SitePages.RollingMaePoint>();
+        foreach (var (asOf, windowDays, latencyDays) in verifyWindows.OrderBy(w => w.AsOfUtc))
+        {
+            // Same window arithmetic as ElementVerifyCommand.RunAsync.
+            var windowStart = asOf.AddDays(-windowDays);
+            var windowEnd = asOf.AddDays(-latencyDays);
+            for (int i = 0; i < panelLeads.Count; i++)
+            {
+                var (lo, hi) = SpotLeadBucket(panelLeads, i);
+                var errs = spot
+                    .Where(m => m.WindSpeed10mMs.HasValue
+                                && m.LeadHours >= lo && m.LeadHours < hi
+                                && m.ValidTimeUtc >= windowStart && m.ValidTimeUtc <= windowEnd
+                                && windTruthByTime.ContainsKey(m.ValidTimeUtc))
+                    .LatestPerValid(m => m.ValidTimeUtc, m => m.LeadHours)
+                    .Select(m => Math.Abs(m.WindSpeed10mMs!.Value - windTruthByTime[m.ValidTimeUtc]))
+                    .ToList();
+                if (errs.Count == 0) continue;
+                points.Add(new SitePages.RollingMaePoint(
+                    SpotPhaseTag, panelLeads[i], asOf, errs.Average(), errs.Count));
             }
         }
         return points;
@@ -1732,7 +2051,7 @@ FROM ranked WHERE rn = 1 ORDER BY LocationName, Model, ValidTimeUtc";
         // an unusual collect cycle.
         var sql = $@"
 WITH ranked AS (
-  SELECT RunTimeUtc, ValidTimeUtc, LocationName, LeadHours, Temperature2m, PrecipitationProbability,
+  SELECT RunTimeUtc, ValidTimeUtc, LocationName, LeadHours, Temperature2m, PrecipitationProbability, WindSpeed10m,
          row_number() OVER (PARTITION BY LocationName, ValidTimeUtc, LeadHours ORDER BY RunTimeUtc DESC) AS rn
   FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
   WHERE LocationName IN ({locFilter})
@@ -1740,7 +2059,7 @@ WITH ranked AS (
     AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
     AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
 )
-SELECT RunTimeUtc, ValidTimeUtc, Temperature2m, PrecipitationProbability, LocationName, LeadHours
+SELECT RunTimeUtc, ValidTimeUtc, Temperature2m, PrecipitationProbability, LocationName, LeadHours, WindSpeed10m
 FROM ranked WHERE rn = 1 ORDER BY LocationName, ValidTimeUtc, LeadHours";
 
         return ParquetReader.Query(sql, r => new SitePages.MetOfficeSpotForecastPoint(
@@ -1749,7 +2068,8 @@ FROM ranked WHERE rn = 1 ORDER BY LocationName, ValidTimeUtc, LeadHours";
             Temperature2m:                   r.IsDBNull(2) ? null : r.GetDouble(2),
             PrecipitationProbabilityPercent: r.IsDBNull(3) ? null : r.GetDouble(3),
             LocationName:                    r.GetString(4),
-            LeadHours:                       r.GetInt32(5)),
+            LeadHours:                       r.GetInt32(5),
+            WindSpeed10mMs:                  r.IsDBNull(6) ? null : r.GetDouble(6)),
             _log, "Met Office Spot tree empty — comparison line will be absent.", ct);
     }
 

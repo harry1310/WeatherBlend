@@ -109,6 +109,68 @@ public class VerifyHistoryWriterTests : IDisposable
     }
 
     [Fact]
+    public async Task WriteAsync_round_trips_wave_height_rows_with_band_coverage()
+    {
+        // The wave verify rail (2026-06-12) adds the BandCoverage field —
+        // pin its camelCase name + null-suppression so the Sea-state Models
+        // page's history table reads it back, and so non-wave targets don't
+        // grow a spurious null property.
+        var asOf = new DateTime(2026, 6, 15, 9, 30, 0, DateTimeKind.Utc);
+        var file = new VerifyHistoryFile
+        {
+            Target = "wave_height",
+            AsOfUtc = asOf,
+            WindowDays = 30,
+            LatencyDays = 0,
+            MetricLabel = "Hs MAE (m)",
+            Rows = new List<VerifyHistoryRow>
+            {
+                new()
+                {
+                    Station = "sennen_cove",
+                    ModelVersion = "v2026-06-11_220452_wave_height_lgb",
+                    Phase = "wave_height_lgb",
+                    LeadHours = 24,
+                    N = 53,
+                    BlendMetric = 0.31,
+                    ReferenceTrainingMetric = 0.107,
+                    DriftFlag = false,
+                    BandCoverage = 0.88,
+                },
+                new()
+                {
+                    Station = "sennen_cove",
+                    ModelVersion = "v2026-06-11_220452_wave_height_lgb",
+                    Phase = "wave_height_lgb",
+                    LeadHours = 48,
+                    N = 12,
+                    BlendMetric = 0.36,
+                    DriftFlag = false,
+                    BandCoverage = null,   // no banded pairs in the bucket
+                },
+            },
+        };
+
+        // Non-primary location → {location} filename segment.
+        await VerifyHistoryWriter.WriteAsync(_root, file, locationName: "sennen_cove", default);
+
+        var path = Path.Combine(_root, "verify_wave_height_sennen_cove_2026-06-15.json");
+        File.Exists(path).Should().BeTrue();
+
+        var json = await File.ReadAllTextAsync(path);
+        json.Should().Contain("\"bandCoverage\": 0.88");
+
+        var options = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            PropertyNameCaseInsensitive = true,
+        };
+        var reread = JsonSerializer.Deserialize<VerifyHistoryFile>(json, options);
+        reread!.Rows[0].BandCoverage.Should().BeApproximately(0.88, 1e-9);
+        reread.Rows[1].BandCoverage.Should().BeNull();
+    }
+
+    [Fact]
     public async Task WriteAsync_creates_target_dir_when_missing()
     {
         var subdir = Path.Combine(_root, "nested", "reports");

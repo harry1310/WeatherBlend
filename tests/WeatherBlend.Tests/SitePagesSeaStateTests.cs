@@ -132,27 +132,18 @@ public class SitePagesSeaStateTests
     public void RenderSeaState_renders_page_level_empty_state_when_no_wave_rows()
     {
         // Fresh deploy / unsynced tree: the page must render (not throw),
-        // with the wave empty state and the wind section still present.
+        // with the wave empty state.
         var html = SitePages.RenderSeaState(MakeInput(Sennen()));
 
         html.Should().Contain("No wave-height predictions available yet");
-        html.Should().Contain("<h3>Wind</h3>");
     }
 
     [Fact]
-    public void RenderSeaState_renders_wind_empty_state_when_no_wind_rows()
+    public void RenderSeaState_has_no_wind_section()
     {
-        // The Sennen wind model trains after this page ships — until its
-        // rows land the section must degrade, not fail the page.
-        var html = SitePages.RenderSeaState(MakeInput(Sennen(), new[] { Wave(GeneratedAt, 1.8) }));
-
-        html.Should().Contain("No wind predictions for this location yet");
-        html.Should().NotContain("Blend wind speed (mph)");
-    }
-
-    [Fact]
-    public void RenderSeaState_renders_wind_speed_line_when_rows_exist()
-    {
+        // Wind moved to Sennen's own wind tab 2026-06-12 ("just like wind
+        // for bonehill") — the page is waves + tide + swell only, even when
+        // wind rows exist for the location.
         var wind = new[]
         {
             new SitePages.WindForecastPoint(
@@ -167,8 +158,8 @@ public class SitePagesSeaStateTests
         };
         var html = SitePages.RenderSeaState(MakeInput(Sennen(), new[] { Wave(GeneratedAt, 1.8) }, wind));
 
-        html.Should().Contain("Blend wind speed (mph)");
-        html.Should().NotContain("No wind predictions for this location yet");
+        html.Should().NotContain("<h3>Wind</h3>");
+        html.Should().NotContain("Blend wind speed (mph)");
     }
 
     [Fact]

@@ -16,6 +16,7 @@ namespace WeatherBlend.Models;
 ///   verify_precipitation_{yyyy-MM-dd}.json
 ///   verify_dry_window_{yyyy-MM-dd}.json
 ///   verify_element_{element}_{yyyy-MM-dd}.json
+///   verify_wave_height_{location}_{yyyy-MM-dd}.json
 ///
 /// Start-hour verify is intentionally NOT in this schema — its metric set
 /// (top-1 / Brier / log-loss skill) doesn't fit a single-blend-metric row,
@@ -174,6 +175,16 @@ public sealed class VerifyHistoryRow
     /// page renders this as a bar chart so the reader sees the shape
     /// directly. Sums to <see cref="N"/>.</summary>
     public List<int>? PitBins { get; init; }
+
+    // ---- Wave-height (wave_height) band metric ------------------------
+
+    /// <summary>Empirical coverage of the wave blend's calibrated 90%
+    /// prediction band — fraction of matched buoy hours with observed Hs ∈
+    /// [BandLoM, BandHiM]. Nominal 0.90; the wave verify flags drift when
+    /// this lands well below nominal (floor 0.75 by default). Populated only
+    /// on <c>wave_height</c> target rows; null everywhere else. (Distinct
+    /// from <see cref="Coverage80"/>, which is 3f's 80% interval.)</summary>
+    public double? BandCoverage { get; init; }
 
     /// <summary>Per-threshold Brier scores for the exceedance forecasts
     /// (P(mm/h ≥ threshold) vs the binary observed exceedance). Keys are

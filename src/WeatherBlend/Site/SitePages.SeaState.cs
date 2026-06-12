@@ -10,7 +10,7 @@ public static partial class SitePages
     /// "wave, tide and wind details on the site for Sennen"). Single page,
     /// no lead sub-nav: wave_height_lgb is ANY-LEAD (one continuous hourly
     /// forecast per cycle, 0–146 h) so a per-lead axis would slice the same
-    /// curve into arbitrary pieces. Four sections:
+    /// curve into arbitrary pieces. Three sections:
     ///
     ///   1. Significant wave height — q50 line + shaded CQR 90% band
     ///      (same band-ribbon idiom as the wind page's wind_speed_lgb chart).
@@ -19,9 +19,9 @@ public static partial class SitePages
     ///   3. Swell — primary + secondary swell-height chart and a collapsible
     ///      3-hourly detail table (period / "from" direction with compass
     ///      point / SST).
-    ///   4. Wind — the location's wind element blend collapsed to one value
-    ///      per hour; the established "no data yet" empty state until the
-    ///      Sennen wind model produces rows (trains 2026-06-12).
+    ///
+    /// Wind lived here for one day (2026-06-11→12) and moved to Sennen's own
+    /// wind tab — "just like wind for bonehill" — the morning after.
     ///
     /// Wave rows arrive already collapsed to one row per ValidTimeUtc by
     /// RenderSiteCommand's SQL, but the page re-applies the same rule
@@ -74,7 +74,9 @@ public static partial class SitePages
             body.Append(RenderSwellSection(input, waves, xMin, xMax));
         }
 
-        body.Append(RenderSeaStateWindSection(input));
+        // Wind moved to Sennen's own wind tab 2026-06-12 (Harry: "just like
+        // wind for bonehill") — the sea-state combiner still reads wind data
+        // directly; this page stays waves + tide + swell.
 
         body.Append("</section>");
         return WrapPage(input, "Sea state", "sea-state", body.ToString());
@@ -274,59 +276,4 @@ public static partial class SitePages
         return points[idx];
     }
 
-    // ----------------------------------------------------------------
-    // Wind — the location's wind element blend, one value per hour
-    // ----------------------------------------------------------------
-
-    private static string RenderSeaStateWindSection(SiteInputs input)
-    {
-        var s = new StringBuilder();
-        s.Append("<h3>Wind</h3>");
-
-        if (input.WindPredictions.Count == 0)
-        {
-            s.Append("<p><em>No wind predictions for this location yet. The line will populate once the wind blender is trained here and predict has run.</em></p>");
-            return s.ToString();
-        }
-
-        // Champion-phase rows only when the phase map can resolve them (same
-        // PhaseOf fallback rule as the wind page: a bare version with no
-        // bundle metadata defaults to the champion "wind" phase). Then the
-        // standard cross-lead collapse: most recent cycle covering each hour.
-        string PhaseOf(string version)
-            => input.PhaseByVersion.TryGetValue(version, out var ph) && !string.IsNullOrEmpty(ph)
-               ? ph : "wind";
-        var championPhase = ActivePhasePolicy.ByTarget.TryGetValue("wind", out var phases) && phases.Count > 0
-            ? phases[0] : "wind";
-        var rows = input.WindPredictions.Where(p => PhaseOf(p.Version) == championPhase).ToList();
-        if (rows.Count == 0) rows = input.WindPredictions.ToList();
-
-        var perHour = rows
-            .LatestPerValid(r => r.ValidTimeUtc, r => r.LeadHours, r => r.PredictedAtUtc)
-            .OrderBy(r => r.ValidTimeUtc)
-            .ToList();
-
-        var maxValid = perHour.Max(r => r.ValidTimeUtc);
-        if (maxValid < input.GeneratedAtUtc) maxValid = input.GeneratedAtUtc;
-
-        s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
-        {
-            Title  = "Blend wind speed (mph)",
-            XLabel = "Valid time (UTC)",
-            YLabel = "Wind speed (mph)",
-            Series = new List<LineSeries>
-            {
-                new($"Champion ({championPhase})", NwpPalette.Blend,
-                    perHour.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.SpeedMs * MsToMph)).ToList()),
-            },
-            Height = 240,
-            FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
-            FormatY = v => v.ToString("0", Ci),
-            TodayLineX = input.GeneratedAtUtc.ToOADate(),
-            XMin = ForecastChartXMin(input),
-            XMax = maxValid.ToOADate(),
-            YMin = 0,
-        }));
-        return s.ToString();
-    }
 }

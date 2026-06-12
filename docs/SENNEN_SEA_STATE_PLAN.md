@@ -171,6 +171,18 @@ wind already done), closed-form for tide, heuristic combiner on top.
   coupling into a Sennen rock-temp story, verify page (rolling Hs MAE vs
   buoy + band coverage), Newlyn harmonics if sea_level_height_msl proves
   dishonest.
+  - **Wind DIRECTION for Sennen (decision 2026-06-12, Harry + assessment):
+    train on ERA5**, not a MIDAS station. The Bonehill→Dunkeswell choice
+    solved a representativeness problem (ERA5 undersells a 393 m tor;
+    Dunkeswell is a genuine exposure analogue). Sennen is the opposite
+    case: an exposed 35 m clifftop near the marine boundary layer ERA5
+    resolves well, direction there is synoptic-flow-dominated, and the
+    MIDAS candidates (Culdrose ~32 km, Camborne ~28 km) are NOT exposure
+    analogues — plumbing CEDA for the wrong place. Work = parameterise
+    wind_mvn's hardcoded Dunkeswell truth loader per location. Insurance:
+    verify direction predictions against Culdrose METAR direction as a
+    sanity rail (not truth); revisit Gwennap Head's licence only if that
+    rail shows a concrete problem.
 
 ## Wiring checklist (the honest touch-list)
 

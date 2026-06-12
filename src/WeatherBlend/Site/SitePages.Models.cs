@@ -203,6 +203,7 @@ public static partial class SitePages
             ("rain",       "models-rain.html",       "Rain",        "rain"),
             ("dry-window", "models-dry-window.html", "Dry window",  "dry_window"),
             ("wind",       "models-wind.html",       "Wind",        "wind"),
+            ("sea-state",  "models-sea-state.html",  "Sea state",   "sea_state"),
             ("elements",   "models-elements.html",   "Elements",    "element"),
         };
         var s = new StringBuilder();

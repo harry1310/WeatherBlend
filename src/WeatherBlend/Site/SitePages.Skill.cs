@@ -55,7 +55,7 @@ public static partial class SitePages
     private static string RenderTempPhaseComparisonBlock(SiteInputs input)
     {
         const int leadHours = 24;
-        var (xMin, xMax) = TempSectionRange(input);
+        var (winStart, winEnd) = VsTruthWindow(input);
 
         var series = new List<LineSeries>();
         foreach (var phaseKey in ActivePhasePolicy.ByTarget["temperature"])
@@ -69,7 +69,7 @@ public static partial class SitePages
             var pts = input.Predictions
                 .Where(p => p.LeadHours == leadHours
                             && versions.Contains(p.ModelVersion)
-                            && p.ValidTimeUtc >= input.WindowStartUtc)
+                            && p.ValidTimeUtc >= winStart && p.ValidTimeUtc <= winEnd)
                 .FreshestPerValid(p => p.ValidTimeUtc, p => p.PredictionMadeAtUtc)
                 .OrderBy(p => p.ValidTimeUtc)
                 .Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.BlendTemperature))
@@ -91,8 +91,8 @@ public static partial class SitePages
             FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
             FormatY = v => v.ToString("0.#", Ci) + "°",
             TodayLineX = input.GeneratedAtUtc.ToOADate(),
-            XMin = xMin,
-            XMax = xMax,
+            XMin = winStart.ToOADate(),
+            XMax = winEnd.ToOADate(),
         });
     }
 
@@ -172,14 +172,27 @@ public static partial class SitePages
     /// element-verify rows accumulate. MAE shown in mph to match the forecast page.</summary>
     private static string RenderWindSpeedSkillBlock(SiteInputs input)
     {
-        // Flatten every element_wind / element_wind_gust verify row to a point.
+        // Flatten every element_wind / element_wind_gust verify row to a
+        // point. POOL per (target, asOf, station, phase, lead) first —
+        // during a version transition a sidecar carries one row per model
+        // VERSION of the same phase for the same as-of week, and plotting
+        // both gave the rolling line two Y-values per X (vertical cliff).
+        // See SeriesDedup.PoolVerifyRowsPerKey for the n-weighted-mean
+        // semantics + why pooling (not picking) is the honest collapse.
         var pts = input.VerifyHistory
             .Where(f => f.Target is "element_wind" or "element_wind_gust")
-            .SelectMany(f => f.Rows.Select(r => (
-                AsOf: f.AsOfUtc,
-                Phase: string.IsNullOrEmpty(r.Phase) ? r.ModelVersion : r.Phase,
-                Lead: r.LeadHours,
-                MaeMph: r.BlendMetric * MsToMph)))
+            .SelectMany(f => f.Rows.Select(r => (File: f, Row: r)))
+            .PoolVerifyRowsPerKey(t => (
+                t.File.Target,
+                t.File.AsOfUtc,
+                t.Row.Station,
+                Phase: string.IsNullOrEmpty(t.Row.Phase) ? t.Row.ModelVersion : t.Row.Phase,
+                t.Row.LeadHours))
+            .Select(t => (
+                AsOf: t.File.AsOfUtc,
+                Phase: string.IsNullOrEmpty(t.Row.Phase) ? t.Row.ModelVersion : t.Row.Phase,
+                Lead: t.Row.LeadHours,
+                MaeMph: t.Row.BlendMetric * MsToMph))
             .ToList();
 
         if (pts.Count == 0)
@@ -221,6 +234,21 @@ public static partial class SitePages
                     .ToList();
                 if (line.Count > 0) series.Add(new LineSeries(label, color, line));
             }
+
+            // Met Office Spot comparison line — wind-speed MAE replayed at
+            // render time over the SAME per-sidecar (asOf, window, latency)
+            // windows + ERA5 truth as the resident points (see
+            // SiteInputs.SpotWindRollingMae). Comparison only: distinct
+            // colour, never part of phase/champion/drift logic. Absent when
+            // no Spot rows cover this lead's [L, L+24) bucket in a window —
+            // omitted rather than faked.
+            var spotLine = input.SpotWindRollingMae
+                .Where(p => p.LeadHours == lead)
+                .OrderBy(p => p.WindowEndUtc)
+                .Select(p => (X: p.WindowEndUtc.ToOADate(), Y: p.BlendMae * MsToMph))
+                .ToList();
+            if (spotLine.Count > 0)
+                series.Add(new LineSeries("Met Office Spot", NwpPalette.MetOfficeSpot, spotLine));
             content.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
             {
                 Title = $"Wind speed MAE — lead +{lead}h (mph)",
@@ -431,14 +459,24 @@ public static partial class SitePages
         (72, "#4527a0"),
     };
 
-    // The lead set actually plotted on the eyeball vs-truth charts, derived
-    // from EyeballLeadSpecs. Those charts cap their X axis at the furthest
-    // valid_time among THESE leads — predictions also exist at 96/120h
-    // (drawn on the rolling-MAE/Brier panels, not the eyeball charts), and
-    // letting those drive the axis stretched it ~2-3 days past where any
-    // drawn line reached, leaving blank space on the right.
-    private static readonly HashSet<int> EyeballLeads =
-        EyeballLeadSpecs.Select(s => s.Lead).ToHashSet();
+    /// <summary>
+    /// Shared X window for every prediction-vs-truth time-series chart
+    /// (temp vs truth, P(wet) vs observed, and their phase-comparison
+    /// companions): the last <see cref="VsTruthWindowDays"/> days ending at
+    /// render time. These charts answer "how did the recent forecasts
+    /// track reality" — so the axis stops at now (truth can't exist past
+    /// it) and shows one week of context. Previously 14 days ending at the
+    /// furthest plotted prediction valid_time, which both buried the
+    /// recent week in history AND ran 2-3 truthless days into the future
+    /// (user ask 2026-06-12). The forward forecast lives on the per-lead
+    /// forecast pages; the rolling MAE / Brier SCORE charts keep their own
+    /// 30-day windows — different question, untouched.
+    /// </summary>
+    private const int VsTruthWindowDays = 7;
+
+    /// <inheritdoc cref="VsTruthWindowDays"/>
+    private static (DateTime StartUtc, DateTime EndUtc) VsTruthWindow(SiteInputs input)
+        => (input.GeneratedAtUtc.AddDays(-VsTruthWindowDays), input.GeneratedAtUtc);
 
     // -------------------------------------------------------------------------------
     // Eyeball: temperature vs truth, grouped by phase so champion/challenger lines at
@@ -472,11 +510,9 @@ public static partial class SitePages
                     "(no description registered — add to SitePages.Skill.PhaseDescriptions)")))
             .ToArray();
 
-        // Section-wide X range so 2b and 2c read as aligned panels — past extent
-        // pinned to WindowStartUtc, forward to the latest prediction valid_time
-        // across either phase. Truth (ERA5 + METAR) doesn't extend past now, so
-        // the right edge always belongs to a prediction; left edge to truth.
-        var (xMin, xMax) = TempSectionRange(input);
+        // Section-wide X range so 2b and 2c read as aligned panels — the
+        // shared last-7-days-ending-now vs-truth window.
+        var (winStart, winEnd) = VsTruthWindow(input);
 
         bool anyDrawn = false;
         foreach (var spec in phaseSpecs)
@@ -492,7 +528,7 @@ public static partial class SitePages
                     <p class="skill-line">{Escape(spec.Description)}</p>
                   </hgroup>
                 """);
-            content.Append(RenderTempVsTruthChart(input, filtered, spec.Key, xMin, xMax));
+            content.Append(RenderTempVsTruthChart(input, filtered, spec.Key, winStart, winEnd));
             content.Append("</article>");
         }
 
@@ -502,57 +538,25 @@ public static partial class SitePages
         return content.ToString();
     }
 
-    /// <summary>
-    /// 14-day rolling window ending at the latest <em>plotted</em> valid_time
-    /// on the eyeball charts. Anchoring on the data's right edge instead of
-    /// the input rolling-window-start keeps the chart visually consistent
-    /// across renders (a sparse-data day doesn't widen the window). The right
-    /// edge is the furthest of the things actually drawn: a blend line at a
-    /// plotted lead (<see cref="EyeballLeads"/>, ≤72h) or the Met Office Spot
-    /// reference line. 96/120h predictions are excluded — they aren't drawn
-    /// here (only on the rolling panels), and letting them set the edge
-    /// stretched the axis ~2-3 days past every drawn line. Falls back to
-    /// truth extent when nothing plotted exists; both nulls → caller passes
-    /// through to Chart.js auto-scaling.
-    /// Tightened 30 → 14 days 2026-05-04; lead-capped 2026-05-22.
-    /// </summary>
-    private static (double? Min, double? Max) TempSectionRange(SiteInputs input)
-    {
-        double? max = null;
-        void Bump(DateTime t)
-        {
-            var x = t.ToOADate();
-            if (max is null || x > max) max = x;
-        }
-
-        // Blend lines — only the leads actually drawn on the eyeball charts.
-        foreach (var p in input.Predictions)
-            if (EyeballLeads.Contains(p.LeadHours)) Bump(p.ValidTimeUtc);
-
-        // The MO Spot reference line is drawn too (its +24h lead bucket) —
-        // count it so a predict-lag day can't clip it off the right edge.
-        foreach (var m in input.MetOfficeSpotForecasts)
-            if (m.LeadHours >= 24 && m.LeadHours < 48 && m.Temperature2m.HasValue)
-                Bump(m.ValidTimeUtc);
-
-        if (max is null)
-            foreach (var kv in input.TruthByTime) Bump(kv.Key);
-
-        if (max is null) return (null, null);
-        return (max - 14.0, max);
-    }
+    // TempSectionRange (14-day, ending at the furthest plotted prediction)
+    // was replaced by the shared VsTruthWindow helper 2026-06-12 — see the
+    // VsTruthWindowDays doc for the reasoning.
 
     private static string RenderTempVsTruthChart(
         SiteInputs input,
         IReadOnlyList<TempPredictionRow> filtered,
         string phaseKey,
-        double? xMin,
-        double? xMax)
+        DateTime winStart,
+        DateTime winEnd)
     {
         var series = new List<LineSeries>();
 
+        // Every series is filtered to [winStart, winEnd] rather than just
+        // axis-clipped — Chart.js auto-scales Y from ALL dataset points, so
+        // leaving off-window rows in the data would let invisible points
+        // stretch the Y axis.
         var era5Pts = input.TruthByTime
-            .Where(kv => kv.Key >= input.WindowStartUtc)
+            .Where(kv => kv.Key >= winStart && kv.Key <= winEnd)
             .OrderBy(kv => kv.Key)
             .Select(kv => (X: kv.Key.ToOADate(), Y: kv.Value))
             .ToList();
@@ -560,7 +564,7 @@ public static partial class SitePages
             series.Add(new LineSeries("ERA5 (truth)", "#ef5350", era5Pts));
 
         var metarPts = input.MetarByTime
-            .Where(m => m.ObservedTimeUtc >= input.WindowStartUtc)
+            .Where(m => m.ObservedTimeUtc >= winStart && m.ObservedTimeUtc <= winEnd)
             .OrderBy(m => m.ObservedTimeUtc)
             .Select(m => (X: m.ObservedTimeUtc.ToOADate(), Y: m.Temperature2m))
             .ToList();
@@ -576,7 +580,7 @@ public static partial class SitePages
         // Bonehill vs ~360m for EGTE so the systematic warm bias is
         // smaller. Read it as a second cross-check, not truth.
         var moObsPts = input.MetOfficeObsByTime
-            .Where(m => m.ObservedTimeUtc >= input.WindowStartUtc)
+            .Where(m => m.ObservedTimeUtc >= winStart && m.ObservedTimeUtc <= winEnd)
             .OrderBy(m => m.ObservedTimeUtc)
             .Select(m => (X: m.ObservedTimeUtc.ToOADate(), Y: m.Temperature2m))
             .ToList();
@@ -591,7 +595,8 @@ public static partial class SitePages
         foreach (var (lead, color) in EyeballLeadSpecs)
         {
             var pts = filtered
-                .Where(p => p.LeadHours == lead)
+                .Where(p => p.LeadHours == lead
+                            && p.ValidTimeUtc >= winStart && p.ValidTimeUtc <= winEnd)
                 .FreshestPerValid(p => p.ValidTimeUtc, p => p.PredictionMadeAtUtc)
                 .OrderBy(p => p.ValidTimeUtc)
                 .Select(p => (X: p.ValidTimeUtc.ToOADate(), Y: p.BlendTemperature))
@@ -609,7 +614,7 @@ public static partial class SitePages
         // input.MetOfficeSpotForecasts is already scoped to this page's
         // location by RenderSiteCommand (single-location SiteInputs invariant).
         var moSpotPts = input.MetOfficeSpotForecasts
-            .Where(m => m.ValidTimeUtc >= input.WindowStartUtc
+            .Where(m => m.ValidTimeUtc >= winStart && m.ValidTimeUtc <= winEnd
                         && m.Temperature2m.HasValue
                         && m.LeadHours >= 24 && m.LeadHours < 48)
             .LatestPerValid(m => m.ValidTimeUtc, m => m.LeadHours)
@@ -632,8 +637,8 @@ public static partial class SitePages
             FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
             FormatY = v => v.ToString("0.#", Ci) + "°",
             TodayLineX = input.GeneratedAtUtc.ToOADate(),
-            XMin = xMin,
-            XMax = xMax,
+            XMin = winStart.ToOADate(),
+            XMax = winEnd.ToOADate(),
         });
     }
 
@@ -696,6 +701,21 @@ public static partial class SitePages
                 content.Append(RenderEmptyChart($"Rolling Brier — lead {lead}h", "No scored predictions at this lead."));
                 continue;
             }
+
+            // Met Office Spot comparison line — PoP/100 scored against the
+            // SAME wet/dry labels + 30-day rolling windows as the resident
+            // phases (computed fresh each render in RenderSiteCommand.
+            // ComputeSpotRollingBrier). Comparison only: distinct colour,
+            // no champion/challenger/drift participation. Drawn only on
+            // panels where at least one resident phase has points, and
+            // omitted at leads with no honest Spot bucket coverage.
+            var spotPts = input.SpotRollingBrier
+                .Where(r => r.Station == currentStation && r.LeadHours == lead)
+                .OrderBy(r => r.WindowEndUtc)
+                .Select(r => (X: r.WindowEndUtc.ToOADate(), Y: r.BlendBrier))
+                .ToList();
+            if (spotPts.Count > 0)
+                series.Add(new LineSeries("Met Office Spot", NwpPalette.MetOfficeSpot, spotPts));
 
             content.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
             {
@@ -764,6 +784,21 @@ public static partial class SitePages
                 continue;
             }
 
+            // Met Office Spot comparison line — Spot temperature scored
+            // against the SAME ERA5 truth + daily rolling windows as the
+            // resident phases (computed fresh each render in
+            // RenderSiteCommand.ComputeSpotRollingMae). Comparison only:
+            // distinct colour, no champion/challenger/drift participation.
+            // Drawn only on panels where at least one resident phase has
+            // points; omitted at leads with no Spot bucket coverage.
+            var spotPts = input.SpotRollingMae
+                .Where(r => r.LeadHours == lead)
+                .OrderBy(r => r.WindowEndUtc)
+                .Select(r => (X: r.WindowEndUtc.ToOADate(), Y: r.BlendMae))
+                .ToList();
+            if (spotPts.Count > 0)
+                series.Add(new LineSeries("Met Office Spot", NwpPalette.MetOfficeSpot, spotPts));
+
             content.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
             {
                 Title = $"Rolling MAE — lead +{lead}h",
@@ -811,31 +846,18 @@ public static partial class SitePages
 
         var stationPredictions = input.PrecipPredictions.Where(p => p.Station == station).ToList();
 
+        // Shared last-7-days-ending-now vs-truth window (see
+        // VsTruthWindowDays). Per-phase charts plus the champion-vs-
+        // challenger overlay all share this time axis and stack as one panel.
+        var (winStart, winEnd) = VsTruthWindow(input);
+        double? xMin = winStart.ToOADate();
+        double? xMax = winEnd.ToOADate();
+
         // Wet-period strips replace the previous 0/1 truth-dot series. Same
         // ≥ 0.1 mm threshold the blender was trained on.
         var wetBands = input.RainfallTruth.TryGetValue(station, out var truth)
-            ? ComputeWetBands(truth, input.WindowStartUtc)
+            ? ComputeWetBands(truth, winStart)
             : new List<(double, double)>();
-
-        // 14-day rolling window. Per-phase charts plus the champion-vs-
-        // challenger overlay all share this time axis and stack as one panel.
-        // Right edge = furthest thing actually drawn: a P(wet) line at a
-        // plotted lead (EyeballLeads, ≤72h) or the MO Spot PoP reference
-        // line. 96/120h predictions exist but aren't drawn here, so they're
-        // excluded — letting them set xMax stretched the axis ~2-3 days past
-        // every line. Tightened 30 → 14 days 2026-05-04; lead-capped 2026-05-22.
-        var plottedValidTimes = stationPredictions
-            .Where(p => EyeballLeads.Contains(p.LeadHours))
-            .Select(p => p.ValidTimeUtc)
-            .Concat(input.MetOfficeSpotForecasts
-                .Where(m => m.LeadHours >= 24 && m.LeadHours < 48
-                            && m.PrecipitationProbabilityPercent.HasValue)
-                .Select(m => m.ValidTimeUtc))
-            .ToList();
-        double? xMax = plottedValidTimes.Count > 0
-            ? plottedValidTimes.Max().ToOADate()
-            : null;
-        double? xMin = xMax is { } m ? m - 14.0 : null;
 
         bool anyRendered = false;
         foreach (var spec in PrecipPhases.All)
@@ -854,7 +876,8 @@ public static partial class SitePages
             foreach (var (lead, color) in EyeballLeadSpecs)
             {
                 var pts = latestPerLead
-                    .Where(r => r.LeadHours == lead)
+                    .Where(r => r.LeadHours == lead
+                                && r.ValidTimeUtc >= winStart && r.ValidTimeUtc <= winEnd)
                     .OrderBy(r => r.ValidTimeUtc)
                     .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet))
                     .ToList();
@@ -879,7 +902,7 @@ public static partial class SitePages
             // location by RenderSiteCommand (single-location SiteInputs
             // invariant) — every row is this location's Spot forecast.
             var moSpotPts = input.MetOfficeSpotForecasts
-                .Where(m => m.ValidTimeUtc >= input.WindowStartUtc
+                .Where(m => m.ValidTimeUtc >= winStart && m.ValidTimeUtc <= winEnd
                             && m.PrecipitationProbabilityPercent.HasValue
                             && m.LeadHours >= 24 && m.LeadHours < 48)
                 .LatestPerValid(m => m.ValidTimeUtc, m => m.LeadHours)
@@ -914,7 +937,7 @@ public static partial class SitePages
             }));
         }
 
-        var cvc = BuildChampionVsChallengerSeries(stationPredictions, input.PhaseByVersion, input.WindowStartUtc, leadHours: 24);
+        var cvc = BuildChampionVsChallengerSeries(stationPredictions, input.PhaseByVersion, winStart, winEnd, leadHours: 24);
         if (cvc.Count >= 2)
         {
             content.Append("<h5>Phase comparison — +24h lead</h5>");
@@ -1105,12 +1128,13 @@ public static partial class SitePages
     /// <summary>
     /// Build a champion-vs-challenger line series at a single lead for one station,
     /// one entry per phase in <see cref="PrecipPhases.Comparable"/>. Caller sets the
-    /// earliest valid time to include.
+    /// valid-time window to include (the shared vs-truth window).
     /// </summary>
     private static List<LineSeries> BuildChampionVsChallengerSeries(
         IReadOnlyList<PrecipForecastPoint> stationRows,
         IReadOnlyDictionary<string, string> phaseByVersion,
         DateTime minValidTimeUtc,
+        DateTime maxValidTimeUtc,
         int leadHours)
     {
         var series = new List<LineSeries>();
@@ -1119,7 +1143,8 @@ public static partial class SitePages
             var pts = stationRows
                 .Where(r => r.LeadHours == leadHours
                          && PrecipPhases.Bucket(phaseByVersion, r.Version) == phase
-                         && r.ValidTimeUtc >= minValidTimeUtc)
+                         && r.ValidTimeUtc >= minValidTimeUtc
+                         && r.ValidTimeUtc <= maxValidTimeUtc)
                 .FreshestPerValid(r => r.ValidTimeUtc, r => r.PredictedAtUtc)
                 .OrderBy(r => r.ValidTimeUtc)
                 .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet))

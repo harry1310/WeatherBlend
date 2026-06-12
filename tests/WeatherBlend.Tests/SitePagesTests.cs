@@ -1264,6 +1264,198 @@ public class SitePagesTests
     }
 
     [Fact]
+    public void RenderTempSkill_vs_truth_charts_window_to_the_last_7_days_ending_at_render_time()
+    {
+        // 2026-06-12 (Harry): the eyeball vs-truth charts pin their X axis
+        // to [now − 7d, now] — no future portion, one week of history. A
+        // future-valid prediction must not appear in the payload at all
+        // (Chart.js Y-autoscales over ALL dataset points, clipped or not).
+        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
+        TempPredictionRow Pred(DateTime valid, double temp) => new()
+        {
+            LocationName = "Test",
+            ModelVersion = "v2b",
+            PredictionMadeAtUtc = valid.AddHours(-24),
+            ValidTimeUtc = valid,
+            LeadHours = 24,
+            BlendTemperature = temp,
+            FeatureVectorHash = "",
+        };
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            Predictions = new[]
+            {
+                Pred(generatedAt.AddHours(-24), 14.25),  // in window
+                Pred(generatedAt.AddHours(24), 99.5),    // future → excluded
+                Pred(generatedAt.AddDays(-9), 77.5),     // older than 7d → excluded
+            },
+            PhaseByVersion = new Dictionary<string, string> { ["v2b"] = "2b" },
+        };
+
+        var html = SitePages.RenderTempSkill(input);
+
+        var xMinJson = System.Text.Json.JsonSerializer.Serialize(generatedAt.AddDays(-7).ToOADate());
+        var xMaxJson = System.Text.Json.JsonSerializer.Serialize(generatedAt.ToOADate());
+        html.Should().Contain($"&quot;xMin&quot;:{xMinJson}");
+        html.Should().Contain($"&quot;xMax&quot;:{xMaxJson}");
+        html.Should().Contain("14.25");
+        html.Should().NotContain("99.5", "future predictions are filtered out of the vs-truth payload");
+        html.Should().NotContain("77.5", "points older than the 7-day window are filtered out");
+    }
+
+    [Fact]
+    public void RenderRainSkill_vs_truth_charts_window_to_the_last_7_days_ending_at_render_time()
+    {
+        // Same 7-day-ending-now rule on the P(wet) eyeball charts.
+        var input = MakePrecipInput(new[] { ("v_3a", "3a") });
+        var generatedAt = input.GeneratedAtUtc;
+
+        var html = SitePages.RenderRainSkill(input);
+
+        var xMinJson = System.Text.Json.JsonSerializer.Serialize(generatedAt.AddDays(-7).ToOADate());
+        var xMaxJson = System.Text.Json.JsonSerializer.Serialize(generatedAt.ToOADate());
+        html.Should().Contain($"&quot;xMin&quot;:{xMinJson}");
+        html.Should().Contain($"&quot;xMax&quot;:{xMaxJson}");
+    }
+
+    // ---- Met Office Spot comparison line (rolling MAE / Brier / wind charts) ----
+
+    [Fact]
+    public void RenderTempSkill_draws_spot_comparison_line_on_rolling_mae_panels_with_resident_data()
+    {
+        var day = new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc);
+        var input = MakeEmptyForecastInput() with
+        {
+            RollingMae = new[] { new SitePages.RollingMaePoint("2b", 24, day, 0.8, 10) },
+            SpotRollingMae = new[] { new SitePages.RollingMaePoint("met_office_spot", 24, day, 1.1, 30) },
+        };
+
+        var html = SitePages.RenderTempSkill(input);
+
+        html.Should().Contain("Met Office Spot");
+        html.Should().Contain("#2e7d32", "Spot keeps its distinct comparison colour");
+    }
+
+    [Fact]
+    public void RenderTempSkill_omits_spot_rolling_line_on_panels_without_resident_series()
+    {
+        // Spot is a comparison line, not a standalone product — a lead panel
+        // with no resident phase points stays on its empty state rather than
+        // rendering a Spot-only chart.
+        var day = new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc);
+        var input = MakeEmptyForecastInput() with
+        {
+            RollingMae = new[] { new SitePages.RollingMaePoint("2b", 24, day, 0.8, 10) },
+            // Spot only has lead-48 points; the 48h panel has no resident data.
+            SpotRollingMae = new[] { new SitePages.RollingMaePoint("met_office_spot", 48, day, 1.1, 30) },
+        };
+
+        SitePages.RenderTempSkill(input).Should().NotContain("Met Office Spot");
+    }
+
+    [Fact]
+    public void RenderRainSkill_draws_spot_comparison_line_on_rolling_brier_panels()
+    {
+        var day = new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc);
+        var input = MakePrecipInput(new[] { ("v_3a", "3a") }) with
+        {
+            RollingBrier = new[] { new SitePages.RollingBrierPoint(Station, "3a", 24, day, 0.10, 10) },
+            SpotRollingBrier = new[] { new SitePages.RollingBrierPoint(Station, "met_office_spot", 24, day, 0.12, 30) },
+        };
+
+        var html = SitePages.RenderRainSkill(input);
+
+        html.Should().Contain("Met Office Spot");
+    }
+
+    [Fact]
+    public void RenderRainSkill_spot_brier_line_is_per_station()
+    {
+        // Spot Brier points for ANOTHER station must not leak onto this
+        // station's panels.
+        var day = new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc);
+        var input = MakePrecipInput(new[] { ("v_3a", "3a") }) with
+        {
+            RollingBrier = new[] { new SitePages.RollingBrierPoint(Station, "3a", 24, day, 0.10, 10) },
+            SpotRollingBrier = new[] { new SitePages.RollingBrierPoint("ea_bovey_tracey", "met_office_spot", 24, day, 0.12, 30) },
+        };
+
+        SitePages.RenderRainSkill(input).Should().NotContain("Met Office Spot");
+    }
+
+    // ---- Wind skill chart: version pooling + Spot comparison line ----
+
+    private static WeatherBlend.Models.VerifyHistoryFile WindVerifyFile(
+        DateTime asOf, params WeatherBlend.Models.VerifyHistoryRow[] rows)
+        => new()
+        {
+            Target = "element_wind",
+            AsOfUtc = asOf,
+            WindowDays = 14,
+            LatencyDays = 5,
+            MetricLabel = "MAE (m/s)",
+            Rows = rows.ToList(),
+        };
+
+    [Fact]
+    public void RenderWindSkill_pools_two_versions_of_the_same_phase_into_one_point_per_asof()
+    {
+        // Version-boundary jump fix (2026-06-12): a sidecar scoring BOTH the
+        // outgoing and incoming wind_speed_lgb bundles for the same as-of
+        // week must chart as ONE n-weighted point, not two Y-values at one X
+        // (the vertical cliff Harry flagged). Pooled MAE here:
+        // (90·1.0 + 10·2.0) / 100 m/s, converted to mph for the chart.
+        var asOf = new DateTime(2026, 6, 7, 8, 0, 0, DateTimeKind.Utc);
+        var file = WindVerifyFile(asOf,
+            new WeatherBlend.Models.VerifyHistoryRow
+            {
+                Station = "bonehill_rocks", ModelVersion = "v_old",
+                Phase = "wind_speed_lgb", LeadHours = 24, N = 90,
+                BlendMetric = 1.0, DriftFlag = false,
+            },
+            new WeatherBlend.Models.VerifyHistoryRow
+            {
+                Station = "bonehill_rocks", ModelVersion = "v_new",
+                Phase = "wind_speed_lgb", LeadHours = 24, N = 10,
+                BlendMetric = 2.0, DriftFlag = false,
+            });
+        var input = MakeEmptyForecastInput() with { VerifyHistory = new[] { file } };
+
+        var html = SitePages.RenderWindSkill(input);
+
+        const double MsToMph = 2.23694;
+        double pooledMs = (1.0 * 90 + 2.0 * 10) / 100.0;
+        var pooledMphJson = System.Text.Json.JsonSerializer.Serialize(pooledMs * MsToMph);
+        var unpooledNewMphJson = System.Text.Json.JsonSerializer.Serialize(2.0 * MsToMph);
+        html.Should().Contain(pooledMphJson, "the two versions pool to one n-weighted point");
+        html.Should().NotContain(unpooledNewMphJson, "the young version's raw score must not chart as a second Y at the same X");
+    }
+
+    [Fact]
+    public void RenderWindSkill_draws_spot_comparison_line_when_spot_wind_mae_present()
+    {
+        var asOf = new DateTime(2026, 6, 7, 8, 0, 0, DateTimeKind.Utc);
+        var file = WindVerifyFile(asOf,
+            new WeatherBlend.Models.VerifyHistoryRow
+            {
+                Station = "bonehill_rocks", ModelVersion = "v1",
+                Phase = "wind_speed_lgb", LeadHours = 24, N = 50,
+                BlendMetric = 1.0, DriftFlag = false,
+            });
+        var input = MakeEmptyForecastInput() with
+        {
+            VerifyHistory = new[] { file },
+            SpotWindRollingMae = new[] { new SitePages.RollingMaePoint("met_office_spot", 24, asOf, 1.4, 40) },
+        };
+
+        var html = SitePages.RenderWindSkill(input);
+
+        html.Should().Contain("Met Office Spot");
+        html.Should().Contain("#2e7d32");
+    }
+
+    [Fact]
     public void RenderForecasts_inlines_per_nwp_pop_into_the_top_pwet_chart_at_each_lead()
     {
         // Per-NWP precipitation_probability lines belong on the per-lead
@@ -1595,21 +1787,24 @@ public class SitePagesTests
         // Each chart's data-cjs config must carry the wet bands AND must not carry
         // a discrete truth dataset coloured as the old red truth marker.
         var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
-        var validTime = generatedAt.AddHours(24);
+        // Past valid time — the vs-truth charts window to [now − 7d, now]
+        // since 2026-06-12, so future rows no longer render.
+        var validTime = generatedAt.AddHours(-24);
         var precipPreds = new[]
         {
             new SitePages.PrecipForecastPoint(
                 Station, "v3a", generatedAt, validTime, 24, 0.4, 0.2,
                 null, null, null, null, null, null, null, null),
         };
-        // Three contiguous wet hours → one merged band in the rendered chart.
+        // Three contiguous wet hours (inside the 7-day window) → one merged
+        // band in the rendered chart.
         var truth = new Dictionary<string, IReadOnlyDictionary<DateTime, double>>(StringComparer.OrdinalIgnoreCase)
         {
             [Station] = new Dictionary<DateTime, double>
             {
-                [generatedAt.AddDays(-30).AddHours(1)] = 0.5,
-                [generatedAt.AddDays(-30).AddHours(2)] = 0.5,
-                [generatedAt.AddDays(-30).AddHours(3)] = 0.5,
+                [generatedAt.AddDays(-2).AddHours(1)] = 0.5,
+                [generatedAt.AddDays(-2).AddHours(2)] = 0.5,
+                [generatedAt.AddDays(-2).AddHours(3)] = 0.5,
             },
         };
         var input = MakeEmptyForecastInput() with
@@ -2196,7 +2391,8 @@ public class SitePagesTests
         // Every rainfall skill chart needs a "today" reference line so readers can
         // tell past rainfall (truth-validated) from future P(wet) (forecast-only).
         var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
-        var validTime = generatedAt.AddHours(24);
+        // Past valid time — vs-truth charts window to [now − 7d, now] (2026-06-12).
+        var validTime = generatedAt.AddHours(-24);
         var precipPreds = new[]
         {
             new SitePages.PrecipForecastPoint(
@@ -3156,7 +3352,10 @@ public class SitePagesTests
     private static SitePages.SiteInputs MakePrecipInput((string Version, string Phase)[] versions)
     {
         var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
-        var validTime = generatedAt.AddHours(24);
+        // Inside the [now − 7d, now] vs-truth window (2026-06-12): the
+        // eyeball charts no longer plot future valid times, so the fixture
+        // prediction has to sit in the past week to render.
+        var validTime = generatedAt.AddHours(-24);
 
         var preds = versions
             .Select(v => new SitePages.PrecipForecastPoint(

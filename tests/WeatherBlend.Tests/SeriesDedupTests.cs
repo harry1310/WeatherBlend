@@ -173,4 +173,123 @@ public class SeriesDedupTests
             .Select(r => r.Tag)
             .Should().Equal("v2", "v1");
     }
+
+    // -----------------------------------------------------------------
+    // Verify-row pooling — the rolling skill charts' version-transition
+    // collapse (n-weighted mean across same-key rows). See the helper's
+    // doc for why pooling beats picking here.
+    // -----------------------------------------------------------------
+
+    private static WeatherBlend.Models.VerifyHistoryRow VRow(
+        string version, int n, double metric,
+        string phase = "3f", int lead = 24, bool drift = false)
+        => new()
+        {
+            Station = "ea_chards_snowdon_hill",
+            ModelVersion = version,
+            Phase = phase,
+            LeadHours = lead,
+            N = n,
+            BlendMetric = metric,
+            DriftFlag = drift,
+        };
+
+    private static WeatherBlend.Models.VerifyHistoryFile VFile(
+        DateTime asOf, params WeatherBlend.Models.VerifyHistoryRow[] rows)
+        => new()
+        {
+            Target = "rainfall_amount",
+            AsOfUtc = asOf,
+            WindowDays = 14,
+            LatencyDays = 5,
+            MetricLabel = "CRPS",
+            Rows = rows.ToList(),
+        };
+
+    [Fact]
+    public void PoolVerifyRows_takes_the_n_weighted_mean_and_sums_counts()
+    {
+        // Outgoing settled bundle (n=140, CRPS 0.10) + incoming young bundle
+        // (n=10, CRPS 0.40). The pooled score is the true mean over all 150
+        // scored rows — NOT the unweighted midpoint 0.25 — because verify
+        // metrics are means over scored rows.
+        var pooled = SeriesDedup.PoolVerifyRows(new[]
+        {
+            VRow("v_old", n: 140, metric: 0.10),
+            VRow("v_new", n: 10,  metric: 0.40),
+        });
+
+        pooled.N.Should().Be(150);
+        pooled.BlendMetric.Should().BeApproximately((140 * 0.10 + 10 * 0.40) / 150.0, 1e-12);
+    }
+
+    [Fact]
+    public void PoolVerifyRows_labels_provenance_with_the_largest_n_version_plus_pooled_suffix()
+    {
+        var pooled = SeriesDedup.PoolVerifyRows(new[]
+        {
+            VRow("v_new", n: 10,  metric: 0.40, drift: true),
+            VRow("v_old", n: 140, metric: 0.10),
+        });
+
+        pooled.ModelVersion.Should().Be("v_old (+1 more pooled)");
+        pooled.DriftFlag.Should().BeTrue("any pooled row's drift flag must surface");
+    }
+
+    [Fact]
+    public void PoolVerifyRowsPerKey_passes_single_row_groups_through_untouched()
+    {
+        var asOf = new DateTime(2026, 6, 7, 0, 0, 0, DateTimeKind.Utc);
+        var row = VRow("v1", n: 100, metric: 0.2);
+        var file = VFile(asOf, row);
+
+        var result = new[] { (File: file, Row: row) }
+            .PoolVerifyRowsPerKey(t => (t.File.AsOfUtc, t.Row.LeadHours));
+
+        result.Should().HaveCount(1);
+        result[0].Row.Should().BeSameAs(row, "no transition → no synthetic pooled row");
+        result[0].Row.ModelVersion.Should().Be("v1");
+    }
+
+    [Fact]
+    public void PoolVerifyRowsPerKey_pools_within_key_only()
+    {
+        // Same asOf: two versions at lead 24 (transition week → pool) and a
+        // third row at lead 48 (different key → untouched). This is the
+        // version-boundary jump fix: lead 24's chart X gets ONE Y value.
+        var asOf = new DateTime(2026, 6, 7, 0, 0, 0, DateTimeKind.Utc);
+        var file = VFile(asOf,
+            VRow("v_old", n: 90, metric: 0.10, lead: 24),
+            VRow("v_new", n: 10, metric: 0.50, lead: 24),
+            VRow("v_old", n: 80, metric: 0.30, lead: 48));
+
+        var result = file.Rows.Select(r => (File: file, Row: r))
+            .PoolVerifyRowsPerKey(t => (t.File.AsOfUtc, t.Row.LeadHours));
+
+        result.Should().HaveCount(2);
+        var lead24 = result.Single(t => t.Row.LeadHours == 24).Row;
+        lead24.N.Should().Be(100);
+        lead24.BlendMetric.Should().BeApproximately((90 * 0.10 + 10 * 0.50) / 100.0, 1e-12);
+        var lead48 = result.Single(t => t.Row.LeadHours == 48).Row;
+        lead48.N.Should().Be(80);
+        lead48.ModelVersion.Should().Be("v_old");
+    }
+
+    [Fact]
+    public void PoolVerifyRowsPerKey_keeps_separate_asOf_weeks_separate()
+    {
+        // Two weekly sidecars, same version pair — pooling must happen per
+        // asOf, never across weeks (that would smear the time axis).
+        var asOf1 = new DateTime(2026, 5, 31, 0, 0, 0, DateTimeKind.Utc);
+        var asOf2 = new DateTime(2026, 6, 7, 0, 0, 0, DateTimeKind.Utc);
+        var f1 = VFile(asOf1, VRow("v_old", 100, 0.10), VRow("v_new", 10, 0.40));
+        var f2 = VFile(asOf2, VRow("v_old", 50, 0.12), VRow("v_new", 60, 0.20));
+
+        var result = new[] { f1, f2 }
+            .SelectMany(f => f.Rows.Select(r => (File: f, Row: r)))
+            .PoolVerifyRowsPerKey(t => (t.File.AsOfUtc, t.Row.LeadHours));
+
+        result.Should().HaveCount(2);
+        result.Select(t => t.File.AsOfUtc).Should().BeEquivalentTo(new[] { asOf1, asOf2 });
+    }
 }

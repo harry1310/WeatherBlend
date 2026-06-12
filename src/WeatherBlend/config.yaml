@@ -162,7 +162,11 @@ locations:
     # sea_state added 2026-06-11 (sea-state Phase 2): wave / tide / swell /
     # wind page fed by the wave_height_lgb predictions tree. Sennen-only —
     # it's the one location with a marine block + wave model.
-    tabs: [overview, temperature, rain, sea_state, skill, models]
+    # wind added 2026-06-12 (Harry: own wind page like Bonehill's, not a
+    # section on Sea state). Sennen has only the champion `wind` element
+    # model — the page's wind_speed_lgb band / gust line / wind_mvn
+    # direction wedges degrade to their absent/empty states.
+    tabs: [overview, temperature, rain, wind, sea_state, skill, models]
 
     overview:
       firstVisibleHourUtc: 6

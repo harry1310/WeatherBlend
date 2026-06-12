@@ -290,6 +290,80 @@ ORDER BY ObservedTimeUtc";
     }
 
     /// <summary>
+    /// Hourly significant wave height (m) from one wave-buoy source under
+    /// <c>data/truth/waves/location={loc}/source={slug}/</c>, keyed by valid
+    /// hour. Used by the wave verify rail (buoy = verification truth;
+    /// era5_ocean in the same tree is the TRAINING truth and is read by the
+    /// Python trainer, never here). The buoy series is gappy and the realtime
+    /// (non-QC'd) rows get silently upgraded in place by later archive
+    /// re-pulls — AVG per hour collapses any transient duplicate rows from
+    /// overlapping pulls into one value rather than throwing on the
+    /// ToDictionary. Empty dict on a missing tree (degraded with a warning).
+    /// </summary>
+    public IReadOnlyDictionary<DateTime, double> GetBuoyWaveHeightHourly(
+        string locationName, string sourceSlug, DateTime start, DateTime end, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (string.IsNullOrWhiteSpace(locationName))
+            throw new ArgumentException("locationName is required.", nameof(locationName));
+        if (string.IsNullOrWhiteSpace(sourceSlug))
+            throw new ArgumentException("sourceSlug is required.", nameof(sourceSlug));
+
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.WavesPath, "**", "*.parquet"));
+        var sql = $@"
+SELECT ValidTimeUtc, AVG(WaveHeight) AS WaveHeight
+FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+WHERE LocationName = '{locationName.Replace("'", "''")}'
+  AND Source = '{sourceSlug.Replace("'", "''")}'
+  AND WaveHeight IS NOT NULL
+  AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
+  AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+GROUP BY ValidTimeUtc
+ORDER BY ValidTimeUtc";
+
+        var rows = ParquetReader.Query(sql,
+            r => (Time: r.GetDateTime(0), Val: r.GetDouble(1)),
+            _log, $"Waves truth tree empty for {locationName}/{sourceSlug} — buoy truth dict will be empty.", ct);
+        return rows.ToDictionary(x => x.Time, x => x.Val);
+    }
+
+    /// <summary>
+    /// Hourly wave period (s) from one buoy source — same tree, gappiness
+    /// and dedup semantics as <see cref="GetBuoyWaveHeightHourly"/>. NOTE
+    /// the definitional mismatch the verify rail must surface, not hide:
+    /// buoys report the zero-crossing period Tz, the forecast pass-through
+    /// is a model MEAN period — expect a stable offset (model reads ~1-2 s
+    /// longer than Tz), so the BIAS column is the load-bearing one and
+    /// period is never a drift trigger.
+    /// </summary>
+    public IReadOnlyDictionary<DateTime, double> GetBuoyWavePeriodHourly(
+        string locationName, string sourceSlug, DateTime start, DateTime end, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (string.IsNullOrWhiteSpace(locationName))
+            throw new ArgumentException("locationName is required.", nameof(locationName));
+        if (string.IsNullOrWhiteSpace(sourceSlug))
+            throw new ArgumentException("sourceSlug is required.", nameof(sourceSlug));
+
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.WavesPath, "**", "*.parquet"));
+        var sql = $@"
+SELECT ValidTimeUtc, AVG(WavePeriod) AS WavePeriod
+FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+WHERE LocationName = '{locationName.Replace("'", "''")}'
+  AND Source = '{sourceSlug.Replace("'", "''")}'
+  AND WavePeriod IS NOT NULL
+  AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
+  AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+GROUP BY ValidTimeUtc
+ORDER BY ValidTimeUtc";
+
+        var rows = ParquetReader.Query(sql,
+            r => (Time: r.GetDateTime(0), Val: r.GetDouble(1)),
+            _log, $"Waves truth tree empty for {locationName}/{sourceSlug} — buoy period dict will be empty.", ct);
+        return rows.ToDictionary(x => x.Time, x => x.Val);
+    }
+
+    /// <summary>
     /// Defensive guard against SQL injection via <c>column</c> — the only repo
     /// input that's interpolated as a SQL identifier rather than a quoted
     /// string. Element verify is the only caller that passes anything other

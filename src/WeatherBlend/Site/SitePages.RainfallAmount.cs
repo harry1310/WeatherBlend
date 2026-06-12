@@ -393,19 +393,13 @@ public static partial class SitePages
 
         // Pool per (asOf, lead) BEFORE charting (2026-06-11, Harry): during a
         // version transition verify scores BOTH the outgoing and incoming 3f
-        // bundles for the same window (each has predictions inside the 14-day
-        // scoring window), so a sidecar carries two rows per (station, lead).
-        // Plotting both gave every rolling line two Y-values per X — vertical
-        // cliffs, made huge because the incoming version's first weeks score
-        // on a few young rows (n≈10-50) against the outgoing version's full
-        // settled sample (n≈140). CRPS / coverage / PIT-mean are MEANS over
-        // scored rows, so the n-weighted average across versions IS the true
-        // pooled "how did 3f do this week" — pool rather than pick, and the
-        // version-transition weeks stay on the chart honestly.
-        rows = rows
-            .GroupBy(t => (t.File.AsOfUtc, t.Row.LeadHours))
-            .Select(g => g.Count() == 1 ? g.First() : (g.First().File, PoolVerifyRows(g.Select(t => t.Row).ToList())))
-            .ToList();
+        // bundles for the same window, so a sidecar carries two rows per
+        // (station, lead) and the rolling lines grew vertical cliffs. The
+        // n-weighted pooling (and the full WHY) lives in
+        // SeriesDedup.PoolVerifyRowsPerKey, shared by every rolling verify
+        // chart. Rows are already filtered to one target + station, so
+        // (asOf, lead) is the full key here.
+        rows = rows.PoolVerifyRowsPerKey(t => (t.File.AsOfUtc, t.Row.LeadHours));
         if (rows.Count == 0)
             return "<p class=\"skill-line\"><em>No rainfall amount verify history yet — Phase 3f isn't active for this station, or no asOf weeks have aged into truth.</em></p>";
 
@@ -479,66 +473,10 @@ public static partial class SitePages
         return content.ToString();
     }
 
-    /// <summary>
-    /// n-weighted pool of same-(asOf, station, lead) verify rows — one per
-    /// model VERSION during a bundle transition (see the call-site comment).
-    /// Means (CRPS / coverage / PIT-mean / per-threshold Briers) pool as
-    /// Σ(nᵢ·mᵢ)/Σnᵢ; counts (N, PitBins) sum; DriftFlag = any. The pooled
-    /// row carries the largest-n version's ModelVersion with a "+k more"
-    /// suffix so the Models-page provenance stays honest.
-    /// </summary>
-    private static VerifyHistoryRow PoolVerifyRows(IReadOnlyList<VerifyHistoryRow> rows)
-    {
-        var totalN = rows.Sum(r => r.N);
-        double? WMean(Func<VerifyHistoryRow, double?> f)
-        {
-            double sum = 0; var n = 0;
-            foreach (var r in rows)
-            {
-                var v = f(r);
-                if (v is null || !double.IsFinite(v.Value) || r.N == 0) continue;
-                sum += v.Value * r.N; n += r.N;
-            }
-            return n == 0 ? null : sum / n;
-        }
-        List<int>? pitBins = null;
-        foreach (var r in rows)
-        {
-            if (r.PitBins is null || r.PitBins.Count != 10) continue;
-            pitBins ??= new List<int>(new int[10]);
-            for (int i = 0; i < 10; i++) pitBins[i] += r.PitBins[i];
-        }
-        Dictionary<string, double>? briers = null;
-        var brierKeys = rows.Where(r => r.ExceedanceBriers is not null)
-            .SelectMany(r => r.ExceedanceBriers!.Keys).Distinct().ToList();
-        if (brierKeys.Count > 0)
-        {
-            briers = new Dictionary<string, double>(StringComparer.Ordinal);
-            foreach (var k in brierKeys)
-            {
-                var v = WMean(r => r.ExceedanceBriers is not null && r.ExceedanceBriers.TryGetValue(k, out var b) ? b : null);
-                if (v is not null) briers[k] = v.Value;
-            }
-        }
-        var primary = rows.OrderByDescending(r => r.N).First();
-        return new VerifyHistoryRow
-        {
-            Station = primary.Station,
-            ModelVersion = rows.Count > 1
-                ? $"{primary.ModelVersion} (+{rows.Count - 1} more pooled)"
-                : primary.ModelVersion,
-            Phase = primary.Phase,
-            LeadHours = primary.LeadHours,
-            N = totalN,
-            BlendMetric = WMean(r => r.BlendMetric) ?? primary.BlendMetric,
-            DriftFlag = rows.Any(r => r.DriftFlag),
-            MaeWet = WMean(r => r.MaeWet),
-            Coverage80 = WMean(r => r.Coverage80),
-            PitMean = WMean(r => r.PitMean),
-            PitBins = pitBins,
-            ExceedanceBriers = briers,
-        };
-    }
+    // PoolVerifyRows moved to SeriesDedup (2026-06-12) — the same
+    // version-transition pooling applies to every rolling verify chart
+    // (3f CRPS/coverage here, wind speed MAE on the wind skill page), so
+    // the n-weighted-mean semantics live in one place.
 
     /// <summary>
     /// Generic rolling-metric chart for a single value per

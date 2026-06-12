@@ -123,7 +123,12 @@ runs:
         # files). The remaining trees (predictions / reports) are tens of
         # MiB each and stay full-copy.
         DATE_WINDOW_INCLUDES=""
-        for i in $(seq 0 40); do
+        # 40 → 55 days (2026-06-12): the Met Office Spot skill-chart lines
+        # replay Spot forecasts over the render window (~30d) PLUS
+        # RenderSiteCommand.SpotVerifyLookbackExtraDays (21d) of lookback —
+        # a 40-day pull silently thinned the Spot lines' early weeks in CI
+        # while local renders (full tree on disk) looked complete.
+        for i in $(seq 0 55); do
           d=$(date -u -d "$i days ago" +%Y-%m-%d)
           DATE_WINDOW_INCLUDES="$DATE_WINDOW_INCLUDES --include **/date=$d/**"
         done

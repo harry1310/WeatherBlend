@@ -476,6 +476,196 @@ public class RenderSiteCommandTests : IDisposable
             new (string, int)[] { ("2b", 24), ("2b", 48), ("2c", 24), ("2c", 48) });
     }
 
+    // ---------- Met Office Spot comparison scoring ----------
+
+    private static SitePages.MetOfficeSpotForecastPoint Spot(
+        DateTime validTime, int leadHours,
+        double? temp = null, double? popPct = null, double? windMs = null)
+        => new(
+            RunTimeUtc: validTime.AddHours(-leadHours),
+            ValidTimeUtc: validTime,
+            Temperature2m: temp,
+            PrecipitationProbabilityPercent: popPct,
+            LocationName: "bonehill_rocks",
+            LeadHours: leadHours,
+            WindSpeed10mMs: windMs);
+
+    [Fact]
+    public void SpotLeadBucket_covers_each_panel_lead_up_to_the_next_and_24h_past_the_last()
+    {
+        // The temp/rain panel grid {12, 24, 48, …} buckets Spot rows so each
+        // forecast hour lands in exactly one panel; the wind grid {24,48,72}
+        // gives uniform 24h buckets. Last panel takes [L, L+24).
+        var tempRain = new[] { 12, 24, 48, 72, 96, 120 };
+        RenderSiteCommand.SpotLeadBucket(tempRain, 0).Should().Be((12, 24));
+        RenderSiteCommand.SpotLeadBucket(tempRain, 1).Should().Be((24, 48));
+        RenderSiteCommand.SpotLeadBucket(tempRain, 5).Should().Be((120, 144));
+        var wind = new[] { 24, 48, 72 };
+        RenderSiteCommand.SpotLeadBucket(wind, 2).Should().Be((72, 96));
+    }
+
+    [Fact]
+    public void ComputeSpotRollingMae_pairs_with_truth_and_buckets_by_panel_lead()
+    {
+        // Two Spot rows in the [24, 48) bucket and one at lead 50 ([48, 72)).
+        // MAE per bucket pairs against the same ERA5 dict the resident series
+        // use; rows missing truth or temperature silently drop.
+        var t1 = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
+        var t2 = new DateTime(2026, 4, 22, 15, 0, 0, DateTimeKind.Utc);
+        var spot = new[]
+        {
+            Spot(t1, 24, temp: 11.0),
+            Spot(t2, 30, temp: 12.0),            // still in the +24h bucket
+            Spot(t1, 50, temp: 14.0),            // +48h bucket
+            Spot(t2, 26, temp: null, popPct: 40) // no temp → dropped
+        };
+        var truth = new Dictionary<DateTime, double> { [t1] = 10.0, [t2] = 10.0 };
+
+        var points = RenderSiteCommand.ComputeSpotRollingMae(
+            spot, truth, new[] { 24, 48 }, windowDays: 14);
+
+        points.Should().HaveCount(2);
+        var p24 = points.Single(p => p.LeadHours == 24);
+        p24.Phase.Should().Be(RenderSiteCommand.SpotPhaseTag);
+        p24.N.Should().Be(2);
+        p24.BlendMae.Should().BeApproximately((1.0 + 2.0) / 2.0, 1e-9);
+        var p48 = points.Single(p => p.LeadHours == 48);
+        p48.N.Should().Be(1);
+        p48.BlendMae.Should().BeApproximately(4.0, 1e-9);
+    }
+
+    [Fact]
+    public void ComputeSpotRollingMae_dedups_to_the_smallest_lead_per_valid_hour_in_a_bucket()
+    {
+        // Two pulls cover the same valid hour at leads 26 and 47 — both in
+        // the +24h bucket. The smaller lead (most recent pull) wins, same
+        // rule as the eyeball charts' LatestPerValid.
+        var t = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
+        var spot = new[]
+        {
+            Spot(t, 47, temp: 16.0),   // |16-10| = 6 — must lose
+            Spot(t, 26, temp: 11.0),   // |11-10| = 1 — must win
+        };
+        var truth = new Dictionary<DateTime, double> { [t] = 10.0 };
+
+        var points = RenderSiteCommand.ComputeSpotRollingMae(spot, truth, new[] { 24 }, 14);
+
+        points.Should().HaveCount(1);
+        points[0].N.Should().Be(1);
+        points[0].BlendMae.Should().BeApproximately(1.0, 1e-9);
+    }
+
+    [Fact]
+    public void ComputeSpotRollingMae_omits_leads_without_spot_coverage()
+    {
+        // No rows in the +48h bucket → no points at lead 48 (the chart omits
+        // the line rather than faking it).
+        var t = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
+        var spot = new[] { Spot(t, 24, temp: 11.0) };
+        var truth = new Dictionary<DateTime, double> { [t] = 10.0 };
+
+        var points = RenderSiteCommand.ComputeSpotRollingMae(spot, truth, new[] { 24, 48 }, 14);
+
+        points.Select(p => p.LeadHours).Distinct().Should().Equal(24);
+    }
+
+    [Fact]
+    public void ComputeSpotRollingBrier_scores_pop_over_100_against_the_wet_dry_labels_per_station()
+    {
+        // PoP 80% vs a wet hour (0.5mm ≥ 0.1) → (0.8−1)² = 0.04; PoP 20% vs
+        // a dry hour → (0.2−0)² = 0.04. Same labels + windows as the
+        // resident ComputeRollingBrier. Station key comes from the truth
+        // dict (Spot is location-level, scored once per gauge).
+        var t1 = new DateTime(2026, 4, 22, 12, 0, 0, DateTimeKind.Utc);
+        var t2 = new DateTime(2026, 4, 23, 12, 0, 0, DateTimeKind.Utc);
+        var spot = new[]
+        {
+            Spot(t1, 24, popPct: 80.0),
+            Spot(t2, 24, popPct: 20.0),
+        };
+        var truth = TruthFor("ea_bellever_dartmoor",
+            new Dictionary<DateTime, double> { [t1] = 0.5, [t2] = 0.05 });
+
+        var points = RenderSiteCommand.ComputeSpotRollingBrier(spot, truth, new[] { 24 }, windowDays: 30);
+
+        points.Should().HaveCount(2);
+        points.Select(p => p.Station).Should().AllBeEquivalentTo("ea_bellever_dartmoor");
+        points.Select(p => p.Phase).Should().AllBeEquivalentTo(RenderSiteCommand.SpotPhaseTag);
+        points[0].BlendBrier.Should().BeApproximately(0.04, 1e-9);
+        points[1].BlendBrier.Should().BeApproximately(0.04, 1e-9);
+        points.Select(p => p.N).Should().Equal(1, 2);
+    }
+
+    [Fact]
+    public void ComputeSpotWindVerifyMae_replays_each_sidecar_window_and_buckets_by_lead()
+    {
+        // One element_wind sidecar at asOf with window 14d / latency 5d.
+        // A Spot row inside [asOf−14d, asOf−5d] pairs against ERA5 wind;
+        // a row after the latency cut must be excluded even though it has
+        // truth. Output X = sidecar AsOfUtc so the point lines up with the
+        // resident verify points on the chart.
+        var asOf = new DateTime(2026, 5, 5, 8, 0, 0, DateTimeKind.Utc);
+        var inWindow = asOf.AddDays(-7);
+        var pastLatencyCut = asOf.AddDays(-2);
+        var spot = new[]
+        {
+            Spot(inWindow, 24, windMs: 6.0),
+            Spot(pastLatencyCut, 24, windMs: 9.0),   // inside latency blackout → excluded
+        };
+        var truth = new Dictionary<DateTime, double>
+        {
+            [inWindow] = 5.0,
+            [pastLatencyCut] = 5.0,
+        };
+
+        var points = RenderSiteCommand.ComputeSpotWindVerifyMae(
+            spot,
+            new[] { (AsOfUtc: asOf, WindowDays: 14, LatencyDays: 5) },
+            truth,
+            new[] { 24, 48, 72 });
+
+        points.Should().HaveCount(1);
+        points[0].LeadHours.Should().Be(24);
+        points[0].WindowEndUtc.Should().Be(asOf);
+        points[0].N.Should().Be(1);
+        points[0].BlendMae.Should().BeApproximately(1.0, 1e-9);
+        points[0].Phase.Should().Be(RenderSiteCommand.SpotPhaseTag);
+    }
+
+    [Fact]
+    public void ComputeSpotWindVerifyMae_emits_one_point_per_sidecar_asof()
+    {
+        // Two weekly sidecars → two points per covered lead, ordered by asOf.
+        // Valid times picked so each row falls in exactly one sidecar's
+        // window (the real 14d windows overlap week-to-week; that overlap
+        // is the sidecars' own semantics, not under test here).
+        var asOf1 = new DateTime(2026, 4, 28, 8, 0, 0, DateTimeKind.Utc);
+        var asOf2 = new DateTime(2026, 5, 5, 8, 0, 0, DateTimeKind.Utc);
+        var v1 = asOf1.AddDays(-13);
+        var v2 = asOf2.AddDays(-7);
+        var spot = new[]
+        {
+            Spot(v1, 30, windMs: 7.0),
+            Spot(v2, 30, windMs: 4.0),
+        };
+        var truth = new Dictionary<DateTime, double> { [v1] = 5.0, [v2] = 5.0 };
+
+        var points = RenderSiteCommand.ComputeSpotWindVerifyMae(
+            spot,
+            new[]
+            {
+                (AsOfUtc: asOf2, WindowDays: 14, LatencyDays: 5),
+                (AsOfUtc: asOf1, WindowDays: 14, LatencyDays: 5),
+            },
+            truth,
+            new[] { 24 });
+
+        points.Should().HaveCount(2);
+        points.Select(p => p.WindowEndUtc).Should().Equal(asOf1, asOf2);
+        points[0].BlendMae.Should().BeApproximately(2.0, 1e-9);
+        points[1].BlendMae.Should().BeApproximately(1.0, 1e-9);
+    }
+
     // ---------- helpers ----------
 
     private static DuckDBConnection OpenConn()

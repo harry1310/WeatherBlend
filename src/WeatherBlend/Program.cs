@@ -238,6 +238,7 @@ public static class Program
                 services.AddTransient<ElementTrainCommand>();
                 services.AddTransient<ElementPredictCommand>();
                 services.AddTransient<ElementVerifyCommand>();
+                services.AddTransient<WaveVerifyCommand>();
                 // ElementBakeoffCommand removed in Phase 5 of unify-model-membership refactor.
                 services.AddTransient<FeelsLikePredictCommand>();
                 services.AddTransient<RockSurfacePredictCommand>();
@@ -1168,7 +1169,7 @@ public static class Program
 
         var verifyTargetOpt = new Option<string>(
             name: "--target",
-            description: "Target variable: temperature | precipitation | rainfall-amount | dry-window | wind | humidity | shortwave-radiation | cloud-cover",
+            description: "Target variable: temperature | precipitation | rainfall-amount | dry-window | waves | wind | humidity | shortwave-radiation | cloud-cover",
             getDefaultValue: () => "temperature");
         var verifyAsOfOpt = new Option<DateOnly?>(
             name: "--as-of",
@@ -1176,10 +1177,9 @@ public static class Program
         var verifyWindowOpt = new Option<int?>(
             name: "--window-days",
             description: "Rolling window size in days. Default: 14 for temperature, 30 for precipitation/dry-window.");
-        var verifyLatencyOpt = new Option<int>(
+        var verifyLatencyOpt = new Option<int?>(
             name: "--latency-days",
-            description: "Truth-release latency — exclude this many most-recent days",
-            getDefaultValue: () => 5);
+            description: "Truth-release latency — exclude this many most-recent days. Default: 5 (ERA5/EA targets), 0 for waves (the buoy realtime feed lands within ~90 min; later QC re-pulls are absorbed by the next rolling run).");
         var verifyDriftOpt = new Option<double>(
             name: "--drift",
             description: "Drift threshold multiplier (rolling metric vs training test metric)",
@@ -1194,7 +1194,7 @@ public static class Program
             getDefaultValue: () => "all");
         var verifyLocationOpt = new Option<string?>(
             name: "--location",
-            description: "Scope verify to one location's predictions (e.g. 'membury_devon'). Default = primary location (Bonehill / Locations[0]). Honoured by temperature, element, and start-hour verify (Phase C commit 3b). Precip + dry-window are location-agnostic via station partitioning and ignore the flag.",
+            description: "Scope verify to one location's predictions (e.g. 'membury_devon'). Default = primary location (Bonehill / Locations[0]). Honoured by temperature, element, and start-hour verify (Phase C commit 3b). Waves default to EVERY configured marine location; the flag narrows to one. Precip + dry-window are location-agnostic via station partitioning and ignore the flag.",
             getDefaultValue: () => null);
         var verify = new Command(
             "verify",
@@ -1218,32 +1218,41 @@ public static class Program
             {
                 var cmd = host.Services.GetRequiredService<PrecipVerifyCommand>();
                 ctx.ExitCode = await cmd.RunAsync(
-                    truthStation, asOf, windowDays ?? 30, latencyDays, drift, ctx.GetCancellationToken());
+                    truthStation, asOf, windowDays ?? 30, latencyDays ?? 5, drift, ctx.GetCancellationToken());
             }
             else if (string.Equals(target, "rainfall-amount", StringComparison.OrdinalIgnoreCase)
                      || string.Equals(target, "rainfall_amount", StringComparison.OrdinalIgnoreCase))
             {
                 var cmd = host.Services.GetRequiredService<RainfallAmountVerifyCommand>();
                 ctx.ExitCode = await cmd.RunAsync(
-                    truthStation, asOf, windowDays ?? 30, latencyDays, drift, ctx.GetCancellationToken());
+                    truthStation, asOf, windowDays ?? 30, latencyDays ?? 5, drift, ctx.GetCancellationToken());
             }
             else if (string.Equals(target, "dry-window", StringComparison.OrdinalIgnoreCase))
             {
                 var cmd = host.Services.GetRequiredService<DryWindowVerifyCommand>();
                 ctx.ExitCode = await cmd.RunAsync(
-                    truthStation, dryWindow, asOf, windowDays ?? 30, latencyDays, drift, ctx.GetCancellationToken());
+                    truthStation, dryWindow, asOf, windowDays ?? 30, latencyDays ?? 5, drift, ctx.GetCancellationToken());
+            }
+            else if (string.Equals(target, "waves", StringComparison.OrdinalIgnoreCase))
+            {
+                // Wave-height blend vs the location's primary buoy. 30-day
+                // window (precip-style — wave events are episodic); latency 0
+                // because the buoy realtime feed has no ERA5-style release lag.
+                var cmd = host.Services.GetRequiredService<WaveVerifyCommand>();
+                ctx.ExitCode = await cmd.RunAsync(
+                    asOf, windowDays ?? 30, latencyDays ?? 0, drift, locationOverride, ctx.GetCancellationToken());
             }
             else if (elementTarget is not null)
             {
                 var cmd = host.Services.GetRequiredService<ElementVerifyCommand>();
                 ctx.ExitCode = await cmd.RunAsync(
-                    elementTarget, asOf, windowDays ?? 14, latencyDays, drift, locationOverride, ctx.GetCancellationToken());
+                    elementTarget, asOf, windowDays ?? 14, latencyDays ?? 5, drift, locationOverride, ctx.GetCancellationToken());
             }
             else
             {
                 var cmd = host.Services.GetRequiredService<TempVerifyCommand>();
                 ctx.ExitCode = await cmd.RunAsync(
-                    target, asOf, windowDays ?? 14, latencyDays, drift, locationOverride, ctx.GetCancellationToken());
+                    target, asOf, windowDays ?? 14, latencyDays ?? 5, drift, locationOverride, ctx.GetCancellationToken());
             }
         });
         root.AddCommand(verify);

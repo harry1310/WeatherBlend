@@ -109,6 +109,14 @@ jobs:
           mkdir -p data/truth/rainfall
           rclone copy "r2:${R2_BUCKET}/data/truth/rainfall" ./data/truth/rainfall --fast-list --transfers 16 --checkers 32 --progress $RECENT_INCLUDES
 
+          # Wave buoy truth: join key for the wave_height verify (Sennen vs
+          # Sevenstones). Partitions as location=…/source=…/date=…, so the
+          # same unrooted date-window include applies. Pulls the era5_ocean
+          # partitions in the window too (same tree) — small, and verify
+          # filters to the buoy source in SQL.
+          mkdir -p data/truth/waves
+          rclone copy "r2:${R2_BUCKET}/data/truth/waves" ./data/truth/waves --fast-list --transfers 16 --checkers 32 --progress $RECENT_INCLUDES
+
           # Model metadata (training_metadata.json + MANIFEST.json) for the drift
           # threshold reference. verify reads ONLY the json metadata + reports —
           # never the per-cell 4a BART artefacts (state_lead_*.rds ~452 MiB +
@@ -309,6 +317,31 @@ jobs:
           echo "drift=$drift" >> "$GITHUB_OUTPUT"
           echo "fail=$fail" >> "$GITHUB_OUTPUT"
 
+      - name: Verify waves (wave_height vs buoy, all marine locations)
+        # Wave-height blend vs the location's primary buoy (Sennen vs
+        # Sevenstones today). The command iterates every config location
+        # with a marine block + buoys itself — no per-location steps or
+        # list-locations loop needed; locations without wave predictions
+        # exit 0. Drift (exit 4) = COVERAGE-ONLY: empirical 90%-band
+        # coverage well below nominal (< 0.75). No MAE-threshold drift —
+        # the buoy sits 28 km from the forecast cell so MAE carries a
+        # ~0.3 m location-mismatch floor that a cal_mae multiplier would
+        # alarm on permanently; the workflow's drift input is ignored by
+        # this target. Default window 30d, latency 0d (buoy realtime has
+        # no ERA5-style release lag).
+        id: verify_waves_run
+        run: |
+          AS_OF="${{ github.event.inputs.as_of }}"
+          WINDOW="${{ github.event.inputs.window_days }}"
+          DRIFT="${{ github.event.inputs.drift }}"
+          ARGS="--target waves"
+          if [ -n "$AS_OF" ]; then ARGS="$ARGS --as-of $AS_OF"; fi
+          if [ -n "$WINDOW" ]; then ARGS="$ARGS --window-days $WINDOW"; fi
+          if [ -n "$DRIFT" ]; then ARGS="$ARGS --drift $DRIFT"; fi
+          set +e
+          dotnet run --project src/WeatherBlend --no-build -c Release -- verify $ARGS
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+
       - name: Push refreshed reports to R2
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
@@ -352,6 +385,7 @@ jobs:
           P_EXIT="${{ steps.verify_precip_run.outputs.exit }}"
           R_EXIT="${{ steps.verify_rainfall_amount_run.outputs.exit }}"
           D_EXIT="${{ steps.verify_dry_window_run.outputs.exit }}"
+          W_EXIT="${{ steps.verify_waves_run.outputs.exit }}"
           E_DRIFT="${{ steps.verify_elements_run.outputs.drift }}"
           E_FAIL="${{ steps.verify_elements_run.outputs.fail }}"
           fail=0
@@ -375,6 +409,11 @@ jobs:
             0) ;;
             4) echo "::warning::Dry-window drift detected — see verify report."; drifted_targets+=("dry-window") ;;
             *) echo "::error::Dry-window verify step exited $D_EXIT (non-drift failure)."; fail=1 ;;
+          esac
+          case "$W_EXIT" in
+            0) ;;
+            4) echo "::warning::Wave-height drift detected (MAE or band coverage) — see verify report."; drifted_targets+=("wave_height") ;;
+            *) echo "::error::Wave verify step exited $W_EXIT (non-drift failure)."; fail=1 ;;
           esac
           if [ "$E_DRIFT" = "1" ]; then
             echo "::warning::Element drift detected — see verify report."

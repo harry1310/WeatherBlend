@@ -420,7 +420,11 @@ targets:
       - id: "wind_mvn"
         role: champion
         impl: python
-        locations: ["bonehill_rocks"]
+        # sennen_cove added 2026-06-12 — trains on ERA5 (u,v) truth at the
+        # Sennen cell, NOT Dunkeswell (the exposure-analogue argument runs
+        # the other way for an exposed clifftop; decision + reasoning in
+        # docs/SENNEN_SEA_STATE_PLAN.md Phase 4). Bonehill stays Dunkeswell.
+        locations: ["bonehill_rocks", "sennen_cove"]
         display:
           shortTitle: "Wind direction (MVN MLP)"
           color: "#7b1fa2"
