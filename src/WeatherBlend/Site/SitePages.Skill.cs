@@ -179,6 +179,24 @@ public static partial class SitePages
         // both gave the rolling line two Y-values per X (vertical cliff).
         // See SeriesDedup.PoolVerifyRowsPerKey for the n-weighted-mean
         // semantics + why pooling (not picking) is the honest collapse.
+        //
+        // WindPhaseLabel folds LEGACY tags from pre-rename verify sidecars
+        // ("lean-wind" was the element wind champion's old phase tag; bare
+        // "v..._wind_blend_live"-style version strings predate the Phase
+        // column) into their modern series, so history reads as ONE
+        // continuous line per model instead of mystery legend entries
+        // (Harry, 2026-06-12).
+        static string WindPhaseLabel(string? phase, string modelVersion)
+        {
+            var tag = string.IsNullOrEmpty(phase) ? modelVersion : phase;
+            if (tag is "lean-wind" or "wind") return "wind";
+            if (tag.Contains("wind_blend", StringComparison.Ordinal)) return "wind_blend";
+            if (tag.Contains("wind_speed_lgb", StringComparison.Ordinal)) return "wind_speed_lgb";
+            if (tag.Contains("wind_gust", StringComparison.Ordinal)) return "wind_gust_lgb";
+            if (tag.Contains("wind", StringComparison.Ordinal) && tag.StartsWith("v", StringComparison.Ordinal))
+                return "wind";   // bare element-wind version strings (pre-Phase-column sidecars)
+            return tag;
+        }
         var pts = input.VerifyHistory
             .Where(f => f.Target is "element_wind" or "element_wind_gust")
             .SelectMany(f => f.Rows.Select(r => (File: f, Row: r)))
@@ -186,11 +204,11 @@ public static partial class SitePages
                 t.File.Target,
                 t.File.AsOfUtc,
                 t.Row.Station,
-                Phase: string.IsNullOrEmpty(t.Row.Phase) ? t.Row.ModelVersion : t.Row.Phase,
+                Phase: WindPhaseLabel(t.Row.Phase, t.Row.ModelVersion),
                 t.Row.LeadHours))
             .Select(t => (
                 AsOf: t.File.AsOfUtc,
-                Phase: string.IsNullOrEmpty(t.Row.Phase) ? t.Row.ModelVersion : t.Row.Phase,
+                Phase: WindPhaseLabel(t.Row.Phase, t.Row.ModelVersion),
                 Lead: t.Row.LeadHours,
                 MaeMph: t.Row.BlendMetric * MsToMph))
             .ToList();
@@ -201,12 +219,15 @@ public static partial class SitePages
                 "No element-verify rows yet. Lines (wind champion / wind_speed_lgb / wind_blend / "
                 + "wind_gust_lgb gust) populate per lead once element-verify scores these phases against ERA5.");
 
-        // Phase → (label, colour). Unknown phases fall through to a neutral grey.
+        // Phase → (label, colour). Unknown phases fall through to a neutral
+        // grey. wind_blend green → red 2026-06-12: it was near-identical to
+        // the Met Office Spot comparison line's green (Harry couldn't tell
+        // them apart).
         static (string Label, string Color) PhaseStyle(string phase) => phase switch
         {
             "wind"           => ("wind (champion)", "#6a1b9a"),
             "wind_speed_lgb" => ("wind_speed_lgb",  "#1976d2"),
-            "wind_blend"     => ("wind_blend",      "#2e7d32"),
+            "wind_blend"     => ("wind_blend",      "#d32f2f"),
             "wind_gust_lgb"  => ("wind_gust_lgb gust", "#ff9800"),
             _                 => (phase,            "#9e9e9e"),
         };
