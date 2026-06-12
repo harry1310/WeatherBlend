@@ -237,6 +237,17 @@ public sealed class RenderSiteCommand
                     FittedOn: vr.FittedOn,
                     WeightsBySlug: vr.Weights.ToDictionary(
                         kv => StationSlug.WithEaPrefix(kv.Key), kv => kv.Value, StringComparer.Ordinal))
+                : null,
+            // Sea-state badge thresholds — marine locations with a
+            // seaStateBadge config block only (Sennen). No block = null =
+            // no badge on that location's overview tiles.
+            SeaStateBadge: loc.Marine?.SeaStateBadge is { } ssb
+                ? new SeaStateBadgeSpec(
+                    TideHighMsl: ssb.TideHighMsl,
+                    RunUpProxy: ssb.RunUpProxy,
+                    WindMinMph: ssb.WindMinMph,
+                    WindSectorFromDeg: ssb.WindSectorFromDeg,
+                    WindSectorToDeg: ssb.WindSectorToDeg)
                 : null)).ToList();
 
         // Top-level model summaries / feature spec rows surface ALL locations'
@@ -2038,7 +2049,12 @@ FROM ranked WHERE rn = 1 ORDER BY LocationName, Model, ValidTimeUtc";
         DateTime start, DateTime end, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.ForecastsPath, "**", "*.parquet"));
+        // Glob the model=met_office_spot subtree only — the hive path encodes
+        // the model, and a whole-tree glob makes DuckDB open every NWP file's
+        // footer just to discard its rows (~7 min on a local full-archive
+        // tree vs seconds; CI never noticed because its pull is date-windowed).
+        var glob = ParquetReader.Glob(Path.Combine(
+            _cfg.Storage.ForecastsPath, "location=*", $"model={_cfg.MetOffice.SpotModelTag}", "**", "*.parquet"));
 
         var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
 

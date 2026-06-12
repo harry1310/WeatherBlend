@@ -239,6 +239,17 @@ locations:
       # Realtime = open WaveNet JSON API (no auth, non-QC'd, ≤10-90 min
       # latency); archive = EMODnet ERDDAP (CC-BY-SA, QC'd, floor 2018-01,
       # mirror lags days-weeks). Directions on waveriders are PEAK direction.
+      # Overview-tile sea-state badge thresholds (amber = 1 trigger fired,
+      # red = 2+). tideHighMsl = 67th percentile of one year's high waters
+      # at the cell (computed 2026-06-12; recompute yearly). ALL values are
+      # DRAFT pending calibration against real sessions. Delete the block
+      # to turn the badge off entirely.
+      seaStateBadge:
+        tideHighMsl: 1.71        # m vs MSL — TideHeightMsl pass-through
+        runUpProxy: 12.0         # √Hs(m) × swell period(s)
+        windMinMph: 15.0
+        windSectorFromDeg: 225   # onshore "from" sector, clockwise from→to
+        windSectorToDeg: 335     # (may wrap 360)
       buoys:
         - slug: "sevenstones_62107"
           displayName: "Sevenstones Light Vessel"

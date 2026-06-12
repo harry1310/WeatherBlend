@@ -247,6 +247,38 @@ public sealed class MarineConfig
     /// open Cefas WaveNet API each collect cycle; QC'd archive via EMODnet
     /// ERDDAP through <c>backfill --source buoys</c>).</summary>
     public List<BuoyConfig> Buoys { get; set; } = new();
+
+    /// <summary>Overview-tile sea-state badge thresholds. Null (no
+    /// <c>seaStateBadge:</c> block in config.yaml) = the location renders
+    /// no sea-state badge. See <see cref="SeaStateBadgeConfig"/>.</summary>
+    public SeaStateBadgeConfig? SeaStateBadge { get; set; }
+}
+
+/// <summary>
+/// Thresholds for the overview-tile sea-state badge (amber = one trigger
+/// fired, red = two-or-more) — see <c>Site/Badges.cs</c> for the trigger
+/// definitions. Config-driven, NOT code: these are per-cell physical
+/// values that need recalibration against real sessions, never recompiles.
+/// </summary>
+public sealed class SeaStateBadgeConfig
+{
+    /// <summary>HIGH TIDE trigger: fires when the wave-predictions
+    /// pass-through TideHeightMsl (m vs mean sea level) is ≥ this.</summary>
+    public double TideHighMsl { get; set; }
+
+    /// <summary>BIG WAVES trigger: fires when √Hs(m) × swell period(s)
+    /// — a run-up scaling proxy — is ≥ this.</summary>
+    public double RunUpProxy { get; set; }
+
+    /// <summary>ONSHORE WIND trigger minimum speed, mph.</summary>
+    public double WindMinMph { get; set; }
+
+    /// <summary>Onshore sector start ("coming from" degrees). The sector
+    /// runs clockwise from→to and may wrap through 360.</summary>
+    public double WindSectorFromDeg { get; set; }
+
+    /// <summary>Onshore sector end ("coming from" degrees).</summary>
+    public double WindSectorToDeg { get; set; }
 }
 
 /// <summary>One wave buoy — see <see cref="MarineConfig.Buoys"/>.</summary>

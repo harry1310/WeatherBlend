@@ -138,7 +138,15 @@ public sealed class MetOfficeSpotClient
                 ValidTimeUtc = valid.Value,
                 LeadHours = lead,
                 RunTimeSource = RunTimeSources.Reported,
-                Temperature2m = GetDouble(step, "screenTemperature"),
+                // Hourly product: instantaneous screenTemperature. The
+                // three-hourly product (leads ~54-168h) has NO such field —
+                // only the period's max/min screen air temps — so temp was
+                // null at long leads, which capped the temp skill page's
+                // Spot MAE line at +48h (2026-06-12). Fall back to the
+                // max/min midpoint: an approximation, but a fair long-lead
+                // comparison line vs hourly ERA5 truth.
+                Temperature2m = GetDouble(step, "screenTemperature")
+                    ?? Midpoint(GetDouble(step, "maxScreenAirTemp"), GetDouble(step, "minScreenAirTemp")),
                 DewPoint2m = GetDouble(step, "screenDewPointTemperature"),
                 RelativeHumidity2m = GetDouble(step, "screenRelativeHumidity"),
                 Precipitation = GetDouble(step, "precipitationRate"),
@@ -160,6 +168,9 @@ public sealed class MetOfficeSpotClient
         }
         return rows;
     }
+
+    private static double? Midpoint(double? a, double? b)
+        => a.HasValue && b.HasValue ? (a.Value + b.Value) / 2.0 : null;
 
     private static double? GetDouble(JsonElement obj, string field)
     {

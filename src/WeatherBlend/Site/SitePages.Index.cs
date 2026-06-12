@@ -97,6 +97,36 @@ public static partial class SitePages
             .LatestPerValid(r => r.ValidTimeUtc, r => r.LeadHours, r => r.PredictedAtUtc)
             .ToDictionary(r => r.ValidTimeUtc);
 
+        // Sea-state badge inputs (marine locations with a seaStateBadge
+        // config block — Sennen). Wave rows arrive pre-collapsed to one row
+        // per valid by RenderSiteCommand's SQL but get the defensive
+        // version-dedup anyway (newest version, freshest made — the
+        // straddling-retrain rule, see SeriesDedup); wind speed + direction
+        // collapse smallest-lead-per-valid like every other tile lookup.
+        // Direction lives in its own wind_mvn tree and can lag the speed
+        // tree (Sennen direction rows are new) — the evaluator skips the
+        // wind trigger for hours with no direction rather than guessing.
+        var seaSpec = input.RenderingFor?.SeaStateBadge;
+        var waveByValid = seaSpec is null
+            ? new Dictionary<DateTime, WaveForecastPoint>()
+            : input.WavePredictions
+                .GroupBy(w => w.ValidTimeUtc)
+                .Select(g => g
+                    .OrderByDescending(w => w.Version, StringComparer.Ordinal)
+                    .ThenByDescending(w => w.PredictedAtUtc)
+                    .First())
+                .ToDictionary(w => w.ValidTimeUtc);
+        var windSpeedMsByValid = seaSpec is null
+            ? new Dictionary<DateTime, double>()
+            : input.WindPredictions
+                .LatestPerValid(w => w.ValidTimeUtc, w => w.LeadHours, w => w.PredictedAtUtc)
+                .ToDictionary(w => w.ValidTimeUtc, w => w.SpeedMs);
+        var windDirDegByValid = seaSpec is null
+            ? new Dictionary<DateTime, double>()
+            : input.WindDirectionPredictions
+                .LatestPerValid(w => w.ValidTimeUtc, w => w.LeadHours, w => w.PredictedAtUtc)
+                .ToDictionary(w => w.ValidTimeUtc, w => w.DirectionDeg);
+
         // Day summary line above the tile grid: temp range + mean P(wet) +
         // driest hour. Falls back to a temp-only line when no P(wet) is
         // available for the headline gauge this day.
@@ -134,7 +164,9 @@ public static partial class SitePages
             var tiles = new StringBuilder();
             int popoverId = 0;
             foreach (var p in dayPreds)
-                tiles.Append(RenderHourTile(p, feelsLikeByValid, pwetByValid, lowCloudByValid, rockByValid, input.WindGustByValidMs, popoverId++));
+                tiles.Append(RenderHourTile(p, feelsLikeByValid, pwetByValid, lowCloudByValid, rockByValid,
+                    seaSpec, waveByValid, windSpeedMsByValid, windDirDegByValid,
+                    input.WindGustByValidMs, popoverId++));
             tilesHtml = string.Create(Ci, $"<div class=\"forecast-grid\">{tiles}</div>");
         }
 
@@ -410,17 +442,32 @@ public static partial class SitePages
     /// denominator is much larger.</summary>
     private const int LowCloudBaseFireThreshold = 6;
 
+    /// <summary>CSS severity class for a badge pill — unified amber/red rule
+    /// (one trigger amber, two-plus red). Callers only invoke this for
+    /// severities that render, so None maps to empty.</summary>
+    private static string BadgeSeverityClass(BadgeSeverity severity) => severity switch
+    {
+        BadgeSeverity.Red => "badge-red",
+        BadgeSeverity.Amber => "badge-amber",
+        _ => "",
+    };
+
     private static string RenderHourTile(
         Models.TempPredictionRow p,
         IReadOnlyDictionary<DateTime, FeelsLikeForecastPoint> feelsLikeByValid,
         IReadOnlyDictionary<DateTime, PrecipForecastPoint> pwetByValid,
         IReadOnlyDictionary<DateTime, LowCloudSignal> lowCloudByValid,
         IReadOnlyDictionary<DateTime, RockSurfaceForecastPoint> rockByValid,
+        SeaStateBadgeSpec? seaSpec,
+        IReadOnlyDictionary<DateTime, WaveForecastPoint> waveByValid,
+        IReadOnlyDictionary<DateTime, double> windSpeedMsByValid,
+        IReadOnlyDictionary<DateTime, double> windDirDegByValid,
         IReadOnlyDictionary<DateTime, double> windGustByValidMs,
         int popoverId)
     {
-        // Low-cloud / mist warning — fires when EITHER signal hits its
-        // threshold. Sits in the tile header as a Pico <details>/<summary>
+        // Low-cloud / mist warning — amber when ONE signal hits its
+        // threshold, red when BOTH do (unified badge severity, 2026-06-12).
+        // Sits at the top of the tile as a Pico <details>/<summary>
         // pop-out so the trigger details work on touch devices (the earlier
         // title="..." tooltip was unreachable from mobile).
         string lowCloudBadge = "";
@@ -428,7 +475,8 @@ public static partial class SitePages
         {
             var visFired = lc.VisFiredCount >= LowCloudVisFireThreshold;
             var cbFired  = lc.CloudBaseFiredCount >= LowCloudBaseFireThreshold;
-            if (visFired || cbFired)
+            var severity = LowCloudBadge.Evaluate(visFired, cbFired);
+            if (severity != BadgeSeverity.None)
             {
                 var rows = new StringBuilder();
                 if (visFired)
@@ -436,8 +484,8 @@ public static partial class SitePages
                 if (cbFired)
                     rows.Append(Ci, $"<li>{lc.CloudBaseFiredCount}/{lc.CloudBaseTotalCount} NWPs: cloud base below tor (T−Td &lt; 1.5°C)</li>");
                 lowCloudBadge = $"""
-                    <details class="low-cloud-pop">
-                      <summary class="low-cloud-badge">☁ low cloud</summary>
+                    <details class="badge-pop low-cloud-pop">
+                      <summary class="tile-badge low-cloud-badge {BadgeSeverityClass(severity)}">☁ low cloud</summary>
                       <ul>{rows}</ul>
                     </details>
                     """;
@@ -449,19 +497,61 @@ public static partial class SitePages
         // amber "rock greasy?" for the marginal band (0 < margin ≤ greasyMargin,
         // already encoded in GreasinessStatus). No badge when dry. Same ±1h
         // tolerance + Pico <details> pop-out idiom as the low-cloud badge.
+        // Trigger logic untouched by the 2026-06-12 badge unification — its
+        // semantics were already two-tier; only the styling moved onto the
+        // shared badge-amber / badge-red classes.
         string rockBadge = "";
         if (TryNearest(rockByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var rk)
             && rk!.GreasinessStatus != Predict.Surface.RockSurfacePhysics.StatusDry)
         {
             var isCond = rk.GreasinessStatus == Predict.Surface.RockSurfacePhysics.StatusCondensation;
-            var cls = isCond ? "rock-badge rock-wet" : "rock-badge rock-greasy";
+            var severityCls = BadgeSeverityClass(isCond ? BadgeSeverity.Red : BadgeSeverity.Amber);
+            var cls = $"tile-badge rock-badge {(isCond ? "rock-wet" : "rock-greasy")} {severityCls}";
             var label = isCond ? "rock wet" : "rock greasy?";
             rockBadge = string.Create(Ci, $"""
-                <details class="rock-pop">
+                <details class="badge-pop rock-pop">
                   <summary class="{cls}">&#x26A0;&#xFE0E; {label}</summary>
                   <ul><li>Rock {rk.RockSurfaceTempC:0.0}°C vs dew point {rk.DewPointC:0.0}°C — margin {rk.CondensationMarginC:+0.0;-0.0;0.0}°C</li></ul>
                 </details>
                 """);
+        }
+
+        // Sea-state badge (marine locations with a seaStateBadge config
+        // block — Sennen). Tide / run-up / onshore-wind triggers, amber for
+        // one fired, red for two-plus; pop-out lists each FIRED trigger with
+        // its live values. Wave + wind lookups tolerate ±1h like the other
+        // tile chips. A missing input skips its trigger inside the evaluator
+        // (e.g. no wind_mvn direction row yet → tide + waves only) — missing
+        // data never fires a trigger.
+        string seaBadge = "";
+        if (seaSpec is not null
+            && TryNearest(waveByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var wv))
+        {
+            double? windMph = TryNearest(windSpeedMsByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var windMs)
+                ? windMs * 2.23694
+                : null;
+            double? windDir = TryNearest(windDirDegByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var dirDeg)
+                ? dirDeg
+                : null;
+            var sea = SeaStateBadge.Evaluate(
+                tideHeightMsl: wv!.TideHeightMsl,
+                waveHeightM: wv.WaveHeightM,
+                swellPeriodS: wv.SwellPeriodS,
+                windMph: windMph,
+                windDirDeg: windDir,
+                spec: seaSpec);
+            if (sea.Severity != BadgeSeverity.None)
+            {
+                var rows = new StringBuilder();
+                foreach (var trigger in sea.FiredTriggers)
+                    rows.Append(Ci, $"<li>{Escape(trigger)}</li>");
+                seaBadge = $"""
+                    <details class="badge-pop sea-pop">
+                      <summary class="tile-badge sea-badge {BadgeSeverityClass(sea.Severity)}">🌊 sea state</summary>
+                      <ul>{rows}</ul>
+                    </details>
+                    """;
+            }
         }
 
         // Feels-like and P(wet) tolerate ±1h drift — predict cycles can land
@@ -550,7 +640,7 @@ public static partial class SitePages
         // main value — lines up across every tile in the grid regardless of how
         // many badges (0/1/2) fired. Badge-free tiles show that reserved space
         // as a small blank gap, by design (user call 2026-06-06).
-        string badgeBlock = $"""<div class="tile-badges">{lowCloudBadge}{rockBadge}</div>""";
+        string badgeBlock = $"""<div class="tile-badges">{lowCloudBadge}{rockBadge}{seaBadge}</div>""";
 
         var tempColor = TemperatureColor(p.BlendTemperature);
         return string.Create(Ci, $"""

@@ -144,6 +144,7 @@ public static partial class SitePages
     /// <param name="Tabs">Site-nav buttons from <see cref="LocationConfig.Tabs"/>. Order matches config.yaml; values are <c>overview</c>, <c>temperature</c>, <c>rain</c>, <c>sea_state</c>, <c>dry_window</c>, <c>skill</c>, <c>models</c>.</param>
     /// <param name="OverviewFirstVisibleHourUtc">Per-loc Overview tile-grid lower bound (inclusive UTC hour). Bonehill 4, Membury 0.</param>
     /// <param name="OverviewLastVisibleHourUtcExclusive">Per-loc Overview tile-grid upper bound (exclusive UTC hour). Bonehill 22, Membury 24.</param>
+    /// <param name="SeaStateBadge">Overview-tile sea-state badge thresholds from the location's <c>marine.seaStateBadge</c> config block (Sennen). Null = no badge for this location.</param>
     public sealed record LocationDescriptor(
         string Name,
         string DisplayName,
@@ -152,7 +153,8 @@ public static partial class SitePages
         IReadOnlyList<string> Tabs,
         int OverviewFirstVisibleHourUtc,
         int OverviewLastVisibleHourUtcExclusive,
-        VillageRainSpec? VillageRain = null)
+        VillageRainSpec? VillageRain = null,
+        SeaStateBadgeSpec? SeaStateBadge = null)
     {
         /// <summary>True iff <paramref name="tab"/> is in <see cref="Tabs"/> (case-insensitive).</summary>
         public bool HasTab(string tab) =>
@@ -1163,14 +1165,30 @@ public static partial class SitePages
            the temperature down — the real alignment bug (closed state handled by
            the margin:0 on each .*-pop below; this line handles the open state). */
         .forecast-card .tile-badges details[open] > summary { margin-bottom: 0; }
-        details.low-cloud-pop { display: block; position: relative; margin: 0; }
-        details.low-cloud-pop > summary.low-cloud-badge { background: #455a64; color: #fff; font-size: 0.7rem; line-height: 1.15; padding: 0.1rem 0.4rem; border-radius: 999px; cursor: pointer; white-space: nowrap; list-style: none; display: inline-block; }
+        /* Shared badge pill + pop-out (low-cloud / rock / sea-state families
+           all use this one idiom — the family classes low-cloud-pop /
+           rock-pop / sea-pop stay in the markup as hooks but carry no
+           styling of their own). */
+        details.badge-pop { display: block; position: relative; margin: 0; }
+        details.badge-pop > summary.tile-badge { font-size: 0.7rem; line-height: 1.15; padding: 0.1rem 0.4rem; border-radius: 999px; cursor: pointer; white-space: nowrap; list-style: none; display: inline-block; }
         /* Kill BOTH native marker and Pico's ::after chevron — Pico v2 adds
            the chevron via a background-image on summary::after, which the
            webkit rule alone doesn't reach. User wants these as plain pills. */
-        details.low-cloud-pop > summary.low-cloud-badge::-webkit-details-marker { display: none; }
-        details.low-cloud-pop > summary.low-cloud-badge::after { display: none !important; content: none !important; }
-        details.low-cloud-pop > ul {
+        details.badge-pop > summary.tile-badge::-webkit-details-marker { display: none; }
+        details.badge-pop > summary.tile-badge::after { display: none !important; content: none !important; }
+        /* Unified amber/red severity colours (Harry 2026-06-12: one trigger =
+           amber, two-or-more = red, across every badge family — supersedes
+           the 2026-06-06 all-slate call). Amber gets DARK text: the earlier
+           red+amber rock pills died on white-on-amber contrast ("⚠ glyph
+           illegible") — the &#xFE0E; text-presentation glyphs inherit the
+           text colour, so dark-on-amber keeps both label and icon legible.
+           Amber #f59f00 sits between the site's MF orange #ffa726 and the
+           drywin-calc's #b8860b; red #d32f2f is the Material 700 sibling of
+           the PrecipProbColor ramp's #e53935 — darker so white text passes
+           contrast where the ramp's text-only red didn't need to. */
+        summary.tile-badge.badge-amber { background: #f59f00; color: #2b1d00; }
+        summary.tile-badge.badge-red { background: #d32f2f; color: #fff; }
+        details.badge-pop > ul {
           position: absolute;
           top: calc(100% + 0.25rem);
           left: 0;
@@ -1187,38 +1205,7 @@ public static partial class SitePages
           width: max-content;
           max-width: 16rem;
         }
-        details.low-cloud-pop > ul li { margin: 0; padding: 0.05rem 0; }
-
-        /* Rock surface / condensation badge (Phase P1) — same pill + pop-out
-           idiom as the low-cloud badge. Red = condensation (rock wet), amber =
-           potentially greasy (rock near dew point). */
-        details.rock-pop { display: block; position: relative; margin: 0; }
-        /* Same slate grey + white as the low-cloud badge (user call 2026-06-06):
-           the old wet/greasy red+amber made the ⚠ glyph illegible (yellow-on-amber).
-           The "rock wet" / "rock greasy?" label carries the severity now. The
-           rock-wet / rock-greasy classes stay in the markup but are no longer
-           recoloured. */
-        details.rock-pop > summary.rock-badge { background: #455a64; color: #fff; font-size: 0.7rem; line-height: 1.15; padding: 0.1rem 0.4rem; border-radius: 999px; cursor: pointer; white-space: nowrap; list-style: none; display: inline-block; }
-        details.rock-pop > summary.rock-badge::-webkit-details-marker { display: none; }
-        details.rock-pop > summary.rock-badge::after { display: none !important; content: none !important; }
-        details.rock-pop > ul {
-          position: absolute;
-          top: calc(100% + 0.25rem);
-          left: 0;
-          z-index: 10;
-          margin: 0;
-          padding: 0.4rem 0.6rem 0.4rem 1.5rem;
-          font-size: 0.78rem;
-          line-height: 1.35;
-          color: var(--pico-muted-color);
-          background: var(--pico-card-background-color);
-          border: 1px solid var(--pico-card-border-color);
-          border-radius: 4px;
-          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-          width: max-content;
-          max-width: 16rem;
-        }
-        details.rock-pop > ul li { margin: 0; padding: 0.05rem 0; }
+        details.badge-pop > ul li { margin: 0; padding: 0.05rem 0; }
 
         /* "Will it stay dry?" overview calculator (Phase 3p copula MC). Two
            dropdowns + a live result line; the per-(start,length) probability
