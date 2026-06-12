@@ -113,10 +113,11 @@ public class ConfigTests
         bound.Locations[1].Metar.Primary.Should().Be("EGTE");
         bound.Locations[1].Metar.Fallback.Should().Be("EGDY");
         // Sennen, Cornwall (added 2026-06-05, sea cliff; surfaced on the site
-        // 2026-06-11 once 2b/2c + 3c bundles existed). Same tab shape as
-        // Membury — no wind / dry-window / element models there.
+        // 2026-06-11 once 2b/2c + 3c bundles existed). Membury's tab shape —
+        // no wind / dry-window / element models there — plus the Sennen-only
+        // sea_state tab (wave / tide / swell / wind, added 2026-06-11).
         bound.Locations[2].Name.Should().Be("sennen_cove");
-        bound.Locations[2].Tabs.Should().Equal("overview", "temperature", "rain", "skill", "models");
+        bound.Locations[2].Tabs.Should().Equal("overview", "temperature", "rain", "sea_state", "skill", "models");
         bound.Locations[2].Metar.Primary.Should().Be("EGDR");
         bound.Locations[2].Rainfall.Stations.Select(s => s.Name).Should()
             .Contain("Trengwainton")

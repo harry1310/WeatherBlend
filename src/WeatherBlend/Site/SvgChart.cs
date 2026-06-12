@@ -83,6 +83,16 @@ public sealed record LineChartSpec
     /// <summary>Optional X-axis upper bound (OADate). Pair of <see cref="XMin"/>.</summary>
     public double? XMax { get; init; }
 
+    /// <summary>Optional Y-axis lower bound. When set, Chart.js pins
+    /// scales.y.min instead of auto-scaling from the data. Added 2026-06-11
+    /// for the sea-state charts — wave height is a physical magnitude that
+    /// must read from 0, and auto-scaling a calm week to [0.6, 1.2] makes
+    /// flat sea look dramatic.</summary>
+    public double? YMin { get; init; }
+
+    /// <summary>Optional Y-axis upper bound. Pair of <see cref="YMin"/>.</summary>
+    public double? YMax { get; init; }
+
     /// <summary>
     /// Filled bands between pairs of series — used for distributional
     /// uncertainty visualisations (e.g. rainfall_amount P10–P90 ribbon
@@ -120,16 +130,19 @@ public static class LineChartRenderer
 
         double xMin = allPoints.Min(p => p.X);
         double xMax = allPoints.Max(p => p.X);
-        double yMin = allPoints.Min(p => p.Y);
-        double yMax = allPoints.Max(p => p.Y);
+        // Pinned Y bounds (YMin/YMax) override the data-driven auto-scale,
+        // matching the Chart.js renderer's scales.y.min/max behaviour.
+        double yMin = spec.YMin ?? allPoints.Min(p => p.Y);
+        double yMax = spec.YMax ?? allPoints.Max(p => p.Y);
 
         if (xMin == xMax) { xMax = xMin + 1; }
         if (yMin == yMax) { yMax = yMin + 1; }
 
-        // 5% padding on Y axis so points don't kiss the frame.
+        // 5% padding on Y axis so points don't kiss the frame — skipped on a
+        // pinned bound (a "from 0" axis must start exactly at 0).
         var yPad = (yMax - yMin) * 0.05;
-        yMin -= yPad;
-        yMax += yPad;
+        if (spec.YMin is null) yMin -= yPad;
+        if (spec.YMax is null) yMax += yPad;
 
         int plotX = spec.PadLeft;
         int plotY = spec.PadTop;
@@ -353,6 +366,8 @@ public static class LineChartRenderer
             // Non-finite values are dropped client-side just like band/today edges.
             xMin = (spec.XMin is { } xn && double.IsFinite(xn)) ? (double?)xn : null,
             xMax = (spec.XMax is { } xx && double.IsFinite(xx)) ? (double?)xx : null,
+            yMin = (spec.YMin is { } yn && double.IsFinite(yn)) ? (double?)yn : null,
+            yMax = (spec.YMax is { } yx && double.IsFinite(yx)) ? (double?)yx : null,
         };
 
         var json = JsonSerializer.Serialize(cfg);

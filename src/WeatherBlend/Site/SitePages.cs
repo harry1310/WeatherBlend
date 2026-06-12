@@ -141,7 +141,7 @@ public static partial class SitePages
     /// <param name="DisplayName">Human-facing label for the tab pill (e.g. <c>Bonehill Rocks, Dartmoor</c>).</param>
     /// <param name="RainStationSlugs">EA-prefixed station slugs from this location's rainfall config (e.g. <c>ea_bellever_dartmoor</c>).</param>
     /// <param name="IsPrimary">First location in config. Phase D made the URL scheme symmetric per-slug, so this is now only used by the location-switcher on the per-loc home (to pre-select an entry on the picker).</param>
-    /// <param name="Tabs">Site-nav buttons from <see cref="LocationConfig.Tabs"/>. Order matches config.yaml; values are <c>overview</c>, <c>temperature</c>, <c>rain</c>, <c>dry_window</c>, <c>skill</c>, <c>models</c>.</param>
+    /// <param name="Tabs">Site-nav buttons from <see cref="LocationConfig.Tabs"/>. Order matches config.yaml; values are <c>overview</c>, <c>temperature</c>, <c>rain</c>, <c>sea_state</c>, <c>dry_window</c>, <c>skill</c>, <c>models</c>.</param>
     /// <param name="OverviewFirstVisibleHourUtc">Per-loc Overview tile-grid lower bound (inclusive UTC hour). Bonehill 4, Membury 0.</param>
     /// <param name="OverviewLastVisibleHourUtcExclusive">Per-loc Overview tile-grid upper bound (exclusive UTC hour). Bonehill 22, Membury 24.</param>
     public sealed record LocationDescriptor(
@@ -552,6 +552,16 @@ public static partial class SitePages
         public IReadOnlyList<WindDirectionForecastPoint> WindDirectionPredictions { get; init; }
             = Array.Empty<WindDirectionForecastPoint>();
 
+        /// <summary>Significant-wave-height predictions (<c>wave_height_lgb</c>)
+        /// for this location, already collapsed by RenderSiteCommand's SQL to
+        /// ONE row per ValidTimeUtc (newest ModelVersion, then freshest
+        /// PredictionMadeAtUtc — the standard version-dedup rule). Drives the
+        /// Sea state page's wave / tide / swell sections. Empty when the
+        /// location has no marine model or the wave_height tree hasn't been
+        /// synced yet — the page degrades to its empty states.</summary>
+        public IReadOnlyList<WaveForecastPoint> WavePredictions { get; init; }
+            = Array.Empty<WaveForecastPoint>();
+
         /// <summary>
         /// Structured weekly verify history loaded from
         /// <c>data/reports/verify_*.json</c>. One entry per (target, asOf)
@@ -937,6 +947,34 @@ public static partial class SitePages
         double? DirectionCi80HiDeg = null,
         double? SpeedCi80LoMs = null,
         double? SpeedCi80HiMs = null);
+
+    /// <summary>One row from a <c>wave_height</c> prediction parquet
+    /// (WP's predict_wave_pi.py — quantile-LGB significant wave height with
+    /// a split-CQR 90% band, plus the pass-through marine columns the Sea
+    /// state page renders without extra joins). <c>WaveHeightM</c> is the
+    /// q50 point (parquet <c>BlendValue</c>); <c>BandLoM</c>/<c>BandHiM</c>
+    /// the calibrated band. Direction columns use the marine "coming from"
+    /// convention (degrees). <c>TideHeightMsl</c> is metres vs mean sea
+    /// level (oscillates roughly ±3 m at Sennen). Pass-throughs are nullable
+    /// — best_match serves them and can gap independently of the wave model.</summary>
+    public sealed record WaveForecastPoint(
+        string Version,
+        DateTime PredictedAtUtc,
+        DateTime ValidTimeUtc,
+        int LeadHours,
+        double WaveHeightM,
+        double? BandLoM,
+        double? BandHiM,
+        double? WavePeriodS,
+        double? WaveDirectionDeg,
+        double? SwellHeightM,
+        double? SwellPeriodS,
+        double? SwellDirectionDeg,
+        double? SecondarySwellHeightM,
+        double? SecondarySwellPeriodS,
+        double? TideHeightMsl,
+        double? SeaSurfaceTempC,
+        string LocationName);
 
     public static string Stylesheet() => """
         :root { --brand: #7c4dff; --pwet: #0288d1; }
@@ -1425,6 +1463,10 @@ public static partial class SitePages
                   },
                   y: {
                     type: 'linear',
+                    // Server-supplied pins (e.g. wave height "from 0") — when
+                    // unset, Chart.js auto-scales from the data as before.
+                    min: cfg.yMin != null ? cfg.yMin : undefined,
+                    max: cfg.yMax != null ? cfg.yMax : undefined,
                     title: { display: !!cfg.yLabel, text: cfg.yLabel || '' },
                     ticks: {
                       font: { family: 'ui-monospace, monospace', size: 10 },
@@ -1545,6 +1587,7 @@ public static partial class SitePages
             "overview"     => ("index.html",                "Overview",     "overview"),
             "temperature"  => ("forecasts-temp-24h.html",   "Temperature",  "temperature"),
             "rain"         => ("forecasts-rain-24h.html",   "Rain",         "rain"),
+            "sea_state"    => ("forecasts-sea-state.html",  "Sea state",    "sea-state"),
             "wind"         => ("forecasts-wind-24h.html",   "Wind",         "wind"),
             "dry_window"   => ("forecasts-dry-window.html", "Dry window",   "dry-window"),
             "skill"        => (skillHref,                   "Skill",        "skill"),

@@ -35,7 +35,12 @@ runs:
       #
       # Tree purposes:
       #   data/predictions     — the prediction parquet the home page + per-lead
-      #                          forecasts + skill charts read.
+      #                          forecasts + skill charts read. NB this whole-tree
+      #                          pull covers every element subtree, including
+      #                          data/predictions/wave_height (the Sea state page's
+      #                          source, added 2026-06-11) — its layout is the same
+      #                          model_version=*/date=* shape, so the 40-day
+      #                          date-window include below applies verbatim.
       #   data/truth/era5      — temperature truth for skill charts.
       #   data/truth/metar     — METAR comparison line for the temp skill page.
       #   data/truth/rainfall  — EA gauge truth for precip + rain-skill charts.

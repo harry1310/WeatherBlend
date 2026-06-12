@@ -124,6 +124,9 @@ public sealed class RenderSiteCommand
         var windDirAllLocs = QueryWindDirectionPredictions(windowStart, predictionEnd, ct);
         _log.LogInformation("Loaded {N} wind_mvn direction prediction rows (all locations).", windDirAllLocs.Count);
 
+        var waveAllLocs = QueryWavePredictions(windowStart, predictionEnd, ct);
+        _log.LogInformation("Loaded {N} wave_height prediction rows (all locations).", waveAllLocs.Count);
+
         var dryWindowRows = _predictions.GetDryWindowPredictions(cells: null, windowStart, predictionEnd, ct);
         var dryWindowAllLocs = dryWindowRows.Select(r => new SitePages.DryWindowForecastPoint(
             Station:                     r.TruthStation,
@@ -301,6 +304,7 @@ public sealed class RenderSiteCommand
                 .ToDictionary(g => g.ValidTimeUtc, g => g.GustMs);
             var windPredictions = windAllLocs.Where(w => IsThisLoc(w.LocationName)).ToList();
             var windDirectionPredictions = windDirAllLocs.Where(w => IsThisLoc(w.LocationName)).ToList();
+            var wavePredictions = waveAllLocs.Where(w => IsThisLoc(w.LocationName)).ToList();
             var startHour = startHourAllLocs.Where(s => IsThisLoc(s.LocationName)).ToList();
             var metOfficeSpot = metOfficeSpotAllLocs.Where(m => IsThisLoc(m.LocationName)).ToList();
             var nwpPop = nwpPopAllLocs.Where(p => IsThisLoc(p.LocationName)).ToList();
@@ -371,6 +375,7 @@ public sealed class RenderSiteCommand
                 WindGustByValidMs = windGustByValid,
                 WindPredictions = windPredictions,
                 WindDirectionPredictions = windDirectionPredictions,
+                WavePredictions = wavePredictions,
                 StartHourPredictions = startHour,
                 MetOfficeSpotForecasts = metOfficeSpot,
                 NwpPrecipProbabilities = nwpPop,
@@ -436,6 +441,13 @@ public sealed class RenderSiteCommand
         {
             foreach (var lead in Leads.ForecastsTempRain)
                 await Write($"forecasts-rain-{lead}h.html", SitePages.RenderForecastsRain(locInputs, lead));
+        }
+
+        if (loc.HasTab("sea_state"))
+        {
+            // Single page — wave_height_lgb is ANY-LEAD (one continuous
+            // hourly forecast per cycle), so there's no lead axis to sub-nav.
+            await Write("forecasts-sea-state.html", SitePages.RenderSeaState(locInputs));
         }
 
         if (loc.HasTab("wind"))
@@ -1332,6 +1344,90 @@ ORDER BY LocationName, LeadHours, ValidTimeUtc";
             SpeedCi80LoMs:       r.IsDBNull(13) ? null : (double?)r.GetDouble(13),
             SpeedCi80HiMs:       r.IsDBNull(14) ? null : (double?)r.GetDouble(14)),
             _log, "wind_mvn predictions tree empty.", ct);
+    }
+
+    /// <summary>Pulls every <c>wave_height</c> prediction row in the rendering
+    /// window for the Sea state page. WP's predict-wave workflow writes
+    /// <c>data/predictions/wave_height/model_version=*_wave_height_lgb/date=*/predictions.parquet</c>
+    /// — one continuous hourly forecast per cycle (LeadHours 0–146), so unlike
+    /// the per-lead element queries the collapse here is to ONE row per
+    /// (LocationName, ValidTimeUtc): newest ModelVersion first (version strings
+    /// are v{timestamp}, so ordinal DESC = newest — the rule that keeps a
+    /// second ModelVersion straddling the Sunday retrain from double-plotting),
+    /// then freshest PredictionMadeAtUtc. Pass-through marine columns ride
+    /// along so the page needs no second read.</summary>
+    private IReadOnlyList<SitePages.WaveForecastPoint> QueryWavePredictions(
+        DateTime start, DateTime end, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.PredictionsPath,
+                                                   "wave_height", "**", "*.parquet"));
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        if (!ParquetReader.HasColumn(conn, glob, "BlendValue"))
+        {
+            _log.LogInformation("wave_height predictions tree empty — Sea state page will empty-state until predict-wave runs.");
+            return Array.Empty<SitePages.WaveForecastPoint>();
+        }
+        // The Python writer stamps PredictionMadeAtUtc as TIMESTAMPTZ (the
+        // wave tree's only timezone-aware column). Pin the session timezone
+        // to UTC so the CAST below yields the UTC wall time on any runner —
+        // without it DuckDB casts into the host's local zone and the made-at
+        // would drift an hour during BST (the same class of bug the removed
+        // Met Office Python writer caused in the forecast tree).
+        using (var tz = conn.CreateCommand())
+        {
+            tz.CommandText = "SET TimeZone = 'UTC'";
+            tz.ExecuteNonQuery();
+        }
+        var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
+        var sql = $@"
+WITH ranked AS (
+    SELECT LocationName, ModelVersion,
+           CAST(PredictionMadeAtUtc AS TIMESTAMP) AS PredictionMadeAtUtc,
+           ValidTimeUtc, CAST(LeadHours AS INTEGER) AS LeadHours,
+           BlendValue, BandLoM, BandHiM,
+           WavePeriodS, WaveDirectionDeg,
+           SwellHeightM, SwellPeriodS, SwellDirectionDeg,
+           SecondarySwellHeightM, SecondarySwellPeriodS,
+           TideHeightMsl, SeaSurfaceTempC,
+           ROW_NUMBER() OVER (PARTITION BY LocationName, ValidTimeUtc
+                              ORDER BY ModelVersion DESC, PredictionMadeAtUtc DESC) AS rn
+    FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+    WHERE Element = 'wave_height'
+      AND LocationName IN ({locFilter})
+      AND BlendValue IS NOT NULL
+      AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
+      AND ValidTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+)
+SELECT LocationName, ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
+       BlendValue, BandLoM, BandHiM,
+       WavePeriodS, WaveDirectionDeg,
+       SwellHeightM, SwellPeriodS, SwellDirectionDeg,
+       SecondarySwellHeightM, SecondarySwellPeriodS,
+       TideHeightMsl, SeaSurfaceTempC
+FROM ranked
+WHERE rn = 1
+ORDER BY LocationName, ValidTimeUtc";
+        return ParquetReader.Query(conn, sql, r => new SitePages.WaveForecastPoint(
+            Version:               r.GetString(1),
+            PredictedAtUtc:        r.GetDateTime(2),
+            ValidTimeUtc:          r.GetDateTime(3),
+            LeadHours:             r.GetInt32(4),
+            WaveHeightM:           r.GetDouble(5),
+            BandLoM:               r.IsDBNull(6)  ? null : (double?)r.GetDouble(6),
+            BandHiM:               r.IsDBNull(7)  ? null : (double?)r.GetDouble(7),
+            WavePeriodS:           r.IsDBNull(8)  ? null : (double?)r.GetDouble(8),
+            WaveDirectionDeg:      r.IsDBNull(9)  ? null : (double?)r.GetDouble(9),
+            SwellHeightM:          r.IsDBNull(10) ? null : (double?)r.GetDouble(10),
+            SwellPeriodS:          r.IsDBNull(11) ? null : (double?)r.GetDouble(11),
+            SwellDirectionDeg:     r.IsDBNull(12) ? null : (double?)r.GetDouble(12),
+            SecondarySwellHeightM: r.IsDBNull(13) ? null : (double?)r.GetDouble(13),
+            SecondarySwellPeriodS: r.IsDBNull(14) ? null : (double?)r.GetDouble(14),
+            TideHeightMsl:         r.IsDBNull(15) ? null : (double?)r.GetDouble(15),
+            SeaSurfaceTempC:       r.IsDBNull(16) ? null : (double?)r.GetDouble(16),
+            LocationName:          r.GetString(0)),
+            _log, "wave_height predictions tree empty.", ct);
     }
 
     /// <summary>

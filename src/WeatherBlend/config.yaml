@@ -159,7 +159,10 @@ locations:
     longitude: -5.7044
     elevationMeters: 35
 
-    tabs: [overview, temperature, rain, skill, models]
+    # sea_state added 2026-06-11 (sea-state Phase 2): wave / tide / swell /
+    # wind page fed by the wave_height_lgb predictions tree. Sennen-only —
+    # it's the one location with a marine block + wave model.
+    tabs: [overview, temperature, rain, sea_state, skill, models]
 
     overview:
       firstVisibleHourUtc: 6

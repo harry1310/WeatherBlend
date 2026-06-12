@@ -58,6 +58,7 @@ public static partial class SitePages
         "overview"    => "Overview",
         "temperature" => "Temperature",
         "rain"        => "Rain",
+        "sea_state"   => "Sea state",
         "dry_window"  => "Dry window",
         "skill"       => "Skill",
         "models"      => "Models",
