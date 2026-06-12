@@ -378,7 +378,10 @@ targets:
       - id: "shortwave_radiation"
         role: champion
         impl: dotnet
-        locations: ["bonehill_rocks"]
+        # sennen_cove added 2026-06-12 — rock-surface input for the sea-cliff
+        # extension (docs/SENNEN_ROCK_TEMP_PLAN.md S1). Same location-generic
+        # ERA5-truth harness as wind; Sennen archives reach back to 2024.
+        locations: ["bonehill_rocks", "sennen_cove"]
         display:
           shortTitle: "Shortwave radiation (element blender)"
           color: "#fdd835"
@@ -387,23 +390,28 @@ targets:
       - id: "cloud_cover"
         role: champion
         impl: dotnet
-        locations: ["bonehill_rocks"]
+        # sennen_cove added 2026-06-12 — rock-surface input (LW↓ cloud
+        # enhancement), docs/SENNEN_ROCK_TEMP_PLAN.md S1.
+        locations: ["bonehill_rocks", "sennen_cove"]
         display:
           shortTitle: "Cloud cover (element blender)"
           color: "#78909c"
 
   # Wind gust — separate target from wind (speed/direction), trained on
   # ERA5 WindGusts10m. Single champion phase: LightGBM over 4 production
-  # NWPs (GFS/ICON/GEM required, UKMO optional). Bonehill-only — Membury
-  # gust not yet evaluated. Phase id keeps the `_lgb` algorithm suffix so
-  # a future MVN/MLP challenger slots in alongside without re-keying the
-  # manifest (matches the plan in docs/WIND_BLENDER_PLAN.md).
+  # NWPs (GFS/ICON/GEM required, UKMO optional). Membury gust not yet
+  # evaluated. Phase id keeps the `_lgb` algorithm suffix so a future
+  # MVN/MLP challenger slots in alongside without re-keying the manifest
+  # (matches the plan in docs/WIND_BLENDER_PLAN.md).
   wind_gust:
     phases:
       - id: "wind_gust_lgb"
         role: champion
         impl: dotnet
-        locations: ["bonehill_rocks"]
+        # sennen_cove added 2026-06-12 — rock-surface convective forcing is
+        # mean(wind, gust); the Bonehill IR-gun validation (2026-06-07)
+        # showed gust closes ~2°C of warm bias. docs/SENNEN_ROCK_TEMP_PLAN.md S1.
+        locations: ["bonehill_rocks", "sennen_cove"]
         display:
           shortTitle: "Wind gust (LightGBM)"
           color: "#f4511e"

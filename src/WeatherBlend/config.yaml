@@ -172,6 +172,17 @@ locations:
       firstVisibleHourUtc: 6
       lastVisibleHourUtcExclusive: 21
 
+    # Rock-surface override (sea-cliff extension, 2026-06-12 —
+    # docs/SENNEN_ROCK_TEMP_PLAN.md). DISABLED until the cliff-aware physics
+    # (S3 face-projected shortwave + S4 sea longwave) lands: Harry's call is
+    # no interim Bonehill-physics output for Sennen. fSky 0.5 is the DRAFT
+    # vertical-face value (~half the view hemisphere is sky, the rest is sea)
+    # — refine alongside S4 + the IR-gun calibration (S5). All other knobs
+    # inherit the global (Bonehill-calibrated) block.
+    rockSurface:
+      enabled: false
+      fSky: 0.5
+
     # Culdrose (RNAS) is the nearest reliable METAR issuer (~32 km E); Newquay
     # (St Mawgan) is the fallback. Land's End (EGHC) is closer but doesn't issue
     # reliable routine METAR. METAR is per-ICAO so these partitions are new.
@@ -722,14 +733,17 @@ dryWindow:
   calibrationStations:
     - "Bellever Dartmoor"
 
-# Rock surface temperature + condensation (Force-Restore, Phase P1 — derived,
-# Bonehill-only). Granite knobs = the validated P0 spike's PARAMS
-# (scripts/rock_temp_spike.py); these defaults match the spike so the module is
-# correct even if this block is removed. mu_scale / tau_long_seconds / f_sky are
-# the free knobs P2 on-site calibration (IR gun / logger) will fit. lw_cloud_k
-# was GFS-DLWRF-calibrated 2026-06-04 (1.0→0.54; removed a ~22 W/m² warm bias).
-# greasy_margin_c: flag "potentially greasy" when the rock gets within this many
-# °C of dew point (not just on a strict Ts ≤ Td crossing) — Harry 2026-06-05.
+# Rock surface temperature + condensation (Force-Restore, Phase P1 — derived).
+# GLOBAL DEFAULTS, Bonehill-calibrated; a location can override any subset
+# (and gate itself off) via its own rockSurface: block — see sennen_cove +
+# docs/SENNEN_ROCK_TEMP_PLAN.md S2. Granite knobs = the validated P0 spike's
+# PARAMS (scripts/rock_temp_spike.py); these defaults match the spike so the
+# module is correct even if this block is removed. mu_scale /
+# tau_long_seconds / f_sky are the free knobs P2 on-site calibration (IR gun
+# / logger) will fit. lw_cloud_k was GFS-DLWRF-calibrated 2026-06-04
+# (1.0→0.54; removed a ~22 W/m² warm bias). greasy_margin_c: flag
+# "potentially greasy" when the rock gets within this many °C of dew point
+# (not just on a strict Ts ≤ Td crossing) — Harry 2026-06-05.
 rockSurface:
   albedo: 0.30
   epsRock: 0.95

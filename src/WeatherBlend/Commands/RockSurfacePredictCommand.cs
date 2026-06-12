@@ -12,8 +12,11 @@ namespace WeatherBlend.Commands;
 /// the temperature + element blends (forward) and recent NWP best-estimate
 /// (dew point + spin-up). See <see cref="RockSurfacePredictPipeline"/>.
 ///
-/// Bonehill-only today — Membury has no element blenders, so the pipeline
-/// returns no rows and this soft-skips (exit 3). Output:
+/// Per-location gating, two layers: a location with <c>rockSurface.enabled:
+/// false</c> (Sennen until its cliff-aware physics ships — see
+/// docs/SENNEN_ROCK_TEMP_PLAN.md) is intentionally dark and exits 0; a location
+/// missing an element-blender champion (Membury) returns no rows and
+/// soft-skips (exit 3). Output:
 /// <c>data/predictions/rock_surface/model_version=v1/date=&lt;anchor&gt;/predictions.parquet</c>.
 /// Run AFTER the temperature + element predicts for the same anchor.
 /// </summary>
@@ -39,6 +42,13 @@ public sealed class RockSurfacePredictCommand
         var (location, locRc) = PredictLocationResolver.Resolve(_cfg, locationOverride, _log);
         if (location is null) return locRc;
 
+        var rockCfg = _cfg.RockSurface.ResolveFor(location.RockSurface);
+        if (!rockCfg.Enabled)
+        {
+            _log.LogInformation("Rock-surface: disabled for {Loc} (rockSurface.enabled=false) — intentional skip.", location.Name);
+            return 0;
+        }
+
         var predictionMadeAt = DateTime.UtcNow;
         var anchor = PredictAnchor.Compute(predictionMadeAt, forDate);
 
@@ -47,7 +57,7 @@ public sealed class RockSurfacePredictCommand
 
         var rows = await RockSurfacePredictPipeline.ComposeForAnchorAsync(
             _log, location, _cfg.Storage.PredictionsPath, _cfg.Storage.ModelsPath,
-            _cfg.Storage.ForecastsPath, _cfg.RockSurface, anchor, predictionMadeAt, ct);
+            _cfg.Storage.ForecastsPath, rockCfg, anchor, predictionMadeAt, ct);
 
         if (rows.Count == 0)
         {

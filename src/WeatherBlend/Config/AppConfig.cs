@@ -149,6 +149,16 @@ public sealed class LocationConfig
     public OverviewConfig Overview { get; set; } = new();
 
     /// <summary>
+    /// Optional per-location rock-surface override block (Sennen sea-cliff
+    /// extension, 2026-06-12 — docs/SENNEN_ROCK_TEMP_PLAN.md S2). Any subset
+    /// of the global <c>rockSurface:</c> knobs, layered over the global block
+    /// at predict time via <see cref="RockSurfaceConfig.ResolveFor"/>; also
+    /// carries the per-location <c>enabled</c> gate. Null = inherit the global
+    /// (Bonehill-calibrated) values wholesale.
+    /// </summary>
+    public RockSurfaceOverrideConfig? RockSurface { get; set; }
+
+    /// <summary>
     /// Optional on-site rainfall calibration (Membury village, 2026-06-10).
     /// Weights map this location's EA gauge 3f forecasts onto a manual
     /// gauge AT the place of interest; the rain pages render a "village"

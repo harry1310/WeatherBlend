@@ -8,9 +8,22 @@ namespace WeatherBlend.Config;
 /// P2 on-site calibration (and the greasy threshold) is a YAML edit, not a
 /// recompile. Defaults here ARE the spike defaults, so the module is correct
 /// even if the <c>rockSurface:</c> block is absent. YAML key: <c>rockSurface:</c>.
+///
+/// The global block holds the Bonehill-calibrated values; a location can
+/// override any subset (and gate itself off) via its own <c>rockSurface:</c>
+/// block — see <see cref="RockSurfaceOverrideConfig"/> and
+/// <see cref="ResolveFor"/> (Sennen sea-cliff extension,
+/// docs/SENNEN_ROCK_TEMP_PLAN.md S2).
 /// </summary>
 public sealed class RockSurfaceConfig
 {
+    /// <summary>Whether the rock-surface module runs at all for a location.
+    /// Global default true; a per-location override of <c>false</c> keeps the
+    /// location dark (no predictions, so nothing renders) while its physics /
+    /// calibration is still being built — distinct from the missing-input
+    /// soft-skip.</summary>
+    public bool Enabled { get; set; } = true;
+
     /// <summary>Granite shortwave albedo (fraction reflected).</summary>
     public double Albedo { get; set; } = 0.30;
 
@@ -63,4 +76,56 @@ public sealed class RockSurfaceConfig
     /// potentially greasy, above = dry. Harry 2026-06-05 — flag the marginal
     /// regime before a strict Ts ≤ Td crossing.</summary>
     public double GreasyMarginC { get; set; } = 3.0;
+
+    /// <summary>The effective config for one location: this global block with
+    /// any fields the location's own <c>rockSurface:</c> block sets layered on
+    /// top. Null/absent override (Bonehill, Membury) returns this instance
+    /// unchanged, so existing behaviour is untouched.</summary>
+    public RockSurfaceConfig ResolveFor(RockSurfaceOverrideConfig? o)
+    {
+        if (o is null) return this;
+        return new RockSurfaceConfig
+        {
+            Enabled        = o.Enabled        ?? Enabled,
+            Albedo         = o.Albedo         ?? Albedo,
+            EpsRock        = o.EpsRock        ?? EpsRock,
+            Lambda         = o.Lambda         ?? Lambda,
+            Rho            = o.Rho            ?? Rho,
+            CpRock         = o.CpRock         ?? CpRock,
+            TauDaySeconds  = o.TauDaySeconds  ?? TauDaySeconds,
+            TauLongSeconds = o.TauLongSeconds ?? TauLongSeconds,
+            FSky           = o.FSky           ?? FSky,
+            LwClearK       = o.LwClearK       ?? LwClearK,
+            LwCloudK       = o.LwCloudK       ?? LwCloudK,
+            MuScale        = o.MuScale        ?? MuScale,
+            Substeps       = o.Substeps       ?? Substeps,
+            SpinupHours    = o.SpinupHours    ?? SpinupHours,
+            GreasyMarginC  = o.GreasyMarginC  ?? GreasyMarginC,
+        };
+    }
+}
+
+/// <summary>
+/// Per-location <c>rockSurface:</c> override block (Sennen sea-cliff extension,
+/// docs/SENNEN_ROCK_TEMP_PLAN.md S2). Every field is optional — only the values
+/// a location actually sets shadow the global <see cref="RockSurfaceConfig"/>;
+/// everything else inherits. Field meanings are identical to the global block.
+/// </summary>
+public sealed class RockSurfaceOverrideConfig
+{
+    public bool? Enabled { get; set; }
+    public double? Albedo { get; set; }
+    public double? EpsRock { get; set; }
+    public double? Lambda { get; set; }
+    public double? Rho { get; set; }
+    public double? CpRock { get; set; }
+    public double? TauDaySeconds { get; set; }
+    public double? TauLongSeconds { get; set; }
+    public double? FSky { get; set; }
+    public double? LwClearK { get; set; }
+    public double? LwCloudK { get; set; }
+    public double? MuScale { get; set; }
+    public int? Substeps { get; set; }
+    public int? SpinupHours { get; set; }
+    public double? GreasyMarginC { get; set; }
 }

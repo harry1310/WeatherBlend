@@ -177,9 +177,10 @@ runs:
       # MUST run AFTER temp + elements — it integrates the Force-Restore ODE over
       # the blended forcing trajectory (temp 2b + wind/shortwave-radiation/cloud-
       # cover champions) plus NWP dew point + spin-up. Derived, not trained.
-      # Bonehill-only — Membury has no element blenders, so the pipeline returns
-      # no rows and this soft-skips (exit 3) until/if Membury elements ship.
-      # Soft-skip 2 / 3.
+      # Per-location gating: a location with rockSurface.enabled=false exits 0
+      # (Sennen until its cliff-aware physics ships — docs/SENNEN_ROCK_TEMP_PLAN.md);
+      # a location missing an element champion (Membury) returns no rows and
+      # soft-skips (exit 3). Soft-skip 2 / 3.
       run: |
         FOR_DATE="${{ inputs.for_date }}"
         LOCS=$(dotnet run --project src/WeatherBlend --no-build -c Release -- list-locations)

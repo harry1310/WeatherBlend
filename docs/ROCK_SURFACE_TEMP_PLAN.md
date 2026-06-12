@@ -1,12 +1,14 @@
 # Rock surface temperature + condensation module — design plan
 
-Status: **P0 spike validated; not yet wired into production (no P1 derived field).**
-Drafted 2026-06-02. Companion to the deep-research survey (memory
+Status: **P1 live for Bonehill since 2026-06-05** (`RockSurfacePredictPipeline`
++ site chip/chart; first IR-gun field check 2026-06-07 → gust-blended convective
+wind). Drafted 2026-06-02. Companion to the deep-research survey (memory
 `project_rock_surface_temp_condensation`). The `scripts/rock_temp_spike.py`
 Force-Restore spike passes all 5 physical checks; its LW term was GFS-calibrated
-2026-06-04 (§3 — warm bias removed). Next concrete step is **P1** (§8): the derived
-`RockSurfaceTempPipeline` + predictions write. Absolute condensation rate still
-needs on-site truth (no logger/IR yet).
+2026-06-04 (§3 — warm bias removed). Absolute condensation rate still needs
+on-site truth (no logger; IR-gun spot checks only). **Sea-cliff extension to
+Sennen: see docs/SENNEN_ROCK_TEMP_PLAN.md** (per-location overrides, face-
+projected shortwave, sea longwave).
 
 ## 1. Why
 
