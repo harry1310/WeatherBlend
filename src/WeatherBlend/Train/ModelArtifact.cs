@@ -705,6 +705,15 @@ public static class ModelArtifact
                 // Another process holds the lock — back off and retry.
                 Thread.Sleep(LockAcquireBackoffMs);
             }
+            catch (UnauthorizedAccessException)
+            {
+                // Windows maps a CreateFile collision with a holder's
+                // DeleteOnClose teardown to ACCESS_DENIED rather than a
+                // sharing violation — same transient contention, same retry
+                // (mirrors AtomicReplace above). Crashed the test host on
+                // the concurrent-writers test 2026-06-13.
+                Thread.Sleep(LockAcquireBackoffMs);
+            }
         }
         throw new IOException(
             $"Could not acquire manifest lock at '{lockPath}' after " +
