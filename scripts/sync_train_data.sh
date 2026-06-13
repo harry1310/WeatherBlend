@@ -104,8 +104,9 @@ for p in "${phases[@]}"; do
     3a|3c|3d|3b)
       need_forecasts=1; need_rainfall=1; need_models=1 ;;
 
-    # 3o adds the per-station static orographic JSON on top of 3c's inputs.
-    3o)
+    # 3o (and 3oni, the no-station-id tor variant) add the per-station static
+    # orographic JSON on top of 3c's inputs.
+    3o|3oni)
       need_forecasts=1; need_rainfall=1; need_orographic=1; need_models=1 ;;
 
     # 3p (copula MC) + 4b (mint) consume previously-trained bundles + EA truth.

@@ -66,6 +66,8 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         {
             "rich"  => await RunPhase3cAsync(leads, station, location, ct),
             "oro"   => await RunPhase3oAsync(leads, location, ct),
+            // 3oni: 3o minus oro_station_id, for the ungauged Bonehill-tor line.
+            "oro-noid" => await RunPhase3oAsync(leads, location, ct, includeStationId: false),
             "exact" => await RunPhase3dAsync(station, tier, includeUkv, exactLeads, cycles, location, ct),
             _       => await RunPhase3aAsync(leads, station, location, ct),
         };
@@ -680,13 +682,19 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         "Princetown",
     };
 
-    private async Task<int> RunPhase3oAsync(int[] leads, Config.LocationConfig location, CancellationToken ct)
+    private async Task<int> RunPhase3oAsync(int[] leads, Config.LocationConfig location, CancellationToken ct, bool includeStationId = true)
     {
+        // 3o (with station id) vs 3oni (no station id, for ungauged-tor
+        // extrapolation). Same pooled training; only the terrain-block id
+        // feature + the phase tag/suffix differ.
+        var phaseTag = includeStationId ? "3o" : "3oni";
+        var suffix = "phase" + phaseTag;
+
         // 3o is Bonehill-only by design (Membury terrain pool was rejected
         // at the 2026-05-25 stage-1 bake-off — too homogeneous).
         if (!location.Name.Equals("bonehill_rocks", StringComparison.OrdinalIgnoreCase))
         {
-            _log.LogError("Phase 3o is Bonehill-only (location='{Loc}'). Skipping.", location.Name);
+            _log.LogError("Phase {Phase} is Bonehill-only (location='{Loc}'). Skipping.", phaseTag, location.Name);
             return 2;
         }
         if (location.Rainfall.Stations.Count == 0)
@@ -733,7 +741,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         // Per-station bundle paths. The same trained model gets saved under
         // each station's subtree (per-station predict plumbing is unchanged).
         var stationDirs = pool.ToDictionary(p => p.Slug,
-            p => ModelArtifact.BuildStationVersionDir(modelsRoot, "precipitation", p.Slug, now, suffix: "phase3o"));
+            p => ModelArtifact.BuildStationVersionDir(modelsRoot, "precipitation", p.Slug, now, suffix: suffix));
         var versionName = Path.GetFileName(stationDirs[pool[0].Slug]);
         foreach (var dir in stationDirs.Values) Directory.CreateDirectory(dir);
         _log.LogInformation("Pooled-bundle version name: {V}", versionName);
@@ -772,7 +780,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             // stays last so BuildForLead's Take(count-9) reconstruction is
             // unchanged. Standalone −1.4%..−2.1% Brier; the real win is in the
             // 4b blend (3-way mean(4a, 3o+UA, 3c+UA) beats live 4b −3.5%@24h).
-            var spec = PrecipRichOroFeatureBuilder.BuildSpec(_cfg.Blenders, lead, withUpperAir: true);
+            var spec = PrecipRichOroFeatureBuilder.BuildSpec(_cfg.Blenders, lead, withUpperAir: true, includeStationId: includeStationId);
             specsPerLead[lead] = spec;
             _log.LogInformation("Spec: {Spec} ({N} features)", spec, spec.FeatureCount);
 
@@ -783,7 +791,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
                 ct.ThrowIfCancellationRequested();
                 var rows = PrecipRichOroFeatureBuilder.BuildForLead(
                     _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
-                    location.Name, name, oro, idx, spec, ct);
+                    location.Name, name, oro, idx, spec, ct, includeStationId: includeStationId);
                 if (rows.Count < 200)
                 {
                     _log.LogWarning("  station {Slug}: only {N} rich-oro rows for lead {Lead}h — skipping station for this lead.",
@@ -913,7 +921,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             {
                 Version = versionName,
                 Target = "precipitation",
-                Phase = "3o",
+                Phase = phaseTag,
                 LocationName = location.Name,
                 DataSource = "previous_runs_api+ea_rainfall+srtm_dem",
                 TrainedAtUtc = DateTime.UtcNow,
@@ -924,7 +932,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
                             string.Join(",", BonehillStationOrder3o)),
                         new KeyValuePair<string, object>("phase3o_station_index", idx),
                         new KeyValuePair<string, object>("phase3o_orographic_features",
-                            string.Join(",", PrecipRichOroFeatureBuilder.TerrainFeatureNames)),
+                            string.Join(",", PrecipRichOroFeatureBuilder.TerrainNamesFor(includeStationId))),
                     })
                     .ToDictionary(kv => kv.Key, kv => kv.Value),
                 TestMae = perLead.ToDictionary(kv => $"lead_{kv.Key}h_brier", kv => kv.Value.BlendTestMae),
@@ -932,7 +940,9 @@ public sealed class PrecipTrainCommand : TrainCommandBase
                 DeviationsFromBrief = new List<string>
                 {
                     "Pooled across the 4 Bonehill rainfall stations (Bellever, Bovey, Hexworthy, Princetown). One LightGBM per lead, trained on the concat of per-station rich+oro rows. The SAME trained model is saved under every station's bundle dir so per-station predict plumbing is unchanged.",
-                    "9 terrain features appended after the rich (55) feature vector: elevation_vs_cell, relief_5km, ruggedness_5km, wind_sin, wind_cos, upwind_gain_per_wind_5km, uplift, uplift_x_q, station_id. station_id is a discrete 0..3 axis (Bellever=0, Bovey=1, Hexworthy=2, Princetown=3) — predict-time MUST use the same mapping.",
+                    includeStationId
+                        ? "9 terrain features appended after the rich (55) feature vector: elevation_vs_cell, relief_5km, ruggedness_5km, wind_sin, wind_cos, upwind_gain_per_wind_5km, uplift, uplift_x_q, station_id. station_id is a discrete 0..3 axis (Bellever=0, Bovey=1, Hexworthy=2, Princetown=3) — predict-time MUST use the same mapping."
+                        : "3oni: 8 terrain features (the 3o block MINUS oro_station_id), so the pooled model treats each point as a pure terrain vector. This is the no-station-id variant for predicting the UNGAUGED Bonehill tor (an unseen station id would otherwise route down a gauge's default split). Slightly worse at the gauges than 3o — accepted; 3oni is a tor point-of-interest line, the gauges keep 3o.",
                     "Per-station climatology (each station's own train-slice base rate) is saved alongside the pooled model so the verify rolling-Brier panel shows honest per-station baselines.",
                 },
             };
@@ -945,7 +955,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         // anomalies surface through the per-station labelRates dictionary.
         var guardResult = RetrainGuard.BuildCheckAndSave(_log,
             stationDirs[pool[0].Slug],
-            composite: $"precipitation/_pool_3o", phase: "3o", version: versionName,
+            composite: $"precipitation/_pool_{phaseTag}", phase: phaseTag, version: versionName,
             computedAtUtc: now,
             rowsTrain: totalTrainRows, rowsVal: totalValRows, rowsTest: totalTestRows,
             trainFeatures: firstLeadTrainFeatures,
@@ -968,15 +978,16 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         foreach (var (_, slug, _, _) in pool)
         {
             ModelArtifact.PromoteStationVersion(
-                modelsRoot, "precipitation", slug, versionName, newPhase: "3o");
+                modelsRoot, "precipitation", slug, versionName, newPhase: phaseTag);
             var active = ModelArtifact.ResolveStationActive(modelsRoot, "precipitation", slug);
-            _log.LogInformation("Phase 3o {Slug} → {Dir}", slug, stationDirs[slug]);
+            _log.LogInformation("Phase {Phase} {Slug} → {Dir}", phaseTag, slug, stationDirs[slug]);
             _log.LogInformation("Active versions for {Slug}: [{Active}]", slug, string.Join(", ", active));
         }
 
-        if (_skipConformal)
+        if (_skipConformal || !includeStationId)
         {
-            _log.LogInformation("Auto-conformal: SKIPPED (WB_SKIP_CONFORMAL=1)");
+            _log.LogInformation("Auto-conformal: SKIPPED ({Reason})",
+                _skipConformal ? "WB_SKIP_CONFORMAL=1" : $"{phaseTag} is a documented conformal-skip phase");
         }
         else
         {

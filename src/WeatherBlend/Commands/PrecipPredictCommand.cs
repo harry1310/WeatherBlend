@@ -67,7 +67,7 @@ public sealed class PrecipPredictCommand
     // internal (not private) so PhaseWiringConsistencyTests can assert the
     // set stays a subset of phases.yaml's precipitation lineup.
     internal static readonly HashSet<string> HandledPrecipPhases =
-        new(StringComparer.Ordinal) { "3a", "3c", "3d", "3o" };
+        new(StringComparer.Ordinal) { "3a", "3c", "3d", "3o", "3oni" };
 
     public PrecipPredictCommand(ILogger<PrecipPredictCommand> log, AppConfig cfg)
     {
@@ -346,8 +346,9 @@ public sealed class PrecipPredictCommand
         // at each target valid_time. Predict reads the station's static
         // orographic JSON + computes the terrain block via the SAME
         // ComposeTerrainBlock helper the trainer used.
-        var is3o = string.Equals(metadata.Phase, "3o", StringComparison.Ordinal);
-        if (is3o)
+        // 3o and 3oni (no-station-id tor variant) share the oro predict path.
+        var isOro = metadata.Phase is "3o" or "3oni";
+        if (isOro)
         {
             return await RunStationAsOroAsync(
                 modelsRoot, station, versionDir, metadata, climatology,
@@ -702,6 +703,12 @@ public sealed class PrecipPredictCommand
         LocationConfig location,
         CancellationToken ct)
     {
+        // 3oni = the no-station-id variant; its bundle schema carries 8 terrain
+        // features (no oro_station_id) vs 3o's 9. Drive the terrain count +
+        // compose off the bundle's phase so the predict vector matches the
+        // trained schema exactly.
+        var includeStationId = !string.Equals(metadata.Phase, "3oni", StringComparison.Ordinal);
+
         // Resolve the station's terrain index. Bundle metadata carries it
         // too — guard against a slug typo in either source.
         if (!Phase3oStationIndex.TryGetValue(station, out var stationIndex))
@@ -843,7 +850,7 @@ public sealed class PrecipPredictCommand
             // Build the rich half of the spec (same as 3c). The spec passed
             // to LightGBM is the FULL rich-oro spec; we just need the rich
             // dim for ComposeRow + slot ordering.
-            int richDim = spec.FeatureCount - PrecipRichOroFeatureBuilder.TerrainFeatureCount;
+            int richDim = spec.FeatureCount - PrecipRichOroFeatureBuilder.TerrainCountFor(includeStationId);
             // We compose the rich row using the rich sub-spec carved out of
             // the rich-oro spec — matches the trainer's BuildForLead inner.
             var richSpec = new BlenderSpec
@@ -922,12 +929,12 @@ public sealed class PrecipPredictCommand
                     station, lead, valid);
                 continue;
             }
-            var terrain = PrecipRichOroFeatureBuilder.ComposeTerrainBlock(oro, nwpMean, stationIndex);
+            var terrain = PrecipRichOroFeatureBuilder.ComposeTerrainBlock(oro, nwpMean, stationIndex, includeStationId);
 
-            // Concatenate rich + terrain into the final 64-dim feature vector.
+            // Concatenate rich + terrain into the final feature vector.
             var features = new float[spec.FeatureCount];
             Array.Copy(richRow.Features, features, richDim);
-            for (int i = 0; i < PrecipRichOroFeatureBuilder.TerrainFeatureCount; i++)
+            for (int i = 0; i < PrecipRichOroFeatureBuilder.TerrainCountFor(includeStationId); i++)
                 features[richDim + i] = terrain[i];
             var fullRow = new BinaryTrainingRow
             {

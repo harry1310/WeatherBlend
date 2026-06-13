@@ -163,6 +163,40 @@ public class FullPipelineSmokeTests
                 $"date={predictAnchor:yyyy-MM-dd}", "predictions.parquet");
             File.Exists(pred3o).Should().BeTrue("3o predictions parquet must exist");
 
+            // ---- 3oni (no-station-id tor variant) — trains on the SAME synced
+            //      pool; mints a _phase3oni bundle (8-terrain, no oro_station_id)
+            //      and predicts non-empty per station. Predict succeeding is the
+            //      train→predict schema round-trip proof: an 8-vs-9 terrain
+            //      mismatch would throw a feature-dim error. (Bundle-drops-the-id
+            //      contract itself is pinned by PrecipOroNoIdSpecTests.) ----
+            var rc3oni = await precipTrain.RunAsync(
+                leads: leads, station: null, featureSet: "oro-noid",
+                tier: null, includeUkv: null, exactLeads: null, cycles: null,
+                location: scope.Config.Location, ct: default);
+            rc3oni.Should().Be(0, "Phase 3oni (oro-noid) train should succeed on the same pool");
+            var bundle3oni = Directory.EnumerateDirectories(stationDir)
+                .Select(d => Path.GetFileName(d)!)
+                .Where(n => n.EndsWith("_phase3oni"))
+                .OrderBy(v => v, StringComparer.Ordinal)
+                .LastOrDefault();
+            bundle3oni.Should().NotBeNull("3oni should mint a _phase3oni bundle per station");
+            Directory.EnumerateFiles(Path.Combine(stationDir, bundle3oni!), "lead_*.zip")
+                .Should().NotBeEmpty();
+            foreach (var (_, friendly) in bonehillStations)
+            {
+                var rcPredict3oni = await precipPredict.RunAsync(
+                    truthStation: friendly,
+                    modelVersion: bundle3oni!,   // explicit version: 3oni is a challenger, not the champion
+                    forDate: DateOnly.FromDateTime(predictAnchor),
+                    locationOverride: null, ct: default);
+                rcPredict3oni.Should().Be(0, $"3oni predict for {friendly} should succeed");
+            }
+            var pred3oni = Path.Combine(
+                scope.PredictionsPath, "precipitation", primarySlug,
+                $"model_version={bundle3oni}",
+                $"date={predictAnchor:yyyy-MM-dd}", "predictions.parquet");
+            File.Exists(pred3oni).Should().BeTrue("3oni predictions parquet must exist");
+
             // ---- 4. Phase 3p train (Σ fit on truth, binds to 3o) ----
             var rc3pTrain = await dryWindowTrain.RunPhase3pAsync(scope.Config.Location, default);
             rc3pTrain.Should().Be(0, "Phase 3p train (Σ fit + bind to 3o) should succeed");

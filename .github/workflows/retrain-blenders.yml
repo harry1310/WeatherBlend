@@ -350,6 +350,19 @@ jobs:
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
             train --target precipitation --feature-set oro --location ${{ matrix.location }}
 
+      - name: Train 3oni (precipitation rich + orographic, NO station id — tor variant)
+        # 3oni = 3o minus oro_station_id. Same 4-station Bonehill pool; dropping
+        # the per-station identity feature lets the pooled model be evaluated at
+        # the ungauged Bonehill tor's terrain vector (predicted later). A little
+        # worse than 3o at the gauges — accepted; 3o stays champion, 3oni is a
+        # tor point-of-interest challenger. Bonehill-only via phases.yaml locations.
+        id: train_3oni
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3oni == 'true'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target precipitation --feature-set oro-noid --location ${{ matrix.location }}
+
       - name: Train 3d (precipitation exact-runtime, leads 12/24/48/72)
         # 3d is a SHORT-lead exact-runtime phase. Its averaging UKV picker
         # resolves up to 72h but throws "UKV averaging picks not defined"
@@ -489,6 +502,7 @@ jobs:
             [3c]="${{ steps.train_3c.outcome }}"
             [3d]="${{ steps.train_3d_short.outcome }}"
             [3o]="${{ steps.train_3o.outcome }}"
+            [3oni]="${{ steps.train_3oni.outcome }}"
             [3b]="${{ steps.train_3b.outcome }}"
             [3p]="${{ steps.train_3p.outcome }}"
             [4b_mint]="${{ steps.mint_4b.outcome }}"

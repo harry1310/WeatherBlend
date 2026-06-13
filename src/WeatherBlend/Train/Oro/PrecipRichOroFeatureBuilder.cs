@@ -46,6 +46,23 @@ public static class PrecipRichOroFeatureBuilder
 
     public const int TerrainFeatureCount = 9;
 
+    /// <summary>3oni (no-station-id variant, 2026-06-13): the same terrain block
+    /// MINUS the trailing <c>oro_station_id</c>, so the pooled model treats an
+    /// UNGAUGED point (the Bonehill tor) as just another terrain vector instead
+    /// of routing an unseen station id down some gauge's default split. Used
+    /// only for the tor point-of-interest line; the 3 EA gauges keep 3o. The
+    /// gauge-Brier cost of dropping the id is the accepted price of being able
+    /// to extrapolate to the ungauged tor at all.</summary>
+    public const string SpecFeatureSetNoId = "rich-oro-noid";
+
+    /// <summary>Terrain feature names with or without the trailing station id.</summary>
+    public static IReadOnlyList<string> TerrainNamesFor(bool includeStationId)
+        => includeStationId ? TerrainFeatureNames : TerrainFeatureNames[..(TerrainFeatureCount - 1)];
+
+    /// <summary>Terrain block length: 9 with the station id, 8 without.</summary>
+    public static int TerrainCountFor(bool includeStationId)
+        => includeStationId ? TerrainFeatureCount : TerrainFeatureCount - 1;
+
     /// <summary>Resolve the runtime <see cref="BlenderSpec"/> for rich-oro precipitation at a given lead.</summary>
     /// <param name="withUpperAir">Experimental (2026-06-02): build the underlying
     /// rich spec WITH the multi-level pressure block, so the layout becomes
@@ -55,24 +72,25 @@ public static class PrecipRichOroFeatureBuilder
     /// auto-detects the ASOF upper-air join from <c>t850_mean</c> being present.
     /// Default false keeps every production caller (train/predict/conformal)
     /// bit-identical. See PrecipUaBakeoffCommand --oro.</param>
-    public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours, bool withUpperAir = false)
+    public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours, bool withUpperAir = false, bool includeStationId = true)
     {
         // Reuse rich's model membership + names — same precipitation blender
         // membership (the terrain block doesn't change which NWPs the
         // builder ingests).
         var rich = PrecipRichFeatureBuilder.BuildSpec(blendersCfg, leadHours, withUpperAir);
-        var names = rich.FeatureNames.Concat(TerrainFeatureNames).ToList();
+        var names = rich.FeatureNames.Concat(TerrainNamesFor(includeStationId)).ToList();
+        var baseSet = includeStationId ? SpecFeatureSet : SpecFeatureSetNoId;
         return new BlenderSpec
         {
             Target = rich.Target,
-            FeatureSet = withUpperAir ? SpecFeatureSet + "-ua" : SpecFeatureSet,
+            FeatureSet = withUpperAir ? baseSet + "-ua" : baseSet,
             LeadHours = rich.LeadHours,
             RequiredModels = rich.RequiredModels,
             OptionalModels = rich.OptionalModels,
             Models = rich.Models,
             FeatureNames = names,
             DataSource = rich.DataSource,
-            Tier = SpecFeatureSet,
+            Tier = baseSet,
             UkvStrategy = rich.UkvStrategy,
         };
     }
@@ -90,8 +108,10 @@ public static class PrecipRichOroFeatureBuilder
         int stationIndex,
         BlenderSpec richOroSpec,
         CancellationToken ct = default,
-        DateTime? maxValidTime = null)
+        DateTime? maxValidTime = null,
+        bool includeStationId = true)
     {
+        var terrainCount = TerrainCountFor(includeStationId);
         // The rich spec is what the underlying builder consumes. Reuse the
         // rich-oro spec's model membership to materialise a matching rich
         // spec — bit-identical to what PrecipRichFeatureBuilder.BuildSpec
@@ -105,7 +125,7 @@ public static class PrecipRichOroFeatureBuilder
             OptionalModels = richOroSpec.OptionalModels,
             Models = richOroSpec.Models,
             FeatureNames = richOroSpec.FeatureNames
-                .Take(richOroSpec.FeatureNames.Count - TerrainFeatureCount).ToList(),
+                .Take(richOroSpec.FeatureNames.Count - terrainCount).ToList(),
             DataSource = richOroSpec.DataSource,
             Tier = PrecipRichFeatureBuilder.SpecFeatureSet,
             UkvStrategy = richOroSpec.UkvStrategy,
@@ -125,9 +145,9 @@ public static class PrecipRichOroFeatureBuilder
 
         var richDim = richSpec.FeatureCount;
         var outDim  = richOroSpec.FeatureCount;
-        if (outDim != richDim + TerrainFeatureCount)
+        if (outDim != richDim + terrainCount)
             throw new InvalidOperationException(
-                $"rich-oro spec dim mismatch: {outDim} != {richDim} + {TerrainFeatureCount}");
+                $"rich-oro spec dim mismatch: {outDim} != {richDim} + {terrainCount}");
 
         var rows = new List<BinaryTrainingRow>(richRows.Count);
         foreach (var rr in richRows)
@@ -136,11 +156,11 @@ public static class PrecipRichOroFeatureBuilder
             if (!aux.TryGetValue(rr.ValidTimeUtc, out var a))
                 continue; // No NWP-mean aux row — drop, matches rich's row filter style.
 
-            var terrain = ComposeTerrainBlock(oro, a, stationIndex);
+            var terrain = ComposeTerrainBlock(oro, a, stationIndex, includeStationId);
 
             var features = new float[outDim];
             Array.Copy(rr.Features, features, richDim);
-            for (int i = 0; i < TerrainFeatureCount; i++)
+            for (int i = 0; i < terrainCount; i++)
                 features[richDim + i] = terrain[i];
 
             rows.Add(new BinaryTrainingRow
@@ -170,7 +190,7 @@ public static class PrecipRichOroFeatureBuilder
     ///   7: oro_uplift_x_q_g_per_kg   (uplift × specific humidity, g/kg)
     ///   8: oro_station_id            (integer 0..N-1, ordered by caller)
     /// </summary>
-    public static float[] ComposeTerrainBlock(OroStaticFeatures oro, NwpMeanRow a, int stationIndex)
+    public static float[] ComposeTerrainBlock(OroStaticFeatures oro, NwpMeanRow a, int stationIndex, bool includeStationId = true)
     {
         // Mean wind direction "from" in radians (atan2 handles wrap correctly).
         var windDirRad = (double.IsNaN(a.WindSin) || double.IsNaN(a.WindCos))
@@ -211,7 +231,7 @@ public static class PrecipRichOroFeatureBuilder
             q = Math.Max(0.0, qKgKg * 1000.0); // g/kg
         }
 
-        var block = new float[TerrainFeatureCount];
+        var block = new float[TerrainCountFor(includeStationId)];
         block[0] = (float)oro.ElevationVsCellM;
         block[1] = (float)oro.Relief5kmM;
         block[2] = (float)oro.TerrainRuggedness5kmM;
@@ -220,7 +240,7 @@ public static class PrecipRichOroFeatureBuilder
         block[5] = (float)upwindGain;
         block[6] = (float)uplift;
         block[7] = (float)(uplift * q);
-        block[8] = (float)stationIndex;
+        if (includeStationId) block[8] = (float)stationIndex;
         return block;
     }
 

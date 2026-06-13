@@ -114,10 +114,10 @@ public sealed class TrainCommand : TrainCommandBase
         }
 
         var fs = (featureSet ?? "lean").ToLowerInvariant();
-        if (fs is not ("lean" or "rich" or "oro" or "exact" or "copula-mc" or "copula-mc-3c"))
+        if (fs is not ("lean" or "rich" or "oro" or "oro-noid" or "exact" or "copula-mc" or "copula-mc-3c"))
         {
-            _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich | oro | exact | copula-mc | copula-mc-3c " +
-                "(copula-mc = Phase 3p over 3o; copula-mc-3c = Phase 3q over 3c).", featureSet);
+            _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich | oro | oro-noid | exact | copula-mc | copula-mc-3c " +
+                "(oro = Phase 3o; oro-noid = Phase 3oni (3o minus station id); copula-mc = Phase 3p over 3o; copula-mc-3c = Phase 3q over 3c).", featureSet);
             return 2;
         }
         // "exact" = Phase 2d (temperature) or Phase 3d (precipitation) — same
@@ -128,9 +128,9 @@ public sealed class TrainCommand : TrainCommandBase
                 "--feature-set {Fs} is only supported for targets temperature, precipitation.", fs);
             return 2;
         }
-        // "oro" = Phase 3o (precipitation rich + 9 terrain features, 4-station
-        // Bonehill pool). Precipitation-only.
-        if (fs == "oro" && t != "precipitation")
+        // "oro" = Phase 3o, "oro-noid" = Phase 3oni (3o minus station id).
+        // Both precipitation rich + terrain, 4-station Bonehill pool. Precip-only.
+        if (fs is "oro" or "oro-noid" && t != "precipitation")
         {
             _log.LogError(
                 "--feature-set {Fs} is only supported for target precipitation.", fs);

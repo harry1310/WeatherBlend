@@ -247,6 +247,27 @@ targets:
           description: "Arithmetic mean of Phase 4a (BART) and Phase 3o (rich+oro). Not a trained model — synthesised at predict time from the freshest 4a and 3o rows per (ValidTime, LeadHours)."
           label: "Phase 4b (mean)"
           color: "#ec407a"
+      # 3oni — 3o MINUS oro_station_id (no-station-id variant, 2026-06-13).
+      # Same 4-Bonehill pooled rich+oro+UA training, but dropping the per-station
+      # identity feature lets the pooled model be evaluated at the UNGAUGED
+      # Bonehill tor's terrain vector (an unseen station id would otherwise route
+      # down a gauge's default split). Placed LAST in the lineup deliberately:
+      # it's a Bonehill-only experimental challenger and 3o (priority 0) is
+      # always present at the gauges, so 3oni never affects champion resolution
+      # there; its position only needs to not perturb the real phases' order.
+      # The actual product is the tor line (predicted at bonehill_rocks's
+      # terrain, wired later); gauge predictions are a credibility check only.
+      # A little worse than 3o at the gauges — accepted; the gauges keep 3o.
+      - id: "3oni"
+        role: challenger
+        impl: dotnet
+        locations: ["bonehill_rocks"]
+        display:
+          title: "Phase 3oni — rich + orographic, no station id (tor extrapolation)"
+          shortTitle: "Phase 3oni (oro, no-id)"
+          description: "3o minus oro_station_id — the pooled rich+orographic model with the per-station identity feature removed, so it can be evaluated at the ungauged Bonehill tor's terrain vector. Experimental tor point-of-interest line; not gauge-verified."
+          label: "Phase 3oni (oro/no-id)"
+          color: "#6a1b9a"
 
   rainfall_amount:
     # Membury-only NGBoost-LogNormal regressor over the wet hours of

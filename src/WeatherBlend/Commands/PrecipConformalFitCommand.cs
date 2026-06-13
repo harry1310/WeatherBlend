@@ -87,9 +87,13 @@ public sealed class PrecipConformalFitCommand
     ///     LightGBM model exists for conformal to fit a calibrator
     ///     against. Listed here so the phase-coverage test passes
     ///     while making the "we considered 4b, conformal doesn't apply"
-    ///     intent explicit.</summary>
+    ///     intent explicit.
+    ///   * <c>3oni</c> — experimental ungauged-tor variant (3o minus
+    ///     station id). No conformal band needed for a point-of-interest
+    ///     line; the trainer skips the fit for it too (RunPhase3oAsync's
+    ///     conformal loop runs for 3o only).</summary>
     public static readonly HashSet<string> DocumentedSkipPhases =
-        new(StringComparer.Ordinal) { "3d", "4b" };
+        new(StringComparer.Ordinal) { "3d", "4b", "3oni" };
 
     public async Task<int> RunAsync(double alpha, CancellationToken ct)
     {
