@@ -114,7 +114,8 @@ public static class ClimbingConditions
     public static Result Evaluate(
         DateTime validUtc, double latitude, double longitude,
         double airTempC, double? pWet, double? windMph,
-        SitePages.RockSurfaceForecastPoint? rock)
+        SitePages.RockSurfaceForecastPoint? rock,
+        Factor? sea = null)
     {
         // ---- Gates (any one → Off) ----
         var (elevDeg, _) = SolarGeometry.SolarPosition(validUtc, latitude, longitude);
@@ -157,6 +158,11 @@ public static class ClimbingConditions
 
         if (pWet is double pwet)
             factors.Add(new Factor("Dry", Clamp01(1.0 - pwet), $"P(wet) {pwet * 100:0}%"));
+
+        // Sea state (sea-cliff locations) — tide / run-up / onshore spray folded
+        // into one factor by SeaConditions; null for inland crags.
+        if (sea is { } seaFactor)
+            factors.Add(seaFactor);
 
         // Weakest-link blend: sqrt(geomean × min). geomean alone is too
         // forgiving of a single off-putting factor; pure min ignores that

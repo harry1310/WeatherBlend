@@ -182,9 +182,25 @@ public static partial class SitePages
                     double? windMph = TryNearest(windSpeedMsByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var wms)
                         ? wms * 2.23694 : null;
                     var rk = TryNearest(rockByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var rkv) ? rkv : null;
+
+                    // Sea-state quality factor (tide / run-up / onshore spray) —
+                    // sea-cliff locations with a seaStateBadge config block only
+                    // (Sennen). Reuses the badge's nearest-hour wave + wind lookups.
+                    ClimbingConditions.Factor? sea = null;
+                    if (seaSpec is not null
+                        && TryNearest(waveByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var swv))
+                    {
+                        double? sWindMph = windMph;
+                        double? sWindDir = TryNearest(windDirDegByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var sdir)
+                            ? sdir : null;
+                        sea = SeaConditions.Evaluate(
+                            swv!.TideHeightMsl, swv.WaveHeightM, swv.SwellPeriodS,
+                            sWindMph, sWindDir, seaSpec);
+                    }
+
                     conditions = ClimbingConditions.Evaluate(
                         p.ValidTimeUtc, input.Latitude, input.Longitude,
-                        p.BlendTemperature, pWet, windMph, rk);
+                        p.BlendTemperature, pWet, windMph, rk, sea);
                 }
                 tiles.Append(RenderHourTile(p, feelsLikeByValid, pwetByValid, lowCloudByValid, rockByValid,
                     seaSpec, waveByValid, windSpeedMsByValid, windDirDegByValid,

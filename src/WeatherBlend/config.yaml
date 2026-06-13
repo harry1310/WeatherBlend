@@ -178,6 +178,15 @@ locations:
     # once the tab is present; empty states show until verify accumulates.
     tabs: [overview, temperature, rain, wind, dry_window, sea_state, skill, models]
 
+    # Climbing-conditions strip v1 (2026-06-13, Harry: ship now). Adds the
+    # Sennen-specific SEA-STATE factor (tide / run-up / ONSHORE SPRAY — see
+    # SeaConditions.cs) on top of dry / wind / temp / daylight. PROVISIONAL:
+    # rock-temp is still gated off here (rockSurface.enabled=false), so the
+    # friction sub-score falls back to AIR temp, not the sea-moderated rock —
+    # upgrades to real per-face friction when the IR-gun calibration enables
+    # rock-temp (S5). Single verdict per hour until then (per-face needs rock).
+    showClimbingConditions: true
+
     overview:
       firstVisibleHourUtc: 6
       lastVisibleHourUtcExclusive: 21
