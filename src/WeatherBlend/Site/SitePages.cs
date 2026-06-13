@@ -1162,7 +1162,14 @@ public static partial class SitePages
            reserved space as a small blank gap, by design (2026-06-06). Margins
            kept tight so the gap to the time above and temperature below is
            small (was 0.2/0.35 — read as too large). */
-        .forecast-card .tile-badges { display: flex; flex-direction: column; align-items: flex-start; gap: 0.2rem; margin: 0.1rem 0 0.15rem; min-height: 2.4rem; }
+        /* min-height reserves space so the temperature lines up across tiles
+           regardless of 0/1/2 badges (2026-06-06). Trimmed 2.4rem->1.3rem on
+           2026-06-13: the always-present conditions strip now anchors the top
+           of every tile, so the old two-badge reserve left a big empty gap
+           between the band and the temperature on the common badge-free tile.
+           1.3rem still clears one badge (the usual case); a rare two-badge
+           tile runs a touch taller. */
+        .forecast-card .tile-badges { display: flex; flex-direction: column; align-items: flex-start; gap: 0.2rem; margin: 0.05rem 0 0.1rem; min-height: 1.3rem; }
         /* Pico defaults <details> to margin-bottom:1rem and adds the same to an
            open <summary>. Left un-reset, each STACKED badge added ~1rem below
            itself, so a two-badge tile overran the reserved min-height and shoved
@@ -1216,7 +1223,7 @@ public static partial class SitePages
            pop-out with the per-factor breakdown table. */
         .forecast-card .conditions-strip {
           display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.3rem 0.5rem;
-          margin: 0.15rem 0 0.35rem; padding: 0.25rem 0.45rem;
+          margin: 0.1rem 0 0.1rem; padding: 0.25rem 0.45rem;
           border-left: 4px solid var(--cond-color, #607d8b);
           border-radius: 3px;
           background: color-mix(in srgb, var(--cond-color, #607d8b) 12%, transparent);
