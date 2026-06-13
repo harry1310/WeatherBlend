@@ -1473,9 +1473,13 @@ ORDER BY LocationName, LeadHours, ValidTimeUtc";
         }
 
         var locFilter = string.Join(",", _cfg.Locations.Select(l => $"'{l.Name.Replace("'", "''")}'"));
+        // Face arrived with cliff-face mode (SENNEN_ROCK_TEMP_PLAN.md S3) — a
+        // tree of purely pre-face files has no such column, so guard the SELECT.
+        var faceCol = ParquetReader.HasColumn(conn, glob, "Face") ? "COALESCE(Face, '')" : "''";
         var sql = $@"
 SELECT ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
-       RockSurfaceTempC, AirTempC, DewPointC, CondensationMarginC, GreasinessStatus, LocationName
+       RockSurfaceTempC, AirTempC, DewPointC, CondensationMarginC, GreasinessStatus, LocationName,
+       {faceCol} AS Face
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
 WHERE LocationName IN ({locFilter})
   AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
@@ -1492,7 +1496,8 @@ ORDER BY LocationName, LeadHours, ValidTimeUtc";
             DewPointC:           r.GetDouble(6),
             CondensationMarginC: r.GetDouble(7),
             GreasinessStatus:    r.IsDBNull(8) ? "" : r.GetString(8),
-            LocationName:        r.GetString(9)),
+            LocationName:        r.GetString(9),
+            Face:                r.IsDBNull(10) ? "" : r.GetString(10)),
             _log, "Rock-surface predictions tree empty — chip + chart absent.", ct);
     }
 

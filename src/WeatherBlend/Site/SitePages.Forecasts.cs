@@ -237,18 +237,35 @@ public static partial class SitePages
 
         // ---- Rock surface temperature vs dew point (Phase P1) ----
         // Force-Restore granite Ts vs the dew point + air temp; condensation is
-        // where the red Ts line sinks to/below the green dew-point line. Shares
+        // where a rock line sinks to/below the green dew-point line. Shares
         // the page X axis. Empty (section omitted) until rock_surface predict
-        // runs / syncs — and Membury never has it (Bonehill-only elements).
-        var rockRows = input.RockSurfacePredictions
-            .LatestPerValid(r => r.ValidTimeUtc, r => r.LeadHours, r => r.PredictedAtUtc)
-            .OrderBy(r => r.ValidTimeUtc)
+        // runs / syncs — and Membury never has it (no element blenders).
+        // Cliff-face mode (SENNEN_ROCK_TEMP_PLAN.md S3/S5): each face is its
+        // own Ts line; dew point + air are shared forcing so they render once.
+        // Dedup must run PER FACE — collapsing per valid alone would keep one
+        // arbitrary face per hour.
+        var faceGroups = input.RockSurfacePredictions
+            .GroupBy(r => r.Face)
+            .OrderBy(g => g.Key, StringComparer.Ordinal)
+            .Select(g => (Face: g.Key, Rows: g
+                .LatestPerValid(r => r.ValidTimeUtc, r => r.LeadHours, r => r.PredictedAtUtc)
+                .OrderBy(r => r.ValidTimeUtc)
+                .ToList()))
+            .Where(g => g.Rows.Count > 0)
             .ToList();
-        if (rockRows.Count > 0)
+        if (faceGroups.Count > 0)
         {
-            var tsPts = rockRows.Select(r => (r.ValidTimeUtc.ToOADate(), r.RockSurfaceTempC)).ToList();
-            var tdPts = rockRows.Select(r => (r.ValidTimeUtc.ToOADate(), r.DewPointC)).ToList();
-            var taPts = rockRows.Select(r => (r.ValidTimeUtc.ToOADate(), r.AirTempC)).ToList();
+            var shared = faceGroups[0].Rows; // Td / Ta forcing is face-independent
+            var tdPts = shared.Select(r => (r.ValidTimeUtc.ToOADate(), r.DewPointC)).ToList();
+            var taPts = shared.Select(r => (r.ValidTimeUtc.ToOADate(), r.AirTempC)).ToList();
+            var series = new List<LineSeries>();
+            foreach (var (face, rows) in faceGroups)
+                series.Add(new LineSeries(
+                    RockFaceLabel(face), RockFaceColor(face),
+                    rows.Select(r => (r.ValidTimeUtc.ToOADate(), r.RockSurfaceTempC)).ToList()));
+            series.Add(new LineSeries("Dew point", "#2e7d32", tdPts));
+            series.Add(new LineSeries("Air temp", "#1565c0", taPts));
+
             s.Append("<h3>Rock surface vs dew point — condensation outlook</h3>");
             s.Append("<p class=\"skill-line\"><small>Granite surface temperature (Force-Restore). Rock sweats when its surface cools to the dew point — “greasy” within ~3°C, condensation at/below. Phase P1: literature granite params, so treat the absolute level as indicative until on-site calibration.</small></p>");
             s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
@@ -256,12 +273,7 @@ public static partial class SitePages
                 Title = "Rock surface temperature",
                 XLabel = "Valid time (UTC)",
                 YLabel = "Temperature (°C)",
-                Series = new[]
-                {
-                    new LineSeries("Rock surface", "#c62828", tsPts),
-                    new LineSeries("Dew point", "#2e7d32", tdPts),
-                    new LineSeries("Air temp", "#1565c0", taPts),
-                },
+                Series = series,
                 Height = 260,
                 FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
                 FormatY = v => v.ToString("0.#", Ci) + "°",
@@ -273,6 +285,23 @@ public static partial class SitePages
 
         return s.ToString();
     }
+
+    /// <summary>Series label for one rock line: whole-crag mode keeps the
+    /// original wording; cliff-face mode names the face.</summary>
+    internal static string RockFaceLabel(string face)
+        => face.Length == 0 ? "Rock surface" : $"Rock — {face} face";
+
+    /// <summary>Per-face rock-line colours — warm hues distinct from the
+    /// shared dew point (green) and air (blue) lines. Unknown face names get
+    /// the deep-red default rather than colliding with the shared series.</summary>
+    internal static string RockFaceColor(string face) => face switch
+    {
+        ""          => "#c62828", // whole-crag (Bonehill) — the original red
+        "west"      => "#c62828", // red
+        "southwest" => "#ef6c00", // deep orange
+        "south"     => "#ad1457", // magenta
+        _           => "#8d6e63", // any future face — warm brown
+    };
 
     /// <summary>
     /// History days for the rain forecast tab's shared X axis. Kept in lockstep

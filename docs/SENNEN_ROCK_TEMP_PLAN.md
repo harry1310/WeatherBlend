@@ -1,8 +1,9 @@
 # Sennen rock surface temperature — sea-cliff extension plan
 
-Status: **S1 + S2 shipped 2026-06-12 (c5ca84b); S3 face-projected shortwave
-implemented 2026-06-13; S4 sea longwave next; Sennen output stays OFF the site
-(`enabled: false`) until S5 flips it.**
+Status: **S1–S5 complete 2026-06-13 (calibration open). Sennen `enabled: true`
+— first rows appear once the 2026-06-14 Sunday retrain mints the element
+blenders. Remaining: IR-gun calibration of `muScale`/`fSky`/`greasyMarginC` +
+real face bearings.**
 Drafted 2026-06-12. Companion to docs/ROCK_SURFACE_TEMP_PLAN.md (the base
 Force-Restore module, live for Bonehill since 2026-06-05) and to
 docs/SENNEN_SEA_STATE_PLAN.md (which owns the salt-spray / wave-wetting side).
@@ -115,28 +116,49 @@ As built:
   file). Pinned by test: pre-face parquet deserialises with `Face = ""`, so
   the deploy-day merge against an old day-file is safe.
 
-### S4 — the sea in the longwave budget
+### S4 — the sea in the longwave budget (DONE 2026-06-13)
 
-With `fSky < 1` the base model treats the non-sky view as exchange-neutral
-(no net longwave). For a wall above the Atlantic that under-states the warm
-return: replace with an explicit term against sea surface temperature —
-`ε·(1−Fsky)·σ·(T_sea⁴ − Ts⁴)`. SST sources, both already collected:
-`sea_surface_temperature` on the marine best_match pull (forecast, hourly) and
-Sevenstones buoy SST (live truth / validation). SST varies slowly — forecast
-quality is not a concern.
+With `fSky < 1` the base model treated the non-sky view as exchange-neutral
+(no net longwave) — right for a boulder field, wrong above the Atlantic. As
+built: when a forcing hour carries a sea temperature the budget gains
+`ε·(1−Fsky)·σ·(T_sea⁴ − Ts⁴)` (`RockSurfacePhysics`; sea emissivity folded
+into ε). SST = the marine best_match pull, smallest-lead per valid, held
+forward across gaps (SST moves slowly), loaded for any location with a
+`marine:` config block; no block / no rows → null → exact pre-S4 behaviour
+plus a logged fallback warning. Rows carry `SeaSurfaceTempC` for audit.
+`data/marine` joined the sync-render-inputs tree list so the CI predict can
+actually see it. Sevenstones buoy SST remains the validation cross-check.
 
-### S5 — validate, calibrate, go live
+### S5 — validate, render, go live (DONE 2026-06-13 except calibration)
 
-- **Physics tests** extended with cliff scenarios: a W-face's SW peak lands in
-  the evening, not noon; a clear night over a 14°C sea cools less than the
-  same night at Bonehill; margin behaviour under maritime Td.
-- **IR-gun spot checks** on Sennen visits → sign + rough size of the Ts−Ta
-  gap, especially clear-evening and morning readings on the main faces.
-- **Tune** `muScale` / `fSky` / `greasyMarginC` for Sennen from the above
-  (ERA5 soil temp is a weak proxy on a part-ocean coastal cell — lean on the
-  gun readings).
-- **Flip `enabled: true`** in Sennen's override block; rock-surface rows start
-  emitting and the existing chart + overview badge render automatically.
+- **Physics tests**: warm sea damps clear-night cooling; cold sea trims
+  daytime heating; `fSky = 1` makes the sea term inert (Bonehill
+  byte-identical); plus the S3 geometry suite (south wall peaks midday,
+  west wall evening, DNI capped).
+- **Face-aware rendering** (the prior "renders automatically" assumption only
+  held for single-surface locations): the temp-tab chart draws one rock line
+  per face (shared dew-point + air lines, per-face colours); the overview
+  tile badge collapses to the WORST face per hour (smallest margin, after
+  per-face lead dedup) and names that face in the pop-out. Whole-crag
+  locations reduce to the old behaviour exactly.
+- **Hindcast sanity + threshold choice** (scripts/sennen_rock_margin_sanity.py;
+  2y of Sennen ERA5 forcing, SST proxied by a 10-day trailing air-temp mean):
+  with the sea term in, true condensation is rare (~0.4% of hours, vs 3.2%
+  under Bonehill-style full-sky physics — the warm sea is the big damper the
+  theory predicted). But Bonehill's 3.0°C amber band would flag ~35% of
+  visible hours — meaningless. Sennen `greasyMarginC` = **1.5** (flags the
+  most-marginal ~10% of visible hours; table in the config comment). Faces
+  differ little in night margin; the face split earns its keep on daytime
+  warmth/drying, which the chart shows.
+- **Flipped `enabled: true` 2026-06-13.** The cliff-aware bar (S3+S4) is met
+  and nothing can emit before the 2026-06-14 retrain mints the element
+  blenders anyway; first rows appear after that retrain's predict cycles.
+  One-line revert (`enabled: false`) if the first output disappoints.
+- **REMAINING — calibration (open):** IR-gun spot checks on visits (sign +
+  size of Ts−Ta on the real faces, clear evenings/mornings especially), then
+  tune `muScale` / `fSky` / `greasyMarginC`, and confirm the nominal
+  bearings/steepness (270/225/180, vertical). ERA5 soil on a part-ocean cell
+  is a weak rail (west-face hindcast correlation 0.72 — direction only).
 
 ## 4. Risks / open questions
 

@@ -841,7 +841,9 @@ public static partial class SitePages
 
     /// <summary>One rock surface temperature + condensation hour for the site
     /// (Phase P1). <see cref="GreasinessStatus"/> is dry / potentially_greasy /
-    /// condensation. <see cref="LocationName"/> scopes the per-loc render.</summary>
+    /// condensation. <see cref="LocationName"/> scopes the per-loc render.
+    /// <see cref="Face"/> is the crag face in cliff-face mode (Sennen W/SW/S),
+    /// empty for whole-crag locations (Bonehill) and pre-face rows.</summary>
     public sealed record RockSurfaceForecastPoint(
         string Version,
         DateTime PredictedAtUtc,
@@ -852,7 +854,8 @@ public static partial class SitePages
         double DewPointC,
         double CondensationMarginC,
         string GreasinessStatus,
-        string LocationName = "");
+        string LocationName = "",
+        string Face = "");
 
     public sealed record DryWindowForecastPoint(
         string Station,

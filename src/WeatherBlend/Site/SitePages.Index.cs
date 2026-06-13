@@ -92,10 +92,11 @@ public static partial class SitePages
         var lowCloudByValid = input.LowCloudByValid;
 
         // Rock surface / condensation (Phase P1) — smallest-lead-per-valid,
-        // freshest made on ties. Drives the "rock damp / greasy" tile badge.
-        var rockByValid = input.RockSurfacePredictions
-            .LatestPerValid(r => r.ValidTimeUtc, r => r.LeadHours, r => r.PredictedAtUtc)
-            .ToDictionary(r => r.ValidTimeUtc);
+        // freshest made on ties, PER FACE, then collapsed to the WORST face
+        // per hour (smallest condensation margin — the conservative summary a
+        // one-chip tile can carry; the temp tab charts every face). Whole-crag
+        // locations have a single empty face, so this is the old behaviour.
+        var rockByValid = CollapseRockToWorstFace(input.RockSurfacePredictions);
 
         // Sea-state badge inputs (marine locations with a seaStateBadge
         // config block — Sennen). Wave rows arrive pre-collapsed to one row
@@ -452,6 +453,23 @@ public static partial class SitePages
         _ => "",
     };
 
+    /// <summary>Tile-badge lookup for rock surface rows: dedup smallest-lead /
+    /// freshest-made PER (valid, face), then keep the WORST face per valid —
+    /// the smallest condensation margin, i.e. the wall closest to sweating.
+    /// Single-face locations (Bonehill, empty face) reduce to the original
+    /// one-row-per-valid behaviour. Internal for tests.</summary>
+    internal static Dictionary<DateTime, RockSurfaceForecastPoint> CollapseRockToWorstFace(
+        IReadOnlyList<RockSurfaceForecastPoint> rows)
+        => rows
+            .GroupBy(r => r.Face)
+            .SelectMany(g => g.LatestPerValid(r => r.ValidTimeUtc, r => r.LeadHours, r => r.PredictedAtUtc))
+            .GroupBy(r => r.ValidTimeUtc)
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderBy(r => r.CondensationMarginC)
+                      .ThenBy(r => r.Face, StringComparer.Ordinal) // deterministic on margin ties
+                      .First());
+
     private static string RenderHourTile(
         Models.TempPredictionRow p,
         IReadOnlyDictionary<DateTime, FeelsLikeForecastPoint> feelsLikeByValid,
@@ -508,10 +526,14 @@ public static partial class SitePages
             var severityCls = BadgeSeverityClass(isCond ? BadgeSeverity.Red : BadgeSeverity.Amber);
             var cls = $"tile-badge rock-badge {(isCond ? "rock-wet" : "rock-greasy")} {severityCls}";
             var label = isCond ? "rock wet" : "rock greasy?";
+            // Cliff-face mode: rk is the WORST face this hour — name it so the
+            // pop-out says which wall is sweating (other faces may be drier;
+            // the temp tab chart shows all of them).
+            var subject = rk.Face.Length == 0 ? "Rock" : $"{char.ToUpperInvariant(rk.Face[0])}{rk.Face[1..]} face";
             rockBadge = string.Create(Ci, $"""
                 <details class="badge-pop rock-pop">
                   <summary class="{cls}">&#x26A0;&#xFE0E; {label}</summary>
-                  <ul><li>Rock {rk.RockSurfaceTempC:0.0}°C vs dew point {rk.DewPointC:0.0}°C — margin {rk.CondensationMarginC:+0.0;-0.0;0.0}°C</li></ul>
+                  <ul><li>{subject} {rk.RockSurfaceTempC:0.0}°C vs dew point {rk.DewPointC:0.0}°C — margin {rk.CondensationMarginC:+0.0;-0.0;0.0}°C</li></ul>
                 </details>
                 """);
         }
