@@ -168,6 +168,14 @@ public sealed class LocationConfig
     /// </summary>
     public VillageRainConfig? VillageRain { get; set; }
 
+    /// <summary>
+    /// Show the climbing-conditions verdict strip on this location's overview
+    /// tiles (idea #1, 2026-06-13). Off by default; Bonehill-only for now —
+    /// Sennen waits until its sea-state factor + per-face split land, and
+    /// Membury has no rock-friction inputs. YAML key: <c>showClimbingConditions</c>.
+    /// </summary>
+    public bool ShowClimbingConditions { get; set; }
+
     /// <summary>True iff <paramref name="tab"/> appears in <see cref="Tabs"/> (case-insensitive).</summary>
     public bool HasTab(string tab) =>
         Tabs.Any(t => string.Equals(t, tab, StringComparison.OrdinalIgnoreCase));

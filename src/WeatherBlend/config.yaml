@@ -22,6 +22,13 @@ locations:
     # order matches the site-nav left-to-right.
     tabs: [overview, temperature, rain, wind, dry_window, skill, models, element]
 
+    # Climbing-conditions verdict strip on the overview tiles (idea #1,
+    # 2026-06-13). Bonehill-first: it has every non-marine input live (rock
+    # friction, wind, temp, rain, daylight). Sennen waits for its sea-state
+    # factor + per-face split; Membury has no rock inputs. Curves are tuned
+    # in Site/ClimbingConditions.cs (Harry's domain numbers).
+    showClimbingConditions: true
+
     # Outdoor walking / climbing window — sleep hours dropped from the
     # Overview tile grid. Pre-Phase-D this was the hardcoded constant
     # HomeFirstVisibleHourUtc=5 / HomeLastVisibleHourUtcExclusive=20 in

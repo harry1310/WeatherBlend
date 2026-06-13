@@ -117,11 +117,12 @@ public static partial class SitePages
                     .ThenByDescending(w => w.PredictedAtUtc)
                     .First())
                 .ToDictionary(w => w.ValidTimeUtc);
-        var windSpeedMsByValid = seaSpec is null
-            ? new Dictionary<DateTime, double>()
-            : input.WindPredictions
-                .LatestPerValid(w => w.ValidTimeUtc, w => w.LeadHours, w => w.PredictedAtUtc)
-                .ToDictionary(w => w.ValidTimeUtc, w => w.SpeedMs);
+        // Built unconditionally (was sea-state-only): the climbing-conditions
+        // strip needs wind at every location, not just marine ones. Empty when
+        // a location has no wind blender (Membury) — harmless.
+        var windSpeedMsByValid = input.WindPredictions
+            .LatestPerValid(w => w.ValidTimeUtc, w => w.LeadHours, w => w.PredictedAtUtc)
+            .ToDictionary(w => w.ValidTimeUtc, w => w.SpeedMs);
         var windDirDegByValid = seaSpec is null
             ? new Dictionary<DateTime, double>()
             : input.WindDirectionPredictions
@@ -162,12 +163,33 @@ public static partial class SitePages
             {
                 daySummary = string.Create(Ci, $"""<p class="skill-line"><strong>{minT:0.0}°C → {maxT:0.0}°C</strong> · no P(wet) for this day</p>""");
             }
+            // Climbing-conditions verdict (idea #1) — Bonehill-first, gated by
+            // the per-location config flag. Computed here where the location's
+            // lat/lon (for daylight) and every per-hour input are in scope, then
+            // passed into the tile as a ready Result so RenderHourTile stays a
+            // pure renderer.
+            var showConditions = input.RenderingFor?.ShowClimbingConditions == true;
+
             var tiles = new StringBuilder();
             int popoverId = 0;
             foreach (var p in dayPreds)
+            {
+                ClimbingConditions.Result? conditions = null;
+                if (showConditions)
+                {
+                    double? pWet = TryNearest(pwetByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var pwc)
+                        ? pwc!.ProbWet : null;
+                    double? windMph = TryNearest(windSpeedMsByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var wms)
+                        ? wms * 2.23694 : null;
+                    var rk = TryNearest(rockByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var rkv) ? rkv : null;
+                    conditions = ClimbingConditions.Evaluate(
+                        p.ValidTimeUtc, input.Latitude, input.Longitude,
+                        p.BlendTemperature, pWet, windMph, rk);
+                }
                 tiles.Append(RenderHourTile(p, feelsLikeByValid, pwetByValid, lowCloudByValid, rockByValid,
                     seaSpec, waveByValid, windSpeedMsByValid, windDirDegByValid,
-                    input.WindGustByValidMs, popoverId++));
+                    input.WindGustByValidMs, conditions, popoverId++));
+            }
             tilesHtml = string.Create(Ci, $"<div class=\"forecast-grid\">{tiles}</div>");
         }
 
@@ -481,6 +503,7 @@ public static partial class SitePages
         IReadOnlyDictionary<DateTime, double> windSpeedMsByValid,
         IReadOnlyDictionary<DateTime, double> windDirDegByValid,
         IReadOnlyDictionary<DateTime, double> windGustByValidMs,
+        ClimbingConditions.Result? conditions,
         int popoverId)
     {
         // Low-cloud / mist warning — amber when ONE signal hits its
@@ -664,10 +687,38 @@ public static partial class SitePages
         // as a small blank gap, by design (user call 2026-06-06).
         string badgeBlock = $"""<div class="tile-badges">{lowCloudBadge}{rockBadge}{seaBadge}</div>""";
 
+        // Climbing-conditions strip (idea #1) — the tile headline when present.
+        // Coloured by tier; the reason (limiting factor, or the gate that
+        // fired) is always shown, with the full per-factor breakdown in a
+        // pop-out so the verdict is never a bare unexplained colour.
+        string conditionsStrip = "";
+        if (conditions is { } c)
+        {
+            var factorRows = new StringBuilder();
+            foreach (var f in c.Factors)
+                factorRows.Append(Ci, $"<tr><td>{Escape(f.Name)}</td><td class=\"num\">{(f.Score * 100):0}</td><td>{Escape(f.Detail)}</td></tr>");
+            var breakdown = c.Factors.Count > 0
+                ? $"""
+                    <details class="badge-pop conditions-pop">
+                      <summary class="conditions-why">why?</summary>
+                      <table class="conditions-table"><thead><tr><th>factor</th><th>/100</th><th></th></tr></thead>{factorRows}</table>
+                    </details>
+                    """
+                : "";
+            conditionsStrip = string.Create(Ci, $"""
+                <div class="conditions-strip" style="--cond-color: {c.TierColor}">
+                  <span class="conditions-tier">{Escape(c.TierLabel)}</span>
+                  <span class="conditions-reason">{Escape(c.Reason)}</span>
+                  {breakdown}
+                </div>
+                """);
+        }
+
         var tempColor = TemperatureColor(p.BlendTemperature);
         return string.Create(Ci, $"""
             <article class="forecast-card">
               <header><h4>{p.ValidTimeUtc:HH:mm}Z</h4></header>
+              {conditionsStrip}
               {badgeBlock}
               <div class="temp" style="--temp-color: {tempColor}">{p.BlendTemperature:0.0}°C</div>
               {feelsCell}

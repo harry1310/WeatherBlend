@@ -248,7 +248,8 @@ public sealed class RenderSiteCommand
                     WindMinMph: ssb.WindMinMph,
                     WindSectorFromDeg: ssb.WindSectorFromDeg,
                     WindSectorToDeg: ssb.WindSectorToDeg)
-                : null)).ToList();
+                : null,
+            ShowClimbingConditions: loc.ShowClimbingConditions)).ToList();
 
         // Top-level model summaries / feature spec rows surface ALL locations'
         // active versions on /specs.html. Per-loc Models page recomputes with

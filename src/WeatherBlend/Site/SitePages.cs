@@ -154,7 +154,8 @@ public static partial class SitePages
         int OverviewFirstVisibleHourUtc,
         int OverviewLastVisibleHourUtcExclusive,
         VillageRainSpec? VillageRain = null,
-        SeaStateBadgeSpec? SeaStateBadge = null)
+        SeaStateBadgeSpec? SeaStateBadge = null,
+        bool ShowClimbingConditions = false)
     {
         /// <summary>True iff <paramref name="tab"/> is in <see cref="Tabs"/> (case-insensitive).</summary>
         public bool HasTab(string tab) =>
@@ -1209,6 +1210,37 @@ public static partial class SitePages
           max-width: 16rem;
         }
         details.badge-pop > ul li { margin: 0; padding: 0.05rem 0; }
+
+        /* Climbing-conditions verdict strip (idea #1). Coloured left border +
+           tinted background by tier; tier label bold, reason muted, a "why?"
+           pop-out with the per-factor breakdown table. */
+        .forecast-card .conditions-strip {
+          display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.3rem 0.5rem;
+          margin: 0.15rem 0 0.35rem; padding: 0.25rem 0.45rem;
+          border-left: 4px solid var(--cond-color, #607d8b);
+          border-radius: 3px;
+          background: color-mix(in srgb, var(--cond-color, #607d8b) 12%, transparent);
+        }
+        .forecast-card .conditions-tier { font-weight: 700; color: var(--cond-color, #607d8b); font-size: 0.95rem; }
+        .forecast-card .conditions-reason { font-size: 0.78rem; color: var(--pico-muted-color); }
+        details.conditions-pop { position: relative; display: inline-block; margin-left: auto; }
+        details.conditions-pop > summary.conditions-why {
+          font-size: 0.72rem; color: var(--pico-muted-color); cursor: pointer;
+          list-style: none; text-decoration: underline dotted;
+        }
+        details.conditions-pop > summary.conditions-why::-webkit-details-marker { display: none; }
+        details.conditions-pop > .conditions-table {
+          position: absolute; top: calc(100% + 0.25rem); right: 0; z-index: 10;
+          font-size: 0.76rem; border-collapse: collapse;
+          background: var(--pico-card-background-color);
+          border: 1px solid var(--pico-card-border-color);
+          border-radius: 4px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+          width: max-content; max-width: 16rem;
+        }
+        details.conditions-pop > .conditions-table th,
+        details.conditions-pop > .conditions-table td { padding: 0.15rem 0.5rem; text-align: left; }
+        details.conditions-pop > .conditions-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+        details.conditions-pop > .conditions-table thead th { color: var(--pico-muted-color); font-weight: 600; border-bottom: 1px solid var(--pico-muted-border-color); }
 
         /* "Will it stay dry?" overview calculator (Phase 3p copula MC). Two
            dropdowns + a live result line; the per-(start,length) probability
