@@ -333,7 +333,7 @@ public class ConfigTests
         cfg.Bind(bound);
 
         var rs = bound.RockSurface;
-        rs.GreasyMarginC.Should().Be(3.0, "Harry's within-3°C greasy threshold");
+        rs.GreasyMarginC.Should().Be(2.0, "Harry lowered the Bonehill amber threshold 3.0→2.0 on 2026-06-13");
         rs.MuScale.Should().Be(0.3);
         rs.LwCloudK.Should().Be(0.54, "GFS-DLWRF-calibrated cloud-enhancement scale");
         rs.LwClearK.Should().Be(1.0);

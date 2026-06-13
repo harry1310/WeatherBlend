@@ -765,7 +765,8 @@ dryWindow:
 # / logger) will fit. lw_cloud_k was GFS-DLWRF-calibrated 2026-06-04
 # (1.0→0.54; removed a ~22 W/m² warm bias). greasy_margin_c: flag
 # "potentially greasy" when the rock gets within this many °C of dew point
-# (not just on a strict Ts ≤ Td crossing) — Harry 2026-06-05.
+# (not just on a strict Ts ≤ Td crossing) — Harry 2026-06-05; lowered
+# 3.0→2.0 on 2026-06-13 (Harry: 3°C too conservative for Bonehill amber).
 rockSurface:
   albedo: 0.30
   epsRock: 0.95
@@ -780,4 +781,4 @@ rockSurface:
   muScale: 0.3
   substeps: 6
   spinupHours: 48
-  greasyMarginC: 3.0
+  greasyMarginC: 2.0
