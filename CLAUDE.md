@@ -60,6 +60,8 @@ Hive paths:
 
 ```powershell
 dotnet build
+./scripts/test-fast.ps1                                             # inner-loop tests (~20s, excludes smokes)
+./scripts/test-smoke.ps1                                            # integration smokes only (~20min, pre-push)
 dotnet run --project src/WeatherBlend -- collect                    # one cycle (live forecasts + recent METAR)
 dotnet run --project src/WeatherBlend -- status                     # disk summary
 dotnet run --project src/WeatherBlend -- inspect --path <parquet>   # dump one file
@@ -68,6 +70,16 @@ dotnet run --project src/WeatherBlend -- backfill --source all --start 2023-04-1
 dotnet run --project src/WeatherBlend -- train --target temperature # phase 2 stub
 dotnet run --project src/WeatherBlend -- evaluate                   # phase 2 stub
 ```
+
+**Tests: fast inner loop vs smokes.** `dotnet test` runs all ~910, but ~97% of
+the wall-time is ~13 `[Trait("Category","Smoke")]` integration tests (end-to-end
+train→sync→predict→parquet chains; they catch the hard-to-spot wiring bugs). For
+the inner loop run `test-fast.ps1` (`--filter "Category!=Smoke"`, ~20s); run
+`test-smoke.ps1` as the final check before pushing major work. The smokes are
+slow for structural reasons (bash sync script + rclone + DuckDB/parquet IO +
+native cold-start), NOT model math — LightGBM iterations are already capped via
+`WB_SMOKE_ITER` in the test `EnvScope`, so don't "fix" them by cutting leads or
+the sync path (that's the coverage).
 
 `backfill --source` accepts `previous-runs | era5 | metar | rainfall | all`. `collect`
 is what Task Scheduler should fire on a cycle (currently every 3h per README; 6h is

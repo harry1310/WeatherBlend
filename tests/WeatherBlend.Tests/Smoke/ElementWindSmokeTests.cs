@@ -29,6 +29,7 @@ namespace WeatherBlend.Tests.Smoke;
 /// pipelines transitively in <c>FullPipelineSmokeTests</c>; this test
 /// targets the train path that has no other end-to-end coverage.
 /// </summary>
+[Trait("Category", "Smoke")]
 public class ElementWindSmokeTests
 {
     private readonly ITestOutputHelper _output;

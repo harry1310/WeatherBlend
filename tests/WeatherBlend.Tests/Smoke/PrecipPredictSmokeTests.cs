@@ -21,6 +21,7 @@ namespace WeatherBlend.Tests.Smoke;
 /// path. Catches wiring / SQL-shape / manifest-plumbing regressions
 /// — not data quality or model skill (the smoke fixture is synthetic).
 /// </summary>
+[Trait("Category", "Smoke")]
 public class PrecipPredictSmokeTests
 {
     private readonly ITestOutputHelper _output;

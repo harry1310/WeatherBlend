@@ -24,6 +24,7 @@ namespace WeatherBlend.Tests.Smoke;
 /// Per-lead LightGBM fit dominates the wall (~3-5s per blender on the
 /// 30-day fixture).
 /// </summary>
+[Trait("Category", "Smoke")]
 public class ElementBlenderSmokeTests
 {
     private readonly ITestOutputHelper _output;

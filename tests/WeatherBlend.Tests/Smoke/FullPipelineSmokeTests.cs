@@ -37,6 +37,7 @@ namespace WeatherBlend.Tests.Smoke;
 /// terrain-JSON loader uses a hardcoded relative path
 /// (<c>Path.Combine("data", "static", "orographic")</c>).
 /// </summary>
+[Trait("Category", "Smoke")]
 public class FullPipelineSmokeTests
 {
     private readonly ITestOutputHelper _output;

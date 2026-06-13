@@ -24,6 +24,7 @@ namespace WeatherBlend.Tests.Smoke;
 ///   3. The mint is the fixed 50/50 mean of champion + lgb speeds, stamped
 ///      v_wind_blend_live.
 /// </summary>
+[Trait("Category", "Smoke")]
 public class WindBlendSmokeTests
 {
     private readonly ITestOutputHelper _output;

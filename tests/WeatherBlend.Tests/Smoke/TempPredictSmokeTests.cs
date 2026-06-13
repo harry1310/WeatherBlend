@@ -16,6 +16,7 @@ namespace WeatherBlend.Tests.Smoke;
 /// Bonehill-only). 2d uses a different forecast tree (raw S3 exact
 /// cycles, RunTimeSource='exact') and is covered in a separate test.
 /// </summary>
+[Trait("Category", "Smoke")]
 public class TempPredictSmokeTests
 {
     private readonly ITestOutputHelper _output;

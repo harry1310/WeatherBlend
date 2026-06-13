@@ -20,6 +20,7 @@ namespace WeatherBlend.Tests.Smoke;
 /// (no <c>lead_*.zip</c>), and predict reads a previously-emitted 3o
 /// hourly predictions parquet to draw correlated samples.
 /// </summary>
+[Trait("Category", "Smoke")]
 public class DryWindowPredictSmokeTests
 {
     private readonly ITestOutputHelper _output;

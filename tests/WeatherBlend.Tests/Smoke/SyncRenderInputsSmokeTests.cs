@@ -28,6 +28,7 @@ namespace WeatherBlend.Tests.Smoke;
 /// trees this action declares, then asserts RenderSiteCommand produces
 /// non-empty pages — is the follow-up.
 /// </summary>
+[Trait("Category", "Smoke")]
 public class SyncRenderInputsSmokeTests
 {
     /// <summary>R2 tree → the predict/render consumer that reads it. If any of

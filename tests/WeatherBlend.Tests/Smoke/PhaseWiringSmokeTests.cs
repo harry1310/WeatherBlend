@@ -23,6 +23,7 @@ namespace WeatherBlend.Tests.Smoke;
 /// Pure file inspection — no fixture, no R2, no build artefacts. Reads the
 /// production phases.yaml + the two satellite files straight from the repo.
 /// </summary>
+[Trait("Category", "Smoke")]
 public class PhaseWiringSmokeTests
 {
     private static string RepoRoot()

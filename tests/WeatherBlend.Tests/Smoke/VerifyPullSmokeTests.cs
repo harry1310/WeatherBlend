@@ -21,6 +21,7 @@ namespace WeatherBlend.Tests.Smoke;
 /// A static guard can't catch a purely data-growth-driven timeout, but it pins
 /// the fix (the exclusion) + the dependency set so neither silently regresses.
 /// </summary>
+[Trait("Category", "Smoke")]
 public class VerifyPullSmokeTests
 {
     private static string LocateVerifyWorkflow()
