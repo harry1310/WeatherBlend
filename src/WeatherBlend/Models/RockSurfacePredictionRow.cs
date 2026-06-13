@@ -69,6 +69,12 @@ public sealed class RockSurfacePredictionRow
     /// <summary>Deep-reservoir temperature Td_deep (°C) — the model's thermal-memory state.</summary>
     public required double DeepTempC { get; init; }
 
+    /// <summary>Sea surface temperature (°C) feeding the S4 sea-longwave term
+    /// (sea-cliff locations; best_match marine forecast). Null = no marine
+    /// block / no SST coverage — neutral surroundings. NOT <c>required</c>:
+    /// pre-S4 rows deserialize as null.</summary>
+    public double? SeaSurfaceTempC { get; init; }
+
     // ---- source model versions ----
     public required string TempModelVersion { get; init; }
     public required string WindModelVersion { get; init; }

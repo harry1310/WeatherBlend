@@ -12,9 +12,19 @@ namespace WeatherBlend.Predict.Surface;
 /// Model (docs/ROCK_SURFACE_TEMP_PLAN.md §2):
 ///   dTs/dt    =  G_net / μ  − (2π/τ)·(Ts − Td_deep)
 ///   dTd_deep/dt = (Ts − Td_deep) / τ_long
-///   G_net = (1−α)·SW↓ + ε·Fsky·(LW↓ − σ·Ts⁴) − h(V)·(Ts − Ta)
+///   G_net = (1−α)·SW↓ + ε·Fsky·(LW↓ − σ·Ts⁴) − h(V)·(Ts − Ta)  [+ sea term]
 /// with h(V) = 5.7 + 3.8·V (McAdams) and LW↓ a Brutsaert clear-sky + linear
 /// cloud-enhancement parameterisation (GFS-calibrated k_cloud=0.54).
+///
+/// SEA LONGWAVE (docs/SENNEN_ROCK_TEMP_PLAN.md S4): with Fsky &lt; 1 the
+/// non-sky view fraction is implicitly exchange-neutral — right for a
+/// boulder field (neighbours sit near Ts), wrong for a wall above the
+/// Atlantic, where ~half the view is sea: a warm radiator that returns
+/// longwave the open sky does not, strongly damping night cooling. When a
+/// forcing hour carries a sea temperature, the budget gains
+///   ε·(1−Fsky)·σ·(T_sea⁴ − Ts⁴)
+/// (sea emissivity ~0.98 folded into ε to one knob). Null sea temp =
+/// neutral surroundings, the exact pre-S4 behaviour.
 /// </summary>
 public static class RockSurfacePhysics
 {
@@ -58,10 +68,12 @@ public static class RockSurfacePhysics
         return Math.Sqrt(p.Lambda * p.Rho * p.CpRock / (2.0 * omega)) * p.MuScale;
     }
 
-    /// <summary>One hour of forcing for the integrator.</summary>
+    /// <summary>One hour of forcing for the integrator. <paramref name="SeaTempC"/>
+    /// is the sea surface temperature filling the rock's non-sky view (sea-cliff
+    /// mode); null = exchange-neutral surroundings (boulder field / pre-S4).</summary>
     public sealed record ForcingHour(
         DateTime ValidTimeUtc, double AirTempC, double DewPointC,
-        double CloudFrac, double WindMs, double ShortwaveWm2);
+        double CloudFrac, double WindMs, double ShortwaveWm2, double? SeaTempC = null);
 
     /// <summary>One integrated hour: rock surface + deep reservoir temps, the
     /// effective LW↓ used, and the air/dew it was driven by.</summary>
@@ -103,11 +115,19 @@ public static class RockSurfacePhysics
             var lwDown = LongwaveDownWm2(h.DewPointC, h.AirTempC, h.CloudFrac, p.LwClearK, p.LwCloudK);
             var hConv = 5.7 + 3.8 * v;
 
+            // Sea longwave: σ·T_sea⁴ once per hour (SST moves slowly).
+            var seaEmitWm2 = h.SeaTempC is double seaC
+                ? Sigma * Math.Pow(seaC + 273.15, 4)
+                : (double?)null;
+
             for (var s = 0; s < sub; s++)
             {
                 var tsK = tsC + 273.15;
+                var tsK4 = tsK * tsK * tsK * tsK;
                 var swAbs = (1.0 - p.Albedo) * sw;
-                var lwNet = p.EpsRock * p.FSky * (lwDown - Sigma * tsK * tsK * tsK * tsK);
+                var lwNet = p.EpsRock * p.FSky * (lwDown - Sigma * tsK4);
+                if (seaEmitWm2 is double seaEmit)
+                    lwNet += p.EpsRock * (1.0 - p.FSky) * (seaEmit - Sigma * tsK4);
                 var hLoss = hConv * (tsC - h.AirTempC);
                 var gNet = swAbs + lwNet - hLoss;
                 var dts = gNet / mu - twoPiTau * (tsC - tdeepC);

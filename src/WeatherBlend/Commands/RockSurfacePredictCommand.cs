@@ -57,7 +57,7 @@ public sealed class RockSurfacePredictCommand
 
         var rows = await RockSurfacePredictPipeline.ComposeForAnchorAsync(
             _log, location, _cfg.Storage.PredictionsPath, _cfg.Storage.ModelsPath,
-            _cfg.Storage.ForecastsPath, rockCfg, anchor, predictionMadeAt, ct);
+            _cfg.Storage.ForecastsPath, _cfg.Storage.MarinePath, rockCfg, anchor, predictionMadeAt, ct);
 
         if (rows.Count == 0)
         {

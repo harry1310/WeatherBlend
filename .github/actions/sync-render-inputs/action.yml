@@ -141,7 +141,8 @@ runs:
             data/truth/met_office_obs \
             data/models \
             data/reports \
-            data/forecasts; do
+            data/forecasts \
+            data/marine; do
           mkdir -p "${tree}"
           echo "::group::sync ${tree}"
           # Per-tree extra rclone flags (word-split, same as DATE_WINDOW_INCLUDES).
@@ -149,7 +150,14 @@ runs:
           TRANSFERS=16
           CHECKERS=32
           case "$tree" in
-            data/forecasts|data/truth/rainfall|data/truth/era5|data/truth/metar|data/predictions)
+            # data/marine joined 2026-06-13: the rock-surface predict's S4
+            # sea-longwave term reads best_match SST from it (Sennen
+            # cliff-face mode, docs/SENNEN_ROCK_TEMP_PLAN.md); without the
+            # tree the SST query silently falls back to neutral
+            # surroundings. Same location=/model=/date= hive layout, so the
+            # window include applies verbatim; tiny tree (one location,
+            # 6 wave models, ~2 files/date).
+            data/forecasts|data/truth/rainfall|data/truth/era5|data/truth/metar|data/predictions|data/marine)
               # Date-window-filtered trees — see the comment above the
               # DATE_WINDOW_INCLUDES builder for the per-tree rationale.
               #

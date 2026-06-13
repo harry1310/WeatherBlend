@@ -21,7 +21,7 @@ public class RockSurfacePhysicsTests
     /// <summary>Synthetic clear/cloudy diurnal forcing: air temp 10±5°C (peak
     /// ~15:00, min ~03:00), shortwave a daytime half-sine (0 at night, ~600 peak
     /// at noon), constant dew point + wind + cloud per scenario.</summary>
-    private static List<ForcingHour> MakeForcing(int days, double cloudFrac, double windMs, double dewC = 6.0)
+    private static List<ForcingHour> MakeForcing(int days, double cloudFrac, double windMs, double dewC = 6.0, double? seaC = null)
     {
         var start = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
         var list = new List<ForcingHour>(days * 24);
@@ -30,7 +30,7 @@ public class RockSurfacePhysicsTests
             var hod = h % 24;
             var ta = 10.0 + 5.0 * Math.Sin((hod - 9) / 24.0 * 2.0 * Math.PI);
             var sw = Math.Max(0.0, 600.0 * Math.Sin((hod - 6) / 12.0 * Math.PI));
-            list.Add(new ForcingHour(start.AddHours(h), ta, dewC, cloudFrac, windMs, sw));
+            list.Add(new ForcingHour(start.AddHours(h), ta, dewC, cloudFrac, windMs, sw, seaC));
         }
         return list;
     }
@@ -136,4 +136,56 @@ public class RockSurfacePhysicsTests
     // original forcing list threaded through.
     private static double SwAt(RockHour h)
         => Math.Max(0.0, 600.0 * Math.Sin((h.ValidTimeUtc.Hour - 6) / 12.0 * Math.PI));
+
+    // ------------------------------------------------------------------
+    // S4 — sea longwave (SENNEN_ROCK_TEMP_PLAN.md): a wall above the
+    // Atlantic sees the sea where a tor sees cold sky; the warm sea damps
+    // night cooling, a cold sea trims daytime heating, and a full sky view
+    // makes the term inert.
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public void Warm_sea_in_the_view_damps_clear_night_cooling()
+    {
+        var cliff = new RockSurfaceConfig { FSky = 0.5 };
+        var neutral = Integrate(MakeForcing(10, 0.0, 1.0), cliff);
+        var sea = Integrate(MakeForcing(10, 0.0, 1.0, seaC: 14.0), cliff);
+
+        var neutralNight = AfterSpinup(neutral).Where(h => SwAt(h) < 5.0).Average(h => h.RockTempC - h.AirTempC);
+        var seaNight = AfterSpinup(sea).Where(h => SwAt(h) < 5.0).Average(h => h.RockTempC - h.AirTempC);
+
+        seaNight.Should().BeGreaterThan(neutralNight + 0.1,
+            "a 14°C sea filling half the view radiates warmth the open sky does not");
+    }
+
+    [Fact]
+    public void Cold_sea_in_the_view_trims_daytime_heating()
+    {
+        var cliff = new RockSurfaceConfig { FSky = 0.5 };
+        var fNeutral = MakeForcing(10, 0.0, 1.0);
+        var neutral = Integrate(fNeutral, cliff);
+        var sea = Integrate(MakeForcing(10, 0.0, 1.0, seaC: 5.0), cliff);
+
+        double DayMean(IReadOnlyList<RockHour> r) => r.Skip(Spinup)
+            .Select((h, i) => (h, sw: fNeutral[i + Spinup].ShortwaveWm2))
+            .Where(x => x.sw > 300.0)
+            .Average(x => x.h.RockTempC);
+
+        DayMean(sea).Should().BeLessThan(DayMean(neutral) - 0.1,
+            "sun-warmed rock radiates to a 5°C sea where neutral surroundings return nothing");
+    }
+
+    [Fact]
+    public void Full_sky_view_makes_the_sea_term_inert()
+    {
+        // FSky = 1 (default): the sea weight (1−FSky) is zero, so the sea
+        // forcing must not change a single hour — Bonehill stays untouched
+        // even if a sea temp ever reached its forcing.
+        var withSea = Integrate(MakeForcing(6, 0.3, 2.0, seaC: 14.0), Cfg);
+        var without = Integrate(MakeForcing(6, 0.3, 2.0), Cfg);
+
+        withSea.Should().HaveSameCount(without);
+        for (var i = 0; i < withSea.Count; i++)
+            withSea[i].RockTempC.Should().Be(without[i].RockTempC);
+    }
 }

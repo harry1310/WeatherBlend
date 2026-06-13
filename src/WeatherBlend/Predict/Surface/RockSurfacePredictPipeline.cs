@@ -37,6 +37,12 @@ namespace WeatherBlend.Predict.Surface;
 /// face name. Empty faces = whole-crag horizontal mode (Bonehill), SW
 /// unmodified, Face = "".
 ///
+/// SEA LONGWAVE (S4): locations with a marine block also feed the integrator
+/// the best_match sea surface temperature (smallest-lead per valid, held
+/// forward across gaps — SST moves slowly), which fills the (1−Fsky) view
+/// fraction as a warm radiator (<see cref="RockSurfacePhysics"/>). No marine
+/// block / no SST rows → null → neutral surroundings, pre-S4 behaviour.
+///
 /// Derived, not trained (no bundle / manifest). Output version "v1".
 /// </summary>
 public static class RockSurfacePredictPipeline
@@ -51,6 +57,7 @@ public static class RockSurfacePredictPipeline
         string predictionsRoot,
         string modelsRoot,
         string forecastsPath,
+        string marinePath,
         RockSurfaceConfig cfg,
         DateTime anchor,
         DateTime predictionMadeAtUtc,
@@ -65,7 +72,7 @@ public static class RockSurfacePredictPipeline
         var cloudV = ModelArtifact.ResolveStationChampionVersion(modelsRoot, ElementTargets.CloudCover.ModelDirName, loc);
         if (string.IsNullOrEmpty(tempV) || string.IsNullOrEmpty(windV) || string.IsNullOrEmpty(radV) || string.IsNullOrEmpty(cloudV))
         {
-            log.LogError("Rock-surface: missing a champion blend version for {Loc} (temp={T}, wind={W}, rad={R}, cloud={C}). Elements are Bonehill-only — skipping.",
+            log.LogError("Rock-surface: missing a champion blend version for {Loc} (temp={T}, wind={W}, rad={R}, cloud={C}) — skipping until all four are trained for this location.",
                 loc, tempV, windV, radV, cloudV);
             return new List<RockSurfacePredictionRow>();
         }
@@ -116,6 +123,13 @@ public static class RockSurfacePredictPipeline
             return new List<RockSurfacePredictionRow>();
         }
 
+        // --- Sea surface temperature (S4) — sea-cliff locations only. ---
+        var sst = location.Marine is null
+            ? new Dictionary<DateTime, double>()
+            : QuerySeaTempByValid(marinePath, loc, spinupStart, lastBlend, anchor, ct);
+        if (location.Marine is not null && sst.Count == 0)
+            log.LogWarning("Rock-surface: no best_match SST rows for {Loc} — sea longwave term disabled this run (neutral surroundings fallback).", loc);
+
         // --- Assemble the contiguous hourly BASE trajectory: spin-up (NWP)
         //     then forward (blends). Horizontal SW and the NWP direct fraction
         //     are kept separate so cliff-face mode can re-project the beam per
@@ -124,19 +138,21 @@ public static class RockSurfacePredictPipeline
         var forwardSet = new HashSet<DateTime>(forwardValids);
         var baseHours = new List<BaseHour>();
         NwpMean? lastNwp = null;
+        double? lastSst = null;
         var gaps = 0;
         for (var t = spinupStart; t <= lastBlend; t = t.AddHours(1))
         {
             ct.ThrowIfCancellationRequested();
             if (nwp.TryGetValue(t, out var hourNwp)) lastNwp = hourNwp;
+            if (sst.TryGetValue(t, out var hourSst)) lastSst = hourSst;
             var useNwp = lastNwp;
             if (useNwp is null) { gaps++; continue; }
 
             baseHours.Add(t >= firstBlend && forwardSet.Contains(t)
                 // Blend-driven reported hour. Td (+ direct fraction) from NWP.
-                ? new BaseHour(t, temp[t].Value, useNwp.Td, cloud[t] / 100.0, EffWind(t), rad[t], useNwp.DirectFrac)
+                ? new BaseHour(t, temp[t].Value, useNwp.Td, cloud[t] / 100.0, EffWind(t), rad[t], useNwp.DirectFrac, lastSst)
                 // Spin-up hour (incl. the sub-24h gap before the first blend hour).
-                : new BaseHour(t, useNwp.Ta, useNwp.Td, useNwp.CloudPct / 100.0, useNwp.WindMs, useNwp.ShortwaveWm2, useNwp.DirectFrac));
+                : new BaseHour(t, useNwp.Ta, useNwp.Td, useNwp.CloudPct / 100.0, useNwp.WindMs, useNwp.ShortwaveWm2, useNwp.DirectFrac, lastSst));
         }
         if (gaps > 0)
             log.LogWarning("Rock-surface: {Gaps} hour(s) had no NWP forcing and were skipped — spin-up may be shorter than requested.", gaps);
@@ -157,6 +173,7 @@ public static class RockSurfacePredictPipeline
             ? new List<RockSurfaceFaceConfig?> { null }
             : cfg.Faces.Select(f => (RockSurfaceFaceConfig?)f).ToList();
 
+        var sstByValid = baseHours.ToDictionary(b => b.ValidTimeUtc, b => b.SeaTempC);
         var rows = new List<RockSurfacePredictionRow>();
         foreach (var face in surfaces)
         {
@@ -174,7 +191,7 @@ public static class RockSurfacePredictPipeline
                 }
                 swByValid[b.ValidTimeUtc] = sw;
                 forcing.Add(new RockSurfacePhysics.ForcingHour(
-                    b.ValidTimeUtc, b.AirTempC, b.DewPointC, b.CloudFrac, b.WindMs, sw));
+                    b.ValidTimeUtc, b.AirTempC, b.DewPointC, b.CloudFrac, b.WindMs, sw, b.SeaTempC));
             }
 
             var integrated = RockSurfacePhysics.Integrate(forcing, cfg);
@@ -203,6 +220,7 @@ public static class RockSurfacePredictPipeline
                     WindSpeed10mMs = EffWind(h.ValidTimeUtc),
                     LongwaveDownWm2 = h.LongwaveDownWm2,
                     DeepTempC = h.DeepTempC,
+                    SeaSurfaceTempC = sstByValid[h.ValidTimeUtc],
                     TempModelVersion = tempV,
                     WindModelVersion = windV,
                     RadiationModelVersion = radV,
@@ -218,10 +236,13 @@ public static class RockSurfacePredictPipeline
     }
 
     /// <summary>One hour of the shared base trajectory: everything the
-    /// integrator needs except the per-face shortwave projection.</summary>
+    /// integrator needs except the per-face shortwave projection.
+    /// <paramref name="SeaTempC"/> null = no marine block / no SST coverage
+    /// yet at this hour (neutral surroundings).</summary>
     private readonly record struct BaseHour(
         DateTime ValidTimeUtc, double AirTempC, double DewPointC,
-        double CloudFrac, double WindMs, double SwHorizontalWm2, double DirectFrac);
+        double CloudFrac, double WindMs, double SwHorizontalWm2, double DirectFrac,
+        double? SeaTempC);
 
     private readonly record struct LeadValue(double Value, int Lead);
 
@@ -260,6 +281,55 @@ public static class RockSurfacePredictPipeline
             .ToDictionary(
                 g => g.Key,
                 g => g.OrderBy(r => r.LeadHours).ThenByDescending(r => r.PredictionMadeAtUtc).First().BlendValue);
+    }
+
+    /// <summary>
+    /// best_match sea surface temperature per valid time (S4 sea-longwave
+    /// forcing) — smallest lead, freshest run, anchored like the NWP query.
+    /// offset_day rows excluded; hist_forecast rows admitted (lead-unlabelled
+    /// archive — SST moves slowly enough that best-available is fine).
+    /// </summary>
+    private static Dictionary<DateTime, double> QuerySeaTempByValid(
+        string marinePath, string loc, DateTime earliestValid, DateTime latestValid, DateTime asOf, CancellationToken ct)
+    {
+        var glob = Path.Combine(marinePath, $"location={loc}", "model=best_match", "**", "*.parquet")
+            .Replace('\\', '/').Replace("'", "''");
+
+        var sql = $@"
+WITH ranked AS (
+    SELECT ValidTimeUtc, SeaSurfaceTemperature,
+           ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc ORDER BY LeadHours ASC, RunTimeUtc DESC) AS rn
+    FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+    WHERE SeaSurfaceTemperature IS NOT NULL
+      AND (RunTimeSource IS NULL OR RunTimeSource <> 'offset_day')
+      AND LeadHours >= 0
+      AND RunTimeUtc <= TIMESTAMP '{asOf:yyyy-MM-dd HH:mm:ss}'
+      AND ValidTimeUtc BETWEEN TIMESTAMP '{earliestValid:yyyy-MM-dd HH:mm:ss}'
+                           AND TIMESTAMP '{latestValid:yyyy-MM-dd HH:mm:ss}'
+)
+SELECT ValidTimeUtc, SeaSurfaceTemperature FROM ranked WHERE rn = 1 ORDER BY ValidTimeUtc;";
+
+        var result = new Dictionary<DateTime, double>();
+        try
+        {
+            using var conn = new DuckDBConnection("DataSource=:memory:");
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = sql;
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                ct.ThrowIfCancellationRequested();
+                if (reader.IsDBNull(0) || reader.IsDBNull(1)) continue;
+                result[reader.GetDateTime(0)] = reader.GetDouble(1);
+            }
+        }
+        catch (DuckDBException)
+        {
+            // Empty/missing marine tree (glob matches nothing) — caller logs
+            // the neutral-surroundings fallback.
+        }
+        return result;
     }
 
     /// <summary><paramref name="DirectFrac"/> = direct share of horizontal SW

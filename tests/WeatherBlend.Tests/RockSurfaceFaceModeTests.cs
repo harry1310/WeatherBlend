@@ -74,6 +74,7 @@ public class RockSurfaceFaceModeTests
 
             rows.Should().HaveCount(1);
             rows[0].Face.Should().Be("");
+            rows[0].SeaSurfaceTempC.Should().BeNull("pre-S4 rows have no SST column");
             rows[0].LocationName.Should().Be("bonehill_rocks");
             rows[0].RockSurfaceTempC.Should().Be(14.2);
             rows[0].GreasinessStatus.Should().Be("dry");
