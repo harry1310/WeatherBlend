@@ -433,16 +433,22 @@ public sealed class DryWindowTrainCommand
     // into every (window) sub-bundle for that station — predict-time reads
     // it back per (station, window, lead) cell uniformly.
 
-    public async Task<int> RunPhase3pAsync(Config.LocationConfig location, CancellationToken ct)
+    public Task<int> RunPhase3pAsync(Config.LocationConfig location, CancellationToken ct)
+        => RunCopulaMcAsync(location, DryWindow3pPredictor.Phase3p, ct);
+
+    /// <summary>
+    /// Train a copula-MC dry-window phase (3p over 3o, or 3q over 3c). The
+    /// engine is identical; only the stage-1 precip source phase + the version
+    /// metadata key differ, both resolved from
+    /// <see cref="DryWindow3pPredictor.SourceFor"/>. Which location runs which
+    /// phase is gated upstream by phases.yaml's <c>locations:</c> filter (3p →
+    /// Bonehill, 3q → Sennen), so this method no longer hard-codes a location —
+    /// a station with no champion of the source phase simply skips below.
+    /// </summary>
+    public async Task<int> RunCopulaMcAsync(Config.LocationConfig location, string dryWindowPhase, CancellationToken ct)
     {
         _activeLocation = location;
-        // 3p is Bonehill-only by design (dry-window targets are Bonehill-only
-        // pending Membury dry-window truth + blenders).
-        if (!_activeLocation.Name.Equals("bonehill_rocks", StringComparison.OrdinalIgnoreCase))
-        {
-            _log.LogError("Phase 3p is Bonehill-only (location='{Loc}'). Skipping.", _activeLocation.Name);
-            return 2;
-        }
+        var source = DryWindow3pPredictor.SourceFor(dryWindowPhase);
         if (_activeLocation.Rainfall.Stations.Count == 0)
         {
             _log.LogError("No rainfall stations configured for location '{Loc}'.", _activeLocation.Name);
@@ -467,30 +473,32 @@ public sealed class DryWindowTrainCommand
         var rngSeed = 42;
 
         _log.LogInformation(
-            "Phase 3p — Gaussian copula MC over 3o; stations=[{S}] windows=[{W}] leads=[{L}]",
+            "Phase {P} — Gaussian copula MC over {Src}; stations=[{S}] windows=[{W}] leads=[{L}]",
+            dryWindowPhase, source.PrecipPhase,
             string.Join(", ", _activeLocation.Rainfall.Stations.Select(s => s.Name)),
             string.Join(",", windows), string.Join(",", leads));
 
-        // Resolve precip 3o champion per station. 3p binds to ONE 3o version
-        // per station for the lifetime of the artefact — re-running 3p training
-        // picks up the latest 3o champion at that moment.
-        var precip3oByStation = new Dictionary<string, string>();
+        // Resolve the stage-1 precip champion per station. The phase binds to
+        // ONE source version per station for the lifetime of the artefact —
+        // re-running training picks up the latest champion at that moment.
+        var precipSrcByStation = new Dictionary<string, string>();
         foreach (var station in _activeLocation.Rainfall.Stations)
         {
             var stationSlug = StationSlug.WithEaPrefix(station.Name);
-            var v3o = ModelArtifact.ResolveStationPhaseVersion(modelsRoot, "precipitation", stationSlug, "3o");
-            if (string.IsNullOrEmpty(v3o))
+            var vSrc = ModelArtifact.ResolveStationPhaseVersion(modelsRoot, "precipitation", stationSlug, source.PrecipPhase);
+            if (string.IsNullOrEmpty(vSrc))
             {
-                _log.LogWarning("Phase 3p: no 3o champion for station {Slug} in manifest — skipping station " +
-                    "(its 3p bundle will not be produced this run; will retry once 3o is trained).", stationSlug);
+                _log.LogWarning("Phase {P}: no {Src} champion for station {Slug} in manifest — skipping station " +
+                    "(its {P} bundle will not be produced this run; will retry once {Src} is trained).",
+                    dryWindowPhase, source.PrecipPhase, stationSlug, dryWindowPhase, source.PrecipPhase);
                 continue;
             }
-            precip3oByStation[stationSlug] = v3o;
+            precipSrcByStation[stationSlug] = vSrc;
         }
-        if (precip3oByStation.Count == 0)
+        if (precipSrcByStation.Count == 0)
         {
-            _log.LogError("Phase 3p: no station has a 3o champion yet — abort. " +
-                "Run `train --target precipitation --feature-set oro --location bonehill_rocks` first.");
+            _log.LogError("Phase {P}: no station has a {Src} champion yet — abort. " +
+                "Train the {Src} precipitation phase for this location first.", dryWindowPhase, source.PrecipPhase);
             return 3;
         }
 
@@ -499,7 +507,7 @@ public sealed class DryWindowTrainCommand
         {
             ct.ThrowIfCancellationRequested();
             var stationSlug = StationSlug.WithEaPrefix(station.Name);
-            if (!precip3oByStation.TryGetValue(stationSlug, out var v3o)) continue;
+            if (!precipSrcByStation.TryGetValue(stationSlug, out var vSrc)) continue;
 
             // Load hourly EA truth across the station's full history. Build
             // per-day daytime wet/dry binary sequences. Threshold = 0.1 mm/h
@@ -507,13 +515,14 @@ public sealed class DryWindowTrainCommand
             var sequencesByDate = LoadDaytimeBinarySequences(station.Name, daytime, ct);
             if (sequencesByDate.Count < 200)
             {
-                _log.LogWarning("Phase 3p {Slug}: only {N} daytime-complete days of truth — too few to fit Σ; skipping.",
-                    stationSlug, sequencesByDate.Count);
+                _log.LogWarning("Phase {P} {Slug}: only {N} daytime-complete days of truth — too few to fit Σ; skipping.",
+                    dryWindowPhase, stationSlug, sequencesByDate.Count);
                 cellFailures++;
                 continue;
             }
-            _log.LogInformation("Phase 3p {Slug}: {N} daytime-complete days of EA truth " +
+            _log.LogInformation("Phase {P} {Slug}: {N} daytime-complete days of EA truth " +
                 "({Start:yyyy-MM-dd}..{End:yyyy-MM-dd}); fitting Σ on train slice.",
+                dryWindowPhase,
                 stationSlug,
                 sequencesByDate.Count,
                 sequencesByDate.Keys.Min(),
@@ -538,7 +547,7 @@ public sealed class DryWindowTrainCommand
             }
             catch (Exception ex)
             {
-                _log.LogError(ex, "Phase 3p {Slug}: Σ fit failed — likely a degenerate train slice (no wet days, or constant per-hour).", stationSlug);
+                _log.LogError(ex, "Phase {P} {Slug}: Σ fit failed — likely a degenerate train slice (no wet days, or constant per-hour).", dryWindowPhase, stationSlug);
                 cellFailures++;
                 continue;
             }
@@ -546,7 +555,7 @@ public sealed class DryWindowTrainCommand
             try { _ = DryWindow3pPredictor.CholeskyDecompose(sigma); }
             catch (Exception ex)
             {
-                _log.LogError(ex, "Phase 3p {Slug}: Σ Cholesky failed — Σ not strictly positive-definite.", stationSlug);
+                _log.LogError(ex, "Phase {P} {Slug}: Σ Cholesky failed — Σ not strictly positive-definite.", dryWindowPhase, stationSlug);
                 cellFailures++;
                 continue;
             }
@@ -567,7 +576,7 @@ public sealed class DryWindowTrainCommand
             {
                 ct.ThrowIfCancellationRequested();
                 var compositeKey = $"{stationSlug}/window_{window}h";
-                var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "dry_window", compositeKey, now, suffix: "phase3p");
+                var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "dry_window", compositeKey, now, suffix: $"phase{dryWindowPhase}");
                 var versionName = Path.GetFileName(versionDir);
                 Directory.CreateDirectory(versionDir);
 
@@ -602,9 +611,9 @@ public sealed class DryWindowTrainCommand
                 {
                     Version = versionName,
                     Target = "dry_window",
-                    Phase = DryWindow3pPredictor.Phase3p,
+                    Phase = dryWindowPhase,
                     LocationName = _activeLocation.Name,
-                    DataSource = "ea_rainfall+3o_live_predictions",
+                    DataSource = $"ea_rainfall+{source.PrecipPhase}_live_predictions",
                     TrainedAtUtc = now,
                     Hyperparameters = new Dictionary<string, object>
                     {
@@ -613,30 +622,30 @@ public sealed class DryWindowTrainCommand
                         ["sigma_dim"] = sigma.GetLength(0),
                         ["sigma_n_train_days"] = trainSequences.Length,
                         ["window_hours"] = window,
-                        [DryWindow3pPredictor.Precip3oVersionKey] = v3o,
+                        [source.VersionKey] = vSrc,
                     },
                     TestMae = perLead.ToDictionary(kv => $"lead_{kv.Key}h_brier", kv => kv.Value.BlendTestMae),
                     PerLead = perLead,
                     DeviationsFromBrief = new List<string>
                     {
-                        "Phase 3p — parameter-free Gaussian copula MC over Phase 3o's hourly P(wet) marginals. No LightGBM, no learned weights; predict reads 3o's live prediction parquet at inference time and runs MC.",
+                        $"Phase {dryWindowPhase} — parameter-free Gaussian copula MC over Phase {source.PrecipPhase}'s hourly P(wet) marginals. No LightGBM, no learned weights; predict reads {source.PrecipPhase}'s live prediction parquet at inference time and runs MC.",
                         "Single empirical Σ per station from train-split observed_wet daytime sequences. Σ structure is lead-independent (truth doesn't move with forecast horizon); pooling per-lead truth sequences gives a tighter estimate.",
-                        $"3o champion bound at training time: {v3o}. Re-run dry-window train --feature-set copula-mc to rebind to a newer 3o champion.",
+                        $"{source.PrecipPhase} champion bound at training time: {vSrc}. Re-run dry-window train to rebind to a newer {source.PrecipPhase} champion.",
                         "Cross-window monotonicity P(N=2) ≥ P(N=3) ≥ … ≥ P(N=6) is guaranteed by computing all windows from a SINGLE shared correlated-Bernoulli sequence per MC sample.",
-                        "Brier numbers are blank in training_metadata — verify scores live predictions vs EA truth as cycles produce 3p rows.",
+                        $"Brier numbers are blank in training_metadata — verify scores live predictions vs EA truth as cycles produce {dryWindowPhase} rows.",
                     },
                 };
                 ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
 
                 // Promote as challenger per (station, window).
                 ModelArtifact.PromoteStationVersion(modelsRoot, "dry_window", compositeKey, versionName,
-                    newPhase: DryWindow3pPredictor.Phase3p);
-                _log.LogInformation("Phase 3p {Key} → {Dir}", compositeKey, versionDir);
+                    newPhase: dryWindowPhase);
+                _log.LogInformation("Phase {P} {Key} → {Dir}", dryWindowPhase, compositeKey, versionDir);
             }
             cellsTrained++;
         }
 
-        _log.LogInformation("Phase 3p complete. CellsTrained={C} CellFailures={F}", cellsTrained, cellFailures);
+        _log.LogInformation("Phase {P} complete. CellsTrained={C} CellFailures={F}", dryWindowPhase, cellsTrained, cellFailures);
         await Task.CompletedTask;
         if (cellsTrained == 0) return 3;
         return cellFailures > 0 ? 4 : 0;

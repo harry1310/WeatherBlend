@@ -118,7 +118,7 @@ public class ConfigTests
         // 2026-06-11) and the wind tab (2026-06-12 — wind moved off Sea
         // state onto its own page, "just like wind for bonehill").
         bound.Locations[2].Name.Should().Be("sennen_cove");
-        bound.Locations[2].Tabs.Should().Equal("overview", "temperature", "rain", "wind", "sea_state", "skill", "models");
+        bound.Locations[2].Tabs.Should().Equal("overview", "temperature", "rain", "wind", "dry_window", "sea_state", "skill", "models");
         bound.Locations[2].Metar.Primary.Should().Be("EGDR");
         bound.Locations[2].Rainfall.Stations.Select(s => s.Name).Should()
             .Contain("Trengwainton")

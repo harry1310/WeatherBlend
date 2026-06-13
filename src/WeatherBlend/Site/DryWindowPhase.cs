@@ -67,6 +67,11 @@ public static class DryWindowPhases
     /// start-hour routing).</summary>
     public static DryWindowPhase Phase3p => ByKey("3p");
 
+    /// <summary>The 3c-bound copula-MC challenger (Sennen) — referenced for its
+    /// own <see cref="DryWindowPhase.StartHourCurveVersion"/>. Falls back to a
+    /// grey stub at locations where 3q isn't a registered phase.</summary>
+    public static DryWindowPhase Phase3q => ByKey("3q");
+
     /// <summary>
     /// Bucket a dry-window version into its phase. Returns <c>null</c> when the
     /// version is missing from the lookup, has an empty/whitespace tag, or its

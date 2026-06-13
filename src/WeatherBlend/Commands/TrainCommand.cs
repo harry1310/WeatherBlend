@@ -4,6 +4,7 @@ using WeatherBlend.Config;
 using WeatherBlend.Evaluate.Temp;
 using WeatherBlend.Models;
 using WeatherBlend.Train;
+using WeatherBlend.Train.DryWindow;
 using WeatherBlend.Train.Common;
 using WeatherBlend.Train.Element;
 using WeatherBlend.Train.Exact12h;
@@ -113,10 +114,10 @@ public sealed class TrainCommand : TrainCommandBase
         }
 
         var fs = (featureSet ?? "lean").ToLowerInvariant();
-        if (fs is not ("lean" or "rich" or "oro" or "exact" or "copula-mc"))
+        if (fs is not ("lean" or "rich" or "oro" or "exact" or "copula-mc" or "copula-mc-3c"))
         {
-            _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich | oro | exact | copula-mc " +
-                "(copula-mc is the Phase 3p binding).", featureSet);
+            _log.LogError("Invalid --feature-set value '{Fs}'. Expected lean | rich | oro | exact | copula-mc | copula-mc-3c " +
+                "(copula-mc = Phase 3p over 3o; copula-mc-3c = Phase 3q over 3c).", featureSet);
             return 2;
         }
         // "exact" = Phase 2d (temperature) or Phase 3d (precipitation) — same
@@ -135,9 +136,9 @@ public sealed class TrainCommand : TrainCommandBase
                 "--feature-set {Fs} is only supported for target precipitation.", fs);
             return 2;
         }
-        // "copula-mc" = Phase 3p (Gaussian copula MC over Phase 3o hourly
-        // marginals). Dry-window-only.
-        if (fs == "copula-mc" && t != "dry-window")
+        // "copula-mc" = Phase 3p (MC over 3o), "copula-mc-3c" = Phase 3q (MC
+        // over 3c). Both dry-window-only.
+        if (fs is "copula-mc" or "copula-mc-3c" && t != "dry-window")
         {
             _log.LogError(
                 "--feature-set {Fs} is only supported for target dry-window.", fs);
@@ -197,9 +198,9 @@ public sealed class TrainCommand : TrainCommandBase
                                    leads, station, fs, tier, includeUkv,
                                    exactLeads, cycles, location, ct),
             // dry-window: lean / rich / default → Phase 3b (53 features);
-            // copula-mc → Phase 3p (Gaussian copula MC over 3o).
-            "dry-window"    => fs == "copula-mc"
-                                   ? await Dispatch3pAsync(_dryWindow, location, ct)
+            // copula-mc → 3p (MC over 3o), copula-mc-3c → 3q (MC over 3c).
+            "dry-window"    => DryWindow3pPredictor.PhaseForFeatureSet(fs) is { } copulaPhase
+                                   ? await _dryWindow.RunCopulaMcAsync(location, copulaPhase, ct)
                                    : await _dryWindow.RunAsync(
                                          station ?? "all", window ?? "all", leads,
                                          location, ct),
@@ -221,18 +222,6 @@ public sealed class TrainCommand : TrainCommandBase
         "120" => new[] { 120 },
         _     => null,
     };
-
-    /// <summary>
-    /// Phase 3p dispatcher — separate from RunAsync because RunPhase3pAsync
-    /// doesn't take station / window / leads args (3p iterates all configured
-    /// stations and all 3 (windows × 3 leads) per station internally). Kept
-    /// out of the switch expression so the return type stays Task&lt;int&gt;.
-    /// </summary>
-    private static Task<int> Dispatch3pAsync(
-        DryWindowTrainCommand dryWindow,
-        Config.LocationConfig location,
-        CancellationToken ct)
-        => dryWindow.RunPhase3pAsync(location, ct);
 
     private async Task<int> RunPhase2bAsync(int[] leads, Config.LocationConfig location, CancellationToken ct)
     {

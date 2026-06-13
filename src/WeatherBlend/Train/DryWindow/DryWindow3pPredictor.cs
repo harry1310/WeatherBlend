@@ -42,11 +42,58 @@ public static class DryWindow3pPredictor
 {
     public const string Phase3p = "3p";
 
+    /// <summary>3q — the SAME copula-MC engine bound to Phase 3c's marginals
+    /// instead of 3o's. For locations without a 3o (orographic) model — Sennen,
+    /// where the flat coastal terrain makes 3o pointless — 3c is the rich precip
+    /// champion, so 3q is the natural dry-window MC challenger there. A distinct
+    /// phase (not a silent "3o-else-3c" fallback) so verify scores it as its own
+    /// line and the stage-1 source stays part of the model's identity
+    /// (reference_stage1_source_pattern_mcsources).</summary>
+    public const string Phase3q = "3q";
+
     /// <summary>Hyperparameter key under <c>training_metadata.Hyperparameters</c>
     /// where the bound 3o per-station champion version is persisted at train
     /// time. Predict reads this back so the live 3o version the MC samples
     /// over is provenance-stamped on the bundle, not silently re-resolved.</summary>
     public const string Precip3oVersionKey = "precip_3o_version";
+
+    /// <summary>3q's analogue of <see cref="Precip3oVersionKey"/> — the bound
+    /// 3c champion version.</summary>
+    public const string Precip3cVersionKey = "precip_3c_version";
+
+    /// <summary>The stage-1 precip source for a copula-MC dry-window phase:
+    /// which precipitation phase supplies the hourly P(wet) marginals, the
+    /// metadata key its bound version is stamped under, and the start-hour
+    /// curve's model_version. The marginals are read from the same
+    /// <c>predictions/precipitation/{station}/model_version=…</c> tree
+    /// regardless of source phase (3o/3c/3a all write ProbWet there), so only
+    /// the version string + provenance key differ.</summary>
+    public readonly record struct CopulaSource(string PrecipPhase, string VersionKey, string StartHourCurveVersion);
+
+    /// <summary>Map a dry-window copula-MC phase to its stage-1 source.
+    /// Throws for non-copula phases — callers gate on <see cref="IsCopulaMcPhase"/>.</summary>
+    public static CopulaSource SourceFor(string dryWindowPhase) => dryWindowPhase switch
+    {
+        Phase3p => new CopulaSource("3o", Precip3oVersionKey, "v3-3p"),
+        Phase3q => new CopulaSource("3c", Precip3cVersionKey, "v3-3q"),
+        _ => throw new ArgumentException($"'{dryWindowPhase}' is not a copula-MC dry-window phase.", nameof(dryWindowPhase)),
+    };
+
+    /// <summary>Map the train CLI <c>--feature-set</c> token to its copula-MC
+    /// phase: <c>copula-mc</c>→3p (3o), <c>copula-mc-3c</c>→3q (3c). Null for
+    /// non-copula feature sets.</summary>
+    public static string? PhaseForFeatureSet(string featureSet) => featureSet switch
+    {
+        "copula-mc"    => Phase3p,
+        "copula-mc-3c" => Phase3q,
+        _ => null,
+    };
+
+    /// <summary>True for the copula-MC dry-window phases (3p, 3q) — the
+    /// parameter-free MC phases that ship no model.zip and read a precip
+    /// phase's live predictions at inference time.</summary>
+    public static bool IsCopulaMcPhase(string phase)
+        => phase is Phase3p or Phase3q;
 
     /// <summary>Default MC sample count. 20,000 trades a small predict-time
     /// hit for low MC noise on the Brier estimate; the copula path runs one

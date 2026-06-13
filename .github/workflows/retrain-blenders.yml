@@ -364,12 +364,16 @@ jobs:
             train --target precipitation --feature-set exact --leads 12,24,48,72
 
       - name: Train 3b (dry-window)
+        # --location added 2026-06-13 (Sennen 3b): without it the Sennen
+        # matrix job would train the DEFAULT location (the elements-bug the
+        # comment below describes). Bonehill-only before that, so it worked
+        # by luck (default == primary == bonehill).
         id: train_3b
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3b == 'true'
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target dry-window
+            train --target dry-window --location ${{ matrix.location }}
 
       - name: Train 3p (dry-window Gaussian copula MC over 3o)
         # 3p is parameter-free — no LightGBM fit, just Σ-fit from observed
@@ -382,7 +386,20 @@ jobs:
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target dry-window --feature-set copula-mc
+            train --target dry-window --feature-set copula-mc --location ${{ matrix.location }}
+
+      - name: Train 3q (dry-window Gaussian copula MC over 3c)
+        # 3q — the 3p engine bound to 3c instead of 3o (Sennen, where 3o's
+        # orographic features are pointless on flat coastal terrain). MUST
+        # run AFTER 3c (earlier in this job) so the bound 3c version pointer
+        # is fresh — same ordering contract 3p has with 3o. Parameter-free,
+        # ~1 min. Gated to its phases.yaml locations (Sennen) via run_3q.
+        id: train_3q
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3q == 'true'
+        continue-on-error: true
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            train --target dry-window --feature-set copula-mc-3c --location ${{ matrix.location }}
 
       # ---- Element blenders (wind / humidity / shortwave radiation /
       # cloud cover) ---- Each is a first-class phases.yaml target now, so

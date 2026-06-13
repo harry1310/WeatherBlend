@@ -114,6 +114,13 @@ for p in "${phases[@]}"; do
     3p|4b)
       need_forecasts=1; need_rainfall=1; need_orographic=1; need_models=1 ;;
 
+    # 3q (copula MC over 3c) — Sennen's coastal dry-window challenger. Like
+    # 3p but bound to 3c, which has NO orographic features, so no orographic
+    # pull. Σ-fit needs EA rainfall truth; the 3c champion version is read
+    # from the (already-pulled) manifest.
+    3q)
+      need_forecasts=1; need_rainfall=1; need_models=1 ;;
+
     # wind_speed_lgb moved to Python 2026-06-10 (Option B CQR cutover) — its
     # pull declaration now lives in WeatherProbabilistic's
     # scripts/sync_train_data.sh. A request here exits 3 loudly below.

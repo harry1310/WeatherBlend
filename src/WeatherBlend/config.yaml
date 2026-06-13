@@ -166,7 +166,10 @@ locations:
     # section on Sea state). Sennen has only the champion `wind` element
     # model — the page's wind_speed_lgb band / gust line / wind_mvn
     # direction wedges degrade to their absent/empty states.
-    tabs: [overview, temperature, rain, wind, sea_state, skill, models]
+    # dry_window added 2026-06-13: 3b champion + 3q challenger (copula MC over
+    # 3c — Sennen has no 3o). The skill/models pages auto-include dry_window
+    # once the tab is present; empty states show until verify accumulates.
+    tabs: [overview, temperature, rain, wind, dry_window, sea_state, skill, models]
 
     overview:
       firstVisibleHourUtc: 6

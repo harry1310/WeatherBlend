@@ -12,6 +12,57 @@ namespace WeatherBlend.Tests;
 /// </summary>
 public class DryWindow3pPredictorTests
 {
+    // ---- Copula-MC source binding (3p over 3o, 3q over 3c — 2026-06-13) ----
+
+    [Fact]
+    public void SourceFor_binds_3p_to_3o_and_3q_to_3c()
+    {
+        var p = DryWindow3pPredictor.SourceFor(DryWindow3pPredictor.Phase3p);
+        p.PrecipPhase.Should().Be("3o");
+        p.VersionKey.Should().Be(DryWindow3pPredictor.Precip3oVersionKey);
+        p.StartHourCurveVersion.Should().Be("v3-3p");
+
+        var q = DryWindow3pPredictor.SourceFor(DryWindow3pPredictor.Phase3q);
+        q.PrecipPhase.Should().Be("3c");
+        q.VersionKey.Should().Be(DryWindow3pPredictor.Precip3cVersionKey);
+        q.StartHourCurveVersion.Should().Be("v3-3q");
+    }
+
+    [Fact]
+    public void SourceFor_throws_for_a_non_copula_phase()
+    {
+        var act = () => DryWindow3pPredictor.SourceFor("3b");
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Theory]
+    [InlineData("copula-mc", "3p")]
+    [InlineData("copula-mc-3c", "3q")]
+    [InlineData("rich", null)]
+    [InlineData("lean", null)]
+    public void PhaseForFeatureSet_maps_only_the_copula_tokens(string featureSet, string? expected)
+        => DryWindow3pPredictor.PhaseForFeatureSet(featureSet).Should().Be(expected);
+
+    [Theory]
+    [InlineData("3p", true)]
+    [InlineData("3q", true)]
+    [InlineData("3b", false)]
+    [InlineData("3a", false)]
+    public void IsCopulaMcPhase_covers_3p_and_3q_only(string phase, bool expected)
+        => DryWindow3pPredictor.IsCopulaMcPhase(phase).Should().Be(expected);
+
+    [Fact]
+    public void Predict_start_hour_versions_match_the_registry_for_both_copula_phases()
+    {
+        // The site reads StartHourCurveVersion from phases.yaml; SourceFor is
+        // the predict/train side. They must agree per phase or the start-hour
+        // curve a phase WRITES won't be the one the page READS.
+        DryWindow3pPredictor.SourceFor(DryWindow3pPredictor.Phase3p).StartHourCurveVersion
+            .Should().Be(WeatherBlend.Site.DryWindowPhases.Phase3p.StartHourCurveVersion);
+        DryWindow3pPredictor.SourceFor(DryWindow3pPredictor.Phase3q).StartHourCurveVersion
+            .Should().Be(WeatherBlend.Site.DryWindowPhases.Phase3q.StartHourCurveVersion);
+    }
+
     private static double[,] IdentityCholesky(int n)
     {
         // Σ = I → L = I; under iid Bernoullis the MC degenerates to independent

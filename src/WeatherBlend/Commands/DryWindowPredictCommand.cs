@@ -42,7 +42,7 @@ public sealed class DryWindowPredictCommand
     /// PrecipPredictCommand and ready for a future split.
     /// </summary>
     private static readonly HashSet<string> HandledDryWindowPhases =
-        new(StringComparer.Ordinal) { "3b", "3p" };
+        new(StringComparer.Ordinal) { "3b", "3p", "3q" };
 
     public DryWindowPredictCommand(ILogger<DryWindowPredictCommand> log, AppConfig cfg)
     {
@@ -199,14 +199,14 @@ public sealed class DryWindowPredictCommand
         _log.LogInformation("{Key}: version {V} (phase {P}), window {W}h",
             compositeKey, metadata.Version, metadata.Phase, windowHours);
 
-        // Phase 3p — Gaussian copula MC over Phase 3o's hourly P(wet).
-        // No LightGBM artefacts and no climatology by design (line ~448
-        // emits ClimatologyProbHasDryWindow=0.0). Dispatch before the
-        // climatology check so 3p bundles aren't rejected for missing
-        // a file they're never meant to ship.
-        if (string.Equals(metadata.Phase, DryWindow3pPredictor.Phase3p, StringComparison.Ordinal))
+        // Copula-MC phases (3p over 3o, 3q over 3c) — Gaussian copula MC over
+        // a precip phase's hourly P(wet). No LightGBM artefacts and no
+        // climatology by design (emits ClimatologyProbHasDryWindow=0.0).
+        // Dispatch before the climatology check so these bundles aren't
+        // rejected for missing a file they're never meant to ship.
+        if (DryWindow3pPredictor.IsCopulaMcPhase(metadata.Phase))
         {
-            return await RunPhase3pAsync(
+            return await RunCopulaMcAsync(
                 versionDir, stationSlug, windowHours, versionName, metadata,
                 targets, anchorDate, predictionMadeAt, ct);
         }
@@ -358,20 +358,22 @@ public sealed class DryWindowPredictCommand
     /// daytime hour vector for each target_date, run Gaussian copula MC
     /// against the bundle's single Σ, write a dry-window prediction row.
     /// </summary>
-    private async Task<bool> RunPhase3pAsync(
+    private async Task<bool> RunCopulaMcAsync(
         string versionDir, string stationSlug, int windowHours, string versionName,
         ModelArtifact.TrainingMetadata metadata,
         IReadOnlyList<(int Lead, DateTime Date)> targets,
         DateTime anchorDate, DateTime predictionMadeAt,
         CancellationToken ct)
     {
-        // Bound 3o version is captured in metadata at train time. If it's
+        // Stage-1 precip source for this copula-MC phase (3p→3o, 3q→3c).
+        var source = DryWindow3pPredictor.SourceFor(metadata.Phase);
+        // Bound source version is captured in metadata at train time. If it's
         // missing, the bundle is malformed — log + skip rather than crash.
-        var v3o = metadata.Hyperparameters.HpString(DryWindow3pPredictor.Precip3oVersionKey);
-        if (string.IsNullOrEmpty(v3o))
+        var vSrc = metadata.Hyperparameters.HpString(source.VersionKey);
+        if (string.IsNullOrEmpty(vSrc))
         {
-            _log.LogWarning("{Key} {V}: 3p bundle is missing `{Key2}` metadata; skipping.",
-                stationSlug, versionName, DryWindow3pPredictor.Precip3oVersionKey);
+            _log.LogWarning("{Key} {V}: {Phase} bundle is missing `{Key2}` metadata; skipping.",
+                stationSlug, versionName, metadata.Phase, source.VersionKey);
             return false;
         }
 
@@ -388,8 +390,8 @@ public sealed class DryWindowPredictCommand
             return false;
         }
 
-        // 3o's live predictions for the anchor cycle. ONE parquet covers
-        // all hourly P(wet) the MC needs; load once, slice by target_date.
+        // The source phase's live predictions for the anchor cycle. ONE parquet
+        // covers all hourly P(wet) the MC needs; load once, slice by target_date.
         Dictionary<DateTime, double>? TryLoadHourly(string version)
         {
             try
@@ -403,40 +405,38 @@ public sealed class DryWindowPredictCommand
                 return null;
             }
         }
-        var hourly = TryLoadHourly(v3o);
+        var hourly = TryLoadHourly(vSrc);
         if (hourly is null)
         {
-            // Pinned-version fallback (2026-06-11). The bound 3o version is
-            // part of 3p's identity (the Σ was fitted on ITS marginals), but
-            // a mid-week 3o re-promotion makes the pin stale: predict writes
-            // 3o rows ONLY under the new version, so the first anchor with
-            // no old-version partition starves every 3p cell and trips the
-            // coverage guard (2026-06-11 03:15Z, run 27321393054 — 20
-            // breaches the night after the 3c/3o policy retrain). Fall back
-            // to the station's CURRENT Active 3o: marginals one retrain
-            // fresher than the Σ is a far smaller error than emitting
-            // nothing, and the weekly retrain re-pins within days. The
-            // warning keeps the inconsistency visible in run logs.
+            // Pinned-version fallback (2026-06-11). The bound source version is
+            // part of this phase's identity (the Σ was fitted on ITS marginals),
+            // but a mid-week source re-promotion makes the pin stale: predict
+            // writes source rows ONLY under the new version, so the first anchor
+            // with no old-version partition starves every cell and trips the
+            // coverage guard. Fall back to the station's CURRENT Active source
+            // phase: marginals one retrain fresher than the Σ is a far smaller
+            // error than emitting nothing, and the weekly retrain re-pins within
+            // days. The warning keeps the inconsistency visible in run logs.
             var current = ModelArtifact.ResolveStationActive(_cfg.Storage.ModelsPath, "precipitation", stationSlug)
-                .Where(v => v.EndsWith("_phase3o", StringComparison.Ordinal))
+                .Where(v => v.EndsWith($"_phase{source.PrecipPhase}", StringComparison.Ordinal))
                 .OrderByDescending(v => v, StringComparer.Ordinal)
                 .FirstOrDefault();
-            if (current is not null && !string.Equals(current, v3o, StringComparison.Ordinal))
+            if (current is not null && !string.Equals(current, vSrc, StringComparison.Ordinal))
             {
                 _log.LogWarning(
-                    "{Key} {V}: bound 3o version {V3o} has no live predictions for anchor {A:yyyy-MM-dd} — " +
-                    "falling back to the station's current Active 3o {Current} (re-promoted since this 3p " +
-                    "bundle trained; Σ/marginal mismatch is one retrain wide; the next 3p retrain re-pins).",
-                    stationSlug, versionName, v3o, anchorDate, current);
+                    "{Key} {V}: bound {Src} version {VSrc} has no live predictions for anchor {A:yyyy-MM-dd} — " +
+                    "falling back to the station's current Active {Src} {Current} (re-promoted since this " +
+                    "bundle trained; Σ/marginal mismatch is one retrain wide; the next retrain re-pins).",
+                    stationSlug, versionName, source.PrecipPhase, vSrc, anchorDate, source.PrecipPhase, current);
                 hourly = TryLoadHourly(current);
             }
         }
         if (hourly is null)
         {
-            _log.LogWarning("{Key} {V}: no 3o live predictions for anchor {A:yyyy-MM-dd} under the bound " +
-                "version ({V3o}) or any current Active 3o — skipping (expected immediately after a fresh " +
-                "deploy until 3o has run at least once).",
-                stationSlug, versionName, anchorDate, v3o);
+            _log.LogWarning("{Key} {V}: no {Src} live predictions for anchor {A:yyyy-MM-dd} under the bound " +
+                "version ({VSrc}) or any current Active {Src} — skipping (expected immediately after a fresh " +
+                "deploy until {Src} has run at least once).",
+                stationSlug, versionName, source.PrecipPhase, anchorDate, vSrc, source.PrecipPhase);
             return false;
         }
 
@@ -519,7 +519,7 @@ public sealed class DryWindowPredictCommand
                     LocationName = primaryLocation,
                     TruthStation = stationSlug,
                     WindowHours = windowHours,
-                    ModelVersion = Phase3pStartHourVersion,
+                    ModelVersion = source.StartHourCurveVersion,
                     PredictionMadeAtUtc = predictionMadeAt,
                     TargetDateUtc = targetDate,
                     LeadHours = lead,
@@ -528,37 +528,40 @@ public sealed class DryWindowPredictCommand
                     ConditionalProb = cond,
                     CalibratedProb = calibrated,
                     DailyProbAnyBlock = prob,
-                    PrecipVersion = v3o,
+                    PrecipVersion = vSrc,
                     DryWindowVersion = metadata.Version,
                 });
             }
 
             _log.LogInformation(
-                "  lead {Lead}h ({Date:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} (3p, MC samples={Mc}, longest dry run P10–P90={P10}-{P90}h, start-hours={Nstarts}, bound 3o={V3o})",
-                lead, targetDate, windowHours, prob, mcSamples,
-                mc.P10LongestDryRunHours, mc.P90LongestDryRunHours, startProbs.Length, v3o);
+                "  lead {Lead}h ({Date:yyyy-MM-dd}) → P(dry {W}h)={P:0.000} ({Phase}, MC samples={Mc}, longest dry run P10–P90={P10}-{P90}h, start-hours={Nstarts}, bound {Src}={VSrc})",
+                lead, targetDate, windowHours, prob, metadata.Phase, mcSamples,
+                mc.P10LongestDryRunHours, mc.P90LongestDryRunHours, startProbs.Length, source.PrecipPhase, vSrc);
         }
 
         if (predictions.Count == 0)
         {
-            _log.LogWarning("{Key} {V}: 3p produced no predictions — likely no overlap between 3o coverage and target dates.",
-                stationSlug, versionName);
+            _log.LogWarning("{Key} {V}: {Phase} produced no predictions — likely no overlap between {Src} coverage and target dates.",
+                stationSlug, versionName, metadata.Phase, source.PrecipPhase);
             return false;
         }
         await WritePredictionsAsync(predictions, stationSlug, windowHours, anchorDate, metadata.Version, ct);
-        await WriteStartHourRowsAsync(startHourRows, stationSlug, windowHours, anchorDate, ct);
+        await WriteStartHourRowsAsync(startHourRows, stationSlug, windowHours, anchorDate, source.StartHourCurveVersion, ct);
         return true;
     }
 
     /// <summary>On-disk <c>model_version</c> tag for the start-hour curves
     /// 3p writes under <c>data/predictions/dry_window_start_hour/</c>. Must
     /// stay in sync with <see cref="WeatherBlend.Site.DryWindowPhases.Phase3p"/>'s
-    /// <c>StartHourCurveVersion</c>.</summary>
+    /// <c>StartHourCurveVersion</c>. (3q's equivalent is <c>v3-3q</c>, resolved
+    /// via <see cref="DryWindow3pPredictor.SourceFor"/> — both checked against
+    /// the registry by PhaseWiringConsistencyTests.)</summary>
     public const string Phase3pStartHourVersion = "v3-3p";
 
     private async Task WriteStartHourRowsAsync(
         IReadOnlyList<StartHourPredictionRow> rows,
         string stationSlug, int windowHours, DateTime anchorDate,
+        string startHourCurveVersion,
         CancellationToken ct)
     {
         if (rows.Count == 0) return;
@@ -567,7 +570,7 @@ public sealed class DryWindowPredictCommand
             "dry_window_start_hour",
             stationSlug,
             $"window_{windowHours}h",
-            $"model_version={Phase3pStartHourVersion}",
+            $"model_version={startHourCurveVersion}",
             $"date={dateStr}",
             "predictions.parquet");
         var total = await PredictionParquetWriter.WriteAsync(outPath, rows, MergeStartHourRows, ct);
@@ -626,7 +629,7 @@ public sealed class DryWindowPredictCommand
     /// it a dispatch branch above; both are mandatory.
     /// </summary>
     internal static bool PhaseRequiresClimatology(string phase) =>
-        !string.Equals(phase, DryWindow3pPredictor.Phase3p, StringComparison.Ordinal);
+        !DryWindow3pPredictor.IsCopulaMcPhase(phase);
 
     internal static bool SlugMatches(string slug, string arg)
     {

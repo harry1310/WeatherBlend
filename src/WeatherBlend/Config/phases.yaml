@@ -272,14 +272,16 @@ targets:
 
   dry_window:
     phases:
-      # 3b LightGBM champion; 3p Gaussian copula MC challenger.
-      # 3b remains champion until the user promotes 3p after enough
-      # clean verify data lands. Bonehill-only — Membury has no
-      # dry-window truth / blenders trained yet.
+      # 3b LightGBM champion; 3p / 3q Gaussian copula MC challengers.
+      # 3b remains champion until the user promotes a challenger after
+      # enough clean verify data lands. Membury has no dry-window truth /
+      # blenders trained yet. Sennen added 2026-06-13 (3b standalone, plus
+      # 3q below) — its inland EA gauges + the global 09–18 daytime window
+      # give 3b everything it needs; no dependency on 3o (which Sennen lacks).
       - id: "3b"
         role: champion
         impl: dotnet
-        locations: ["bonehill_rocks"]
+        locations: ["bonehill_rocks", "sennen_cove"]
         minValidTime: "2024-01-01"
         display:
           title: "Phase 3b — lean (53 features)"
@@ -310,6 +312,26 @@ targets:
           # column + start-hour chart via this key so phases never read
           # each other's curve.
           startHourCurveVersion: "v3-3p"
+      # 3q — the SAME copula-MC engine as 3p, bound to Phase 3c's marginals
+      # instead of 3o's. For Sennen (added 2026-06-13): the flat 35m coastal
+      # cell makes 3o's orographic features pointless, so 3c is the rich
+      # precip champion there and 3q is the natural MC challenger. Runs
+      # head-to-head with the 3b champion at Sennen to settle which
+      # dry-window approach wins at the coast. Distinct phase (not a silent
+      # 3o-else-3c fallback) so verify scores it on its own line and the
+      # stage-1 source stays part of the model identity. Source binding +
+      # the "v3-3q" curve version live in DryWindow3pPredictor.SourceFor.
+      - id: "3q"
+        role: challenger
+        impl: dotnet
+        locations: ["sennen_cove"]
+        display:
+          title: "Phase 3q — Gaussian copula MC over Phase 3c hourly P(wet)"
+          shortTitle: "Phase 3q (copula MC/3c)"
+          description: "Gaussian copula MC over Phase 3c's hourly P(wet) marginals — the 3p engine bound to the rich (non-orographic) 3c instead of 3o, for coastal locations without a 3o model. Single empirical Σ per station from train-split observed daytime wet/dry sequences. Captures within-day wet/dry autocorrelation an iid sampler misses; scored against the 3b champion at Sennen."
+          label: "Phase 3q (copula MC/3c)"
+          color: "#5e35b1"
+          startHourCurveVersion: "v3-3q"
 
   # Element per-variable blenders — wind / humidity / shortwave radiation /
   # cloud cover — feed the UTCI / feels-like derivation. One lean blender
