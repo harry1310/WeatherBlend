@@ -295,7 +295,10 @@ public sealed class PrecipCrossLeadBakeoffCommand
             pres[i] = pivot.Pressure[ci] ?? double.NaN;
         }
 
-        var runTime = valid.AddHours(-inputLead);
+        // Leak-safe anchor (identity for ≥24h leads; back-shifts off valid at
+        // lead 0 so persistence can't read the predicted hour) — mirrors
+        // Predict3c + training (NowcastSource).
+        var runTime = valid.AddHours(-NowcastSource.PersistenceAnchorHours(inputLead));
         var persist = PrecipRichFeatureBuilder.ComputePersistence(hourlyRain, runTime);
         double[]? uaValues = richSpec.FeatureNames.Contains("t850_mean")
             ? PrecipFeatureBuilder.UpperAirValuesFor(ua, valid) : null;
@@ -586,7 +589,9 @@ public sealed class PrecipCrossLeadBakeoffCommand
         var studyRoot = Path.Combine(Path.GetDirectoryName(_cfg.Storage.ModelsPath)!, "models_study");
         var hp = PrecipOccurrenceTrainer.Hyperparameters.Default();
         var ml = new MLContext(seed: 42);
-        var leads = Leads.Full;
+        // Include lead 0 (the nowcast model, sourced from hist_forecast by the
+        // builders) so the fit can score it as a candidate at the short bands.
+        var leads = new[] { NowcastSource.LeadHours }.Concat(Leads.Full).ToArray();
 
         // Scan-once cache: the per-(phase,gauge,lead) BuildForLead each re-globs the whole
         // forecast tree (thousands of partition files) and only differ by the in-file LeadHours
@@ -1686,8 +1691,12 @@ FROM latest WHERE rn = 1;";
             return 2;
         }
 
-        int[] cands = { 24, 48, 72, 96, 120 };
-        var taus = Enumerable.Range(0, (117 - 12) / 3 + 1).Select(i => 12 + 3 * i).ToArray();
+        // Lead 0 (nowcast) is a candidate; taus run from 0 (3-spaced) so the
+        // 0-6h band exists. Per-band eligibility is the ±24h window applied
+        // below (|model lead − band| ≤ 24), NOT "any model anywhere".
+        int[] cands = { 0, 24, 48, 72, 96, 120 };
+        var taus = Enumerable.Range(0, 117 / 3 + 1).Select(i => 3 * i).ToArray();
+        const int CandWindowHours = 24;   // a model lead L competes at band lo iff |L − lo| ≤ 24
         var pairs = new List<(int Lo, int Hi)>();
         for (int i = 0; i < cands.Length; i++)
             for (int j = i + 1; j < cands.Length; j++) pairs.Add((cands[i], cands[j]));
@@ -1852,7 +1861,7 @@ FROM latest WHERE rn = 1;";
             Console.WriteLine();
             Console.WriteLine($"### {phase}{(allowBlend ? "" : "   (singles only — locked)")}");
             Console.WriteLine($"  {"band",9} {"Nsco",6} {"baseline",13} {"SELECT pick",16} {"SCORE",8} {"decision",18}");
-            for (int lo = 12; lo < 120; lo += 6)
+            for (int lo = 0; lo < 120; lo += 6)
             {
                 int hi = lo + 6;
                 var tin = taus.Where(t => t >= lo && t < hi).ToArray();
@@ -1868,11 +1877,21 @@ FROM latest WHERE rn = 1;";
                     continue;
                 }
 
-                // Candidate set: singles always; pairs when the phase allows.
+                // Candidate set: only models whose training lead is within ±24h
+                // of this band (|L − lo| ≤ 24) — so e.g. the 0h model competes at
+                // bands up to ~24h but not beyond, and m120 never competes near
+                // the nowcast end. Singles always; pairs (both legs in-window)
+                // when the phase allows.
+                // L − W ≤ band < L + W (exclusive upper, per the agreed rule):
+                // 0h competes at bands lo ∈ {0,6,12,18} (not 24); 120h at
+                // lo ∈ {96..114}; etc.
+                bool InWindow(int m) => lo >= m - CandWindowHours && lo < m + CandWindowHours;
                 var candidates = new List<(string Series, string Kind, List<int> Leads)>();
-                foreach (var m in cands) candidates.Add(($"s{m}", "single", new List<int> { m }));
+                foreach (var m in cands.Where(InWindow)) candidates.Add(($"s{m}", "single", new List<int> { m }));
                 if (allowBlend)
-                    foreach (var (l, h) in pairs) candidates.Add(($"b{l}x{h}", "blend", new List<int> { l, h }));
+                    foreach (var (l, h) in pairs.Where(p => InWindow(p.Lo) && InWindow(p.Hi)))
+                        candidates.Add(($"b{l}x{h}", "blend", new List<int> { l, h }));
+                if (candidates.Count == 0) continue;   // no in-window model (shouldn't happen — baseline covers it)
 
                 // 1. Pick on SELECT.
                 var pick = candidates.OrderBy(c => SelB(c.Series)).First();
