@@ -1515,6 +1515,84 @@ public class SitePagesTests
     }
 
     [Fact]
+    public void RenderForecastsRain_overlays_experimental_tor_3oni_line_on_bellever_chart()
+    {
+        // The ungauged Bonehill-tor 3oni line — predictions written under the
+        // "bonehill_rocks" station key — is overlaid on the reference gauge's
+        // (Bellever) P(wet) chart, flagged as experimental / not gauge-verified.
+        // It must NOT get its own per-station panel (there is no tor gauge).
+        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
+        var validTime = generatedAt.AddHours(24);
+
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            WindowStartUtc = generatedAt.AddDays(-30),
+            PrecipPredictions = new[]
+            {
+                // Reference gauge (Bellever) champion 3o line.
+                new SitePages.PrecipForecastPoint(
+                    Station: "ea_bellever_dartmoor", Version: "v3o",
+                    PredictedAtUtc: generatedAt, ValidTimeUtc: validTime,
+                    LeadHours: 24, ProbWet: 0.6, ClimatologyPWet: 0.4,
+                    PrecipGfs: null, PrecipEcmwf: null, PrecipIcon: null,
+                    PrecipMf: null, PrecipUkmo: null, PrecipGem: null,
+                    PrecipAifs: null, PrecipJma: null),
+                // Tor 3oni line, written under the bonehill_rocks station key.
+                new SitePages.PrecipForecastPoint(
+                    Station: "bonehill_rocks", Version: "v3oni",
+                    PredictedAtUtc: generatedAt, ValidTimeUtc: validTime,
+                    LeadHours: 24, ProbWet: 0.82, ClimatologyPWet: 0.4,
+                    PrecipGfs: null, PrecipEcmwf: null, PrecipIcon: null,
+                    PrecipMf: null, PrecipUkmo: null, PrecipGem: null,
+                    PrecipAifs: null, PrecipJma: null),
+            },
+            PrecipCurrentByStation = new Dictionary<string, string> { ["ea_bellever_dartmoor"] = "v3o" },
+            PhaseByVersion = new Dictionary<string, string> { ["v3o"] = "3o", ["v3oni"] = "3oni" },
+        };
+
+        var html = SitePages.RenderForecastsRain(input, lead: 24);
+
+        // The experimental tor line is labelled and overlaid (deep-orange,
+        // dashed) on the Bellever chart.
+        html.Should().Contain("Bonehill tor (3oni, experimental");
+        html.Should().Contain("#e65100");
+        // The tor never gets its own per-station P(wet) chart.
+        html.Should().NotContain("P(wet) — Bonehill Rocks");
+    }
+
+    [Fact]
+    public void RenderForecastsRain_omits_tor_line_when_3oni_not_yet_predicted()
+    {
+        // Until 3oni trains (first Sunday retrain) there are no tor rows, so
+        // the overlay must simply be absent — no placeholder, no error.
+        var generatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc);
+        var validTime = generatedAt.AddHours(24);
+
+        var input = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt,
+            WindowStartUtc = generatedAt.AddDays(-30),
+            PrecipPredictions = new[]
+            {
+                new SitePages.PrecipForecastPoint(
+                    Station: "ea_bellever_dartmoor", Version: "v3o",
+                    PredictedAtUtc: generatedAt, ValidTimeUtc: validTime,
+                    LeadHours: 24, ProbWet: 0.6, ClimatologyPWet: 0.4,
+                    PrecipGfs: null, PrecipEcmwf: null, PrecipIcon: null,
+                    PrecipMf: null, PrecipUkmo: null, PrecipGem: null,
+                    PrecipAifs: null, PrecipJma: null),
+            },
+            PrecipCurrentByStation = new Dictionary<string, string> { ["ea_bellever_dartmoor"] = "v3o" },
+            PhaseByVersion = new Dictionary<string, string> { ["v3o"] = "3o" },
+        };
+
+        var html = SitePages.RenderForecastsRain(input, lead: 24);
+
+        html.Should().NotContain("Bonehill tor (3oni, experimental");
+    }
+
+    [Fact]
     public void RenderRainSkill_renders_rolling_brier_block_when_points_present()
     {
         // Mirror of the temp page's rolling-MAE panel, station-filtered.

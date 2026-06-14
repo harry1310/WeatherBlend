@@ -327,6 +327,12 @@ public static partial class SitePages
     /// (light purple) with the only distinction being 2d/3d (magenta) —
     /// adding 4b put multiple lines on identical colour, unreadable.
     /// </summary>
+    // Experimental Bonehill-tor 3oni line: the reference gauge whose chart it
+    // overlays, and the station key the tor predictions are written under
+    // (mirrors PrecipPredictCommand.TorReferenceGauge / TorStationSlug).
+    private const string TorReferenceGaugeSlug = "ea_bellever_dartmoor";
+    private const string TorStationSlug = "bonehill_rocks";
+
     private static string PrecipPhaseColor(string phase, bool isChampion)
     {
         if (isChampion) return NwpPalette.Blend;   // brand purple
@@ -405,8 +411,12 @@ public static partial class SitePages
 
         // Filter to active stations so a demoted-from-config station whose
         // historical predictions are still on disk doesn't get a panel.
+        // The ungauged tor (3oni) never gets its OWN panel — it has no gauge
+        // truth and renders only as an overlay on the reference gauge's chart
+        // below — so exclude its station key here regardless of manifest state.
         var stations = precipForLocation
             .Select(p => p.Station).Distinct()
+            .Where(s => !string.Equals(s, TorStationSlug, StringComparison.Ordinal))
             .Where(s => input.ActiveStationSlugs.Count == 0 || input.ActiveStationSlugs.Contains(s))
             .OrderBy(st => st, StringComparer.Ordinal).ToList();
 
@@ -623,6 +633,33 @@ public static partial class SitePages
             // a blender output. Read off the champion-pooled rows above.
             probSeries.Add(new LineSeries("Climatology", "#9e9e9e",
                 latestPerValid.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ClimatologyPWet)).ToList()));
+
+            // Experimental ungauged Bonehill-tor line (3oni). The pooled
+            // no-station-id model is evaluated at the tor's own orographic
+            // vector (predictions written under the bonehill_rocks station key)
+            // and overlaid HERE on the reference gauge's (Bellever) chart, so
+            // the tor's terrain-driven divergence reads directly against the
+            // gauge it borrows its NWP + persistence from. NOT gauge-verified —
+            // there is no tor rain gauge, so the only truth is on-site eyeballs;
+            // mostly interesting on strong-wind orographic days. Renders only on
+            // Bellever's chart, and only once 3oni has been trained + predicted.
+            if (string.Equals(station, TorReferenceGaugeSlug, StringComparison.Ordinal))
+            {
+                var torRows = precipForLocation
+                    .Where(r => string.Equals(r.Station, TorStationSlug, StringComparison.Ordinal)
+                                && r.LeadHours == lead
+                                && input.PhaseByVersion.TryGetValue(r.Version, out var torPh)
+                                && string.Equals(torPh, "3oni", StringComparison.Ordinal))
+                    .FreshestPerValid(r => r.ValidTimeUtc, r => r.PredictedAtUtc)
+                    .OrderBy(r => r.ValidTimeUtc)
+                    .ToList();
+                if (torRows.Count > 0)
+                    probSeries.Add(new LineSeries(
+                        "P(wet) — Bonehill tor (3oni, experimental — not gauge-verified)",
+                        "#e65100",
+                        torRows.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet)).ToList(),
+                        Dashed: true));
+            }
 
             s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
             {

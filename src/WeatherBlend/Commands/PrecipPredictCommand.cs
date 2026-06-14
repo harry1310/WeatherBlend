@@ -221,7 +221,83 @@ public sealed class PrecipPredictCommand
             }
         }
 
+        // Ungauged Bonehill-tor rain line (3oni). The pooled no-station-id
+        // model can extrapolate to a terrain it never saw at train time, so we
+        // evaluate it at the tor's own orographic vector. There is no tor gauge
+        // — this borrows the nearest gauge's (Bellever) bundle + NWP forecasts
+        // + rainfall-persistence and only swaps the terrain block + output key.
+        // Experimental / not gauge-verified; runs only for the Bonehill site.
+        if (string.Equals(location.Name, TorPoiLocation, StringComparison.Ordinal))
+            anyWritten |= await RunTorPointOfInterestAsync(
+                modelsRoot, predictionMadeAt, anchor, targets, perLeadValid, leadPolicy, location, ct);
+
         return anyWritten ? 0 : 3;
+    }
+
+    // The Bonehill tor point-of-interest line: location name, the reference
+    // gauge whose bundle/forecasts/persistence we borrow, and the station key
+    // (== the orographic slug data/static/orographic/bonehill_rocks.json) the
+    // tor predictions are written under.
+    private const string TorPoiLocation = "bonehill_rocks";
+    private const string TorReferenceGauge = "Bellever Dartmoor";
+    private const string TorStationSlug = "bonehill_rocks";
+
+    /// <summary>
+    /// Predict the experimental ungauged-tor 3oni line. Resolves the reference
+    /// gauge's newest 3oni bundle, then runs the oro predict path with the
+    /// terrain read from <c>bonehill_rocks.json</c> and the rows written under
+    /// the tor station key. No-op (returns false) if 3oni hasn't been trained
+    /// yet — expected until the first Sunday retrain produces the bundle.
+    /// </summary>
+    private async Task<bool> RunTorPointOfInterestAsync(
+        string modelsRoot,
+        DateTime predictionMadeAt,
+        DateTime anchor,
+        (int Lead, DateTime Valid)[] targets,
+        IReadOnlyDictionary<int, IReadOnlyDictionary<DateTime, PivotedRow>> perLeadValid,
+        PrecipLeadPolicy? leadPolicy,
+        LocationConfig location,
+        CancellationToken ct)
+    {
+        var refGauge = StationSlug.WithEaPrefix(TorReferenceGauge);
+        var version = ModelArtifact.ResolveStationPhaseVersion(modelsRoot, "precipitation", refGauge, "3oni");
+        if (string.IsNullOrEmpty(version))
+        {
+            _log.LogInformation(
+                "Tor 3oni line: no 3oni bundle for reference gauge {Gauge} yet — skipping (expected until the first retrain trains 3oni).",
+                refGauge);
+            return false;
+        }
+
+        var versionDir = ModelArtifact.ResolveStationVersionDir(modelsRoot, "precipitation", refGauge, version);
+        var metadata = ModelArtifact.LoadTrainingMetadata(versionDir);
+        if (metadata.PerLead.Count == 0)
+        {
+            _log.LogError("Tor 3oni line: reference bundle {V} has no per-lead blenders.", version);
+            return false;
+        }
+        if (!string.Equals(metadata.Phase, "3oni", StringComparison.Ordinal))
+        {
+            _log.LogError("Tor 3oni line: resolved bundle {V} has phase '{Phase}', expected 3oni.", version, metadata.Phase);
+            return false;
+        }
+
+        var climPath = Path.Combine(versionDir, ModelArtifact.ClimatologyFileName);
+        if (!File.Exists(climPath))
+        {
+            _log.LogError("Tor 3oni line: reference bundle {V} missing {File}.", version, ModelArtifact.ClimatologyFileName);
+            return false;
+        }
+        var climatology = PrecipClimatology.LoadFrom(climPath);
+
+        _log.LogInformation(
+            "Tor 3oni line: borrowing gauge {Gauge} bundle {V} (phase=3oni); terrain={Terrain}.json, writing under station '{Out}'.",
+            refGauge, version, TorStationSlug, TorStationSlug);
+
+        return await RunStationAsOroAsync(
+            modelsRoot, refGauge, versionDir, metadata, climatology,
+            predictionMadeAt, anchor, targets, perLeadValid, leadPolicy, location, ct,
+            oroSlugOverride: TorStationSlug, outputStation: TorStationSlug);
     }
 
     private IReadOnlyList<string> ResolveRequestedVersions(string modelsRoot, string station, string modelVersion)
@@ -701,8 +777,16 @@ public sealed class PrecipPredictCommand
         IReadOnlyDictionary<int, IReadOnlyDictionary<DateTime, PivotedRow>> perLeadValid,
         PrecipLeadPolicy? leadPolicy,
         LocationConfig location,
-        CancellationToken ct)
+        CancellationToken ct,
+        // Ungauged-tor line (3oni): borrow this station's BUNDLE + forecasts +
+        // rainfall-persistence, but read terrain from oroSlugOverride and write
+        // under outputStation. Both null = normal per-gauge predict.
+        string? oroSlugOverride = null,
+        string? outputStation = null)
     {
+        var oroSlug = oroSlugOverride ?? station;
+        var outStation = outputStation ?? station;
+
         // 3oni = the no-station-id variant; its bundle schema carries 8 terrain
         // features (no oro_station_id) vs 3o's 9. Drive the terrain count +
         // compose off the bundle's phase so the predict vector matches the
@@ -741,18 +825,18 @@ public sealed class PrecipPredictCommand
         // so parallel test runs don't collide on the process-global CWD).
         var oroPath = Path.Combine(
             Path.GetDirectoryName(_cfg.Storage.ForecastsPath)!,
-            "static", "orographic", $"{station}.json");
+            "static", "orographic", $"{oroSlug}.json");
         if (!File.Exists(oroPath))
         {
             _log.LogError("Station {Station}: orographic record missing at {Path} — cannot Phase 3o predict.",
-                station, oroPath);
+                oroSlug, oroPath);
             return false;
         }
         var oroBySlug = OroStaticFeatures.LoadAll(Path.GetDirectoryName(oroPath)!);
-        if (!oroBySlug.TryGetValue(station, out var oro))
+        if (!oroBySlug.TryGetValue(oroSlug, out var oro))
         {
             _log.LogError("Station {Station}: orographic record at {Path} parsed but no entry for slug.",
-                station, oroPath);
+                oroSlug, oroPath);
             return false;
         }
 
@@ -980,7 +1064,7 @@ public sealed class PrecipPredictCommand
             predictions.Add(new PrecipPredictionRow
             {
                 LocationName = location.Name,
-                TruthStation = station,
+                TruthStation = outStation,
                 ModelVersion = metadata.Version,
                 PredictionMadeAtUtc = predictionMadeAt,
                 ValidTimeUtc = valid,
@@ -1006,8 +1090,8 @@ public sealed class PrecipPredictCommand
                     ? ModelArtifact.PredictConformalIfPresent(versionDir, lead, pWet[0])
                     : null,
             });
-            _log.LogInformation("Station {Station} lead {Lead}h → P(wet) {P:0.000} (clim {Clim:0.000}, phase=3o, models=[{M}])",
-                station, lead, pWet[0], climPWet, string.Join("+", modelLeads));
+            _log.LogInformation("Station {Station} lead {Lead}h → P(wet) {P:0.000} (clim {Clim:0.000}, phase={Phase}, models=[{M}])",
+                outStation, lead, pWet[0], climPWet, metadata.Phase, string.Join("+", modelLeads));
         }
 
         if (predictions.Count == 0)
@@ -1015,7 +1099,7 @@ public sealed class PrecipPredictCommand
             _log.LogWarning("Station {Station}: no 3o predictions produced.", station);
             return false;
         }
-        await WritePredictionsAsync(predictions, station, anchor, metadata.Version, ct);
+        await WritePredictionsAsync(predictions, outStation, anchor, metadata.Version, ct);
         return true;
     }
 

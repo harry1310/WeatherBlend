@@ -95,6 +95,13 @@ public class FullPipelineSmokeTests
                 Path.Combine(fakeR2, "data", "static", "orographic"),
                 SmokeFixtures.EaSlug(friendly));
         }
+        // Ungauged-tor terrain record (3oni reads this at predict time to
+        // produce the experimental Bonehill-tor rain line). Committed for real
+        // in the repo; the smoke synthesises it so the tor predict path is
+        // exercised end-to-end on the synced pool.
+        await SmokeFixtures.WriteOrographicStaticAsync(
+            Path.Combine(fakeR2, "data", "static", "orographic"),
+            "bonehill_rocks");
         // Full chain trains 3o + 3p + 4b. Script's case table covers
         // each phase's tree set; passing all three resolves the union.
         SmokeFixtures.RunSyncTrainData(
@@ -196,6 +203,23 @@ public class FullPipelineSmokeTests
                 $"model_version={bundle3oni}",
                 $"date={predictAnchor:yyyy-MM-dd}", "predictions.parquet");
             File.Exists(pred3oni).Should().BeTrue("3oni predictions parquet must exist");
+
+            // ---- 3oni TOR line — the payoff. Predicting at the location fires
+            //      the ungauged-tor driver after the gauge loop: it borrows the
+            //      reference gauge's (Bellever) 3oni bundle + NWP + persistence
+            //      but reads terrain from bonehill_rocks.json and writes under
+            //      the "bonehill_rocks" station key. Proves the oroSlug/output
+            //      override path round-trips end-to-end. ----
+            var torPred = Path.Combine(
+                scope.PredictionsPath, "precipitation", "bonehill_rocks",
+                $"model_version={bundle3oni}",
+                $"date={predictAnchor:yyyy-MM-dd}", "predictions.parquet");
+            File.Exists(torPred).Should().BeTrue(
+                "the tor 3oni line must be written under the bonehill_rocks station key");
+            var torRows = await ParquetSerializer.DeserializeAsync<PrecipPredictionRow>(torPred);
+            torRows.Should().NotBeEmpty("the tor 3oni line must produce predictions");
+            torRows.Should().OnlyContain(r => r.TruthStation == "bonehill_rocks",
+                "every tor row must be tagged with the tor station key, not the borrowed gauge");
 
             // ---- 4. Phase 3p train (Σ fit on truth, binds to 3o) ----
             var rc3pTrain = await dryWindowTrain.RunPhase3pAsync(scope.Config.Location, default);
