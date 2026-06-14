@@ -46,7 +46,7 @@ public static partial class SitePages
 
         body.Append(Ci, $"""
               <hgroup>
-                <h2>Temperature +{lead}h</h2>
+                <h2>Temperature {LeadLabel(lead)}</h2>
                 <p>Our blend forecast on top (champion solid, challengers lighter); the raw NWP inputs below.</p>
               </hgroup>
             """);
@@ -54,7 +54,7 @@ public static partial class SitePages
         body.Append(RenderTempSection(input, lead));
 
         body.Append("</section>");
-        return WrapPage(input, $"Temperature forecast +{lead}h", "temperature", body.ToString());
+        return WrapPage(input, $"Temperature forecast {LeadLabel(lead)}", "temperature", body.ToString());
     }
 
     /// <summary>
@@ -73,7 +73,7 @@ public static partial class SitePages
 
         body.Append(Ci, $"""
               <hgroup>
-                <h2>Rain +{lead}h</h2>
+                <h2>Rain {LeadLabel(lead)}</h2>
                 <p>NWP precipitation probability up top; per-station blended P(wet) + rainfall amount in the middle; per-NWP precip rate at the bottom.</p>
               </hgroup>
             """);
@@ -87,22 +87,28 @@ public static partial class SitePages
         body.Append(RenderPrecipSection(input, lead, active));
 
         body.Append("</section>");
-        return WrapPage(input, $"Rain forecast +{lead}h", "rain", body.ToString());
+        return WrapPage(input, $"Rain forecast {LeadLabel(lead)}", "rain", body.ToString());
     }
 
     // RenderForecastsSubNav removed in Phase D — each forecast variable is
     // its own top-level tab in the per-loc site-nav now, so the per-page
     // pill row was redundant.
 
+    // The lead-12 bucket spans today's hours (τ 0..23) and is where the per-lead
+    // policy can route the 0h nowcast model, so it's labelled "<24hr" rather than
+    // "+12h". HTML-escaped ("&lt;") since it's interpolated raw into markup.
+    private static string LeadLabel(int lead) => lead == 12 ? "&lt;24hr" : $"+{lead}h";
+
     private static string RenderLeadSubNav(string pageBase, int current)
     {
         var items = new StringBuilder();
-        // ForecastsTempRain prepends +12h for 2d/3d (exact-runtime) on top of
-        // the standard {24, 48, 72, 96, 120} set used by 2b/2c/3a/3c.
+        // ForecastsTempRain prepends the +12h (now "<24hr") today bucket for 2d/3d
+        // (exact-runtime) + the policy nowcast, on top of the standard
+        // {24, 48, 72, 96, 120} set used by 2b/2c/3a/3c.
         foreach (var lead in Leads.ForecastsTempRain)
         {
             var cls = lead == current ? " class=\"active\"" : "";
-            items.Append(Ci, $"""<li><a href="{pageBase}-{lead}h.html"{cls}>+{lead}h</a></li>""");
+            items.Append(Ci, $"""<li><a href="{pageBase}-{lead}h.html"{cls}>{LeadLabel(lead)}</a></li>""");
         }
         return $"""<nav class="lead-nav"><ul>{items}</ul></nav>""";
     }
