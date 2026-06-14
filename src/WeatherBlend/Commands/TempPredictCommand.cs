@@ -104,8 +104,14 @@ public sealed class TempPredictCommand
             // 24 hourly targets per lead bucket — mirrors PrecipPredictCommand
             // so each predict cycle emits a full hourly trajectory (anchor+L .. anchor+L+23h)
             // for every lead, not just one snapshot value at lead L exactly.
+            // {12} ∪ Full: lead 12 is the "today" bucket (valid = today's 24h),
+            // so the per-lead policy's short bands (incl. the 0h nowcast) have
+            // targets with τ < 24 to apply to. Lead 12 only flows to the rich
+            // (2c) path — filtered out for lean 2b in PredictForVersionAsync, and
+            // exact 2d builds its own targets.
+            var predictLeads = new[] { 12 }.Concat(DefaultLeads).ToArray();
             var anchorDayUtc = new DateTime(anchor.Year, anchor.Month, anchor.Day, 0, 0, 0, DateTimeKind.Utc);
-            var targets = DefaultLeads
+            var targets = predictLeads
                 .SelectMany(L =>
                 {
                     var dayStart = anchorDayUtc.AddDays(L / 24);
@@ -121,7 +127,7 @@ public sealed class TempPredictCommand
 
             // Per-lead forecast pull — keyed to this station's location.
             var perLeadValid = new Dictionary<int, IReadOnlyDictionary<DateTime, PivotedRow>>();
-            foreach (var lead in DefaultLeads)
+            foreach (var lead in predictLeads)
             {
                 var leadTargets = targets.Where(t => t.Lead == lead).ToArray();
                 if (leadTargets.Length == 0) continue;
@@ -135,10 +141,17 @@ public sealed class TempPredictCommand
                     ct);
             }
 
+            // Per-location temperature policy (per-lead model selection). Null =
+            // bucket models everywhere (predict never breaks on a policy problem).
+            var tempPolicy = PrecipLeadPolicy.TryLoad(modelsRoot, "temperature", location.Name);
+            if (tempPolicy is not null)
+                _log.LogInformation("[{Station}] Temp lead-policy loaded (fitted {Fit:yyyy-MM-dd}, {N} band(s)).",
+                    stationKey, tempPolicy.FittedAtUtc, tempPolicy.Phases.Sum(p => p.Value.Count));
+
             foreach (var version in versions)
             {
                 ct.ThrowIfCancellationRequested();
-                var ok = await PredictForVersionAsync(modelsRoot, stationKey, location, version, perLeadValid, targets, predictionMadeAt, anchor, ct);
+                var ok = await PredictForVersionAsync(modelsRoot, stationKey, location, version, perLeadValid, targets, tempPolicy, predictionMadeAt, anchor, ct);
                 if (ok) anyOutput = true; else failures++;
             }
         }
@@ -161,6 +174,26 @@ public sealed class TempPredictCommand
         return new List<string> { modelVersion! };
     }
 
+    /// <summary>
+    /// Which 2c model lead(s) serve a (bucket, valid) target — mirrors
+    /// PrecipPredictCommand.ResolveModelLeads. Precedence: a LEAD_POLICY band
+    /// for (phase, actual-lead τ) — single or equal-weight pair — else the bucket
+    /// default (the bucket's own model, except lead 12 which has no native model
+    /// and defaults to m24). A band referencing a lead this bundle doesn't carry
+    /// degrades to the default, so predict never breaks on a policy problem.
+    /// </summary>
+    private static int[] ResolveTempModelLeads(
+        PrecipLeadPolicy? policy, string phase, int bucketLead, DateTime valid, DateTime anchor,
+        IReadOnlyDictionary<int, BlenderSpec> specs)
+    {
+        var fallback = new[] { bucketLead == 12 ? 24 : bucketLead };
+        if (policy is null) return fallback;
+        var tau = (valid - anchor).TotalHours;
+        var entry = policy.Lookup(phase, tau);
+        if (entry is null || entry.Leads.Count == 0) return fallback;
+        return entry.Leads.All(specs.ContainsKey) ? entry.Leads.ToArray() : fallback;
+    }
+
     private async Task<bool> PredictForVersionAsync(
         string modelsRoot,
         string stationKey,
@@ -168,6 +201,7 @@ public sealed class TempPredictCommand
         string version,
         IReadOnlyDictionary<int, IReadOnlyDictionary<DateTime, PivotedRow>> perLeadValid,
         (int Lead, DateTime Valid)[] targets,
+        PrecipLeadPolicy? tempPolicy,
         DateTime predictionMadeAt,
         DateTime anchor,
         CancellationToken ct)
@@ -229,7 +263,23 @@ public sealed class TempPredictCommand
             return ok;
         }
 
-        foreach (var (lead, valid) in targets)
+        // Lead-12 (the "today" bucket) is a 2c-only product — it carries the
+        // short-band policy (incl. the 0h nowcast). Lean 2b has no policy and no
+        // lead-12 model, so drop those targets for it (mirrors precip 3a vs 3c).
+        var phaseTargets = isRich ? targets : targets.Where(t => t.Lead != 12).ToArray();
+
+        // Per-lead model cache — the policy can route several buckets through the
+        // same model lead (e.g. m24 serving the 0+24 blend at multiple bands), so
+        // load each lead once.
+        var modelCache = new Dictionary<int, ITransformer>();
+        ITransformer ModelFor(int modelLead)
+        {
+            if (!modelCache.TryGetValue(modelLead, out var m))
+                modelCache[modelLead] = m = ModelArtifact.LoadLeadModel(ml, versionDir, modelLead, out _);
+            return m;
+        }
+
+        foreach (var (lead, valid) in phaseTargets)
         {
             if (!perLeadValid.TryGetValue(lead, out var perValid)
                 || !perValid.TryGetValue(valid, out var pivot))
@@ -239,7 +289,11 @@ public sealed class TempPredictCommand
                 continue;
             }
 
-            if (!specs.TryGetValue(lead, out var spec))
+            // The lead-12 bucket has no native lead_12h model/spec — compose with
+            // the m24 spec (2c feature layout is lead-independent); the policy then
+            // routes the actual model(s) below.
+            var specLead = lead == 12 ? 24 : lead;
+            if (!specs.TryGetValue(specLead, out var spec))
             {
                 _log.LogWarning("  Lead {Lead}h: no BlenderSpec in feature_schema.json for this lead; skipping.", lead);
                 continue;
@@ -323,8 +377,19 @@ public sealed class TempPredictCommand
                 row = TempFeatureBuilder.ComposeRow(spec, valid, specTemps, pivot.WindDirMean, era5Temp: double.NaN);
             }
 
-            var loadedModel = ModelArtifact.LoadLeadModel(ml, versionDir, lead, out _);
-            var yhat = TempTrainer.PredictVector(ml, loadedModel, spec, new[] { row })[0];
+            // Per-lead policy: which model lead(s) serve this (bucket, valid).
+            // 2c-only (the policy phase); equal-weight blends are averaged. The
+            // row's 2c feature layout is lead-independent, so any 2c lead's model
+            // scores it. Falls back to the bucket model (lead-12 → m24) when there
+            // is no policy band or a referenced lead isn't in this bundle.
+            var modelLeads = isRich
+                ? ResolveTempModelLeads(tempPolicy, "2c", lead, valid, anchor, specs)
+                : new[] { lead };
+            double yhat;
+            if (modelLeads.Length == 1)
+                yhat = TempTrainer.PredictVector(ml, ModelFor(modelLeads[0]), specs[modelLeads[0]], new[] { row })[0];
+            else
+                yhat = modelLeads.Average(m => TempTrainer.PredictVector(ml, ModelFor(m), specs[m], new[] { row })[0]);
             var featureHash = FeatureHashing.HashFloats(row.Features);
 
             // Build TempPredictionRow per-model fields: populate only spec.Models, null elsewhere.
