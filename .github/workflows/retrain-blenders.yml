@@ -278,7 +278,7 @@ jobs:
           WB_GUARD_ROWS_DELTA_OVERRIDE: ${{ github.event.inputs.guard_rows_delta }}
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target temperature --feature-set rich --location ${{ matrix.location }}
+            train --target temperature --feature-set rich --location ${{ matrix.location }} ${{ matrix.location == 'bonehill_rocks' && '--nowcast' || '' }}
 
       - name: Train 2d (temperature exact-runtime, leads 12/24/48)
         # 2d is a SHORT-lead exact-runtime phase: its strict UKV picker
@@ -348,7 +348,7 @@ jobs:
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target precipitation --feature-set oro --location ${{ matrix.location }}
+            train --target precipitation --feature-set oro --location ${{ matrix.location }} ${{ matrix.location == 'bonehill_rocks' && '--nowcast' || '' }}
 
       - name: Train 3oni (precipitation rich + orographic, NO station id — tor variant)
         # 3oni = 3o minus oro_station_id. Same 4-station Bonehill pool; dropping
