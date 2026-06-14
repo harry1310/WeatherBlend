@@ -184,12 +184,40 @@ public sealed class RenderSiteCommand
         _log.LogInformation("Loaded {N} precip conformal τ values across (station, version, lead).",
             precipConformalTau.Count);
 
+        // Champion + per-(station, lead) overrides are global (keyed by station
+        // = location-name for temp / EA slug for precip). Resolved BEFORE the
+        // phase map so the CURRENT champion's phase is always in it — see the
+        // union below.
+        var tempChampions = _metadata.GetChampionsByStation("temperature");
+        var tempChampionByStationLead = _metadata.GetChampionByStationLead("temperature");
+        var precipCurrentByStation = _metadata.GetChampionsByStation("precipitation");
+        var precipChampionByStationLead = _metadata.GetChampionByStationLead("precipitation");
+
         // PhaseByVersion is computed across ALL locations (a single dict
         // keyed by version string); rolling-MAE/Brier compute per-loc inside
         // the foreach below.
-        var phaseByVersion = _metadata.GetPhaseByVersion(
+        //
+        // Union the prediction-derived versions with the current champion
+        // versions. A champion minted by today's retrain has ZERO predictions
+        // until the next predict cycle runs (the retrain→predict race — e.g.
+        // Membury retrained after the predict step on 2026-06-14), so it never
+        // appears in the prediction keys. Its phase would then be absent here,
+        // and ChampionMatcher's phase fallback — which needs BOTH the row's and
+        // the champion's phase — silently fails to match the PREVIOUS champion's
+        // still-valid rows, blanking the whole overview. Feeding the champion
+        // versions in resolves their phase off disk (the bundle's
+        // training_metadata.json is synced even when no predictions exist yet),
+        // so the overview keeps rendering on the prior champion's phase until
+        // the new one has predictions. Match on PHASE, never a specific version.
+        var tempPhaseKeys = WithChampionVersions(
             predictionsAllLocs.Select(p => (Station: p.LocationName, Version: p.ModelVersion)),
-            precipAllLocs.Select(p => (p.Station, p.Version)),
+            tempChampions, tempChampionByStationLead);
+        var precipPhaseKeys = WithChampionVersions(
+            precipAllLocs.Select(p => (Station: p.Station, Version: p.Version)),
+            precipCurrentByStation, precipChampionByStationLead);
+        var phaseByVersion = _metadata.GetPhaseByVersion(
+            tempPhaseKeys,
+            precipPhaseKeys,
             dryWindowAllLocs.Select(d => (d.Station, d.WindowHours, d.Version)),
             // Element keys are LOCATION-keyed (element bundles live under
             // data/models/{element}/{location}/{version}). Wind is the only
@@ -203,13 +231,6 @@ public sealed class RenderSiteCommand
 
         _log.LogInformation("Phase map: {Entries}",
             string.Join(", ", phaseByVersion.Select(kv => $"{kv.Key}→{kv.Value}")));
-
-        // Champion + per-(station, lead) overrides are global (keyed by station
-        // = location-name for temp / EA slug for precip).
-        var tempChampions = _metadata.GetChampionsByStation("temperature");
-        var tempChampionByStationLead = _metadata.GetChampionByStationLead("temperature");
-        var precipCurrentByStation = _metadata.GetChampionsByStation("precipitation");
-        var precipChampionByStationLead = _metadata.GetChampionByStationLead("precipitation");
         _log.LogInformation("Champion (temperature) by station: {Entries}",
             tempChampions.Count == 0 ? "(none)" : string.Join(", ", tempChampions.Select(kv => $"{kv.Key}→{kv.Value}")));
         _log.LogInformation("Champion (precipitation): {Entries}",
@@ -1046,6 +1067,29 @@ public sealed class RenderSiteCommand
         var stations = precip.Select(p => p.Station).Distinct().ToList();
         return _truth.GetEaHourlyRainfallByStation(stations, start, end, ct);
     }
+
+    /// <summary>
+    /// Prediction-derived (station, version) keys unioned with the CURRENT
+    /// champion versions for the phase map. The champion that today's retrain
+    /// minted has no predictions until the next predict cycle runs (the
+    /// retrain→predict race), so it's absent from <paramref name="predictionKeys"/>.
+    /// If its phase never enters the phase map, <see cref="ChampionMatcher"/>'s
+    /// phase fallback — which needs the champion's phase as well as the row's —
+    /// can't match the PREVIOUS champion's still-valid rows and the overview
+    /// blanks (the recurring "no tiles after a Sunday retrain" bug; 2026-05-26
+    /// then again 2026-06-14 for Membury). Adding the champion keys lets
+    /// <see cref="ModelMetadataRepository.GetPhaseByVersion"/> resolve their
+    /// phase off the on-disk bundle, which is synced even with zero predictions.
+    /// Per-lead champion pins (<paramref name="championByStationLead"/>) get the
+    /// same treatment. Duplicates are harmless — GetPhaseByVersion de-dupes.
+    /// </summary>
+    internal static IEnumerable<(string Station, string Version)> WithChampionVersions(
+        IEnumerable<(string Station, string Version)> predictionKeys,
+        IReadOnlyDictionary<string, string> championByStation,
+        IReadOnlyDictionary<(string Station, int LeadHours), string> championByStationLead)
+        => predictionKeys
+            .Concat(championByStation.Select(kv => (Station: kv.Key, Version: kv.Value)))
+            .Concat(championByStationLead.Select(kv => (Station: kv.Key.Station, Version: kv.Value)));
 
     /// <summary>
     /// Rolling MAE per (Phase, LeadHours, daily window end) across the last
