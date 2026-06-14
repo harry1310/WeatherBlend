@@ -290,11 +290,20 @@ public sealed class OpenMeteoClient
     public async Task<List<ForecastRow>> FetchHistoricalForecastAsync(
         LocationConfig location,
         string modelId,
+        IEnumerable<string> variables,
         DateOnly startDate,
         DateOnly endDate,
         CancellationToken ct)
     {
-        var hourly = string.Join(",", PressureLevelVariables);
+        // The caller passes the full forecast variable list (config
+        // Variables.Forecast already carries surface + pressure-level fields),
+        // so one pull populates BOTH the surface columns the 0h nowcast needs
+        // and the upper-air columns the original gap-fill use needs. Falling
+        // back to the pressure-only set keeps legacy callers that pass nothing
+        // working unchanged.
+        var varList = (variables ?? Enumerable.Empty<string>()).ToArray();
+        if (varList.Length == 0) varList = PressureLevelVariables;
+        var hourly = string.Join(",", varList);
         var qs = new[]
         {
             $"latitude={location.Latitude.ToString(System.Globalization.CultureInfo.InvariantCulture)}",
@@ -336,6 +345,31 @@ public sealed class OpenMeteoClient
                      .ToArray()
                 : Enumerable.Repeat<double?>(null, times.Length).ToArray();
 
+        // Surface columns (populated when the caller requested surface vars —
+        // the 0h nowcast path). A model/window that doesn't archive a field
+        // returns an all-null column, which is fine.
+        var t2m   = Col("temperature_2m");
+        var td2m  = Col("dew_point_2m");
+        var rh2m  = Col("relative_humidity_2m");
+        var pr    = Col("precipitation");
+        var prp   = Col("precipitation_probability");
+        var rain  = Col("rain");
+        var show  = Col("showers");
+        var snow  = Col("snowfall");
+        var cc    = Col("cloud_cover");
+        var ccl   = Col("cloud_cover_low");
+        var ccm   = Col("cloud_cover_mid");
+        var cch   = Col("cloud_cover_high");
+        var ws10  = Col("wind_speed_10m");
+        var wd10  = Col("wind_direction_10m");
+        var wg10  = Col("wind_gusts_10m");
+        var sp    = Col("surface_pressure");
+        var pmsl  = Col("pressure_msl");
+        var cape  = Col("cape");
+        var vis   = Col("visibility");
+        var swr   = Col("shortwave_radiation");
+        var drr   = Col("direct_radiation");
+        var dfr   = Col("diffuse_radiation");
         var t850 = Col("temperature_850hPa");
         var t700 = Col("temperature_700hPa");
         var t500 = Col("temperature_500hPa");
@@ -350,11 +384,20 @@ public sealed class OpenMeteoClient
         var rows = new List<ForecastRow>(times.Length);
         for (int i = 0; i < times.Length; i++)
         {
-            // Drop hours with no pressure data at all — a model that doesn't
-            // archive upper-air levels returns all-null columns (e.g. UKMO/AIFS).
-            if (t850[i] is null && t700[i] is null && t500[i] is null &&
-                z850[i] is null && z500[i] is null && ws850[i] is null &&
-                ws500[i] is null && wd850[i] is null && wd500[i] is null && rh850[i] is null)
+            // Keep any hour that carries at least one non-null payload field
+            // (surface OR pressure). The original pressure-only gap-fill dropped
+            // pressure-less hours; now that the same pull also serves the 0h
+            // surface nowcast, a surface-only hour (e.g. UKMO/AIFS, which don't
+            // archive upper-air) must survive on its surface fields alone.
+            var anySurface =
+                t2m[i] is not null || pr[i] is not null || rh2m[i] is not null ||
+                cc[i] is not null || ws10[i] is not null || sp[i] is not null ||
+                td2m[i] is not null || cape[i] is not null;
+            var anyPressure =
+                t850[i] is not null || t700[i] is not null || t500[i] is not null ||
+                z850[i] is not null || z500[i] is not null || ws850[i] is not null ||
+                ws500[i] is not null || wd850[i] is not null || wd500[i] is not null || rh850[i] is not null;
+            if (!anySurface && !anyPressure)
                 continue;
 
             rows.Add(new ForecastRow
@@ -366,6 +409,28 @@ public sealed class OpenMeteoClient
                 ValidTimeUtc = times[i],
                 LeadHours = 0,
                 RunTimeSource = RunTimeSources.HistForecast,
+                Temperature2m = t2m[i],
+                DewPoint2m = td2m[i],
+                RelativeHumidity2m = rh2m[i],
+                Precipitation = pr[i],
+                PrecipitationProbability = prp[i],
+                Rain = rain[i],
+                Showers = show[i],
+                Snowfall = snow[i],
+                CloudCover = cc[i],
+                CloudCoverLow = ccl[i],
+                CloudCoverMid = ccm[i],
+                CloudCoverHigh = cch[i],
+                WindSpeed10m = ws10[i],
+                WindDirection10m = wd10[i],
+                WindGusts10m = wg10[i],
+                SurfacePressure = sp[i],
+                PressureMsl = pmsl[i],
+                Cape = cape[i],
+                Visibility = vis[i],
+                ShortwaveRadiation = swr[i],
+                DirectRadiation = drr[i],
+                DiffuseRadiation = dfr[i],
                 Temperature850hPa = t850[i],
                 Temperature700hPa = t700[i],
                 Temperature500hPa = t500[i],

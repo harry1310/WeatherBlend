@@ -14,7 +14,11 @@ namespace WeatherBlend.Commands;
 ///   era5          - Open-Meteo ERA5 reanalysis archive (gapless training truth)
 ///   metar         - OGIMET historical METAR archive (verification truth, gappy)
 ///   rainfall      - EA Hydrology 15-min rainfall totals (precip verification truth)
-///   all           - everything above
+///   hist-forecast - Open-Meteo Historical Forecast API (best-available per valid-
+///                   time, ≈lead-0). Surface + pressure fields, RunTimeSource=
+///                   hist_forecast, LeadHours=0 → the 0h "nowcast" training set
+///                   (+ upper-air gap-fill). NOT in "all" (opt-in, separate file).
+///   all           - everything above EXCEPT hist-forecast
 ///
 /// Open-Meteo Previous Runs is throttled by HttpConfig.PreviousRunsBackfillDelaySeconds
 /// (default 15s); that endpoint uses an hourly token bucket and a 30 min burst at
@@ -175,13 +179,19 @@ public sealed class BackfillCommand
         return errors;
     }
 
-    // ---- Historical forecast pressure (monthly chunks, per model) ----------------
-    // Backfills ONLY the pressure-level (…hPa) fields the Previous Runs API rejects
-    // (400). Source: Open-Meteo Historical Forecast API (~2022→present). The data
-    // is lead-unlabelled (RunTimeSource=hist_forecast) and lands in a SEPARATE
-    // file — date=*/hist_forecast.parquet — alongside previous_runs.parquet, never
-    // overwriting it. Models that don't archive upper-air levels (e.g. UKMO, AIFS)
-    // return all-null columns → 0 rows, logged and skipped (not an error).
+    // ---- Historical forecast (monthly chunks, per model) -------------------------
+    // Source: Open-Meteo Historical Forecast API (~2022→present) — best-available
+    // per valid-time, i.e. ≈analysis quality at lead 0. Two uses, one pull:
+    //   1. surface fields (precip/temp/cloud/wind/…) → the 0h-lead "nowcast"
+    //      training set (lead-0 models read these hist_forecast rows);
+    //   2. pressure-level (…hPa) fields the Previous Runs API rejects (400) →
+    //      the original upper-air history gap-fill.
+    // The caller passes the full config Variables.Forecast list (surface +
+    // pressure), so one request serves both. Data is lead-unlabelled
+    // (RunTimeSource=hist_forecast, LeadHours=0) and lands in a SEPARATE file —
+    // date=*/hist_forecast.parquet — alongside previous_runs.parquet, never
+    // overwriting it. A model/window that archives neither surface nor pressure
+    // for an hour yields 0 rows for it, logged and skipped (not an error).
 
     private async Task<int> BackfillHistoricalForecastAsync(DateOnly start, DateOnly end, string? modelFilter, IReadOnlyList<LocationConfig> locations, CancellationToken ct)
     {
@@ -209,7 +219,7 @@ public sealed class BackfillCommand
                     try
                     {
                         var rows = await _forecasts.FetchHistoricalForecastAsync(
-                            location, model.Id, cursor, chunkEnd, ct);
+                            location, model.Id, _cfg.Variables.Forecast, cursor, chunkEnd, ct);
                         await ParquetWriter.WriteHistoricalForecastAsync(_cfg.Storage.ForecastsPath, rows, ct);
                         _log.LogInformation("  hist-forecast/{Name}/{Model} {Start:yyyy-MM-dd}..{End:yyyy-MM-dd}: {Rows} rows",
                             location.Name, model.Id, cursor, chunkEnd, rows.Count);

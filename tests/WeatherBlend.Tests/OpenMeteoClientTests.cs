@@ -344,4 +344,84 @@ public class OpenMeteoClientTests
         (rows[1].LeadHours - rows[0].LeadHours).Should().Be(3);
         (rows[2].LeadHours - rows[1].LeadHours).Should().Be(3);
     }
+
+    // ---- Historical-forecast (0h-lead "nowcast" source) ---------------------
+
+    [Fact]
+    public void ParseHistoricalForecast_maps_surface_and_pressure_columns_lead0_histforecast()
+    {
+        // The widened hist-forecast pull carries surface AND pressure fields;
+        // every row is lead-0, RunTime == ValidTime, tagged hist_forecast.
+        var json = """
+        {
+          "hourly": {
+            "time": ["2025-06-10T12:00"],
+            "temperature_2m": [15.3],
+            "precipitation": [0.4],
+            "relative_humidity_2m": [88],
+            "cloud_cover": [75],
+            "wind_speed_10m": [6.0],
+            "surface_pressure": [1009.0],
+            "temperature_850hPa": [8.1],
+            "relative_humidity_850hPa": [92]
+          }
+        }
+        """;
+
+        var rows = OpenMeteoClient.ParseHistoricalForecast(Payload(json), Loc, Model);
+
+        rows.Should().HaveCount(1);
+        var r = rows[0];
+        r.RunTimeSource.Should().Be(WeatherBlend.Models.RunTimeSources.HistForecast);
+        r.LeadHours.Should().Be(0);
+        r.RunTimeUtc.Should().Be(r.ValidTimeUtc);
+        r.Temperature2m.Should().Be(15.3);
+        r.Precipitation.Should().Be(0.4);
+        r.RelativeHumidity2m.Should().Be(88);
+        r.CloudCover.Should().Be(75);
+        r.WindSpeed10m.Should().Be(6.0);
+        r.SurfacePressure.Should().Be(1009.0);
+        r.Temperature850hPa.Should().Be(8.1);
+        r.RelativeHumidity850hPa.Should().Be(92);
+    }
+
+    [Fact]
+    public void ParseHistoricalForecast_keeps_surface_only_hour_when_pressure_absent()
+    {
+        // UKMO/AIFS don't archive upper-air — a surface-only hour must survive
+        // on its surface fields alone (the old pressure-only parser dropped it).
+        var json = """
+        {
+          "hourly": {
+            "time": ["2025-06-10T12:00"],
+            "temperature_2m": [14.0],
+            "precipitation": [1.2]
+          }
+        }
+        """;
+
+        var rows = OpenMeteoClient.ParseHistoricalForecast(Payload(json), Loc, Model);
+
+        rows.Should().HaveCount(1);
+        rows[0].Precipitation.Should().Be(1.2);
+        rows[0].Temperature850hPa.Should().BeNull();
+    }
+
+    [Fact]
+    public void ParseHistoricalForecast_drops_fully_empty_hour()
+    {
+        var json = """
+        {
+          "hourly": {
+            "time": ["2025-06-10T12:00"],
+            "temperature_2m": [null],
+            "precipitation": [null],
+            "temperature_850hPa": [null]
+          }
+        }
+        """;
+
+        OpenMeteoClient.ParseHistoricalForecast(Payload(json), Loc, Model)
+            .Should().BeEmpty();
+    }
 }
