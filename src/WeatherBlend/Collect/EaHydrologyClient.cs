@@ -29,6 +29,13 @@ public sealed class EaHydrologyClient
     {
         _http = http;
         _log = log;
+        // EA Hydrology started returning 403 (Forbidden) to header-less requests
+        // on 2026-06-14 (worked 08:46Z, blocked by 14:47Z) — gov APIs commonly
+        // reject an empty/default User-Agent. Identify ourselves so the requests
+        // are accepted. Guarded so a reused HttpClient isn't double-stamped.
+        if (_http.DefaultRequestHeaders.UserAgent.Count == 0)
+            _http.DefaultRequestHeaders.UserAgent.ParseAdd(
+                "WeatherBlend/1.0 (+https://github.com/harry1310/WeatherBlend)");
     }
 
     /// <summary>
