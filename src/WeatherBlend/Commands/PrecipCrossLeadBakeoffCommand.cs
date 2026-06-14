@@ -723,7 +723,16 @@ public sealed class PrecipCrossLeadBakeoffCommand
             using var c = conn.CreateCommand();
             c.CommandText =
                 $"COPY (SELECT * FROM read_parquet('{Esc(Path.Combine(_cfg.Storage.ForecastsPath, "location=bonehill_rocks", "**", "*.parquet"))}', hive_partitioning=false, union_by_name=true) " +
-                $"WHERE (RunTimeSource IS NULL OR RunTimeSource <> 'offset_day') AND ValidTimeUtc BETWEEN TIMESTAMP '{windowStart:yyyy-MM-dd HH:mm:ss}' AND TIMESTAMP '{windowEnd:yyyy-MM-dd HH:mm:ss}') " +
+                // LIVE FORECASTS ONLY — exclude both offset_day (historical
+                // backfill) AND hist_forecast (the lead-0 archive ≈ analysis).
+                // The policy must score every candidate, ESPECIALLY the 0h model
+                // at the 0-2h bucket, on exactly what predict sees live: the
+                // freshest real cycle. The hist_forecast archive (RunTime=valid)
+                // would out-rank live cycles at τ=0 and isn't available at live
+                // predict time — scoring on it would falsely qualify the 0h model
+                // (e.g. precip's unbankable −4.2% τ=0). This only matters since
+                // hist_forecast was backfilled into the scoring window (2026-06-14).
+                $"WHERE (RunTimeSource IS NULL OR RunTimeSource NOT IN ('offset_day', 'hist_forecast')) AND ValidTimeUtc BETWEEN TIMESTAMP '{windowStart:yyyy-MM-dd HH:mm:ss}' AND TIMESTAMP '{windowEnd:yyyy-MM-dd HH:mm:ss}') " +
                 $"TO '{Esc(Path.Combine(fcPart, "fc.parquet"))}' (FORMAT PARQUET);";
             c.ExecuteNonQuery();
         }
@@ -1205,7 +1214,16 @@ FROM latest WHERE rn = 1;";
             using var c = conn.CreateCommand();
             c.CommandText =
                 $"COPY (SELECT * FROM read_parquet('{Esc(Path.Combine(_cfg.Storage.ForecastsPath, "location=bonehill_rocks", "**", "*.parquet"))}', hive_partitioning=false, union_by_name=true) " +
-                $"WHERE (RunTimeSource IS NULL OR RunTimeSource <> 'offset_day') AND ValidTimeUtc BETWEEN TIMESTAMP '{windowStart:yyyy-MM-dd HH:mm:ss}' AND TIMESTAMP '{windowEnd:yyyy-MM-dd HH:mm:ss}') " +
+                // LIVE FORECASTS ONLY — exclude both offset_day (historical
+                // backfill) AND hist_forecast (the lead-0 archive ≈ analysis).
+                // The policy must score every candidate, ESPECIALLY the 0h model
+                // at the 0-2h bucket, on exactly what predict sees live: the
+                // freshest real cycle. The hist_forecast archive (RunTime=valid)
+                // would out-rank live cycles at τ=0 and isn't available at live
+                // predict time — scoring on it would falsely qualify the 0h model
+                // (e.g. precip's unbankable −4.2% τ=0). This only matters since
+                // hist_forecast was backfilled into the scoring window (2026-06-14).
+                $"WHERE (RunTimeSource IS NULL OR RunTimeSource NOT IN ('offset_day', 'hist_forecast')) AND ValidTimeUtc BETWEEN TIMESTAMP '{windowStart:yyyy-MM-dd HH:mm:ss}' AND TIMESTAMP '{windowEnd:yyyy-MM-dd HH:mm:ss}') " +
                 $"TO '{Esc(Path.Combine(fcPart, "fc.parquet"))}' (FORMAT PARQUET);";
             c.ExecuteNonQuery();
         }
@@ -1340,7 +1358,16 @@ FROM latest WHERE rn = 1;";
             using var c = conn.CreateCommand();
             c.CommandText =
                 $"COPY (SELECT * FROM read_parquet('{Esc(Path.Combine(_cfg.Storage.ForecastsPath, "location=bonehill_rocks", "**", "*.parquet"))}', hive_partitioning=false, union_by_name=true) " +
-                $"WHERE (RunTimeSource IS NULL OR RunTimeSource <> 'offset_day') AND ValidTimeUtc BETWEEN TIMESTAMP '{windowStart:yyyy-MM-dd HH:mm:ss}' AND TIMESTAMP '{windowEnd:yyyy-MM-dd HH:mm:ss}') " +
+                // LIVE FORECASTS ONLY — exclude both offset_day (historical
+                // backfill) AND hist_forecast (the lead-0 archive ≈ analysis).
+                // The policy must score every candidate, ESPECIALLY the 0h model
+                // at the 0-2h bucket, on exactly what predict sees live: the
+                // freshest real cycle. The hist_forecast archive (RunTime=valid)
+                // would out-rank live cycles at τ=0 and isn't available at live
+                // predict time — scoring on it would falsely qualify the 0h model
+                // (e.g. precip's unbankable −4.2% τ=0). This only matters since
+                // hist_forecast was backfilled into the scoring window (2026-06-14).
+                $"WHERE (RunTimeSource IS NULL OR RunTimeSource NOT IN ('offset_day', 'hist_forecast')) AND ValidTimeUtc BETWEEN TIMESTAMP '{windowStart:yyyy-MM-dd HH:mm:ss}' AND TIMESTAMP '{windowEnd:yyyy-MM-dd HH:mm:ss}') " +
                 $"TO '{Esc(Path.Combine(fcPart, "fc.parquet"))}' (FORMAT PARQUET);";
             c.ExecuteNonQuery();
         }
@@ -1483,7 +1510,10 @@ FROM latest WHERE rn = 1;";
         {
             using var conn = new DuckDBConnection("DataSource=:memory:");
             conn.Open(); using var c = conn.CreateCommand();
-            c.CommandText = $"COPY (SELECT * FROM read_parquet('{Esc(Path.Combine(_cfg.Storage.ForecastsPath, "location=bonehill_rocks", "**", "*.parquet"))}', hive_partitioning=false, union_by_name=true) WHERE (RunTimeSource IS NULL OR RunTimeSource <> 'offset_day') AND ValidTimeUtc BETWEEN TIMESTAMP '{windowStart:yyyy-MM-dd HH:mm:ss}' AND TIMESTAMP '{windowEnd:yyyy-MM-dd HH:mm:ss}') TO '{Esc(Path.Combine(fcPart, "fc.parquet"))}' (FORMAT PARQUET);";
+            // Live forecasts only (exclude offset_day backfill + hist_forecast
+            // archive) — score on what predict sees at runtime. See the fuller
+            // note in RunFitLeadPolicyAsync's cache.
+            c.CommandText = $"COPY (SELECT * FROM read_parquet('{Esc(Path.Combine(_cfg.Storage.ForecastsPath, "location=bonehill_rocks", "**", "*.parquet"))}', hive_partitioning=false, union_by_name=true) WHERE (RunTimeSource IS NULL OR RunTimeSource NOT IN ('offset_day', 'hist_forecast')) AND ValidTimeUtc BETWEEN TIMESTAMP '{windowStart:yyyy-MM-dd HH:mm:ss}' AND TIMESTAMP '{windowEnd:yyyy-MM-dd HH:mm:ss}') TO '{Esc(Path.Combine(fcPart, "fc.parquet"))}' (FORMAT PARQUET);";
             c.ExecuteNonQuery();
         }
         _log.LogInformation("Policy eval v2 (full overlap) — SELECT < {Split:yyyy-MM-dd} ≤ SCORE; window {S:yyyy-MM-dd}..{E:yyyy-MM-dd}", splitDate, windowStart, windowEnd);
@@ -1679,7 +1709,16 @@ FROM latest WHERE rn = 1;";
             using var c = conn.CreateCommand();
             c.CommandText =
                 $"COPY (SELECT * FROM read_parquet('{Esc(Path.Combine(_cfg.Storage.ForecastsPath, "location=bonehill_rocks", "**", "*.parquet"))}', hive_partitioning=false, union_by_name=true) " +
-                $"WHERE (RunTimeSource IS NULL OR RunTimeSource <> 'offset_day') AND ValidTimeUtc BETWEEN TIMESTAMP '{windowStart:yyyy-MM-dd HH:mm:ss}' AND TIMESTAMP '{windowEnd:yyyy-MM-dd HH:mm:ss}') " +
+                // LIVE FORECASTS ONLY — exclude both offset_day (historical
+                // backfill) AND hist_forecast (the lead-0 archive ≈ analysis).
+                // The policy must score every candidate, ESPECIALLY the 0h model
+                // at the 0-2h bucket, on exactly what predict sees live: the
+                // freshest real cycle. The hist_forecast archive (RunTime=valid)
+                // would out-rank live cycles at τ=0 and isn't available at live
+                // predict time — scoring on it would falsely qualify the 0h model
+                // (e.g. precip's unbankable −4.2% τ=0). This only matters since
+                // hist_forecast was backfilled into the scoring window (2026-06-14).
+                $"WHERE (RunTimeSource IS NULL OR RunTimeSource NOT IN ('offset_day', 'hist_forecast')) AND ValidTimeUtc BETWEEN TIMESTAMP '{windowStart:yyyy-MM-dd HH:mm:ss}' AND TIMESTAMP '{windowEnd:yyyy-MM-dd HH:mm:ss}') " +
                 $"TO '{Esc(Path.Combine(fcPart, "fc.parquet"))}' (FORMAT PARQUET);";
             c.ExecuteNonQuery();
         }
