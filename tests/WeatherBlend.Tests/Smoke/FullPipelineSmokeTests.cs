@@ -83,6 +83,15 @@ public class FullPipelineSmokeTests
             Path.Combine(fakeR2, "data", "forecasts"),
             locationName, truthStart, forecastDays,
             runTimeSource: "offset_day", leads: leads);
+        // Lead-0 "nowcast" source: best-available hist_forecast rows (LeadHours=0,
+        // RunTimeSource=hist_forecast). Lands in the same forecasts subtree the
+        // sync pulls wholesale, so the lead-0 builder branch reads it without a
+        // sync-script change. Spanned over the full truth window so the rich
+        // 3c lead-0 join has plenty of rows.
+        await SmokeFixtures.WriteForecastTreeAsync(
+            Path.Combine(fakeR2, "data", "forecasts"),
+            locationName, truthStart, truthDays,
+            runTimeSource: "hist_forecast", leads: new[] { 0 });
         foreach (var (_, friendly) in bonehillStations)
         {
             await SmokeFixtures.WriteRainfallTruthAsync(
@@ -344,6 +353,27 @@ public class FullPipelineSmokeTests
                 r.TruthStation.Should().Be(primarySlug);
                 r.ProbWet.Should().BeInRange(0.0, 1.0);
             });
+
+            // ---- 9. Lead-0 NOWCAST — trains a 3c bundle with leads {24, 0}
+            //      where lead 0 is sourced from the hist_forecast tree
+            //      (RunTimeSource=hist_forecast) and lead 24 from offset_day,
+            //      mirroring the production `--nowcast` shape (lead 0 APPENDED to
+            //      the real leads). Proves the lead-0 builder branch
+            //      (hist_forecast sourcing + valid−lag persistence) end-to-end.
+            //      Runs LAST so the real 3c bundle can't collide with the fake
+            //      3c stand-in the 4b mint globbed above. Single station
+            //      (Bellever) keeps it cheap; the source switch is
+            //      station-independent. ----
+            var rcNowcast = await precipTrain.RunAsync(
+                leads: new[] { 24, 0 }, station: "Bellever Dartmoor", featureSet: "rich",
+                tier: null, includeUkv: null, exactLeads: null, cycles: null,
+                location: scope.Config.Location, ct: default);
+            rcNowcast.Should().Be(0, "lead-0 nowcast 3c train should succeed on the hist_forecast tree");
+            var has3cLead0 = Directory.EnumerateDirectories(stationDir)
+                .Where(d => Path.GetFileName(d)!.EndsWith("_phase3c"))
+                .Any(d => File.Exists(Path.Combine(d, "lead_0h.zip")));
+            has3cLead0.Should().BeTrue(
+                "a _phase3c bundle must carry a lead_0h model trained from the hist_forecast tree");
         }
     }
 }

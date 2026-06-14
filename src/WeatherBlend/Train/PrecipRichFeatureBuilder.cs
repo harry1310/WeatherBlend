@@ -264,7 +264,7 @@ exact_ua AS (
                ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, Model ORDER BY RunTimeUtc DESC) AS rn
         FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
         WHERE LocationName = '{escLocation}'
-          AND RunTimeSource = 'exact'
+          AND RunTimeSource = '{NowcastSource.UpperAirRunTimeSource(spec.LeadHours)}'
           AND LeadHours = {spec.LeadHours}
           AND Model IN {uaModelIn}
     )
@@ -286,7 +286,10 @@ exact_ua AS (
         sb.AppendLine("           ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, Model ORDER BY RunTimeUtc DESC) AS rn");
         sb.AppendLine($"    FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)");
         sb.AppendLine($"    WHERE LocationName = '{escLocation}'");
-        sb.AppendLine("      AND RunTimeSource = 'offset_day'");
+        // Lead 0 = nowcast: source the best-available hist_forecast rows instead
+        // of offset_day (whose shortest lead is 24h). Both carry LeadHours=0/N
+        // respectively, so the lead filter below still selects the right rows.
+        sb.AppendLine($"      AND RunTimeSource = '{NowcastSource.SurfaceRunTimeSource(spec.LeadHours)}'");
         sb.AppendLine($"      AND LeadHours = {spec.LeadHours}");
         sb.AppendLine($"      AND Model IN {modelInClause}");
         if (minValidTime.HasValue)
@@ -400,7 +403,10 @@ exact_ua AS (
                 uaValues[pc * mc + 1] = rh850N == 0 ? double.NaN : rh850Sum / rh850N;
             }
 
-            var runTime = valid.AddHours(-spec.LeadHours);
+            // Anchor persistence at valid − max(lead, min-lag). Identity for the
+            // ≥24h leads; at lead 0 it back-shifts off the predicted hour so the
+            // (runTime-inclusive) window can't fold in valid's own gauge reading.
+            var runTime = valid.AddHours(-NowcastSource.PersistenceAnchorHours(spec.LeadHours));
             var persistence = ComputePersistence(hourlyRain, runTime);
 
             rows.Add(ComposeRow(spec, valid, precip, dew, rh, dewdep, pres,

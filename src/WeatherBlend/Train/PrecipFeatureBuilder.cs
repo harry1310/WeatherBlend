@@ -180,7 +180,7 @@ exact_ua AS (
                ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, Model ORDER BY RunTimeUtc DESC) AS rn
         FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
         WHERE LocationName = '{escLocation}'
-          AND RunTimeSource = 'exact'
+          AND RunTimeSource = '{NowcastSource.UpperAirRunTimeSource(spec.LeadHours)}'
           AND LeadHours = {spec.LeadHours}
           AND Model IN {uaModelIn}
     )
@@ -217,7 +217,7 @@ latest AS (
         ) AS rn
     FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
     WHERE LocationName = '{escLocation}'
-      AND RunTimeSource = 'offset_day'
+      AND RunTimeSource = '{NowcastSource.SurfaceRunTimeSource(spec.LeadHours)}'
       AND LeadHours = {spec.LeadHours}
       AND Model IN {modelInClause}
 {minValidTimeFilter}),

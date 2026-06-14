@@ -226,7 +226,11 @@ public sealed class PrecipCrossLeadBakeoffCommand
             pres[i] = pivot.Pressure[ci] ?? double.NaN;
         }
 
-        var runTime = valid.AddHours(-inputLead);
+        // Leak-safe anchor: identity for ≥24h leads (so the policy eval is
+        // unchanged), but at lead 0 it back-shifts off valid so persistence
+        // can't read the predicted hour's own gauge value. Mirrors training
+        // (PrecipRichFeatureBuilder.BuildForLead → NowcastSource).
+        var runTime = valid.AddHours(-NowcastSource.PersistenceAnchorHours(inputLead));
         var persist = PrecipRichFeatureBuilder.ComputePersistence(hourlyRain, runTime);
         double[]? uaValues = overrideUa ?? (spec.FeatureNames.Contains("t850_mean")
             ? PrecipFeatureBuilder.UpperAirValuesFor(ua, valid) : null);
@@ -814,6 +818,352 @@ public sealed class PrecipCrossLeadBakeoffCommand
         }
         Console.WriteLine();
         return acc.Count == 0 ? 3 : 0;
+    }
+
+    // ===================== NOWCAST (lead-0) bake-off =====================
+    //
+    // Does a lead-0 model — trained on the hist_forecast archive (≈analysis at
+    // lead 0) — beat the lead-24 model over the short-range ≤12h window? Walk-
+    // forward OOS: train 3c {0, 24} per Bonehill gauge on data ≤ cutoff, then
+    // score BOTH at target leads τ ∈ {0,3,6,9,12} on the held-out window
+    // (cutoff, now], fed the freshest cycle ≥τh stale, vs EA gauge truth. The
+    // headline cell is τ=12: nowcast model vs the 24h model the ≤12h tab uses.
+    // 3c only for this first read (3o is a follow-up if 3c looks promising).
+    public async Task<int> RunNowcastBakeoffAsync(string? cutoffStr, CancellationToken ct)
+    {
+        await Task.Yield();
+        var location = _cfg.Location;
+        var cutoff = DateOnly.TryParse(cutoffStr, out var dc)
+            ? dc.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc)
+            : new DateTime(2026, 3, 15, 0, 0, 0, DateTimeKind.Utc);
+        var min3c = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var asOf = DateTime.UtcNow;
+        int[] bakeLeads = { 0, 24 };
+        int[] taus = { 0, 3, 6, 9, 12 };
+        var hp = PrecipOccurrenceTrainer.Hyperparameters.Default();
+        var ml = new MLContext(seed: 42);
+        var canon = TempFeatureBuilder.CanonicalModelOrder.ToList();
+        var emptyUa = System.Array.Empty<(DateTime, double[])>();
+        static string Esc(string p) => p.Replace('\\', '/').Replace("'", "''");
+
+        // Two scan-once caches: TRAIN (≤cutoff, all sources incl hist_forecast +
+        // offset_day) and EVAL (>cutoff, non-offset_day = hist_forecast + live).
+        var root = Path.GetDirectoryName(_cfg.Storage.ModelsPath)!;
+        var trFc = Path.Combine(root, "scratch", "nowcast_bake", "tr"); Directory.CreateDirectory(Path.Combine(trFc, "p"));
+        var evFc = Path.Combine(root, "scratch", "nowcast_bake", "ev"); Directory.CreateDirectory(Path.Combine(evFc, "p"));
+        var rnPath = Path.Combine(root, "scratch", "nowcast_bake", "rn"); Directory.CreateDirectory(Path.Combine(rnPath, "p"));
+        var fcGlob = Esc(Path.Combine(_cfg.Storage.ForecastsPath, "location=bonehill_rocks", "**", "*.parquet"));
+        var rnGlob = Esc(Path.Combine(_cfg.Storage.RainfallPath, "location=bonehill_rocks", "**", "*.parquet"));
+        using (var conn = new DuckDBConnection("DataSource=:memory:"))
+        {
+            conn.Open();
+            using var c = conn.CreateCommand();
+            c.CommandText = $"COPY (SELECT * FROM read_parquet('{fcGlob}', hive_partitioning=false, union_by_name=true) " +
+                $"WHERE ValidTimeUtc <= TIMESTAMP '{cutoff:yyyy-MM-dd HH:mm:ss}') TO '{Esc(Path.Combine(trFc, "p", "fc.parquet"))}' (FORMAT PARQUET);";
+            c.ExecuteNonQuery();
+            c.CommandText = $"COPY (SELECT * FROM read_parquet('{fcGlob}', hive_partitioning=false, union_by_name=true) " +
+                $"WHERE (RunTimeSource IS NULL OR RunTimeSource <> 'offset_day') AND ValidTimeUtc > TIMESTAMP '{cutoff:yyyy-MM-dd HH:mm:ss}') TO '{Esc(Path.Combine(evFc, "p", "fc.parquet"))}' (FORMAT PARQUET);";
+            c.ExecuteNonQuery();
+            c.CommandText = $"COPY (SELECT * FROM read_parquet('{rnGlob}', hive_partitioning=false, union_by_name=true)) TO '{Esc(Path.Combine(rnPath, "p", "rn.parquet"))}' (FORMAT PARQUET);";
+            c.ExecuteNonQuery();
+        }
+        _log.LogInformation("Nowcast bake-off — train ≤{Cut:yyyy-MM-dd}, eval ({Cut:yyyy-MM-dd}, {End:yyyy-MM-dd}], τ=[{T}], leads=[{L}].",
+            cutoff, asOf, string.Join(",", taus), string.Join(",", bakeLeads));
+
+        var gauges = location.Rainfall.Stations.Select(s => (Slug: StationSlug.WithEaPrefix(s.Name), Friendly: s.Name)).ToList();
+        var models = new Dictionary<string, Dictionary<int, (ITransformer Model, BlenderSpec Spec)>>();
+        foreach (var (slug, friendly) in gauges)
+        {
+            var byLead = new Dictionary<int, (ITransformer, BlenderSpec)>();
+            foreach (var lead in bakeLeads)
+            {
+                ct.ThrowIfCancellationRequested();
+                var spec = PrecipRichFeatureBuilder.BuildSpec(_cfg.Blenders, lead, withUpperAir: false);
+                var rows = PrecipRichFeatureBuilder.BuildForLead(
+                    trFc, rnPath, location.Name, friendly, spec, minValidTime: min3c, ct: ct, maxValidTime: cutoff);
+                if (rows.Count < 300) { _log.LogWarning("  {Slug} L{Lead}h: only {N} train rows — skipping.", slug, lead, rows.Count); continue; }
+                var ds = BinaryDataset.Split(rows);
+                var trained = PrecipOccurrenceTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
+                byLead[lead] = (trained.Model, spec);
+                _log.LogInformation("  trained 3c {Slug} L{Lead}h: rows={N} (wet {W:P1}, last {E:yyyy-MM-dd}).",
+                    slug, lead, rows.Count, rows.Count(r => r.Label) / (double)rows.Count, rows[^1].ValidTimeUtc);
+            }
+            models[slug] = byLead;
+        }
+
+        // Score: per (gauge, tau, lead) Brier + per-gauge climatology baseline.
+        var acc = new Dictionary<string, EvalAcc>();
+        EvalAcc Acc(string k) { if (!acc.TryGetValue(k, out var a)) { a = new EvalAcc(); acc[k] = a; } return a; }
+        var truthByGauge = new Dictionary<string, IReadOnlyList<(DateTime, double)>>();
+        var rainByGauge = new Dictionary<string, Dictionary<DateTime, double>>();
+        foreach (var (slug, friendly) in gauges)
+        {
+            truthByGauge[slug] = LoadHourlyTruth(rnPath, location.Name, friendly, cutoff, asOf, ct);
+            rainByGauge[slug] = PrecipRichFeatureBuilder.LoadHourlyRain(rnPath, location.Name, friendly, null, ct);
+        }
+        foreach (var tau in taus)
+        {
+            ct.ThrowIfCancellationRequested();
+            var pivot = QueryLatestForecastRows(evFc, location.Name, cutoff, asOf, asOf, tau, ct);
+            foreach (var (slug, friendly) in gauges)
+            {
+                if (!models.TryGetValue(slug, out var byLead)) continue;
+                foreach (var lead in bakeLeads.Where(byLead.ContainsKey))
+                {
+                    var a = Acc($"{tau}|{lead}|{slug}");
+                    var ap = Acc($"{tau}|{lead}|pooled");
+                    var (m, sp) = byLead[lead];
+                    foreach (var (V, mm) in truthByGauge[slug])
+                    {
+                        if (!pivot.TryGetValue(V, out var pv) || !pv.Precip.Any(p => p.HasValue)) continue;
+                        var p = Predict3c(ml, m, sp, canon, V, tau, pv, rainByGauge[slug], emptyUa);
+                        if (p is null) continue;
+                        var y = mm >= WetThresholdMm ? 1.0 : 0.0;
+                        var e2 = (p.Value - y) * (p.Value - y);
+                        a.Sq += e2; a.N++; if (y > 0) a.Wet++;
+                        ap.Sq += e2; ap.N++; if (y > 0) ap.Wet++;
+                    }
+                }
+            }
+            _log.LogInformation("  τ={Tau}h scored.", tau);
+        }
+
+        // Report: pooled Brier by τ, m0 vs m24, with the climatology baseline
+        // (constant pooled wet-rate) for context. Δ% = m0 relative to m24.
+        Console.WriteLine();
+        Console.WriteLine("=== Nowcast bake-off: 3c lead-0 (hist_forecast) vs lead-24, Bonehill pooled, walk-forward OOS ===");
+        Console.WriteLine($"  {"τ",4} {"N",6} {"wet%",5} {"m0",9} {"m24",9} {"Δ% (m0 vs m24)",16} {"clim",9}");
+        foreach (var tau in taus)
+        {
+            var a0 = acc.GetValueOrDefault($"{tau}|0|pooled");
+            var a24 = acc.GetValueOrDefault($"{tau}|24|pooled");
+            var any = a0 is { N: > 0 } ? a0 : a24;
+            if (any is null || any.N == 0) { Console.WriteLine($"  {tau + "h",4}  (no rows)"); continue; }
+            double? b0 = a0 is { N: > 0 } ? a0.Sq / a0.N : null;
+            double? b24 = a24 is { N: > 0 } ? a24.Sq / a24.N : null;
+            var wetRate = (double)any.Wet / any.N;
+            var clim = wetRate * (1 - wetRate);   // Brier of predicting the constant base rate
+            var delta = (b0 is double x && b24 is double yv && yv > 0) ? (x - yv) / yv * 100.0 : double.NaN;
+            Console.WriteLine($"  {tau + "h",4} {any.N,6} {wetRate,5:P0} " +
+                $"{(b0 is double v0 ? v0.ToString("F4") : "-"),9} " +
+                $"{(b24 is double v24 ? v24.ToString("F4") : "-"),9} " +
+                $"{(double.IsNaN(delta) ? "-" : delta.ToString("+0.0;-0.0") + "%"),16} " +
+                $"{clim,9:F4}");
+        }
+        Console.WriteLine();
+        Console.WriteLine("  (negative Δ% = nowcast better. clim = base-rate Brier reference.)");
+        Console.WriteLine();
+        return acc.Count == 0 ? 3 : 0;
+    }
+
+    // ===================== NOWCAST (lead-0) bake-off — TEMPERATURE 2c =====================
+    //
+    // Temp twin of the precip nowcast bake-off, SAME methodology: train m0
+    // (lead-0, hist_forecast) + m24 (lead-24, offset_day) on ≤cutoff, then score
+    // BOTH at target leads τ ∈ {0,3,6,9,12} on the held-out window (cutoff, now],
+    // each fed the freshest live cycle ≥τh stale (PredictForecastFilters
+    // .LiveCycleAsOf, non-offset_day), vs ERA5 (MAE °C). τ=0's pivot grabs the
+    // hist_forecast archive row (≈analysis, RunTime=valid out-ranks live cycles —
+    // not available at live predict time); τ≥3 use live cycles only, the live-
+    // reproducible comparison. Headline = τ=12. Feature layout is lead-
+    // independent so a model trained at one lead scores any τ's pivot.
+    private sealed record TempPivot(
+        double?[] Temp, double?[] Dew, double?[] Rh, double?[] Cloud,
+        double?[] CloudLow, double?[] CloudMid, double?[] CloudHigh,
+        double?[] WindSpeed, double?[] WindDir, double?[] WindGust, double?[] Pressure);
+
+    public async Task<int> RunNowcastBakeoffTempAsync(string? cutoffStr, CancellationToken ct)
+    {
+        await Task.Yield();
+        var location = _cfg.Location;
+        var cutoff = DateOnly.TryParse(cutoffStr, out var dc)
+            ? dc.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc)
+            : new DateTime(2026, 3, 15, 0, 0, 0, DateTimeKind.Utc);
+        var minValid = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var asOf = DateTime.UtcNow;
+        int[] taus = { 0, 3, 6, 9, 12 };
+        var hp = TempTrainer.Hyperparameters.Default();
+        var canon = TempFeatureBuilder.CanonicalModelOrder.ToList();
+        _log.LogInformation("Temp nowcast bake-off (2c) — loc={Loc}, train ≤{Cut:yyyy-MM-dd}, eval ({Cut:yyyy-MM-dd},{End:yyyy-MM-dd}], τ=[{T}]; ERA5 truth.",
+            location.Name, cutoff, asOf, string.Join(",", taus));
+
+        // Scan-once caches: all Bonehill forecasts (training BuildForLead + the
+        // τ pivot read it; both filter source/lead internally) + Bonehill ERA5
+        // (training join + truth). LocationName preserved so the SQL filters match.
+        static string Esc(string p) => p.Replace('\\', '/').Replace("'", "''");
+        var root = Path.GetDirectoryName(_cfg.Storage.ModelsPath)!;
+        var fcCache = Path.Combine(root, "scratch", "temp_nowcast_bake", "fc"); Directory.CreateDirectory(Path.Combine(fcCache, "p"));
+        var eraCache = Path.Combine(root, "scratch", "temp_nowcast_bake", "era"); Directory.CreateDirectory(Path.Combine(eraCache, "p"));
+        var fcGlob = Esc(Path.Combine(_cfg.Storage.ForecastsPath, "location=bonehill_rocks", "**", "*.parquet"));
+        var eraGlob = Esc(Path.Combine(_cfg.Storage.Era5Path, "**", "*.parquet"));
+        var escLoc = location.Name.Replace("'", "''");
+        using (var conn = new DuckDBConnection("DataSource=:memory:"))
+        {
+            conn.Open();
+            using var c = conn.CreateCommand();
+            c.CommandText = $"COPY (SELECT * FROM read_parquet('{fcGlob}', hive_partitioning=false, union_by_name=true)) TO '{Esc(Path.Combine(fcCache, "p", "fc.parquet"))}' (FORMAT PARQUET);";
+            c.ExecuteNonQuery();
+            c.CommandText = $"COPY (SELECT * FROM read_parquet('{eraGlob}', hive_partitioning=false, union_by_name=true) WHERE LocationName = '{escLoc}') TO '{Esc(Path.Combine(eraCache, "p", "era.parquet"))}' (FORMAT PARQUET);";
+            c.ExecuteNonQuery();
+        }
+
+        // Train m0 (lead 0) + m24 (lead 24) on ≤cutoff.
+        var spec0 = TempRichFeatureBuilder.BuildSpec(_cfg.Blenders, NowcastSource.LeadHours);
+        var spec24 = TempRichFeatureBuilder.BuildSpec(_cfg.Blenders, 24);
+        var train0 = TempRichFeatureBuilder.BuildForLead(fcCache, eraCache, location.Name, spec0, minValid, ct)
+            .Where(r => r.ValidTimeUtc <= cutoff).ToList();
+        var train24 = TempRichFeatureBuilder.BuildForLead(fcCache, eraCache, location.Name, spec24, minValid, ct)
+            .Where(r => r.ValidTimeUtc <= cutoff).ToList();
+        if (train0.Count < 300 || train24.Count < 300)
+        {
+            _log.LogError("  too few train rows (lead0={N0}, lead24={N24}) ≤cutoff — widen window / check backfill.", train0.Count, train24.Count);
+            return 2;
+        }
+        var ds0 = RegressionDataset.Split(train0);
+        var ds24 = RegressionDataset.Split(train24);
+        var m0 = TempTrainer.TrainVector(ds0.Train, ds0.Val, spec0, hp);
+        var m24 = TempTrainer.TrainVector(ds24.Train, ds24.Val, spec24, hp);
+        _log.LogInformation("  trained m0 (lead-0, n={N0}) + m24 (lead-24, n={N24}).", ds0.Train.Count, ds24.Train.Count);
+
+        // ERA5 truth over the held-out window.
+        var truth = LoadEra5Temp(eraCache, location.Name, cutoff, asOf, ct);
+
+        static string Pct(double a, double b) => (double.IsNaN(a) || double.IsNaN(b) || b <= 0)
+            ? "-" : ((a - b) / b * 100.0).ToString("+0.0;-0.0") + "%";
+
+        Console.WriteLine();
+        Console.WriteLine("=== Temp nowcast bake-off (2c): MAE °C vs ERA5, Bonehill, walk-forward OOS (live cycles, τ-fed) ===");
+        Console.WriteLine($"  {"τ",4} {"N",6} {"m0 (nowcast)",13} {"m24",10} {"Δ% (m0 vs m24)",16}");
+        foreach (var tau in taus)
+        {
+            ct.ThrowIfCancellationRequested();
+            var pivot = QueryLatestTempRows(fcCache, location.Name, cutoff, asOf, asOf, tau, canon, ct);
+            double s0 = 0, s24 = 0; int n0 = 0, n24 = 0;
+            foreach (var (v, t) in truth)
+            {
+                if (!pivot.TryGetValue(v, out var pv)) continue;
+                var p0 = PredictTemp(m0, spec0, canon, v, pv);
+                var p24 = PredictTemp(m24, spec24, canon, v, pv);
+                if (p0 is double x0) { s0 += Math.Abs(x0 - t); n0++; }
+                if (p24 is double x24) { s24 += Math.Abs(x24 - t); n24++; }
+            }
+            var mae0 = n0 > 0 ? s0 / n0 : double.NaN;
+            var mae24 = n24 > 0 ? s24 / n24 : double.NaN;
+            Console.WriteLine($"  {tau + "h",4} {Math.Min(n0, n24),6} {mae0,13:F3} {mae24,10:F3} {Pct(mae0, mae24),16}");
+        }
+        Console.WriteLine();
+        Console.WriteLine("  (negative Δ% = nowcast better. τ=0 is fed the hist_forecast archive analysis,");
+        Console.WriteLine("   which isn't available live; τ≥3 are live-reproducible. Headline = τ=12.)");
+        Console.WriteLine();
+        return 0;
+    }
+
+    // ERA5 hourly 2m-temperature truth (valid→°C) for one location + window.
+    private static IReadOnlyList<(DateTime Valid, double TempC)> LoadEra5Temp(
+        string era5Path, string locationName, DateTime earliest, DateTime latest, CancellationToken ct)
+    {
+        var glob = Path.Combine(era5Path, "**", "*.parquet").Replace('\\', '/').Replace("'", "''");
+        var esc = locationName.Replace("'", "''");
+        var sql = $@"
+SELECT ValidTimeUtc, Temperature2m
+FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+WHERE LocationName = '{esc}' AND Temperature2m IS NOT NULL
+  AND ValidTimeUtc >  TIMESTAMP '{earliest:yyyy-MM-dd HH:mm:ss}'
+  AND ValidTimeUtc <= TIMESTAMP '{latest:yyyy-MM-dd HH:mm:ss}'
+ORDER BY ValidTimeUtc;";
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        var rows = new List<(DateTime, double)>();
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            ct.ThrowIfCancellationRequested();
+            rows.Add((r.GetDateTime(0), r.GetDouble(1)));
+        }
+        return rows;
+    }
+
+    // Freshest live cycle (RunTime ≤ valid − τ, non-offset_day) per (valid,
+    // model) — the temp-rich per-model pivot. Indexed by canonical model slot.
+    private static IReadOnlyDictionary<DateTime, TempPivot> QueryLatestTempRows(
+        string forecastsPath, string locationName,
+        DateTime earliestValid, DateTime latestValid, DateTime asOfRunTime, int leadHoursLowerBound,
+        IReadOnlyList<string> canonOrder, CancellationToken ct)
+    {
+        var fcGlob = Path.Combine(forecastsPath, "**", "*.parquet").Replace('\\', '/').Replace("'", "''");
+        var filter = PredictForecastFilters.LiveCycleAsOf(
+            locationName, asOfRunTime, earliestValid, latestValid, leadHoursLowerBound);
+        var sql = $@"
+WITH latest AS (
+    SELECT ValidTimeUtc, Model, RunTimeUtc,
+           Temperature2m, DewPoint2m, RelativeHumidity2m, CloudCover,
+           CloudCoverLow, CloudCoverMid, CloudCoverHigh,
+           WindSpeed10m, WindDirection10m, WindGusts10m, SurfacePressure,
+           ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, Model ORDER BY RunTimeUtc DESC) AS rn
+    FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
+    WHERE {filter}
+)
+SELECT ValidTimeUtc, Model,
+       Temperature2m, DewPoint2m, RelativeHumidity2m, CloudCover,
+       CloudCoverLow, CloudCoverMid, CloudCoverHigh,
+       WindSpeed10m, WindDirection10m, WindGusts10m, SurfacePressure
+FROM latest WHERE rn = 1;";
+
+        var slot = canonOrder.Select((id, i) => (id, i)).ToDictionary(x => x.id, x => x.i);
+        int n = canonOrder.Count;
+        var acc = new Dictionary<DateTime, TempPivot>();
+        TempPivot New() => new(new double?[n], new double?[n], new double?[n], new double?[n],
+            new double?[n], new double?[n], new double?[n], new double?[n], new double?[n], new double?[n], new double?[n]);
+
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        using var r = cmd.ExecuteReader();
+        double? G(int i) => r.IsDBNull(i) ? (double?)null : r.GetDouble(i);
+        while (r.Read())
+        {
+            ct.ThrowIfCancellationRequested();
+            var valid = r.GetDateTime(0);
+            if (!slot.TryGetValue(r.GetString(1), out var si)) continue;
+            if (!acc.TryGetValue(valid, out var p)) { p = New(); acc[valid] = p; }
+            p.Temp[si] = G(2); p.Dew[si] = G(3); p.Rh[si] = G(4); p.Cloud[si] = G(5);
+            p.CloudLow[si] = G(6); p.CloudMid[si] = G(7); p.CloudHigh[si] = G(8);
+            p.WindSpeed[si] = G(9); p.WindDir[si] = G(10); p.WindGust[si] = G(11); p.Pressure[si] = G(12);
+        }
+        return acc;
+    }
+
+    // Build the temp-rich row from a pivot (canonical-slot indexed) in spec.Models
+    // order and predict. Null when no model has a temperature for this valid.
+    private static double? PredictTemp(
+        TempTrainer.TrainedBlender m, BlenderSpec spec, List<string> canonOrder,
+        DateTime valid, TempPivot pv)
+    {
+        int n = spec.Models.Count;
+        double[] Col(Func<TempPivot, double?[]> sel)
+        {
+            var src = sel(pv);
+            var outv = new double[n];
+            for (int i = 0; i < n; i++)
+            {
+                var ci = canonOrder.IndexOf(spec.Models[i]);
+                outv[i] = ci >= 0 && src[ci].HasValue ? src[ci]!.Value : double.NaN;
+            }
+            return outv;
+        }
+        var temps = Col(p => p.Temp);
+        if (temps.All(double.IsNaN)) return null;
+        var row = TempRichFeatureBuilder.ComposeRow(
+            spec, valid, temps,
+            dewPoints: Col(p => p.Dew), rhs: Col(p => p.Rh), clouds: Col(p => p.Cloud),
+            cloudLows: Col(p => p.CloudLow), cloudMids: Col(p => p.CloudMid), cloudHighs: Col(p => p.CloudHigh),
+            windSpeeds: Col(p => p.WindSpeed), windDirsDeg: Col(p => p.WindDir),
+            windGusts: Col(p => p.WindGust), pressures: Col(p => p.Pressure),
+            windDirMeanDeg: 0, era5Temp: 0);
+        return TempTrainer.PredictVector(m.Ml, m.Model, spec, new[] { row })[0];
     }
 
     // ===================== per-lead BLEND crossover (study bundles, OOS) =====================

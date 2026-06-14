@@ -108,8 +108,12 @@ public static class TempFeatureBuilder
         var anyNotNull = "(" + string.Join(" OR ", spec.Models.Select(m => $"p.temp_{ShortName(m)} IS NOT NULL")) + ")";
         var whereClause = $"({requiredNotNull})\n  AND {anyNotNull}";
 
+        // Lead 0 = nowcast: source best-available hist_forecast rows instead of
+        // the offset_day Previous Runs tree (see NowcastSource). Temp truth is
+        // ERA5, so there's no persistence-leakage concern here — only the
+        // forecast source switches.
         var fcWhere =
-            $"LocationName = '{locationName}' AND RunTimeSource = 'offset_day' " +
+            $"LocationName = '{locationName}' AND RunTimeSource = '{NowcastSource.SurfaceRunTimeSource(spec.LeadHours)}' " +
             $"AND LeadHours = {spec.LeadHours} AND Temperature2m IS NOT NULL " +
             $"AND Model IN {modelInClause}" +
             minValidTimeFilter;

@@ -286,7 +286,9 @@ public static class PrecipRichOroFeatureBuilder
         sb.AppendLine("           ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, Model ORDER BY RunTimeUtc DESC) AS rn");
         sb.AppendLine($"    FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)");
         sb.AppendLine($"    WHERE LocationName = '{escLocation}'");
-        sb.AppendLine("      AND RunTimeSource = 'offset_day'");
+        // Lead 0 = nowcast: terrain dynamic covariates come from the same
+        // hist_forecast rows the rich surface block reads (see NowcastSource).
+        sb.AppendLine($"      AND RunTimeSource = '{NowcastSource.SurfaceRunTimeSource(spec.LeadHours)}'");
         sb.AppendLine($"      AND LeadHours = {spec.LeadHours}");
         sb.AppendLine($"      AND Model IN {modelInClause}");
         sb.AppendLine(")");

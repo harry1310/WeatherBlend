@@ -793,6 +793,42 @@ public static class Program
         }, policyEvalStartOpt);
         root.AddCommand(policyEval);
 
+        // precip-nowcast-bakeoff — does a lead-0 model (trained on hist_forecast
+        // ≈analysis) beat the lead-24 model over the ≤12h window? Walk-forward
+        // OOS, Bonehill 3c, τ ∈ {0,3,6,9,12}. Headline = τ=12 (nowcast vs the
+        // 24h model the ≤12h tab uses). Self-contained: trains + scores in one run.
+        var nowcastCutoffOpt = new Option<string?>(
+            name: "--cutoff",
+            description: "Train on ValidTime ≤ this (yyyy-MM-dd); score on the held-out window after it. Default 2026-03-15.",
+            getDefaultValue: () => null);
+        var nowcastBake = new Command(
+            "precip-nowcast-bakeoff",
+            "Bake-off: lead-0 (hist_forecast) vs lead-24 3c over τ≤12h, Bonehill, walk-forward OOS")
+            { nowcastCutoffOpt };
+        nowcastBake.SetHandler(async (cutoff) =>
+        {
+            var cmd = host.Services.GetRequiredService<PrecipCrossLeadBakeoffCommand>();
+            Environment.ExitCode = await cmd.RunNowcastBakeoffAsync(cutoff, CancellationToken.None);
+        }, nowcastCutoffOpt);
+        root.AddCommand(nowcastBake);
+
+        // temp-nowcast-bakeoff — temperature (2c) analogue: 2×2 bracket
+        // (m0/m24 × archive-fed/24h-stale-fed) vs ERA5, walk-forward OOS.
+        var tempNowcastCutoffOpt = new Option<string?>(
+            name: "--cutoff",
+            description: "Train on ValidTime ≤ this (yyyy-MM-dd); hold out after it. Default 2026-03-15.",
+            getDefaultValue: () => null);
+        var tempNowcastBake = new Command(
+            "temp-nowcast-bakeoff",
+            "Bake-off: lead-0 (hist_forecast) vs lead-24 2c temperature, Bonehill, walk-forward OOS (MAE vs ERA5)")
+            { tempNowcastCutoffOpt };
+        tempNowcastBake.SetHandler(async (cutoff) =>
+        {
+            var cmd = host.Services.GetRequiredService<PrecipCrossLeadBakeoffCommand>();
+            Environment.ExitCode = await cmd.RunNowcastBakeoffTempAsync(cutoff, CancellationToken.None);
+        }, tempNowcastCutoffOpt);
+        root.AddCommand(tempNowcastBake);
+
         // precip-policy-eval-split — STUDY v2: full bidirectional matrix (all models at every lead)
         // + SELECT/SCORE split + per-lead blend, on live OOS inputs.
         var pesStartOpt = new Option<string?>(name: "--start", description: "Live window start (yyyy-MM-dd). Default 2026-03-19.", getDefaultValue: () => null);
@@ -954,9 +990,13 @@ public static class Program
             name: "--location",
             description: "Override the primary location for precipitation training (3a/3c). Must match a name in config.yaml's `locations:` list (e.g. 'membury_devon'). Default = primary location (Bonehill). Other targets ignore this flag for now.",
             getDefaultValue: () => null);
+        var nowcastOpt = new Option<bool>(
+            name: "--nowcast",
+            description: "Also train the lead-0 'nowcast' model (sourced from the hist_forecast archive) into the same per-phase bundle. Temperature + precipitation only. Default false (production untouched).",
+            getDefaultValue: () => false);
         var train = new Command("train", "Train the blender (phase 2b temperature / phase 3a precipitation / phase 3b dry-window)")
         {
-            targetOpt, leadOpt, stationOpt, windowOpt, featureSetOpt, tierOpt, includeUkvOpt, exactLeadsOpt, cyclesOpt, trainLocationOpt,
+            targetOpt, leadOpt, stationOpt, windowOpt, featureSetOpt, tierOpt, includeUkvOpt, exactLeadsOpt, cyclesOpt, trainLocationOpt, nowcastOpt,
         };
         train.SetHandler(async (ctx) =>
         {
@@ -974,8 +1014,9 @@ public static class Program
             int[]? cycles = string.IsNullOrWhiteSpace(cyclesStr) ? null
                 : cyclesStr.Split(',').Select(s => int.Parse(s.Trim(), System.Globalization.CultureInfo.InvariantCulture)).ToArray();
             var locationOverride = ctx.ParseResult.GetValueForOption(trainLocationOpt);
+            var includeNowcast = ctx.ParseResult.GetValueForOption(nowcastOpt);
             var cmd = host.Services.GetRequiredService<TrainCommand>();
-            ctx.ExitCode = await cmd.RunAsync(target, lead, station, window, featureSet, tier, includeUkv, exactLeads, cycles, locationOverride, ctx.GetCancellationToken());
+            ctx.ExitCode = await cmd.RunAsync(target, lead, station, window, featureSet, tier, includeUkv, exactLeads, cycles, locationOverride, ctx.GetCancellationToken(), includeNowcast);
         });
         root.AddCommand(train);
 

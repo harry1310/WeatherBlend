@@ -184,11 +184,19 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             _log.LogInformation("Time ranges — train {T0:yyyy-MM-dd}..{T1:yyyy-MM-dd}, " +
                                 "val {V0:yyyy-MM-dd}..{V1:yyyy-MM-dd}, test {E0:yyyy-MM-dd}..{E1:yyyy-MM-dd}",
                 ds.TrainStart, ds.TrainEnd, ds.ValStart, ds.ValEnd, ds.TestStart, ds.TestEnd);
-            totalTrainRows += ds.Train.Count;
-            totalValRows   += ds.Val.Count;
-            totalTestRows  += ds.Test.Count;
-            firstLeadTrainFeatures ??= ds.Train.Select(r => r.Features).ToList();
-            firstLeadTrainLabels   ??= ds.Train.Select(r => r.Label).ToList();
+            // Lead-0 nowcast rows train on a different (shorter, hist_forecast)
+            // window, so exclude them from the RetrainGuard baseline — otherwise
+            // --nowcast would shift the rows/label/feature totals vs the
+            // production leads and could trip the gate. (No-op for non-nowcast
+            // leads, incl. 3d's {12,24}.)
+            if (!Train.Common.NowcastSource.IsNowcast(lead))
+            {
+                totalTrainRows += ds.Train.Count;
+                totalValRows   += ds.Val.Count;
+                totalTestRows  += ds.Test.Count;
+                firstLeadTrainFeatures ??= ds.Train.Select(r => r.Features).ToList();
+                firstLeadTrainLabels   ??= ds.Train.Select(r => r.Label).ToList();
+            }
 
             var trained = PrecipOccurrenceTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
 
@@ -471,11 +479,19 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             _log.LogInformation("Time ranges — train {T0:yyyy-MM-dd}..{T1:yyyy-MM-dd}, " +
                                 "val {V0:yyyy-MM-dd}..{V1:yyyy-MM-dd}, test {E0:yyyy-MM-dd}..{E1:yyyy-MM-dd}",
                 ds.TrainStart, ds.TrainEnd, ds.ValStart, ds.ValEnd, ds.TestStart, ds.TestEnd);
-            totalTrainRows += ds.Train.Count;
-            totalValRows   += ds.Val.Count;
-            totalTestRows  += ds.Test.Count;
-            firstLeadTrainFeatures ??= ds.Train.Select(r => r.Features).ToList();
-            firstLeadTrainLabels   ??= ds.Train.Select(r => r.Label).ToList();
+            // Lead-0 nowcast rows train on a different (shorter, hist_forecast)
+            // window, so exclude them from the RetrainGuard baseline — otherwise
+            // --nowcast would shift the rows/label/feature totals vs the
+            // production leads and could trip the gate. (No-op for non-nowcast
+            // leads, incl. 3d's {12,24}.)
+            if (!Train.Common.NowcastSource.IsNowcast(lead))
+            {
+                totalTrainRows += ds.Train.Count;
+                totalValRows   += ds.Val.Count;
+                totalTestRows  += ds.Test.Count;
+                firstLeadTrainFeatures ??= ds.Train.Select(r => r.Features).ToList();
+                firstLeadTrainLabels   ??= ds.Train.Select(r => r.Label).ToList();
+            }
 
             var trained = PrecipOccurrenceTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
 
@@ -822,11 +838,16 @@ public sealed class PrecipTrainCommand : TrainCommandBase
                 pooledTrain.Count,
                 pooledTrain.Count(r => r.Label) / (double)pooledTrain.Count,
                 pooledVal.Count);
-            totalTrainRows += pooledTrain.Count;
-            totalValRows   += pooledVal.Count;
-            totalTestRows  += perStation.Sum(p => p.Ds.Test.Count);
-            firstLeadTrainFeatures ??= pooledTrain.Select(r => r.Features).ToList();
-            firstLeadTrainLabels   ??= pooledTrain.Select(r => r.Label).ToList();
+            // Lead-0 nowcast pool excluded from the RetrainGuard baseline (see
+            // the per-station note above) — different training window.
+            if (!Train.Common.NowcastSource.IsNowcast(lead))
+            {
+                totalTrainRows += pooledTrain.Count;
+                totalValRows   += pooledVal.Count;
+                totalTestRows  += perStation.Sum(p => p.Ds.Test.Count);
+                firstLeadTrainFeatures ??= pooledTrain.Select(r => r.Features).ToList();
+                firstLeadTrainLabels   ??= pooledTrain.Select(r => r.Label).ToList();
+            }
 
             var trained = PrecipOccurrenceTrainer.TrainVector(pooledTrain, pooledVal, spec, hp);
             importanceByLead[lead] = trained.FeatureImportance;
@@ -1132,11 +1153,19 @@ public sealed class PrecipTrainCommand : TrainCommandBase
                 ds.Train.Count, ds.TrainWet,
                 ds.Val.Count,   ds.ValWet,
                 ds.Test.Count,  ds.TestWet);
-            totalTrainRows += ds.Train.Count;
-            totalValRows   += ds.Val.Count;
-            totalTestRows  += ds.Test.Count;
-            firstLeadTrainFeatures ??= ds.Train.Select(r => r.Features).ToList();
-            firstLeadTrainLabels   ??= ds.Train.Select(r => r.Label).ToList();
+            // Lead-0 nowcast rows train on a different (shorter, hist_forecast)
+            // window, so exclude them from the RetrainGuard baseline — otherwise
+            // --nowcast would shift the rows/label/feature totals vs the
+            // production leads and could trip the gate. (No-op for non-nowcast
+            // leads, incl. 3d's {12,24}.)
+            if (!Train.Common.NowcastSource.IsNowcast(lead))
+            {
+                totalTrainRows += ds.Train.Count;
+                totalValRows   += ds.Val.Count;
+                totalTestRows  += ds.Test.Count;
+                firstLeadTrainFeatures ??= ds.Train.Select(r => r.Features).ToList();
+                firstLeadTrainLabels   ??= ds.Train.Select(r => r.Label).ToList();
+            }
 
             var trained = PrecipOccurrenceTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
 

@@ -117,7 +117,10 @@ public static class TempRichFeatureBuilder
         sb.AppendLine("           ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, Model ORDER BY RunTimeUtc DESC) AS rn");
         sb.AppendLine($"    FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)");
         sb.AppendLine($"    WHERE LocationName = '{locationName}'");
-        sb.AppendLine("      AND RunTimeSource = 'offset_day'");
+        // Lead 0 = nowcast: source best-available hist_forecast rows instead of
+        // the offset_day Previous Runs tree (see NowcastSource). Temp truth is
+        // ERA5, so no persistence-leakage concern — only the source switches.
+        sb.AppendLine($"      AND RunTimeSource = '{Common.NowcastSource.SurfaceRunTimeSource(spec.LeadHours)}'");
         sb.AppendLine($"      AND LeadHours = {spec.LeadHours}");
         sb.AppendLine("      AND Temperature2m IS NOT NULL");
         sb.AppendLine($"      AND Model IN {modelInClause}");

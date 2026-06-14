@@ -81,7 +81,12 @@ public sealed class TrainCommand : TrainCommandBase
 
     public async Task<int> RunAsync(
         string target, string lead, string? station, string? window, string featureSet,
-        string? tier, bool? includeUkv, int[]? exactLeads, int[]? cycles, string? locationOverride, CancellationToken ct)
+        string? tier, bool? includeUkv, int[]? exactLeads, int[]? cycles, string? locationOverride, CancellationToken ct,
+        // Opt-in (default OFF so production is untouched): also train the lead-0
+        // "nowcast" model, sourced from the hist_forecast archive (see
+        // NowcastSource). Prepended to the lead set so it lands in the SAME
+        // per-phase bundle as the ≥24h leads. Temperature + precipitation only.
+        bool includeNowcast = false)
     {
         // tier + includeUkv + exactLeads are exact-runtime levers (Phase 2d /
         // 3d). Defaults (null, null, null) preserve historical behaviour: 2d
@@ -111,6 +116,27 @@ public sealed class TrainCommand : TrainCommandBase
         {
             _log.LogError("Invalid --lead value '{Lead}'. Expected 24, 48, 72, 96, 120, or all.", lead);
             return 2;
+        }
+
+        // --nowcast: prepend lead 0 so the per-phase bundle also carries a
+        // lead_0h model trained on the hist_forecast archive. Temperature +
+        // precipitation only (the families the user scoped: 2b/2c, 3a/3c/3o).
+        if (includeNowcast)
+        {
+            if (t is not ("temperature" or "precipitation"))
+            {
+                _log.LogError("--nowcast is only supported for targets temperature, precipitation (got '{T}').", t);
+                return 2;
+            }
+            // APPEND (not prepend) so leads[0] stays a production lead: the
+            // RetrainGuard captures its rows/label-rate/feature basis from
+            // leads[0], and we don't want the new lead-0 window to shift that
+            // baseline and trip the sanity gate on production retrains.
+            leads = leads.Where(l => l != Train.Common.NowcastSource.LeadHours)
+                .Append(Train.Common.NowcastSource.LeadHours)
+                .ToArray();
+            _log.LogInformation("--nowcast ON: lead {L}h appended (hist_forecast-sourced); leads now [{Leads}].",
+                Train.Common.NowcastSource.LeadHours, string.Join(",", leads));
         }
 
         var fs = (featureSet ?? "lean").ToLowerInvariant();
@@ -294,10 +320,17 @@ public sealed class TrainCommand : TrainCommandBase
             // Accumulate row counts across all leads (aggregate signal); buffer
             // the FIRST lead's train features for per-feature stats so the
             // distribution bands aren't blurred by per-lead variability.
-            totalTrainRows += ds.Train.Count;
-            totalValRows   += ds.Val.Count;
-            totalTestRows  += ds.Test.Count;
-            firstLeadTrainFeatures ??= ds.Train.Select(r => r.Features).ToList();
+            // Lead-0 nowcast rows train on a different (shorter, hist_forecast)
+            // window — exclude from the RetrainGuard baseline so --nowcast can't
+            // shift the rows/feature totals vs the production leads. (No-op for
+            // non-nowcast leads, incl. exact-runtime's {12,24}.)
+            if (!Train.Common.NowcastSource.IsNowcast(lead))
+            {
+                totalTrainRows += ds.Train.Count;
+                totalValRows   += ds.Val.Count;
+                totalTestRows  += ds.Test.Count;
+                firstLeadTrainFeatures ??= ds.Train.Select(r => r.Features).ToList();
+            }
 
             var trained = TempTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
 
@@ -495,10 +528,17 @@ public sealed class TrainCommand : TrainCommandBase
                 ds.Train.Count, ds.TrainStart, ds.TrainEnd,
                 ds.Val.Count,   ds.ValStart,   ds.ValEnd,
                 ds.Test.Count,  ds.TestStart,  ds.TestEnd);
-            totalTrainRows += ds.Train.Count;
-            totalValRows   += ds.Val.Count;
-            totalTestRows  += ds.Test.Count;
-            firstLeadTrainFeatures ??= ds.Train.Select(r => r.Features).ToList();
+            // Lead-0 nowcast rows train on a different (shorter, hist_forecast)
+            // window — exclude from the RetrainGuard baseline so --nowcast can't
+            // shift the rows/feature totals vs the production leads. (No-op for
+            // non-nowcast leads, incl. exact-runtime's {12,24}.)
+            if (!Train.Common.NowcastSource.IsNowcast(lead))
+            {
+                totalTrainRows += ds.Train.Count;
+                totalValRows   += ds.Val.Count;
+                totalTestRows  += ds.Test.Count;
+                firstLeadTrainFeatures ??= ds.Train.Select(r => r.Features).ToList();
+            }
 
             var trained = TempTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
 
@@ -698,10 +738,17 @@ public sealed class TrainCommand : TrainCommandBase
                 ds.Train.Count, ds.TrainStart, ds.TrainEnd,
                 ds.Val.Count,   ds.ValStart,   ds.ValEnd,
                 ds.Test.Count,  ds.TestStart,  ds.TestEnd);
-            totalTrainRows += ds.Train.Count;
-            totalValRows   += ds.Val.Count;
-            totalTestRows  += ds.Test.Count;
-            firstLeadTrainFeatures ??= ds.Train.Select(r => r.Features).ToList();
+            // Lead-0 nowcast rows train on a different (shorter, hist_forecast)
+            // window — exclude from the RetrainGuard baseline so --nowcast can't
+            // shift the rows/feature totals vs the production leads. (No-op for
+            // non-nowcast leads, incl. exact-runtime's {12,24}.)
+            if (!Train.Common.NowcastSource.IsNowcast(lead))
+            {
+                totalTrainRows += ds.Train.Count;
+                totalValRows   += ds.Val.Count;
+                totalTestRows  += ds.Test.Count;
+                firstLeadTrainFeatures ??= ds.Train.Select(r => r.Features).ToList();
+            }
 
             var trained = TempTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
 
