@@ -82,15 +82,33 @@ public sealed class PrecipLeadPolicy
         public int ScoreN { get; set; }
     }
 
-    public static string PathFor(string modelsRoot)
-        => Path.Combine(modelsRoot, "precipitation", FileName);
+    /// <summary>
+    /// Policy artifact path. Per-TARGET (precipitation / temperature — the file
+    /// lives under that target's models dir) and per-LOCATION when a location is
+    /// given (LEAD_POLICY_&lt;location&gt;.json), so a Bonehill-fitted policy is no
+    /// longer applied to Membury/Sennen. <paramref name="location"/> null = the
+    /// legacy global file (LEAD_POLICY.json), kept as a transition fallback.
+    /// </summary>
+    public static string PathFor(string modelsRoot, string target, string? location = null)
+        => Path.Combine(modelsRoot, target,
+            location is null ? FileName : $"LEAD_POLICY_{location}.json");
 
-    /// <summary>Load, or null when the file is absent or unreadable — the
-    /// caller treats null as "production bucket policy" (predict must never
-    /// break on a policy problem; the producer treats null as "no incumbent").</summary>
-    public static PrecipLeadPolicy? TryLoad(string modelsRoot)
+    /// <summary>Load the policy for (target, location), or null when absent /
+    /// unreadable (caller treats null as "production bucket policy"). When a
+    /// location is given, the per-location file takes precedence and the legacy
+    /// global file is the fallback until per-location fits have run.</summary>
+    public static PrecipLeadPolicy? TryLoad(string modelsRoot, string target, string? location = null)
     {
-        var path = PathFor(modelsRoot);
+        if (location is not null)
+        {
+            var perLoc = TryLoadFile(PathFor(modelsRoot, target, location));
+            if (perLoc is not null) return perLoc;
+        }
+        return TryLoadFile(PathFor(modelsRoot, target));
+    }
+
+    private static PrecipLeadPolicy? TryLoadFile(string path)
+    {
         try
         {
             if (!File.Exists(path)) return null;
@@ -103,10 +121,11 @@ public sealed class PrecipLeadPolicy
     }
 
     /// <summary>Atomic write (temp + rename) so a crash mid-write can't leave
-    /// a half policy for predict to trip on.</summary>
-    public void Save(string modelsRoot)
+    /// a half policy for predict to trip on. Writes the per-location file when
+    /// a location is given.</summary>
+    public void Save(string modelsRoot, string target, string? location = null)
     {
-        var path = PathFor(modelsRoot);
+        var path = PathFor(modelsRoot, target, location);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var tmp = path + ".tmp";
         File.WriteAllText(tmp, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));

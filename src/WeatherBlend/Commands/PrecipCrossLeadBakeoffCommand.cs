@@ -1833,7 +1833,7 @@ FROM latest WHERE rn = 1;";
         }
 
         // ---- per-band decisions + gates ----
-        var incumbent = PrecipLeadPolicy.TryLoad(modelsRoot);
+        var incumbent = PrecipLeadPolicy.TryLoad(modelsRoot, "precipitation", location.Name);
         var policy = new PrecipLeadPolicy
         {
             FittedAtUtc = asOf,
@@ -1935,10 +1935,174 @@ FROM latest WHERE rn = 1;";
             if (entries.Count > 0) policy.Phases[phase] = entries;
         }
 
-        policy.Save(modelsRoot);
+        policy.Save(modelsRoot, "precipitation", location.Name);
         Console.WriteLine();
-        Console.WriteLine($"LEAD_POLICY.json written → {PrecipLeadPolicy.PathFor(modelsRoot)} " +
+        Console.WriteLine($"LEAD_POLICY written → {PrecipLeadPolicy.PathFor(modelsRoot, "precipitation", location.Name)} " +
                           $"({policy.Phases.Sum(p => p.Value.Count)} deviation band(s); absent bands = production buckets)");
+        return 0;
+    }
+
+    // ===================== TEMPERATURE per-lead policy producer (target-generic) =====================
+    //
+    // Temp twin of RunFitLeadPolicyAsync. Same band machinery (±24h candidate
+    // window, SELECT/SCORE split, margin + hysteresis gates, lead-0 candidate)
+    // but: single phase 2c, single-location ERA5 truth (MAE, not gauge Brier),
+    // models trained in-process (TempRichFeatureBuilder + TempTrainer), and the
+    // τ pivot read via QueryLatestTempRows. Writes the per-location temperature
+    // LEAD_POLICY. Scoring is LIVE-ONLY (the score cache excludes offset_day AND
+    // hist_forecast) so the 0h model is judged on what predict sees at runtime.
+    public async Task<int> RunFitLeadPolicyTempAsync(string? startDateStr, string? cutoffStr, CancellationToken ct)
+    {
+        await Task.Yield();
+        var location = _cfg.Location;
+        var modelsRoot = _cfg.Storage.ModelsPath;
+        var thresholds = new PrecipLeadPolicy.ThresholdsBlock();
+        var windowStart = DateOnly.TryParse(startDateStr, out var d0)
+            ? d0.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc)
+            : new DateTime(2026, 3, 19, 0, 0, 0, DateTimeKind.Utc);
+        var studyCutoff = DateOnly.TryParse(cutoffStr, out var dc)
+            ? dc.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc)
+            : new DateTime(2026, 3, 15, 0, 0, 0, DateTimeKind.Utc);
+        var minValid = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var asOf = DateTime.UtcNow;
+        var windowEnd = asOf;
+        var splitDate = windowEnd.Date.AddDays(-thresholds.HoldoutDays);
+        if (splitDate <= windowStart.AddDays(7))
+        {
+            _log.LogError("temp fit-lead-policy: SELECT slice <7 days — widen --start."); return 2;
+        }
+        int[] cands = { 0, 24, 48, 72, 96, 120 };
+        var taus = Enumerable.Range(0, 117 / 3 + 1).Select(i => 3 * i).ToArray();
+        const int CandWindowHours = 24;
+        var pairs = new List<(int Lo, int Hi)>();
+        for (int i = 0; i < cands.Length; i++)
+            for (int j = i + 1; j < cands.Length; j++) pairs.Add((cands[i], cands[j]));
+
+        var canon = TempFeatureBuilder.CanonicalModelOrder.ToList();
+        var hp = TempTrainer.Hyperparameters.Default();
+        static string Esc(string p) => p.Replace('\\', '/').Replace("'", "''");
+        var root = Path.GetDirectoryName(modelsRoot)!;
+        var fcGlobAll = Esc(Path.Combine(_cfg.Storage.ForecastsPath, "location=bonehill_rocks", "**", "*.parquet"));
+        var eraGlob = Esc(Path.Combine(_cfg.Storage.Era5Path, "**", "*.parquet"));
+        var escLoc = location.Name.Replace("'", "''");
+        // TRAIN cache: ≤cutoff, all sources (offset_day for ≥24h, hist_forecast
+        // for lead 0). SCORE cache: in-window, LIVE ONLY (no offset_day, no
+        // hist_forecast). ERA cache: truth.
+        var trainFc = Path.Combine(root, "scratch", "temp_policy_fit", "trfc"); Directory.CreateDirectory(Path.Combine(trainFc, "p"));
+        var scoreFc = Path.Combine(root, "scratch", "temp_policy_fit", "scfc"); Directory.CreateDirectory(Path.Combine(scoreFc, "p"));
+        var eraCache = Path.Combine(root, "scratch", "temp_policy_fit", "era"); Directory.CreateDirectory(Path.Combine(eraCache, "p"));
+        using (var conn = new DuckDBConnection("DataSource=:memory:"))
+        {
+            conn.Open();
+            using var c = conn.CreateCommand();
+            c.CommandText = $"COPY (SELECT * FROM read_parquet('{fcGlobAll}', hive_partitioning=false, union_by_name=true) WHERE ValidTimeUtc <= TIMESTAMP '{studyCutoff:yyyy-MM-dd HH:mm:ss}') TO '{Esc(Path.Combine(trainFc, "p", "fc.parquet"))}' (FORMAT PARQUET);";
+            c.ExecuteNonQuery();
+            // Live forecasts only (see RunFitLeadPolicyAsync's cache note) — score on what predict sees.
+            c.CommandText = $"COPY (SELECT * FROM read_parquet('{fcGlobAll}', hive_partitioning=false, union_by_name=true) WHERE (RunTimeSource IS NULL OR RunTimeSource NOT IN ('offset_day', 'hist_forecast')) AND ValidTimeUtc BETWEEN TIMESTAMP '{windowStart:yyyy-MM-dd HH:mm:ss}' AND TIMESTAMP '{windowEnd:yyyy-MM-dd HH:mm:ss}') TO '{Esc(Path.Combine(scoreFc, "p", "fc.parquet"))}' (FORMAT PARQUET);";
+            c.ExecuteNonQuery();
+            c.CommandText = $"COPY (SELECT * FROM read_parquet('{eraGlob}', hive_partitioning=false, union_by_name=true) WHERE LocationName = '{escLoc}') TO '{Esc(Path.Combine(eraCache, "p", "era.parquet"))}' (FORMAT PARQUET);";
+            c.ExecuteNonQuery();
+        }
+
+        // Train one 2c study model per lead on ≤cutoff (trainFc is already bounded).
+        var specByLead = cands.ToDictionary(l => l, l => TempRichFeatureBuilder.BuildSpec(_cfg.Blenders, l));
+        var models = new Dictionary<int, TempTrainer.TrainedBlender>();
+        foreach (var l in cands)
+        {
+            ct.ThrowIfCancellationRequested();
+            var rows = TempRichFeatureBuilder.BuildForLead(trainFc, eraCache, location.Name, specByLead[l], minValid, ct);
+            if (rows.Count < 300) { _log.LogWarning("  temp study lead {L}h: {N} rows ≤cutoff — skip.", l, rows.Count); continue; }
+            var ds = RegressionDataset.Split(rows);
+            models[l] = TempTrainer.TrainVector(ds.Train, ds.Val, specByLead[l], hp);
+            _log.LogInformation("  temp study lead {L}h trained (n={N}).", l, ds.Train.Count);
+        }
+        if (!models.ContainsKey(24)) { _log.LogError("temp fit: no lead-24 study model — abort."); return 2; }
+
+        // ERA5 truth over the score window, then per-τ MAE accumulation split SELECT/SCORE.
+        var truth = LoadEra5Temp(eraCache, location.Name, windowStart, windowEnd, ct);
+        if (truth.Count == 0) { _log.LogWarning("temp fit: no ERA5 truth in window — skip update."); return 0; }
+        var selAbs = new Dictionary<string, double>(); var scoAbs = new Dictionary<string, double>();
+        var selN = new Dictionary<string, int>(); var scoN = new Dictionary<string, int>();
+        void Add(Dictionary<string, double> a, string tk, string ser, double e) => a[$"{tk}|{ser}"] = a.GetValueOrDefault($"{tk}|{ser}") + e;
+        foreach (var tau in taus)
+        {
+            ct.ThrowIfCancellationRequested();
+            var pivot = QueryLatestTempRows(scoreFc, location.Name, windowStart, windowEnd, asOf, tau, canon, ct);
+            var tk = $"2c|{tau}";
+            foreach (var (V, t) in truth)
+            {
+                if (!pivot.TryGetValue(V, out var pv)) continue;
+                var preds = new Dictionary<int, double>();
+                foreach (var m in cands)
+                {
+                    if (!models.TryGetValue(m, out var mdl)) continue;
+                    var p = PredictTemp(mdl, specByLead[m], canon, V, pv);
+                    if (p is double x) preds[m] = x;
+                }
+                if (!preds.ContainsKey(24)) continue;   // need the baseline for a comparable row
+                var (a, n) = V < splitDate ? (selAbs, selN) : (scoAbs, scoN);
+                n[tk] = n.GetValueOrDefault(tk) + 1;
+                foreach (var (m, p) in preds) Add(a, tk, $"s{m}", Math.Abs(p - t));
+                foreach (var (lo, hi) in pairs)
+                    if (preds.TryGetValue(lo, out var pl) && preds.TryGetValue(hi, out var ph))
+                        Add(a, tk, $"b{lo}x{hi}", Math.Abs(0.5 * (pl + ph) - t));
+            }
+        }
+
+        // Band decisions (mirror the precip producer; MAE in place of Brier).
+        var incumbent = PrecipLeadPolicy.TryLoad(modelsRoot, "temperature", location.Name);
+        var policy = new PrecipLeadPolicy
+        {
+            FittedAtUtc = asOf, Location = location.Name,
+            WindowStartUtc = windowStart, WindowEndUtc = windowEnd,
+            StudyCutoffUtc = studyCutoff, SelectScoreSplitUtc = splitDate, Thresholds = thresholds,
+        };
+        const int MinScoreN = 300;
+        const string phase = "2c";
+        var entries = new List<PrecipLeadPolicy.BandEntry>();
+        Console.WriteLine();
+        Console.WriteLine("=== temp fit-lead-policy (2c): 6h-band decisions, MAE °C vs ERA5 (SELECT picks, SCORE grades) ===");
+        Console.WriteLine($"  {"band",9} {"Nsco",6} {"baseline",13} {"SELECT pick",14} {"SCORE",8} {"decision",16}");
+        for (int lo = 0; lo < 120; lo += 6)
+        {
+            var tin = taus.Where(t => t >= lo && t < lo + 6).ToArray();
+            double SelB(string s) { var n = tin.Sum(t => selN.GetValueOrDefault($"{phase}|{t}")); return n == 0 ? double.NaN : tin.Sum(t => selAbs.GetValueOrDefault($"{phase}|{t}|{s}")) / n; }
+            double ScoB(string s) { var n = tin.Sum(t => scoN.GetValueOrDefault($"{phase}|{t}")); return n == 0 ? double.NaN : tin.Sum(t => scoAbs.GetValueOrDefault($"{phase}|{t}|{s}")) / n; }
+            int nSco = tin.Sum(t => scoN.GetValueOrDefault($"{phase}|{t}"));
+            var baseLead = PrecipLeadPolicy.BucketModelFor(lo);
+            var baseSco = ScoB($"s{baseLead}");
+            if (nSco < MinScoreN || double.IsNaN(baseSco)) { Console.WriteLine($"  {lo + "-" + (lo + 6) + "h",9} {nSco,6} (insufficient SCORE rows — baseline)"); continue; }
+            bool InWindow(int m) => lo >= m - CandWindowHours && lo < m + CandWindowHours;
+            var candidates = new List<(string Series, string Kind, List<int> Leads)>();
+            foreach (var m in cands.Where(m => InWindow(m) && models.ContainsKey(m))) candidates.Add(($"s{m}", "single", new List<int> { m }));
+            foreach (var (l, h) in pairs.Where(p => InWindow(p.Lo) && InWindow(p.Hi) && models.ContainsKey(p.Lo) && models.ContainsKey(p.Hi)))
+                candidates.Add(($"b{l}x{h}", "blend", new List<int> { l, h }));
+            if (candidates.Count == 0) continue;
+            var pick = candidates.OrderBy(c => SelB(c.Series)).First();
+            var inc = incumbent?.Lookup(phase, lo);
+            string IncSeries(PrecipLeadPolicy.BandEntry e) => e.Kind == "blend" ? $"b{e.Leads[0]}x{e.Leads[1]}" : $"s{e.Leads[0]}";
+            if (inc is not null)
+            {
+                var incSco = ScoB(IncSeries(inc));
+                if (!double.IsNaN(incSco) && IncSeries(inc) != pick.Series
+                    && !(ScoB(pick.Series) <= incSco * (1 - thresholds.HysteresisPct / 100.0)))
+                    pick = candidates.FirstOrDefault(c => c.Series == IncSeries(inc), pick);
+            }
+            var pickSco = ScoB(pick.Series);
+            var isIncumbentPick = inc is not null && IncSeries(inc) == pick.Series;
+            var requiredPct = isIncumbentPick ? Math.Max(0.0, thresholds.MarginPct - thresholds.HysteresisPct) : thresholds.MarginPct;
+            var isBaselinePick = pick.Kind == "single" && pick.Leads[0] == baseLead;
+            var passes = !isBaselinePick && pickSco <= baseSco * (1 - requiredPct / 100.0);
+            var deltaPct = 100.0 * (baseSco - pickSco) / baseSco;
+            var decision = passes ? (pick.Kind == "blend" ? $"blend {pick.Leads[0]}+{pick.Leads[1]}" : $"m{pick.Leads[0]}") : $"baseline m{baseLead}";
+            Console.WriteLine($"  {lo + "-" + (lo + 6) + "h",9} {nSco,6} {$"m{baseLead} {baseSco:F3}",13} {$"{pick.Series}",14} {pickSco,8:F3} {decision,16}{(passes ? $"  (+{deltaPct:F2}%)" : "")}");
+            if (passes)
+                entries.Add(new PrecipLeadPolicy.BandEntry { LeadLo = lo, LeadHi = lo + 6, Kind = pick.Kind, Leads = pick.Leads, BaselineBrier = baseSco, PolicyBrier = pickSco, DeltaPct = deltaPct, ScoreN = nSco });
+        }
+        if (entries.Count > 0) policy.Phases[phase] = entries;
+        policy.Save(modelsRoot, "temperature", location.Name);
+        Console.WriteLine();
+        Console.WriteLine($"temperature LEAD_POLICY written → {PrecipLeadPolicy.PathFor(modelsRoot, "temperature", location.Name)} ({entries.Count} deviation band(s))");
         return 0;
     }
 

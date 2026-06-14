@@ -866,6 +866,26 @@ public static class Program
         }, fitPolicyStartOpt, fitPolicyCutoffOpt);
         root.AddCommand(fitPolicy);
 
+        // temp-fit-lead-policy — temperature twin (target-generic policy). Trains
+        // 2c study models in-process (no separate retrain), scores MAE vs ERA5 on
+        // live-only inputs, emits the per-location temperature LEAD_POLICY.
+        var fitPolicyTempStartOpt = new Option<string?>(
+            name: "--start", description: "Live OOS window start (yyyy-MM-dd). Default 2026-03-19.",
+            getDefaultValue: () => null);
+        var fitPolicyTempCutoffOpt = new Option<string?>(
+            name: "--cutoff", description: "Study-train cutoff (yyyy-MM-dd). Default 2026-03-15.",
+            getDefaultValue: () => null);
+        var fitPolicyTemp = new Command(
+            "temp-fit-lead-policy",
+            "Fit + emit the temperature LEAD_POLICY (per-6h-band 2c model policy, MAE vs ERA5, ±24h window)")
+            { fitPolicyTempStartOpt, fitPolicyTempCutoffOpt };
+        fitPolicyTemp.SetHandler(async (start, cutoff) =>
+        {
+            var cmd = host.Services.GetRequiredService<PrecipCrossLeadBakeoffCommand>();
+            Environment.ExitCode = await cmd.RunFitLeadPolicyTempAsync(start, cutoff, CancellationToken.None);
+        }, fitPolicyTempStartOpt, fitPolicyTempCutoffOpt);
+        root.AddCommand(fitPolicyTemp);
+
         // precip-ifs-cycle-bakeoff — 4-way IFS-cycle comparison for 3d
         // (Both / Oper / Scda / None) on a constant row/eval set. Trains
         // in memory, persists nothing; writes data/reports/ifs_cycle_bakeoff_3d.md.

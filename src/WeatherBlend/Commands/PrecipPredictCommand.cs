@@ -174,7 +174,9 @@ public sealed class PrecipPredictCommand
         // band model deviations for 3c/3o. Null (absent / unreadable) means
         // "production bucket models" everywhere — predict must never break on
         // a policy problem, so any load failure degrades to today's behaviour.
-        var leadPolicy = PrecipLeadPolicy.TryLoad(modelsRoot);
+        // Per-location policy (falls back to the legacy global file until the
+        // per-location fit has run for this location).
+        var leadPolicy = PrecipLeadPolicy.TryLoad(modelsRoot, "precipitation", location.Name);
         if (leadPolicy is not null)
             _log.LogInformation(
                 "Lead policy loaded (fitted {Fit:yyyy-MM-dd}, {N} deviation band(s)); absent bands use bucket models.",
