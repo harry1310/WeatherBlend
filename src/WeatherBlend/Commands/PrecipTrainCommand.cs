@@ -7,6 +7,7 @@ using WeatherBlend.Train;
 using WeatherBlend.Train.Common;
 using WeatherBlend.Train.Oro;
 using WeatherBlend.Train.PrecipExact;
+using DuckDB.NET.Data;
 
 namespace WeatherBlend.Commands;
 
@@ -142,6 +143,8 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         if (minValidTime3a.HasValue)
             _log.LogInformation("Phase 3a training-data cutoff: ValidTimeUtc >= {Cutoff:yyyy-MM-dd} (from phases.yaml)", minValidTime3a.Value);
 
+        var cache = MaterializeTrainCache(location.Name, $"3a_{location.Name}");
+
         foreach (var lead in leads)
         {
             ct.ThrowIfCancellationRequested();
@@ -152,8 +155,8 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             _log.LogInformation("Spec: {Spec}", spec);
 
             var rows = PrecipFeatureBuilder.BuildForLead(
-                _cfg.Storage.ForecastsPath,
-                _cfg.Storage.RainfallPath,
+                cache.FcPath,
+                cache.RnPath,
                 location.Name,
                 primaryStation,
                 spec,
@@ -347,6 +350,33 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         return 0;
     }
 
+    // Scan-once train cache: materialise THIS location's forecasts + rainfall
+    // into one parquet each, so the per-(station,lead) BuildForLead calls become
+    // one-file reads instead of re-globbing the whole forecast tree ~40× per
+    // retrain (3c/3o each loop 4 stations × 5 leads). One full-tree scan here +
+    // N cheap reads, vs N full-tree scans. All forecast sources are kept
+    // (offset_day for ≥24h leads, hist_forecast for the lead-0 nowcast, exact for
+    // the UA block) — the builders filter by RunTimeSource/LeadHours internally.
+    // Mirrors RunPolicyRetrainAsync's proven pattern.
+    private (string FcPath, string RnPath) MaterializeTrainCache(string locationName, string tag)
+    {
+        var scratchRoot = Path.Combine(Path.GetDirectoryName(_cfg.Storage.ModelsPath)!, "scratch", "train_cache", tag);
+        var fcPath = Path.Combine(scratchRoot, "fc"); Directory.CreateDirectory(Path.Combine(fcPath, "p"));
+        var rnPath = Path.Combine(scratchRoot, "rn"); Directory.CreateDirectory(Path.Combine(rnPath, "p"));
+        static string Esc(string p) => p.Replace('\\', '/').Replace("'", "''");
+        var fcSrc = Esc(Path.Combine(_cfg.Storage.ForecastsPath, "location=" + locationName, "**", "*.parquet"));
+        var rnSrc = Esc(Path.Combine(_cfg.Storage.RainfallPath, "location=" + locationName, "**", "*.parquet"));
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        using var c = conn.CreateCommand();
+        c.CommandText = $"COPY (SELECT * FROM read_parquet('{fcSrc}', hive_partitioning=false, union_by_name=true)) TO '{Esc(Path.Combine(fcPath, "p", "fc.parquet"))}' (FORMAT PARQUET);";
+        c.ExecuteNonQuery();
+        c.CommandText = $"COPY (SELECT * FROM read_parquet('{rnSrc}', hive_partitioning=false, union_by_name=true)) TO '{Esc(Path.Combine(rnPath, "p", "rn.parquet"))}' (FORMAT PARQUET);";
+        c.ExecuteNonQuery();
+        _log.LogInformation("Scan-once train cache → {Scratch} (forecasts + rainfall, {Loc}).", scratchRoot, locationName);
+        return (fcPath, rnPath);
+    }
+
     // ---- Phase 3c: rich-feature precip occurrence blender (champion/challenger) ----
 
     private async Task<int> RunPhase3cAsync(int[] leads, string? stationOverride, Config.LocationConfig location, CancellationToken ct)
@@ -386,11 +416,13 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         _log.LogInformation("Hyperparameters: iter={Iter} lr={Lr} leaves={Leaves} esr={Esr} seed={Seed} (identical to Phase 3a — feature richness is the only variable)",
             hp.NumberOfIterations, hp.LearningRate, hp.NumberOfLeaves, hp.EarlyStoppingRound, hp.Seed);
 
+        var cache = MaterializeTrainCache(location.Name, $"3c_{location.Name}");
+
         var anyFail = false;
         foreach (var station in stationsToTrain)
         {
             ct.ThrowIfCancellationRequested();
-            var rc = await TrainPhase3cStationAsync(station, leads, modelsRoot, hp, location, ct);
+            var rc = await TrainPhase3cStationAsync(station, leads, modelsRoot, hp, location, cache, ct);
             if (rc != 0) anyFail = true;
         }
         return anyFail ? 3 : 0;
@@ -402,6 +434,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         string modelsRoot,
         PrecipOccurrenceTrainer.Hyperparameters hp,
         Config.LocationConfig location,
+        (string FcPath, string RnPath) cache,
         CancellationToken ct)
     {
         var stationSlug = StationSlug.WithEaPrefix(primaryStation);
@@ -449,8 +482,8 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             _log.LogInformation("Spec: {Spec}", spec);
 
             var rows = PrecipRichFeatureBuilder.BuildForLead(
-                _cfg.Storage.ForecastsPath,
-                _cfg.Storage.RainfallPath,
+                cache.FcPath,
+                cache.RnPath,
                 location.Name,
                 primaryStation,
                 spec,
@@ -786,6 +819,8 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         // mid-week) gets flagged separately.
         var perStationLabelRates = new Dictionary<string, double>();
 
+        var cache = MaterializeTrainCache(location.Name, $"3o_{location.Name}");
+
         foreach (var lead in leads)
         {
             ct.ThrowIfCancellationRequested();
@@ -806,7 +841,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             {
                 ct.ThrowIfCancellationRequested();
                 var rows = PrecipRichOroFeatureBuilder.BuildForLead(
-                    _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
+                    cache.FcPath, cache.RnPath,
                     location.Name, name, oro, idx, spec, ct, includeStationId: includeStationId);
                 if (rows.Count < 200)
                 {

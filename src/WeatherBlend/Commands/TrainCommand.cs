@@ -1,4 +1,5 @@
 using System.Globalization;
+using DuckDB.NET.Data;
 using Microsoft.Extensions.Logging;
 using WeatherBlend.Config;
 using WeatherBlend.Evaluate.Temp;
@@ -238,6 +239,30 @@ public sealed class TrainCommand : TrainCommandBase
         };
     }
 
+    // Scan-once temperature train cache: this location's forecasts + ERA5 into
+    // one parquet each, so the per-lead BuildForLead calls are one-file reads
+    // instead of re-globbing the whole forecast tree per lead (more so now that
+    // --nowcast adds a lead-0 build and the hist_forecast backfill enlarged the
+    // tree). All forecast sources kept; the builders filter internally.
+    private (string FcPath, string EraPath) MaterializeTempTrainCache(string locationName, string tag)
+    {
+        var scratchRoot = Path.Combine(Path.GetDirectoryName(_cfg.Storage.ModelsPath)!, "scratch", "train_cache", tag);
+        var fcPath = Path.Combine(scratchRoot, "fc"); Directory.CreateDirectory(Path.Combine(fcPath, "p"));
+        var eraPath = Path.Combine(scratchRoot, "era"); Directory.CreateDirectory(Path.Combine(eraPath, "p"));
+        static string Esc(string p) => p.Replace('\\', '/').Replace("'", "''");
+        var fcSrc = Esc(Path.Combine(_cfg.Storage.ForecastsPath, "location=" + locationName, "**", "*.parquet"));
+        var eraSrc = Esc(Path.Combine(_cfg.Storage.Era5Path, "location=" + locationName, "**", "*.parquet"));
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        using var c = conn.CreateCommand();
+        c.CommandText = $"COPY (SELECT * FROM read_parquet('{fcSrc}', hive_partitioning=false, union_by_name=true)) TO '{Esc(Path.Combine(fcPath, "p", "fc.parquet"))}' (FORMAT PARQUET);";
+        c.ExecuteNonQuery();
+        c.CommandText = $"COPY (SELECT * FROM read_parquet('{eraSrc}', hive_partitioning=false, union_by_name=true)) TO '{Esc(Path.Combine(eraPath, "p", "era.parquet"))}' (FORMAT PARQUET);";
+        c.ExecuteNonQuery();
+        _log.LogInformation("Scan-once temp train cache → {Scratch} (forecasts + ERA5, {Loc}).", scratchRoot, locationName);
+        return (fcPath, eraPath);
+    }
+
     private static int[]? ParseLeads(string lead) => lead.ToLowerInvariant() switch
     {
         "all" => DefaultLeads,
@@ -283,6 +308,8 @@ public sealed class TrainCommand : TrainCommandBase
         if (minValidTime2b.HasValue)
             _log.LogInformation("Phase 2b training-data cutoff: ValidTimeUtc >= {Cutoff:yyyy-MM-dd} (from phases.yaml)", minValidTime2b.Value);
 
+        var cache2b = MaterializeTempTrainCache(location.Name, $"2b_{location.Name}");
+
         foreach (var lead in leads)
         {
             ct.ThrowIfCancellationRequested();
@@ -293,8 +320,8 @@ public sealed class TrainCommand : TrainCommandBase
             _log.LogInformation("Spec: {Spec}", spec);
 
             var rows = TempFeatureBuilder.BuildForLead(
-                _cfg.Storage.ForecastsPath,
-                _cfg.Storage.Era5Path,
+                cache2b.FcPath,
+                cache2b.EraPath,
                 location.Name,
                 spec,
                 minValidTime2b,
@@ -494,6 +521,8 @@ public sealed class TrainCommand : TrainCommandBase
         if (minValidTime2c.HasValue)
             _log.LogInformation("Phase 2c training-data cutoff: ValidTimeUtc >= {Cutoff:yyyy-MM-dd} (from phases.yaml)", minValidTime2c.Value);
 
+        var cache2c = MaterializeTempTrainCache(location.Name, $"2c_{location.Name}");
+
         foreach (var lead in leads)
         {
             ct.ThrowIfCancellationRequested();
@@ -504,8 +533,8 @@ public sealed class TrainCommand : TrainCommandBase
             _log.LogInformation("Spec: {Spec}", spec);
 
             var rows = TempRichFeatureBuilder.BuildForLead(
-                _cfg.Storage.ForecastsPath,
-                _cfg.Storage.Era5Path,
+                cache2c.FcPath,
+                cache2c.EraPath,
                 location.Name,
                 spec,
                 minValidTime2c,
