@@ -795,7 +795,14 @@ public static partial class SitePages
         // Defaults to "" so existing test fixtures + legacy positional
         // callers still build; production projection in RenderSiteCommand
         // assigns the real value via named arg.
-        string LocationName = "");
+        string LocationName = "",
+        // Whether real upper-air (…hPa) features were in hand for this
+        // valid-time (UA-capable phases 3c-with-UA / 3o only; null = N/A).
+        // Drives the UA-backed background shading on the rain charts. UA is
+        // pulled from the archive-forecast feed on its own schedule, so it's
+        // present for some hours and not others — uniform across lines at a
+        // given valid-time. Defaults null so legacy/test callers still build.
+        bool? UpperAirIncluded = null);
 
     /// <summary>
     /// Per-valid-hour aggregate of NWP fog / low-cloud forecasts. Counts

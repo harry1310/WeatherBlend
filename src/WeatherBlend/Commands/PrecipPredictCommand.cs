@@ -569,7 +569,11 @@ public sealed class PrecipPredictCommand
             }
 
             // Compose the row — lean or rich depending on spec.FeatureSet.
+            // uaIncluded: null = phase never uses UA (lean 3a / legacy 3c); set
+            // true/false in the rich branch per whether real UA values were in
+            // hand for this valid-time (drives the site's UA-backed shading).
             BinaryTrainingRow row;
+            bool? uaIncluded = null;
             if (isRich)
             {
                 var dew    = new double[N];
@@ -596,6 +600,10 @@ public sealed class PrecipPredictCommand
                     ? PrecipFeatureBuilder.UpperAirValuesFor(
                         uaByLead.TryGetValue(lead, out var asof) ? asof : System.Array.Empty<(DateTime, double[])>(), valid)
                     : null;
+                // UA-capable bundle (t850_mean in schema): record whether real
+                // (non-NaN) UA values were actually present for this valid-time.
+                if (spec.FeatureNames.Contains("t850_mean"))
+                    uaIncluded = uaValues is not null && uaValues.Any(v => !double.IsNaN(v));
                 row = PrecipRichFeatureBuilder.ComposeRow(
                     spec, valid, specPrecip, dew, rh, dewDep, pres,
                     rhMean: pivot.RhMean, dewDepressionMean: pivot.DewDepressionMean,
@@ -690,6 +698,7 @@ public sealed class PrecipPredictCommand
                 ConformalSetTag = modelLeads.Length == 1 && modelLeads[0] == lead
                     ? ModelArtifact.PredictConformalIfPresent(versionDir, lead, pWet[0])
                     : null,
+                UpperAirIncluded = uaIncluded,
             });
 
             _log.LogInformation(
@@ -1089,6 +1098,11 @@ public sealed class PrecipPredictCommand
                 ConformalSetTag = modelLeads.Length == 1 && modelLeads[0] == lead
                     ? ModelArtifact.PredictConformalIfPresent(versionDir, lead, pWet[0])
                     : null,
+                // 3o always carries the UA block; flag whether real UA values
+                // were in hand for this valid-time (drives the site shading).
+                UpperAirIncluded = richSpec.FeatureNames.Contains("t850_mean")
+                    ? uaValues is not null && uaValues.Any(v => !double.IsNaN(v))
+                    : (bool?)null,
             });
             _log.LogInformation("Station {Station} lead {Lead}h → P(wet) {P:0.000} (clim {Clim:0.000}, phase={Phase}, models=[{M}])",
                 outStation, lead, pWet[0], climPWet, metadata.Phase, string.Join("+", modelLeads));

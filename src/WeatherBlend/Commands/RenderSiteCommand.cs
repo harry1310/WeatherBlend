@@ -105,7 +105,8 @@ public sealed class RenderSiteCommand
             ProbWetQ05:      r.ProbWetQ05,
             ProbWetQ95:      r.ProbWetQ95,
             Ci80Width:       r.Ci80Width,
-            Ci90Width:       r.Ci90Width)).ToList();
+            Ci90Width:       r.Ci90Width,
+            UpperAirIncluded: r.UpperAirIncluded)).ToList();
         _log.LogInformation("Loaded {N} precipitation prediction rows (all locations).", precipAllLocs.Count);
 
         var feelsLikeAllLocs = QueryFeelsLikePredictions(windowStart, predictionEnd, ct);

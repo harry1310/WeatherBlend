@@ -176,7 +176,8 @@ SELECT LocationName, TruthStation, ModelVersion, PredictionMadeAtUtc, ValidTimeU
        PrecipAgreementWet01,
        FeatureVectorHash,
        ConformalSetTag,
-       ProbWetStd, ProbWetQ05, ProbWetQ95, Ci80Width, Ci90Width
+       ProbWetStd, ProbWetQ05, ProbWetQ95, Ci80Width, Ci90Width,
+       UpperAirIncluded
 FROM {fromClause}
 WHERE LocationName IN ({locationInList})
   AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
@@ -222,6 +223,9 @@ ORDER BY TruthStation, ModelVersion, LeadHours, ValidTimeUtc";
         ProbWetQ95  = NullableDouble(r, 21),
         Ci80Width   = NullableDouble(r, 22),
         Ci90Width   = NullableDouble(r, 23),
+        // UA-included flag persisted since 2026-06-14 (UA-backed chart shading).
+        // union_by_name → null for older parquets; rendered as "no shading".
+        UpperAirIncluded = r.IsDBNull(24) ? (bool?)null : r.GetBoolean(24),
     };
 
     // -----------------------------------------------------------------

@@ -119,4 +119,15 @@ public sealed class PrecipPredictionRow
     public double? ProbWetQ95 { get; init; }
     public double? Ci80Width  { get; init; }
     public double? Ci90Width  { get; init; }
+
+    /// <summary>
+    /// Whether this prediction actually had upper-air (…hPa) features in hand —
+    /// i.e. the UA block was present AND carried real (non-NaN) values for this
+    /// valid-time. UA is pulled from the archive-forecast feed on a different
+    /// schedule, so a UA-capable phase (3c-with-UA, 3o) has it for some hours
+    /// and not others. The site shades the chart over UA-backed time spans.
+    /// Null on phases/bundles that never use UA (legacy 3c, 3a) — "not
+    /// applicable", rendered as no shading.
+    /// </summary>
+    public bool? UpperAirIncluded { get; init; }
 }

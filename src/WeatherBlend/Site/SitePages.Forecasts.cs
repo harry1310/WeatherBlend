@@ -333,6 +333,43 @@ public static partial class SitePages
     private const string TorReferenceGaugeSlug = "ea_bellever_dartmoor";
     private const string TorStationSlug = "bonehill_rocks";
 
+    /// <summary>
+    /// Contiguous valid-time spans (OADate XStart..XEnd) where the prediction
+    /// had real upper-air features in hand, clipped to the visible [xMin, xMax]
+    /// window — the background-shaded "UA-backed" regions on the P(wet) chart.
+    /// Hours are grouped into runs (gap &gt; ~1h breaks a run); each run's band
+    /// runs from its first hour to one hour past its last so the shading covers
+    /// the whole hour cell. Empty when no row carries UpperAirIncluded==true
+    /// (phases that never use UA, or no UA available in the window).
+    /// </summary>
+    private static IReadOnlyList<(double XStart, double XEnd)> BuildUpperAirBands(
+        IReadOnlyList<PrecipForecastPoint> rows, double xMin, double xMax)
+    {
+        var times = rows
+            .Where(r => r.UpperAirIncluded == true
+                        && r.ValidTimeUtc.ToOADate() >= xMin
+                        && r.ValidTimeUtc.ToOADate() <= xMax)
+            .Select(r => r.ValidTimeUtc)
+            .Distinct()
+            .OrderBy(t => t)
+            .ToList();
+        var bands = new List<(double, double)>();
+        if (times.Count == 0) return bands;
+        var runStart = times[0];
+        var prev = times[0];
+        foreach (var t in times.Skip(1))
+        {
+            if ((t - prev).TotalHours > 1.5)
+            {
+                bands.Add((runStart.ToOADate(), prev.AddHours(1).ToOADate()));
+                runStart = t;
+            }
+            prev = t;
+        }
+        bands.Add((runStart.ToOADate(), prev.AddHours(1).ToOADate()));
+        return bands;
+    }
+
     private static string PrecipPhaseColor(string phase, bool isChampion)
     {
         if (isChampion) return NwpPalette.Blend;   // brand purple
@@ -661,6 +698,13 @@ public static partial class SitePages
                         Dashed: true));
             }
 
+            // Upper-air-backed time spans: shade the hours where the prediction
+            // actually had …hPa features in hand. UA is pulled from the archive-
+            // forecast feed on its own schedule (uniform across lines at a given
+            // valid-time), so it's present for some hours and not others — read
+            // it off the champion-phase rows. Empty for phases that never use UA.
+            var uaBands = BuildUpperAirBands(championLatestPerValidByStation[station], pageXMin, pageXMax);
+
             s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
             {
                 Title = $"P(wet) — {PrettyStation(station)} — +{lead}h",
@@ -673,7 +717,11 @@ public static partial class SitePages
                 TodayLineX = input.GeneratedAtUtc.ToOADate(),
                 XMin = pageXMin,
                 XMax = pageXMax,
+                Bands = uaBands,
+                BandColor = "rgba(96, 125, 139, 0.13)",  // faint slate = "upper-air in the mix"
             }));
+            if (uaBands.Count > 0)
+                s.Append("<p class=\"chart-note\"><span style=\"background:rgba(96,125,139,0.13);padding:0 6px;\">shaded</span> = upper-air (…hPa) data included in the forecast (pulled from the archive feed on its own schedule).</p>");
 
             // Clip the daily-summary + hourly-confidence tables to the
             // same time window as the chart on the tab. Without this they
