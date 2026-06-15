@@ -44,6 +44,22 @@ public sealed class EcmwfClientFieldFixTests
     }
 
     [Fact]
+    public void DeaccumulateSum_returns_per_window_total_not_a_rate()
+    {
+        // tp cumulative: 1.80mm at lead 12, 1.82mm at lead 24 → the 12–24h window
+        // got just 0.02mm (NOT the cumulative 1.82, and NOT divided by hours).
+        EcmwfClient.DeaccumulateSum(1.82, cumPrevLead: 1.80, leadHours: 24, prevLeadHours: 12)
+            .Should().BeApproximately(0.02, 1e-9);
+        // First lead → the 0→lead total.
+        EcmwfClient.DeaccumulateSum(1.80, cumPrevLead: null, leadHours: 12, prevLeadHours: 0)
+            .Should().BeApproximately(1.80, 1e-9);
+        // Null / backwards / zero-window guards.
+        EcmwfClient.DeaccumulateSum(null, 1.0, 24, 12).Should().BeNull();
+        EcmwfClient.DeaccumulateSum(1.0, 2.0, 24, 12).Should().Be(0.0);
+        EcmwfClient.DeaccumulateSum(5.0, 1.0, 12, 12).Should().Be(5.0);
+    }
+
+    [Fact]
     public void NormalizeCloudPct_undoes_the_aifs_double_scale()
     {
         // AIFS: stored 9274.61 (= 92.7461% × 100) → 92.7461%.

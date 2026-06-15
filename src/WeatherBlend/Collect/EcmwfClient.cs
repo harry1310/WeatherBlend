@@ -158,21 +158,28 @@ public sealed class EcmwfClient
         };
 
         var rows = new List<ForecastRow>();
-        // Deaccumulation anchor for ssrd (accumulated-since-start) — the previous
-        // successfully-fetched lead's cumulative value + its lead hours.
+        // Deaccumulation anchors for ssrd + tp (both accumulated-since-start) —
+        // the previous successfully-fetched lead's cumulative values + lead hours.
         double? prevShortwaveCumulative = null;
+        double? prevPrecipCumulative = null;
         int prevLeadHours = 0;
         foreach (var lead in leadHours.OrderBy(h => h))
         {
             ct.ThrowIfCancellationRequested();
             try
             {
-                var (row, swCum) = await FetchLeadAsync(location, cycleDate, cycleHour, stream, modelId,
-                    lead, runTime, scratchDir, apiBaseUrl, prevShortwaveCumulative, prevLeadHours, ct);
-                if (row is not null) rows.Add(row);
-                // Advance the anchor only when this lead carried ssrd; a missing
-                // lead just widens the next deaccumulation window.
-                if (swCum is not null) { prevShortwaveCumulative = swCum; prevLeadHours = lead; }
+                var (row, swCum, precipCum) = await FetchLeadAsync(location, cycleDate, cycleHour, stream, modelId,
+                    lead, runTime, scratchDir, apiBaseUrl, prevShortwaveCumulative, prevPrecipCumulative, prevLeadHours, ct);
+                if (row is not null)
+                {
+                    rows.Add(row);
+                    // Advance the anchor on a successful fetch (ssrd + tp arrive
+                    // together for the oper streams); a missing lead widens the
+                    // next deaccumulation window.
+                    prevShortwaveCumulative = swCum;
+                    prevPrecipCumulative = precipCum;
+                    prevLeadHours = lead;
+                }
             }
             catch (HttpRequestException e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
@@ -183,10 +190,10 @@ public sealed class EcmwfClient
         return rows;
     }
 
-    private async Task<(ForecastRow? Row, double? ShortwaveCumulative)> FetchLeadAsync(
+    private async Task<(ForecastRow? Row, double? ShortwaveCumulative, double? PrecipCumulative)> FetchLeadAsync(
         LocationConfig loc, DateOnly date, int cycleHour, string stream, string modelId,
         int lead, DateTime runTime, string scratchDir, string apiBaseUrl,
-        double? prevShortwaveCumulative, int prevLeadHours, CancellationToken ct)
+        double? prevShortwaveCumulative, double? prevPrecipCumulative, int prevLeadHours, CancellationToken ct)
     {
         // Path is `{date}/{HH}z/{streamSubpath}/0p25/{streamFolder}/{date}{HH}0000-{lead}h-{streamFolder}-fc.{grib2|index}`
         // where streamSubpath ∈ {ifs, aifs-single} (or aifs legacy) and the
@@ -254,9 +261,9 @@ public sealed class EcmwfClient
         {
             // Every candidate 404'd — rethrow so FetchCycleAsync logs "Missing".
             if (lastNotFound is not null) throw lastNotFound;
-            return (null, null);
+            return (null, null, null);
         }
-        if (indexEntries.Count == 0) return (null, null);
+        if (indexEntries.Count == 0) return (null, null, null);
 
         // 2) For each variable we want, find the FIRST matching index entry
         //    by exact param match. ECMWF param codes ARE unique per (param,
@@ -283,7 +290,7 @@ public sealed class EcmwfClient
         if (picks.Count == 0)
         {
             _log.LogWarning("No matching variables in .index for {Stem}", stem);
-            return (null, null);
+            return (null, null, null);
         }
 
         // Sort picks by byte offset. Step 3 requests the ranges in this
@@ -371,10 +378,12 @@ public sealed class EcmwfClient
                 // VarMap's ×100 (IFS tcc is a fraction); clamp to [0,100].
                 CloudCover = NormalizeCloudPct(raw.CloudCover, modelId),
                 Cape = raw.Cape,
-                // tp (precip) is ALSO accumulated-since-start, but it feeds the
-                // exact precip model (3d) — left cumulative pending a coordinated
-                // backfill + retrain so live/train scales stay consistent.
-                Precipitation = raw.Precipitation,
+                // tp is accumulated-since-start; deaccumulate to the per-window
+                // total. 3d (exact precip) consumes ifs_oper/aifs_oper precip, so
+                // this needs a coordinated backfill + 3d retrain to keep the
+                // train/predict scales consistent (2026-06-15).
+                Precipitation = DeaccumulateSum(
+                    raw.Precipitation, prevPrecipCumulative, lead, prevLeadHours),
                 // ssrd is accumulated-since-start; deaccumulate to the per-window
                 // mean W/m². Unused by any blender (the SW blend uses the OM
                 // *_025/_seamless variants), so safe to correct without backfill.
@@ -393,7 +402,7 @@ public sealed class EcmwfClient
             };
             // Return the row plus the still-CUMULATIVE ssrd (raw.ShortwaveRadiation,
             // = mean×leadHours) so the caller can deaccumulate the next lead.
-            return (row, raw.ShortwaveRadiation);
+            return (row, raw.ShortwaveRadiation, raw.Precipitation);
         }
         finally
         {
@@ -561,6 +570,22 @@ public sealed class EcmwfClient
         var dLead = leadHours - prevLeadHours;
         if (dLead <= 0) return Math.Max(0.0, cur);
         return Math.Max(0.0, (cur - (cumPrevLead ?? 0.0)) / dLead);
+    }
+
+    /// <summary>
+    /// Deaccumulate an accumulated-since-start TOTAL (e.g. tp precip, already
+    /// converted m→mm). Unlike <see cref="DeaccumulateMeanFlux"/> this is a sum,
+    /// not a rate, so the per-window value is just the difference
+    /// (cum[lead] − cum[prevLead]) — the precip that fell in (prevLead, lead].
+    /// First lead → the 0→lead total; non-positive window → value unchanged;
+    /// clamped ≥ 0. The window width follows the fetched lead grid.
+    /// </summary>
+    internal static double? DeaccumulateSum(
+        double? cumThisLead, double? cumPrevLead, int leadHours, int prevLeadHours)
+    {
+        if (cumThisLead is not double cur) return null;
+        if (leadHours - prevLeadHours <= 0) return Math.Max(0.0, cur);
+        return Math.Max(0.0, cur - (cumPrevLead ?? 0.0));
     }
 
     /// <summary>
