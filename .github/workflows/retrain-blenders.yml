@@ -278,7 +278,7 @@ jobs:
           WB_GUARD_ROWS_DELTA_OVERRIDE: ${{ github.event.inputs.guard_rows_delta }}
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target temperature --feature-set rich --location ${{ matrix.location }} ${{ matrix.location == 'bonehill_rocks' && '--nowcast' || '' }}
+            train --target temperature --feature-set rich --location ${{ matrix.location }}
 
       - name: Train 2d (temperature exact-runtime, leads 12/24/48)
         # 2d is a SHORT-lead exact-runtime phase: its strict UKV picker
@@ -348,7 +348,7 @@ jobs:
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            train --target precipitation --feature-set oro --location ${{ matrix.location }} ${{ matrix.location == 'bonehill_rocks' && '--nowcast' || '' }}
+            train --target precipitation --feature-set oro --location ${{ matrix.location }}
 
       - name: Train 3oni (precipitation rich + orographic, NO station id — tor variant)
         # 3oni = 3o minus oro_station_id. Same 4-station Bonehill pool; dropping
@@ -542,61 +542,70 @@ jobs:
           rclone copy ./data/models "r2:${R2_BUCKET}/data/models" \
             --fast-list --transfers 16 --checkers 32 --s3-no-check-bucket
 
-      - name: Fit per-lead precip policy (study retrain + gated LEAD_POLICY.json)
-        # Phase 3 of docs/PRECIP_LEAD_POLICY_PLAN.md — QUARTERLY, behind the
-        # fit_lead_policy input (default false: weekly Sunday retrains never
-        # touch the policy; no churn). Bonehill-only (the policy is the
-        # Bonehill pooled study) and requires BOTH 3c + 3o resolved in this
-        # dispatch — their sync pulls (full forecasts incl. live rows, EA
-        # rainfall, static orographic) are exactly the study's inputs.
-        #
-        # Sequence: walk-forward study bundles at a ROLLING cutoff (today−84d:
-        # ~9 weeks SELECT + the 21-day settled SCORE holdout), then the
-        # producer (margin 0.75% / hysteresis 0.5% / truth-settled guard —
-        # all enforced inside precip-fit-lead-policy, which exits 0 and keeps
-        # the last-good artifact when truth coverage is short). The incumbent
-        # LEAD_POLICY.json is pulled first so hysteresis has its reference.
-        # The production bundles trained above are NOT the study subjects —
-        # the policy's structure is learned on the cutoff replicas and
-        # applied to the full-data bundles (see the plan doc's Phase 1).
+      - name: Fit per-lead policies (temp 2c + precip 3c/3o, PER LOCATION)
+        # Phase 3 of docs/PRECIP_LEAD_POLICY_PLAN.md + its temperature twin —
+        # QUARTERLY, behind the fit_lead_policy input (default false: weekly
+        # Sunday retrains never touch the policy; no churn). PER matrix location
+        # since 2026-06-15: each location writes its own LEAD_POLICY_<loc>.json
+        # (temperature + precipitation); predict reads the per-location file and
+        # falls back to the legacy global one.
+        #   - temperature 2c: trains 2c study models inline (incl. the lead-0
+        #     nowcast where hist_forecast surface data exists), scores MAE vs ERA5.
+        #   - precip 3c (+ 3o where the Bonehill oro pool exists): mints walk-
+        #     forward study bundles at a ROLLING cutoff (today−84d: ~9wk SELECT +
+        #     21d settled SCORE holdout), then the producer. 3o auto-skips for
+        #     single-gauge locations (Membury/Sennen → 3c only).
+        # Margin/hysteresis/truth-settled gates live inside the producers (exit 0
+        # + keep last-good on short coverage). Incumbents pulled first so
+        # hysteresis has its reference.
         id: fit_lead_policy
         if: >-
           steps.gate.outputs.proceed == 'true'
           && inputs.fit_lead_policy
-          && matrix.location == 'bonehill_rocks'
-          && steps.phases.outputs.run_3c == 'true'
-          && steps.phases.outputs.run_3o == 'true'
+          && (steps.phases.outputs.run_2c == 'true' || steps.phases.outputs.run_3c == 'true')
         continue-on-error: true
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          LOC: ${{ matrix.location }}
         run: |
-          rclone copyto "r2:${R2_BUCKET}/data/models/precipitation/LEAD_POLICY.json" \
-            ./data/models/precipitation/LEAD_POLICY.json --s3-no-check-bucket \
-            || echo "::notice::No incumbent LEAD_POLICY.json on R2 — first fit, hysteresis has no reference."
           CUTOFF=$(date -ud '84 days ago' +%F)
           START=$(date -ud '80 days ago' +%F)
-          echo "Study cutoff=$CUTOFF, scoring window start=$START"
-          dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            precip-policy-retrain --as-of "$CUTOFF"
-          dotnet run --project src/WeatherBlend --no-build -c Release -- \
-            precip-fit-lead-policy --start "$START" --cutoff "$CUTOFF"
+          echo "Study cutoff=$CUTOFF, scoring window start=$START, location=$LOC"
+          if [ "${{ steps.phases.outputs.run_2c }}" = "true" ]; then
+            rclone copyto "r2:${R2_BUCKET}/data/models/temperature/LEAD_POLICY_${LOC}.json" \
+              "./data/models/temperature/LEAD_POLICY_${LOC}.json" --s3-no-check-bucket \
+              || echo "::notice::No incumbent temperature LEAD_POLICY_${LOC}.json — first fit."
+            dotnet run --project src/WeatherBlend --no-build -c Release -- \
+              temp-fit-lead-policy --start "$START" --cutoff "$CUTOFF" --location "$LOC"
+          fi
+          if [ "${{ steps.phases.outputs.run_3c }}" = "true" ]; then
+            rclone copyto "r2:${R2_BUCKET}/data/models/precipitation/LEAD_POLICY_${LOC}.json" \
+              "./data/models/precipitation/LEAD_POLICY_${LOC}.json" --s3-no-check-bucket \
+              || echo "::notice::No incumbent precipitation LEAD_POLICY_${LOC}.json — first fit."
+            dotnet run --project src/WeatherBlend --no-build -c Release -- \
+              precip-policy-retrain --as-of "$CUTOFF" --location "$LOC"
+            dotnet run --project src/WeatherBlend --no-build -c Release -- \
+              precip-fit-lead-policy --start "$START" --cutoff "$CUTOFF" --location "$LOC"
+          fi
 
-      - name: Push LEAD_POLICY.json to R2
-        # Separate explicit push (not part of the models sync above, which
-        # runs BEFORE the fit). Only on a successful fit — a failed fit
-        # leaves the incumbent artifact untouched on R2.
+      - name: Push LEAD_POLICY files to R2
+        # Separate explicit push (not part of the models sync above, which runs
+        # BEFORE the fit). Only on a successful fit — a failed/truth-skipped fit
+        # leaves the incumbent artifact untouched on R2. Per-location files only.
         if: steps.fit_lead_policy.outcome == 'success'
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          LOC: ${{ matrix.location }}
         run: |
-          if [ -f ./data/models/precipitation/LEAD_POLICY.json ]; then
-            rclone copyto ./data/models/precipitation/LEAD_POLICY.json \
-              "r2:${R2_BUCKET}/data/models/precipitation/LEAD_POLICY.json" \
-              --s3-no-check-bucket
-            echo "Pushed LEAD_POLICY.json to R2."
-          else
-            echo "::warning::fit step succeeded but no LEAD_POLICY.json on disk (truth guard skip keeps last-good) — nothing pushed."
-          fi
+          for tgt in temperature precipitation; do
+            f="./data/models/${tgt}/LEAD_POLICY_${LOC}.json"
+            if [ -f "$f" ]; then
+              rclone copyto "$f" "r2:${R2_BUCKET}/data/models/${tgt}/LEAD_POLICY_${LOC}.json" --s3-no-check-bucket
+              echo "Pushed ${tgt} LEAD_POLICY_${LOC}.json to R2."
+            else
+              echo "::notice::No ${tgt} LEAD_POLICY_${LOC}.json on disk (truth guard skip keeps last-good) — nothing pushed."
+            fi
+          done
 
       - name: Upload run logs
         if: failure()

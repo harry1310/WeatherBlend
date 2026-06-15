@@ -82,12 +82,7 @@ public sealed class TrainCommand : TrainCommandBase
 
     public async Task<int> RunAsync(
         string target, string lead, string? station, string? window, string featureSet,
-        string? tier, bool? includeUkv, int[]? exactLeads, int[]? cycles, string? locationOverride, CancellationToken ct,
-        // Opt-in (default OFF so production is untouched): also train the lead-0
-        // "nowcast" model, sourced from the hist_forecast archive (see
-        // NowcastSource). Prepended to the lead set so it lands in the SAME
-        // per-phase bundle as the ≥24h leads. Temperature + precipitation only.
-        bool includeNowcast = false)
+        string? tier, bool? includeUkv, int[]? exactLeads, int[]? cycles, string? locationOverride, CancellationToken ct)
     {
         // tier + includeUkv + exactLeads are exact-runtime levers (Phase 2d /
         // 3d). Defaults (null, null, null) preserve historical behaviour: 2d
@@ -117,27 +112,6 @@ public sealed class TrainCommand : TrainCommandBase
         {
             _log.LogError("Invalid --lead value '{Lead}'. Expected 24, 48, 72, 96, 120, or all.", lead);
             return 2;
-        }
-
-        // --nowcast: prepend lead 0 so the per-phase bundle also carries a
-        // lead_0h model trained on the hist_forecast archive. Temperature +
-        // precipitation only (the families the user scoped: 2b/2c, 3a/3c/3o).
-        if (includeNowcast)
-        {
-            if (t is not ("temperature" or "precipitation"))
-            {
-                _log.LogError("--nowcast is only supported for targets temperature, precipitation (got '{T}').", t);
-                return 2;
-            }
-            // APPEND (not prepend) so leads[0] stays a production lead: the
-            // RetrainGuard captures its rows/label-rate/feature basis from
-            // leads[0], and we don't want the new lead-0 window to shift that
-            // baseline and trip the sanity gate on production retrains.
-            leads = leads.Where(l => l != Train.Common.NowcastSource.LeadHours)
-                .Append(Train.Common.NowcastSource.LeadHours)
-                .ToArray();
-            _log.LogInformation("--nowcast ON: lead {L}h appended (hist_forecast-sourced); leads now [{Leads}].",
-                Train.Common.NowcastSource.LeadHours, string.Join(",", leads));
         }
 
         var fs = (featureSet ?? "lean").ToLowerInvariant();
@@ -193,6 +167,34 @@ public sealed class TrainCommand : TrainCommandBase
             }
             // "all" implicitly includes 96 + 120 — silently narrow rather than error.
             leads = leads.Where(l => l != 96 && l != 120).ToArray();
+        }
+
+        // Lead-0 "nowcast" model: trained on the hist_forecast archive (≈analysis
+        // quality at lead 0; see NowcastSource) and appended to the SAME per-phase
+        // bundle as the ≥24h leads, so the per-lead policy can select it at the
+        // short bands. STANDARD (no flag, every location) for exactly the two
+        // rich phases that carry it: temperature 2c (--feature-set rich) and
+        // precipitation 3o (--feature-set oro) + 3c (--feature-set rich). 3c is
+        // included so Membury/Sennen — whose precip champion falls back to 3c, not
+        // 3o — also get a lead-0 candidate in their champion phase. Was an opt-in
+        // --nowcast flag gated to Bonehill in CI; the per-site gate was the thing
+        // that left the other sites without a nowcast. A location whose
+        // hist_forecast surface archive isn't backfilled yet just trains too few
+        // lead-0 rows and the phase trainer SKIPS that lead (see the IsNowcast
+        // guard in RunPhase2cAsync / PrecipTrainCommand.RunPhase3cAsync /
+        // RunPhase3oAsync), so this can never abort a retrain. APPENDED (not
+        // prepended) so leads[0] stays a production lead — the RetrainGuard reads
+        // its rows/label/feature basis from leads[0] and must not see the shorter
+        // lead-0 window.
+        var includeNowcast = (t == "temperature" && fs == "rich")
+                          || (t == "precipitation" && (fs == "oro" || fs == "rich"));
+        if (includeNowcast)
+        {
+            leads = leads.Where(l => l != Train.Common.NowcastSource.LeadHours)
+                .Append(Train.Common.NowcastSource.LeadHours)
+                .ToArray();
+            _log.LogInformation("Nowcast lead {L}h appended (hist_forecast-sourced); leads now [{Leads}].",
+                Train.Common.NowcastSource.LeadHours, string.Join(",", leads));
         }
 
         // Resolve --location into the active LocationConfig. Every target's
@@ -546,6 +548,18 @@ public sealed class TrainCommand : TrainCommandBase
 
             if (rows.Count < 500)
             {
+                // The lead-0 nowcast is appended automatically for 2c, but a
+                // location whose hist_forecast surface archive isn't backfilled
+                // yet has no lead-0 rows. Skip it (the bundle keeps its ≥24h
+                // leads) rather than aborting the whole retrain — the policy fit
+                // simply won't see a lead-0 candidate for that location.
+                if (Train.Common.NowcastSource.IsNowcast(lead))
+                {
+                    _log.LogWarning("Lead {Lead}h (nowcast): only {N} rows — no hist_forecast surface "
+                        + "data for this location yet; skipping the lead-0 model.", lead, rows.Count);
+                    specsPerLead.Remove(lead);   // drop the orphan spec so the bundle has no model-less lead
+                    continue;
+                }
                 _log.LogError("Only {N} rows for lead {Lead}h — too few to train.", rows.Count, lead);
                 return 3;
             }
@@ -858,40 +872,23 @@ public sealed class TrainCommand : TrainCommandBase
             locationName: location.Name);
         if (!guardResult2d.Passed)
         {
-            _log.LogError("Aborting Phase 2d retrain — sanity guard failed. Orphan dir {Dir} not promoted; ChampionByLead retains the previous 2d pin (manifest unchanged).", versionDir);
+            _log.LogError("Aborting Phase 2d retrain — sanity guard failed. Orphan dir {Dir} not promoted (manifest unchanged).", versionDir);
             return 4;
         }
 
-        // Promote 2d as a challenger — 2b stays Current. ChampionByLead pins
-        // 2d at lead 12 ONLY (where 2b doesn't train); 24+ falls through
-        // to Current (= 2b). PromoteStationVersionAsChallenger is lead-set-aware
-        // (post-2026-05-08) so a 2d retrain at e.g. {72,96,120} no longer
-        // clobbers a sibling 2d at {12,24,48}; both stay Active when their
-        // lead-sets differ.
-        //
-        // ChampionByLead pin is gated on whether THIS train run actually
-        // covered lead 12. Pre-2026-05-08 the trainer pinned 12 →
-        // versionName regardless, which left ChampionByLead.12 dangling
-        // at a version with no lead 12 in its schema (silently broke the
-        // home-page lead-12 tile filter).
-        const int Phase2dChampionLead = 12;
+        // Promote 2d as a challenger. 2c is the champion since 2026-06-15 and its
+        // per-lead LEAD_POLICY owns the <24hr (lead-12) bucket via the 0h nowcast.
+        // 2d is no longer pinned as the lead-12 champion (the per-lead champion
+        // override was removed 2026-06-15) — it stays an Active challenger, still
+        // on the forecast/skill pages, just not the <24hr headline.
+        // PromoteStationVersionAsChallenger is lead-set-aware (post-2026-05-08) so
+        // a 2d retrain at e.g. {72,96,120} no longer clobbers a sibling 2d at
+        // {12,24,48}; both stay Active when their lead-sets differ.
         ModelArtifact.PromoteStationVersion(modelsRoot, "temperature", stationKey, versionName, newPhase: "2d");
-        if (leads.Contains(Phase2dChampionLead))
-        {
-            ModelArtifact.SetStationChampionForLead(modelsRoot, "temperature", stationKey, Phase2dChampionLead, versionName);
-        }
-        else
-        {
-            _log.LogInformation(
-                "Skipping ChampionByLead pin — this run did not train lead {Lead}h (leads: [{Leads}]).",
-                Phase2dChampionLead, string.Join(",", leads));
-        }
         var newActive = ModelArtifact.ResolveStationActive(modelsRoot, "temperature", stationKey);
 
         _log.LogInformation("Phase 2d artefacts → {Dir}", versionDir);
         _log.LogInformation("Active versions now: [{Active}]", string.Join(", ", newActive));
-        if (leads.Contains(Phase2dChampionLead))
-            _log.LogInformation("Champion for lead {Lead}h: {V}", Phase2dChampionLead, versionName);
         _log.LogInformation("Summary — {Summary}",
             string.Join("; ", perLead.Select(kv =>
                 $"lead {kv.Key}h: blend MAE {kv.Value.BlendTestMae:0.000}°C vs {kv.Value.BestSingle} val MAE {kv.Value.BestSingleValMae:0.000}°C")));

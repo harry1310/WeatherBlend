@@ -99,6 +99,11 @@ public static partial class SitePages
     // "+12h". HTML-escaped ("&lt;") since it's interpolated raw into markup.
     private static string LeadLabel(int lead) => lead == 12 ? "&lt;24hr" : $"+{lead}h";
 
+    /// <summary>Plain-text twin of <see cref="LeadLabel"/> for canvas contexts
+    /// (Chart.js titles render literal text, so '&lt;' must NOT be HTML-escaped
+    /// there). Lead 12 = the policy-served "today" bucket, not a 12h forecast.</summary>
+    private static string LeadLabelText(int lead) => lead == 12 ? "<24hr" : $"+{lead}h";
+
     private static string RenderLeadSubNav(string pageBase, int current)
     {
         var items = new StringBuilder();

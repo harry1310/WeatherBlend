@@ -34,22 +34,64 @@ but only temperature realises a gain.
 | display | `433d529` | `12h` forecast tab renamed `<24hr` |
 | perf | `0b36498` | scan-once train cache in 3a/3c/3o + 2b/2c |
 
-The **Bonehill nowcast core is complete** (train → producer → predict → display).
-Bonehill is the only location with hist_forecast data, so it's the only place
-the nowcast applies today.
+## 2026-06-15 — all-locations rollout (pending push, not yet on `main`)
 
-## How to activate the temperature nowcast (operational, gated)
+This pass extends the nowcast from Bonehill-only to all three locations and
+makes it standard. **None of it is committed yet** — it deploys via the next
+Sunday retrain once pushed.
+
+**Data correction.** The earlier claim "Bonehill is the only location with
+hist_forecast data" was wrong. Membury *had* 7,073 hist_forecast files but every
+**surface** field was null — they predate the 06-13 surface-field widening
+(`d948a31`) and Membury's archive was stale at 05-29. Sennen had none. So neither
+could train a lead-0 surface model. Fix: a chunked `hist-forecast` backfill (CI
+`backfill.yml`, source `hist-forecast`, per location, yearly chunks 2024/25/26)
+was dispatched for Membury + Sennen on 2026-06-15; validated as repopulating the
+surface fields (24/24 non-null).
+
+**Nowcast is now standard (no flag).** The `--nowcast` train flag is gone;
+`TrainCommand` auto-appends lead 0 for exactly the champion rich phases —
+temperature **2c**, precipitation **3o** AND **3c** (3c added so Membury/Sennen,
+whose precip champion falls back to 3c, also carry a lead-0 candidate). A
+location with no hist_forecast surface archive yet trains too few lead-0 rows and
+the phase trainer **skips** that lead (warning, not abort) — so it can never
+break a retrain. Applies on every location.
+
+**2c is the temperature champion.** phases.yaml lineup reordered to 2c → 2b
+(fallback), mirroring precip's 3o → 3c → 3a. The hardcoded lead-12 `ChampionByLead`
+pin to 2d is now **cleared** on 2d's promotion, so the `<24hr` bucket is served by
+2c's policy everywhere (incl. Bonehill — where the nowcast was proven). 2d stays a
+visible challenger. **Precip keeps its 3d lead-12 pin** — the precip nowcast
+doesn't win, and 3d (exact-runtime) is the best precip `<24hr` model, so the
+asymmetry is deliberate: temp `<24hr` = 2c policy, precip `<24hr` = 3d.
+
+**Per-location policy producers.** `temp-fit-lead-policy`, `precip-fit-lead-policy`
+and `precip-policy-retrain` all take `--location` now (resolved like
+`TrainCommand`), with the hardcoded `location=bonehill_rocks` globs swapped to the
+resolved location. The precip retrain mints 3c per gauge and **skips 3o** for
+locations without the Bonehill oro pool (Membury/Sennen → 3c only). The precip
+fit drops the lead-0 candidate (rebuilds cands+pairs) when no lead-0 study model
+exists, so the `cands.All` gate can't empty a location's policy.
+
+**CI.** `retrain-blenders.yml`'s fit step (still behind the quarterly
+`fit_lead_policy` flag) now runs **per matrix location** for both temperature and
+precipitation, pushing per-location `LEAD_POLICY_<loc>.json`.
+
+**Display.** The skill page's per-lead MAE/Brier panels relabel the lead-12 panel
+to `<24hr` (matching the forecast tab) — that panel scores the policy-served
+today bucket, not a fixed 12h model.
+
+## How to activate (operational, gated)
 
 Nothing is live until these run — by design:
 
-1. A Sunday retrain (with `--nowcast`, already enabled for Bonehill) mints the
-   `lead_0h` model into the Bonehill 2c + 3o bundles. _Watch: `lead_0h.zip`
-   appears under `data/models/temperature/bonehill_rocks/v…_phase2c/`._
-2. Run `temp-fit-lead-policy` (CI dispatch / quarterly tick) → writes
-   `data/models/temperature/LEAD_POLICY_bonehill_rocks.json` to R2.
-3. Predict then routes the `<24hr` bucket's near hours through the policy's
-   0+24 blend; the `<24hr` temp tab shows it. No separate overlay — it's the
-   existing per-phase line using the policy-selected model.
+1. **Finish the backfills** (Membury + Sennen `hist-forecast`, running 2026-06-15).
+2. **Push this branch** + the next Sunday retrain mints `lead_0h` into the 2c/3c/3o
+   bundles per location and makes 2c the Active champion.
+3. **Run the fit** (`retrain-blenders.yml` dispatch with `fit_lead_policy=true`, or
+   the quarterly tick) → writes `LEAD_POLICY_<loc>.json` per location to R2.
+4. Predict routes the `<24hr` bucket through each location's policy; the `<24hr`
+   temp tab + the relabelled skill panel show it.
 
 ## Remaining work
 

@@ -87,10 +87,9 @@ public sealed class PhaseMapChampionFallbackTests : IDisposable
         {
             [Station] = NewChampion,
         };
-        var champByLead = new Dictionary<(string Station, int LeadHours), string>();
 
         var keys = RenderSiteCommand
-            .WithChampionVersions(predictionKeys, champByStation, champByLead)
+            .WithChampionVersions(predictionKeys, champByStation)
             .ToList();
 
         keys.Should().Contain((Station, PrevChampion));
@@ -106,9 +105,8 @@ public sealed class PhaseMapChampionFallbackTests : IDisposable
         {
             [Station] = NewChampion,
         };
-        var champByLead = new Dictionary<(string Station, int LeadHours), string>();
 
-        var tempKeys = RenderSiteCommand.WithChampionVersions(predictionKeys, champByStation, champByLead);
+        var tempKeys = RenderSiteCommand.WithChampionVersions(predictionKeys, champByStation);
         var phaseByVersion = _repo.GetPhaseByVersion(
             tempKeys,
             Enumerable.Empty<(string Station, string Version)>(),
@@ -128,20 +126,18 @@ public sealed class PhaseMapChampionFallbackTests : IDisposable
         {
             [Station] = NewChampion,
         };
-        var champByLead = new Dictionary<(string Station, int LeadHours), string>();
 
-        var tempKeys = RenderSiteCommand.WithChampionVersions(predictionKeys, champByStation, champByLead);
+        var tempKeys = RenderSiteCommand.WithChampionVersions(predictionKeys, champByStation);
         var phaseByVersion = _repo.GetPhaseByVersion(
             tempKeys,
             Enumerable.Empty<(string Station, string Version)>(),
             Enumerable.Empty<(string Station, int WindowHours, string Version)>(),
             Enumerable.Empty<(string Station, string Version)>());
 
-        // The overview filter: champion = the new version (no per-lead pins).
-        var matcher = new ChampionMatcher(
-            new Dictionary<int, string>(), NewChampion, phaseByVersion);
+        // The overview filter: champion = the new version.
+        var matcher = new ChampionMatcher(NewChampion, phaseByVersion);
 
-        matcher.MatchesChampionPhase(PrevChampion, lead: 24)
+        matcher.MatchesChampionPhase(PrevChampion)
             .Should().BeTrue("the previous champion shares phase 2b with the new one, so its still-valid rows belong on the tile grid");
     }
 
@@ -159,12 +155,11 @@ public sealed class PhaseMapChampionFallbackTests : IDisposable
 
         phaseByVersion.Should().NotContainKey(NewChampion);
 
-        var matcher = new ChampionMatcher(
-            new Dictionary<int, string>(), NewChampion, phaseByVersion);
+        var matcher = new ChampionMatcher(NewChampion, phaseByVersion);
 
         // The champion's phase is unknown, so the phase fallback can't fire and
         // the previous champion's rows are dropped — this is the blank overview.
-        matcher.MatchesChampionPhase(PrevChampion, lead: 24)
+        matcher.MatchesChampionPhase(PrevChampion)
             .Should().BeFalse("without the champion in the phase map the fallback starves — the regression the union fixes");
     }
 }

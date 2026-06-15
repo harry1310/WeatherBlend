@@ -498,6 +498,17 @@ public sealed class PrecipTrainCommand : TrainCommandBase
 
             if (rows.Count < 500)
             {
+                // The lead-0 nowcast is appended automatically for 3c, but a
+                // location whose hist_forecast surface archive isn't backfilled
+                // yet has no lead-0 rows. Skip it (bundle keeps its ≥24h leads)
+                // rather than aborting; drop the orphan spec registered above.
+                if (Train.Common.NowcastSource.IsNowcast(lead))
+                {
+                    _log.LogWarning("Lead {Lead}h (nowcast): only {N} rows — no hist_forecast surface "
+                        + "data for this location yet; skipping the lead-0 model.", lead, rows.Count);
+                    specsPerLead.Remove(lead);
+                    continue;
+                }
                 _log.LogError("Only {N} rows for lead {Lead}h — too few to train.", rows.Count, lead);
                 return 3;
             }
@@ -861,7 +872,18 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             }
             if (perStation.Count < 2)
             {
-                _log.LogError("Lead {Lead}h: <2 stations with usable data after split — abort lead.", lead);
+                // <2 usable stations → no pooled model for this lead. Expected for
+                // the appended lead-0 nowcast on a location whose hist_forecast
+                // surface archive isn't backfilled yet (every station starves) —
+                // a warning, not an error. Either way, drop the spec registered
+                // above so the bundle carries no model-less lead, and skip rather
+                // than abort (≥24h leads still produce models).
+                if (Train.Common.NowcastSource.IsNowcast(lead))
+                    _log.LogWarning("Lead {Lead}h (nowcast): <2 stations with usable data — no hist_forecast "
+                        + "surface data for this location yet; skipping the lead-0 model.", lead);
+                else
+                    _log.LogError("Lead {Lead}h: <2 stations with usable data after split — skipping this lead.", lead);
+                specsPerLead.Remove(lead);
                 continue;
             }
 
@@ -1299,36 +1321,23 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             tolerances: RetrainGuard.Defaults with { AllowFeaturesEffectiveChange = true });
         if (!guardResult3d.Passed)
         {
-            _log.LogError("Aborting Phase 3d retrain ({Station}) — sanity guard failed. Orphan dir {Dir} not promoted; ChampionByLead retains the previous 3d pin (manifest unchanged).", stationSlug, versionDir);
+            _log.LogError("Aborting Phase 3d retrain ({Station}) — sanity guard failed. Orphan dir {Dir} not promoted (manifest unchanged).", stationSlug, versionDir);
             return 4;
         }
 
-        // Promote 3d as a station challenger — 3a stays Current. Per-station
-        // ChampionByLead pins 3d at lead 12 ONLY (where 3a competes well too,
-        // but 3d's exact-runtime feature set wins on Brier). Lead-set-aware
-        // promote (post-2026-05-08) lets a 3d retrain at e.g. {96,120} coexist
-        // with a sibling 3d at {12,24,48,72} when their lead-sets differ.
-        // ChampionByLead pin gated on whether THIS run trained lead 12.
-        const int Phase3dChampionLead = 12;
+        // Promote 3d as a station challenger — 3a stays Current. 3d is no longer
+        // pinned as the lead-12 champion (the per-lead champion override was
+        // removed 2026-06-15): the precip champion (3o/3c) owns every lead, and
+        // 3d's exact-runtime short-lead value still shows on the forecast/skill
+        // pages as a challenger. Lead-set-aware promote (post-2026-05-08) lets a
+        // 3d retrain at e.g. {96,120} coexist with a sibling 3d at {12,24,48,72}
+        // when their lead-sets differ.
         ModelArtifact.PromoteStationVersion(
             modelsRoot, "precipitation", stationSlug, versionName, newPhase: "3d");
-        if (leadsToTrain.Contains(Phase3dChampionLead))
-        {
-            ModelArtifact.SetStationChampionForLead(
-                modelsRoot, "precipitation", stationSlug, leadHours: Phase3dChampionLead, versionName);
-        }
-        else
-        {
-            _log.LogInformation(
-                "Skipping ChampionByLead pin for {Station} — this run did not train lead {Lead}h (leads: [{Leads}]).",
-                stationSlug, Phase3dChampionLead, string.Join(",", leadsToTrain));
-        }
         var newActive = ModelArtifact.ResolveStationActive(modelsRoot, "precipitation", stationSlug);
 
         _log.LogInformation("Phase 3d artefacts → {Dir}", versionDir);
         _log.LogInformation("Active versions for station {Station} now: [{Active}]", stationSlug, string.Join(", ", newActive));
-        if (leadsToTrain.Contains(Phase3dChampionLead))
-            _log.LogInformation("Champion for lead {Lead}h ({Station}): {V}", Phase3dChampionLead, stationSlug, versionName);
         _log.LogInformation("Summary — {Summary}",
             string.Join("; ", perLead.Select(kv =>
                 $"lead {kv.Key}h: blend Brier {kv.Value.BlendTestMae:0.000} vs climatology Brier {kv.Value.BlendTestRmse:0.000}")));

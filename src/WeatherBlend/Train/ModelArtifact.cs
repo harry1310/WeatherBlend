@@ -67,13 +67,10 @@ public static class ModelArtifact
         /// </summary>
         public List<string> Active { get; set; } = new();
 
-        /// <summary>
-        /// Per-lead champion override (Phase 3d, 2026-05-05). Maps lead-hours
-        /// → version pinned as champion AT THAT LEAD ONLY for this station,
-        /// so 3d (exact-runtime precip) can take over as champion at lead 12
-        /// per station while the champion phase owns the other leads.
-        /// </summary>
-        public Dictionary<int, string> ChampionByLead { get; set; } = new();
+        // ChampionByLead (the per-lead champion pin for 2d/3d at lead 12) was
+        // removed 2026-06-15 — the per-lead LEAD_POLICY owns the <24hr bucket
+        // now. Existing manifests carrying the key deserialize fine (unknown
+        // JSON members are ignored) and shed it on their next write.
 
         /// <summary>
         /// Configured location this station belongs to (e.g.
@@ -576,28 +573,6 @@ public static class ModelArtifact
                 TryReadVersionPhase(Path.Combine(stationDir, v)), phase, StringComparison.Ordinal))
             .OrderByDescending(v => v, StringComparer.Ordinal)
             .FirstOrDefault() ?? "";
-    }
-
-    /// <summary>
-    /// Set the per-lead champion override for one (station, lead). Pass an
-    /// empty <paramref name="versionDirName"/> to clear the entry.
-    /// Idempotent. Doesn't touch <see cref="StationEntry.Active"/>.
-    /// </summary>
-    public static void SetStationChampionForLead(
-        string modelsRoot, string target, string station, int leadHours, string versionDirName)
-    {
-        MutateManifest(modelsRoot, target, m =>
-        {
-            if (!m.Stations.TryGetValue(station, out var entry))
-            {
-                entry = new StationEntry();
-                m.Stations[station] = entry;
-            }
-            if (string.IsNullOrWhiteSpace(versionDirName))
-                entry.ChampionByLead.Remove(leadHours);
-            else
-                entry.ChampionByLead[leadHours] = versionDirName;
-        });
     }
 
     /// <summary>

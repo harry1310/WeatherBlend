@@ -578,10 +578,28 @@ public sealed class PrecipCrossLeadBakeoffCommand
     private static readonly string[] BonehillOrder3o =
         { "Bellever Dartmoor", "Bovey Tracey", "Dartmoor nr Hexworthy", "Princetown" };
 
-    public async Task<int> RunPolicyRetrainAsync(string? asOfStr, CancellationToken ct)
+    /// <summary>
+    /// Resolve a <c>--location</c> override to its <see cref="Config.LocationConfig"/>,
+    /// mirroring <c>TrainCommand</c>. Blank = the primary location (Bonehill).
+    /// Returns null (and logs) for an unknown name so the policy producers can
+    /// exit-2 — the same pattern the trainers use.
+    /// </summary>
+    private Config.LocationConfig? ResolveLocation(string? locationOverride)
+    {
+        if (string.IsNullOrWhiteSpace(locationOverride)) return _cfg.Location;
+        var loc = _cfg.Locations.FirstOrDefault(l =>
+            l.Name.Equals(locationOverride, StringComparison.OrdinalIgnoreCase));
+        if (loc is null)
+            _log.LogError("Location '{Name}' not found in config.yaml's `locations:` list. Available: [{All}]",
+                locationOverride, string.Join(", ", _cfg.Locations.Select(l => l.Name)));
+        return loc;
+    }
+
+    public async Task<int> RunPolicyRetrainAsync(string? asOfStr, string? locationOverride, CancellationToken ct)
     {
         await Task.Yield();
-        var location = _cfg.Location;
+        var location = ResolveLocation(locationOverride);
+        if (location is null) return 2;
         var cutoff = DateOnly.TryParse(asOfStr, out var d)
             ? d.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc)
             : new DateTime(2026, 3, 15, 0, 0, 0, DateTimeKind.Utc);
@@ -609,15 +627,15 @@ public sealed class PrecipCrossLeadBakeoffCommand
             conn.Open();
             using var c = conn.CreateCommand();
             c.CommandText =
-                $"COPY (SELECT * FROM read_parquet('{Esc(Path.Combine(_cfg.Storage.ForecastsPath, "location=bonehill_rocks", "**", "*.parquet"))}', hive_partitioning=false, union_by_name=true) " +
+                $"COPY (SELECT * FROM read_parquet('{Esc(Path.Combine(_cfg.Storage.ForecastsPath, "location=" + location.Name, "**", "*.parquet"))}', hive_partitioning=false, union_by_name=true) " +
                 $"WHERE ValidTimeUtc <= TIMESTAMP '{cutoff:yyyy-MM-dd HH:mm:ss}') TO '{Esc(Path.Combine(fcPart, "fc.parquet"))}' (FORMAT PARQUET);";
             c.ExecuteNonQuery();
             c.CommandText =
-                $"COPY (SELECT * FROM read_parquet('{Esc(Path.Combine(_cfg.Storage.RainfallPath, "location=bonehill_rocks", "**", "*.parquet"))}', hive_partitioning=false, union_by_name=true)) " +
+                $"COPY (SELECT * FROM read_parquet('{Esc(Path.Combine(_cfg.Storage.RainfallPath, "location=" + location.Name, "**", "*.parquet"))}', hive_partitioning=false, union_by_name=true)) " +
                 $"TO '{Esc(Path.Combine(rnPart, "rn.parquet"))}' (FORMAT PARQUET);";
             c.ExecuteNonQuery();
         }
-        _log.LogInformation("Scan-once cache materialised → {Scratch} (forecasts ≤{Cut:yyyy-MM-dd} + rainfall, Bonehill)", scratch, cutoff);
+        _log.LogInformation("Scan-once cache materialised → {Scratch} (forecasts ≤{Cut:yyyy-MM-dd} + rainfall, {Loc})", scratch, cutoff, location.Name);
 
         _log.LogInformation("STUDY retrain — loc={Loc}, train ValidTime ≤ {Cut:yyyy-MM-dd} (live window stays OOS), UA OFF; out={Root}",
             location.Name, cutoff, studyRoot);
@@ -649,6 +667,20 @@ public sealed class PrecipCrossLeadBakeoffCommand
         }
 
         // ---- 3o: pooled across the 4 Bonehill gauges, rich-oro (no-UA) ----
+        // 3o is the Bonehill Dartmoor product (4-gauge orographic pool). It does
+        // not exist for single-gauge lowland/coastal locations (Membury, Sennen),
+        // whose precip champion falls back to 3c — and the policy fit already
+        // skips 3o for stations without an oro record. So when this location
+        // doesn't carry the full Bonehill pool, mint 3c study bundles only and
+        // skip 3o rather than erroring (the old behaviour returned exit-2, which
+        // is why precip-policy-retrain was Bonehill-only).
+        var hasOroPool = BonehillOrder3o.All(name =>
+            location.Rainfall.Stations.Any(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase)));
+        if (!hasOroPool)
+        {
+            _log.LogInformation("STUDY retrain DONE — 3c-only (no 3o oro pool for {Loc}) under {Root}", location.Name, studyRoot);
+            return 0;
+        }
         var oroRoot = Path.Combine(Path.GetDirectoryName(_cfg.Storage.ForecastsPath)!, "static", "orographic");
         var oroBySlug = OroStaticFeatures.LoadAll(oroRoot);
         var pool = new List<(string Name, string Slug, OroStaticFeatures Oro, int Index)>();
@@ -1667,10 +1699,11 @@ FROM latest WHERE rn = 1;";
     // artifact mean "production bucket" — an empty policy is a no-op.
 
     public async Task<int> RunFitLeadPolicyAsync(
-        string? startDateStr, string? cutoffStr, CancellationToken ct)
+        string? startDateStr, string? cutoffStr, string? locationOverride, CancellationToken ct)
     {
         await Task.Yield();
-        var location = _cfg.Location;
+        var location = ResolveLocation(locationOverride);
+        if (location is null) return 2;
         var modelsRoot = _cfg.Storage.ModelsPath;
         var studyRoot = Path.Combine(Path.GetDirectoryName(modelsRoot)!, "models_study");
         var thresholds = new PrecipLeadPolicy.ThresholdsBlock();   // locked defaults
@@ -1717,7 +1750,7 @@ FROM latest WHERE rn = 1;";
             conn.Open();
             using var c = conn.CreateCommand();
             c.CommandText =
-                $"COPY (SELECT * FROM read_parquet('{Esc(Path.Combine(_cfg.Storage.ForecastsPath, "location=bonehill_rocks", "**", "*.parquet"))}', hive_partitioning=false, union_by_name=true) " +
+                $"COPY (SELECT * FROM read_parquet('{Esc(Path.Combine(_cfg.Storage.ForecastsPath, "location=" + location.Name, "**", "*.parquet"))}', hive_partitioning=false, union_by_name=true) " +
                 // LIVE FORECASTS ONLY — exclude both offset_day (historical
                 // backfill) AND hist_forecast (the lead-0 archive ≈ analysis).
                 // The policy must score every candidate, ESPECIALLY the 0h model
@@ -1762,6 +1795,22 @@ FROM latest WHERE rn = 1;";
         {
             _log.LogError("fit-lead-policy: no study bundles under {Root} — run precip-policy-retrain first.", studyRoot);
             return 2;
+        }
+        // Effective candidate set: drop the lead-0 nowcast when no study bundle
+        // carries it (a location with no hist_forecast surface archive yet). The
+        // per-station gate below requires cands.All(byLead.ContainsKey); with 0
+        // in cands but no lead-0 model that gate would skip EVERY station, empty
+        // the policy, and wipe the location's existing ≥24h bands. The ≥24h
+        // study leads are always present, so this only ever removes 0. Rebuild
+        // the blend pairs from the effective set so the scoring + band loops agree.
+        if (!m3c.Values.Concat(m3o.Values).Any(bl => bl.ContainsKey(NowcastSource.LeadHours)))
+        {
+            cands = cands.Where(c => c != NowcastSource.LeadHours).ToArray();
+            pairs.Clear();
+            for (int i = 0; i < cands.Length; i++)
+                for (int j = i + 1; j < cands.Length; j++) pairs.Add((cands[i], cands[j]));
+            _log.LogInformation("fit-lead-policy: no lead-0 study model for {Loc} — nowcast candidate dropped; cands now [{C}].",
+                location.Name, string.Join(",", cands));
         }
         var anySpec3o = m3o.Values.FirstOrDefault()?.Values.FirstOrDefault().Spec;
         var aux = anySpec3o is null ? new() : PrecipRichOroFeatureBuilder.LoadAuxNwpMeansLive(fcPath, location.Name, anySpec3o, windowStart, windowEnd, ct);
@@ -1951,10 +2000,11 @@ FROM latest WHERE rn = 1;";
     // τ pivot read via QueryLatestTempRows. Writes the per-location temperature
     // LEAD_POLICY. Scoring is LIVE-ONLY (the score cache excludes offset_day AND
     // hist_forecast) so the 0h model is judged on what predict sees at runtime.
-    public async Task<int> RunFitLeadPolicyTempAsync(string? startDateStr, string? cutoffStr, CancellationToken ct)
+    public async Task<int> RunFitLeadPolicyTempAsync(string? startDateStr, string? cutoffStr, string? locationOverride, CancellationToken ct)
     {
         await Task.Yield();
-        var location = _cfg.Location;
+        var location = ResolveLocation(locationOverride);
+        if (location is null) return 2;
         var modelsRoot = _cfg.Storage.ModelsPath;
         var thresholds = new PrecipLeadPolicy.ThresholdsBlock();
         var windowStart = DateOnly.TryParse(startDateStr, out var d0)
@@ -1982,7 +2032,7 @@ FROM latest WHERE rn = 1;";
         var hp = TempTrainer.Hyperparameters.Default();
         static string Esc(string p) => p.Replace('\\', '/').Replace("'", "''");
         var root = Path.GetDirectoryName(modelsRoot)!;
-        var fcGlobAll = Esc(Path.Combine(_cfg.Storage.ForecastsPath, "location=bonehill_rocks", "**", "*.parquet"));
+        var fcGlobAll = Esc(Path.Combine(_cfg.Storage.ForecastsPath, "location=" + location.Name, "**", "*.parquet"));
         var eraGlob = Esc(Path.Combine(_cfg.Storage.Era5Path, "**", "*.parquet"));
         var escLoc = location.Name.Replace("'", "''");
         // TRAIN cache: ≤cutoff, all sources (offset_day for ≥24h, hist_forecast

@@ -765,15 +765,19 @@ public static class Program
             name: "--as-of",
             description: "Max training ValidTime (yyyy-MM-dd); live window stays OOS. Default 2026-03-15.",
             getDefaultValue: () => null);
+        var policyRetrainLocationOpt = new Option<string?>(
+            name: "--location",
+            description: "Location to mint study bundles for (e.g. 'membury_devon'). Blank = primary (Bonehill). 3c minted per gauge; 3o (Bonehill Dartmoor pool) is skipped for locations without the full pool.",
+            getDefaultValue: () => null);
         var policyRetrain = new Command(
             "precip-policy-retrain",
-            "STUDY: retrain no-UA cutoff 3c+3o bundles (Bonehill) into data/models_study/")
-            { policyAsOfOpt };
-        policyRetrain.SetHandler(async (asOf) =>
+            "STUDY: retrain no-UA cutoff 3c (+3o where applicable) bundles into data/models_study/")
+            { policyAsOfOpt, policyRetrainLocationOpt };
+        policyRetrain.SetHandler(async (asOf, location) =>
         {
             var cmd = host.Services.GetRequiredService<PrecipCrossLeadBakeoffCommand>();
-            await cmd.RunPolicyRetrainAsync(asOf, CancellationToken.None);
-        }, policyAsOfOpt);
+            await cmd.RunPolicyRetrainAsync(asOf, location, CancellationToken.None);
+        }, policyAsOfOpt, policyRetrainLocationOpt);
         root.AddCommand(policyRetrain);
 
         // precip-policy-eval — STUDY: score study bundles (no-UA, cutoff) per target-lead τ ×
@@ -855,15 +859,19 @@ public static class Program
         var fitPolicyCutoffOpt = new Option<string?>(
             name: "--cutoff", description: "Study-bundle train cutoff for provenance (yyyy-MM-dd). Default 2026-03-15.",
             getDefaultValue: () => null);
+        var fitPolicyLocationOpt = new Option<string?>(
+            name: "--location",
+            description: "Location to fit the precip policy for (e.g. 'membury_devon'). Blank = primary (Bonehill). Each location gets its own LEAD_POLICY_<location>.json; 3o is scored only where its study pool exists.",
+            getDefaultValue: () => null);
         var fitPolicy = new Command(
             "precip-fit-lead-policy",
             "Fit + emit LEAD_POLICY.json (per-6h-band 3c/3o model policy; margin+hysteresis+truth gates)")
-            { fitPolicyStartOpt, fitPolicyCutoffOpt };
-        fitPolicy.SetHandler(async (start, cutoff) =>
+            { fitPolicyStartOpt, fitPolicyCutoffOpt, fitPolicyLocationOpt };
+        fitPolicy.SetHandler(async (start, cutoff, location) =>
         {
             var cmd = host.Services.GetRequiredService<PrecipCrossLeadBakeoffCommand>();
-            Environment.ExitCode = await cmd.RunFitLeadPolicyAsync(start, cutoff, CancellationToken.None);
-        }, fitPolicyStartOpt, fitPolicyCutoffOpt);
+            Environment.ExitCode = await cmd.RunFitLeadPolicyAsync(start, cutoff, location, CancellationToken.None);
+        }, fitPolicyStartOpt, fitPolicyCutoffOpt, fitPolicyLocationOpt);
         root.AddCommand(fitPolicy);
 
         // temp-fit-lead-policy — temperature twin (target-generic policy). Trains
@@ -875,15 +883,19 @@ public static class Program
         var fitPolicyTempCutoffOpt = new Option<string?>(
             name: "--cutoff", description: "Study-train cutoff (yyyy-MM-dd). Default 2026-03-15.",
             getDefaultValue: () => null);
+        var fitPolicyTempLocationOpt = new Option<string?>(
+            name: "--location",
+            description: "Location to fit the temperature policy for (e.g. 'membury_devon'). Must match config.yaml's `locations:`. Blank = primary location (Bonehill). Each location gets its own LEAD_POLICY_<location>.json.",
+            getDefaultValue: () => null);
         var fitPolicyTemp = new Command(
             "temp-fit-lead-policy",
             "Fit + emit the temperature LEAD_POLICY (per-6h-band 2c model policy, MAE vs ERA5, ±24h window)")
-            { fitPolicyTempStartOpt, fitPolicyTempCutoffOpt };
-        fitPolicyTemp.SetHandler(async (start, cutoff) =>
+            { fitPolicyTempStartOpt, fitPolicyTempCutoffOpt, fitPolicyTempLocationOpt };
+        fitPolicyTemp.SetHandler(async (start, cutoff, location) =>
         {
             var cmd = host.Services.GetRequiredService<PrecipCrossLeadBakeoffCommand>();
-            Environment.ExitCode = await cmd.RunFitLeadPolicyTempAsync(start, cutoff, CancellationToken.None);
-        }, fitPolicyTempStartOpt, fitPolicyTempCutoffOpt);
+            Environment.ExitCode = await cmd.RunFitLeadPolicyTempAsync(start, cutoff, location, CancellationToken.None);
+        }, fitPolicyTempStartOpt, fitPolicyTempCutoffOpt, fitPolicyTempLocationOpt);
         root.AddCommand(fitPolicyTemp);
 
         // precip-ifs-cycle-bakeoff — 4-way IFS-cycle comparison for 3d
@@ -1010,13 +1022,12 @@ public static class Program
             name: "--location",
             description: "Override the primary location for precipitation training (3a/3c). Must match a name in config.yaml's `locations:` list (e.g. 'membury_devon'). Default = primary location (Bonehill). Other targets ignore this flag for now.",
             getDefaultValue: () => null);
-        var nowcastOpt = new Option<bool>(
-            name: "--nowcast",
-            description: "Also train the lead-0 'nowcast' model (sourced from the hist_forecast archive) into the same per-phase bundle. Temperature + precipitation only. Default false (production untouched).",
-            getDefaultValue: () => false);
+        // The lead-0 "nowcast" model is now appended automatically for the two
+        // champion rich phases that carry it (temperature 2c / precipitation 3o),
+        // on every location — no flag. See TrainCommand's includeNowcast derive.
         var train = new Command("train", "Train the blender (phase 2b temperature / phase 3a precipitation / phase 3b dry-window)")
         {
-            targetOpt, leadOpt, stationOpt, windowOpt, featureSetOpt, tierOpt, includeUkvOpt, exactLeadsOpt, cyclesOpt, trainLocationOpt, nowcastOpt,
+            targetOpt, leadOpt, stationOpt, windowOpt, featureSetOpt, tierOpt, includeUkvOpt, exactLeadsOpt, cyclesOpt, trainLocationOpt,
         };
         train.SetHandler(async (ctx) =>
         {
@@ -1034,9 +1045,8 @@ public static class Program
             int[]? cycles = string.IsNullOrWhiteSpace(cyclesStr) ? null
                 : cyclesStr.Split(',').Select(s => int.Parse(s.Trim(), System.Globalization.CultureInfo.InvariantCulture)).ToArray();
             var locationOverride = ctx.ParseResult.GetValueForOption(trainLocationOpt);
-            var includeNowcast = ctx.ParseResult.GetValueForOption(nowcastOpt);
             var cmd = host.Services.GetRequiredService<TrainCommand>();
-            ctx.ExitCode = await cmd.RunAsync(target, lead, station, window, featureSet, tier, includeUkv, exactLeads, cycles, locationOverride, ctx.GetCancellationToken(), includeNowcast);
+            ctx.ExitCode = await cmd.RunAsync(target, lead, station, window, featureSet, tier, includeUkv, exactLeads, cycles, locationOverride, ctx.GetCancellationToken());
         });
         root.AddCommand(train);
 

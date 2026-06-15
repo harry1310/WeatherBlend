@@ -716,10 +716,10 @@ public static partial class SitePages
                     series.Add(new LineSeries($"Phase {p}", PrecipPhases.ColorFor(p), pts));
             }
 
-            content.Append(Ci, $"<h4>Lead +{lead}h</h4>");
+            content.Append(Ci, $"<h4>{(lead == 12 ? "&lt;24hr" : $"Lead +{lead}h")}</h4>");
             if (series.Count == 0)
             {
-                content.Append(RenderEmptyChart($"Rolling Brier — lead {lead}h", "No scored predictions at this lead."));
+                content.Append(RenderEmptyChart($"Rolling Brier — {LeadLabelText(lead)}", "No scored predictions at this lead."));
                 continue;
             }
 
@@ -740,7 +740,7 @@ public static partial class SitePages
 
             content.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
             {
-                Title = $"Rolling Brier — {PrettyStation(currentStation)} — lead +{lead}h",
+                Title = $"Rolling Brier — {PrettyStation(currentStation)} — {LeadLabelText(lead)}",
                 XLabel = "Window end (UTC)",
                 YLabel = "Brier",
                 Series = series,
@@ -798,10 +798,10 @@ public static partial class SitePages
                     series.Add(new LineSeries($"Phase {p}", TempPhases.ColorFor(p), pts));
             }
 
-            content.Append(Ci, $"<h4>Lead +{lead}h</h4>");
+            content.Append(Ci, $"<h4>{(lead == 12 ? "&lt;24hr" : $"Lead +{lead}h")}</h4>");
             if (series.Count == 0)
             {
-                content.Append(RenderEmptyChart($"Rolling MAE — lead {lead}h", "No scored predictions at this lead."));
+                content.Append(RenderEmptyChart($"Rolling MAE — {LeadLabelText(lead)}", "No scored predictions at this lead."));
                 continue;
             }
 
@@ -822,7 +822,7 @@ public static partial class SitePages
 
             content.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
             {
-                Title = $"Rolling MAE — lead +{lead}h",
+                Title = $"Rolling MAE — {LeadLabelText(lead)}",
                 XLabel = "Window end (UTC)",
                 YLabel = "MAE (°C)",
                 Series = series,

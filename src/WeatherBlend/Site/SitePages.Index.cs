@@ -34,15 +34,14 @@ public static partial class SitePages
         var dayWindowStart = dayUtc.AddHours(firstHour);
         var dayWindowEnd   = dayUtc.AddHours(lastHourExcl);
 
-        // Champion-PHASE filter, per lead — see ChampionMatcher for the
-        // full rationale (per-lead pins, phase-over-version matching after
-        // a retrain, test-fixture version-equality fallback). Empty
-        // CurrentVersion + no per-lead pins = no manifest, fall back to
-        // "any" so a freshly-deployed environment still renders cards.
+        // Champion-PHASE filter — see ChampionMatcher for the full rationale
+        // (phase-over-version matching after a retrain, test-fixture
+        // version-equality fallback). Empty CurrentVersion = no manifest, fall
+        // back to "any" so a freshly-deployed environment still renders cards.
         var champion = new ChampionMatcher(input);
-        var cardSource = string.IsNullOrEmpty(input.CurrentVersion) && input.ChampionByLead.Count == 0
+        var cardSource = string.IsNullOrEmpty(input.CurrentVersion)
             ? input.Predictions
-            : input.Predictions.Where(p => champion.MatchesChampionPhase(p.ModelVersion, p.LeadHours));
+            : input.Predictions.Where(p => champion.MatchesChampionPhase(p.ModelVersion));
 
         // For each future valid_time, take the smallest lead (most recent
         // cycle); within ties, freshest PredictionMadeAt wins. Restrict to
@@ -452,9 +451,9 @@ public static partial class SitePages
         // RenderIndex filter so the sub-nav doesn't disagree with the day
         // body. See ChampionMatcher for the rationale.
         var champion = new ChampionMatcher(input);
-        var cardSource = string.IsNullOrEmpty(input.CurrentVersion) && input.ChampionByLead.Count == 0
+        var cardSource = string.IsNullOrEmpty(input.CurrentVersion)
             ? input.Predictions
-            : input.Predictions.Where(p => champion.MatchesChampionPhase(p.ModelVersion, p.LeadHours));
+            : input.Predictions.Where(p => champion.MatchesChampionPhase(p.ModelVersion));
 
         return cardSource
             .Where(p => p.ValidTimeUtc > input.GeneratedAtUtc

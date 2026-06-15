@@ -184,14 +184,11 @@ public sealed class RenderSiteCommand
         _log.LogInformation("Loaded {N} precip conformal τ values across (station, version, lead).",
             precipConformalTau.Count);
 
-        // Champion + per-(station, lead) overrides are global (keyed by station
-        // = location-name for temp / EA slug for precip). Resolved BEFORE the
-        // phase map so the CURRENT champion's phase is always in it — see the
-        // union below.
+        // Champion versions are global (keyed by station = location-name for
+        // temp / EA slug for precip). Resolved BEFORE the phase map so the
+        // CURRENT champion's phase is always in it — see the union below.
         var tempChampions = _metadata.GetChampionsByStation("temperature");
-        var tempChampionByStationLead = _metadata.GetChampionByStationLead("temperature");
         var precipCurrentByStation = _metadata.GetChampionsByStation("precipitation");
-        var precipChampionByStationLead = _metadata.GetChampionByStationLead("precipitation");
 
         // PhaseByVersion is computed across ALL locations (a single dict
         // keyed by version string); rolling-MAE/Brier compute per-loc inside
@@ -211,10 +208,10 @@ public sealed class RenderSiteCommand
         // the new one has predictions. Match on PHASE, never a specific version.
         var tempPhaseKeys = WithChampionVersions(
             predictionsAllLocs.Select(p => (Station: p.LocationName, Version: p.ModelVersion)),
-            tempChampions, tempChampionByStationLead);
+            tempChampions);
         var precipPhaseKeys = WithChampionVersions(
             precipAllLocs.Select(p => (Station: p.Station, Version: p.Version)),
-            precipCurrentByStation, precipChampionByStationLead);
+            precipCurrentByStation);
         var phaseByVersion = _metadata.GetPhaseByVersion(
             tempPhaseKeys,
             precipPhaseKeys,
@@ -364,11 +361,9 @@ public sealed class RenderSiteCommand
             var moObs = _truth.GetMetOfficeObsTemperature(loc.Name, windowStart, now, ct);
             var rainfall = LoadRainfallTruth(windowStart, now, precip, ct);
 
-            // Per-loc champions.
+            // Per-loc champion (one version per (target, station) — the per-lead
+            // ChampionByLead override was removed 2026-06-15).
             var currentVersion = tempChampions.TryGetValue(loc.Name, out var tcv) ? tcv : "";
-            var championByLead = (IReadOnlyDictionary<int, string>)tempChampionByStationLead
-                .Where(kv => string.Equals(kv.Key.Station, loc.Name, StringComparison.Ordinal))
-                .ToDictionary(kv => kv.Key.LeadHours, kv => kv.Value);
 
             // Per-loc rolling metrics.
             var rolling = ComputeRollingMae(predictions, truth, phaseByVersion, rollingWindowDays);
@@ -447,9 +442,7 @@ public sealed class RenderSiteCommand
                 PhaseByVersion = phaseByVersion,
                 RainfallTruth = rainfall,
                 CurrentVersion = currentVersion,
-                ChampionByLead = championByLead,
                 PrecipCurrentByStation = precipCurrentByStation,
-                PrecipChampionByStationLead = precipChampionByStationLead,
                 ActiveStationSlugs = locStationSlugs,
                 Locations = locationDescriptors,
                 ModelSummaries = locModelSummaries,
@@ -1080,16 +1073,13 @@ public sealed class RenderSiteCommand
     /// then again 2026-06-14 for Membury). Adding the champion keys lets
     /// <see cref="ModelMetadataRepository.GetPhaseByVersion"/> resolve their
     /// phase off the on-disk bundle, which is synced even with zero predictions.
-    /// Per-lead champion pins (<paramref name="championByStationLead"/>) get the
-    /// same treatment. Duplicates are harmless — GetPhaseByVersion de-dupes.
+    /// Duplicates are harmless — GetPhaseByVersion de-dupes.
     /// </summary>
     internal static IEnumerable<(string Station, string Version)> WithChampionVersions(
         IEnumerable<(string Station, string Version)> predictionKeys,
-        IReadOnlyDictionary<string, string> championByStation,
-        IReadOnlyDictionary<(string Station, int LeadHours), string> championByStationLead)
+        IReadOnlyDictionary<string, string> championByStation)
         => predictionKeys
-            .Concat(championByStation.Select(kv => (Station: kv.Key, Version: kv.Value)))
-            .Concat(championByStationLead.Select(kv => (Station: kv.Key.Station, Version: kv.Value)));
+            .Concat(championByStation.Select(kv => (Station: kv.Key, Version: kv.Value)));
 
     /// <summary>
     /// Rolling MAE per (Phase, LeadHours, daily window end) across the last

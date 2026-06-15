@@ -450,16 +450,6 @@ public static partial class SitePages
         public string CurrentVersion { get; init; } = "";
 
         /// <summary>
-        /// Per-lead champion override (Phase 2d, 2026-05-05). Maps lead-hours
-        /// → version pinned as champion AT THAT LEAD ONLY. Lookups for any
-        /// lead not present here fall back to <see cref="CurrentVersion"/>.
-        /// Empty dict on legacy renders so behaviour is unchanged from before
-        /// per-lead championship landed.
-        /// </summary>
-        public IReadOnlyDictionary<int, string> ChampionByLead { get; init; }
-            = new Dictionary<int, string>();
-
-        /// <summary>
         /// Per-station precipitation champion version, keyed by EA station
         /// slug (e.g. <c>ea_bellever_dartmoor</c>) — the newest Active version
         /// of the phases.yaml champion phase (3a), resolved per station. The
@@ -469,18 +459,6 @@ public static partial class SitePages
         /// </summary>
         public IReadOnlyDictionary<string, string> PrecipCurrentByStation { get; init; }
             = new Dictionary<string, string>();
-
-        /// <summary>
-        /// Per-(station, lead) precipitation champion override (Phase 3d,
-        /// 2026-05-05). Maps (station-slug, lead-hours) → version pinned as
-        /// champion AT THAT (STATION, LEAD) ONLY. Lookups for any (station,
-        /// lead) not present here fall back to <see cref="PrecipCurrentByStation"/>.
-        /// Mirrors <see cref="ChampionByLead"/> on the temperature side so 3d
-        /// (exact-runtime precip) can take over as champion at lead 12 per
-        /// station while 3a owns 24+. Empty dict when no per-lead pin is set.
-        /// </summary>
-        public IReadOnlyDictionary<(string Station, int LeadHours), string> PrecipChampionByStationLead { get; init; }
-            = new Dictionary<(string, int), string>();
 
         /// <summary>
         /// Per-model held-out test scores (Blend vs ERA5 / EA rainfall) for every active

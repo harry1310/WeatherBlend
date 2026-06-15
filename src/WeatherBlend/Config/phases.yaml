@@ -101,20 +101,25 @@ targets:
       # doesn't have to remap colours in their head. Temperature has no
       # equivalent of 4a (BART) yet, so the amber slot is reserved for
       # whenever a fourth active temp phase appears.
-      - id: "2b"
+      # 2c is champion (2026-06-15): the rich blender wins test MAE at every
+      # lead AND carries the lead-0 nowcast + <24hr per-lead policy, so it's the
+      # headline forecast. Champion resolution falls back 2c → 2b per station
+      # (ResolveStationChampionVersion walks this lineup), mirroring precip's
+      # 3o → 3c → 3a chain — so a station with no Active 2c still resolves to 2b.
+      - id: "2c"
         role: champion
         impl: dotnet
         minValidTime: "2024-01-01"
         display:
-          shortTitle: "Phase 2b (lean)"
-          color: "#7c4dff"   # purple — current champion (lean blender)
-      - id: "2c"
+          shortTitle: "Phase 2c (rich)"
+          color: "#26a69a"   # teal — rich-feature champion (carries the nowcast policy)
+      - id: "2b"
         role: challenger
         impl: dotnet
         minValidTime: "2024-01-01"
         display:
-          shortTitle: "Phase 2c (rich)"
-          color: "#26a69a"   # teal — rich-feature challenger
+          shortTitle: "Phase 2b (lean)"
+          color: "#7c4dff"   # purple — lean blender (champion fallback when 2c absent)
       - id: "2d"
         role: challenger
         impl: dotnet

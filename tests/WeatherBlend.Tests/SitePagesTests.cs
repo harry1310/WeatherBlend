@@ -293,53 +293,6 @@ public class SitePagesTests
     }
 
     [Fact]
-    public void RenderIndex_filters_per_lead_using_ChampionByLead_override()
-    {
-        // 2d at lead 12, 2b at lead 24. ChampionByLead pins 2d at lead 12;
-        // CurrentVersion is the 2b champion. Tile at lead 12 should show the
-        // 2d temperature; tile at lead 24 should show the 2b temperature.
-        // Both predictions share the same valid_time so the smallest-lead-wins
-        // grouping doesn't matter here — what matters is that the 2c
-        // challenger's row at the same valid_time is filtered out.
-        var generatedAt = new DateTime(2026, 5, 5, 0, 0, 0, DateTimeKind.Utc);
-        var nextDay = generatedAt.Date.AddDays(1);
-        var v12 = nextDay.AddHours(12);  // tomorrow noon
-        var v24 = nextDay.AddDays(1).AddHours(0);  // day after, 00Z
-
-        TempPredictionRow Row(string version, int lead, DateTime valid, double t) => new()
-        {
-            LocationName = "Test", ModelVersion = version,
-            PredictionMadeAtUtc = generatedAt,
-            ValidTimeUtc = valid, LeadHours = lead,
-            BlendTemperature = t,
-            FeatureVectorHash = "",
-        };
-
-        var preds = new[]
-        {
-            Row("v-2b", 12, v12, 11.0),
-            Row("v-2c", 12, v12, 11.5),
-            Row("v-2d", 12, v12, 12.5),  // 2d champion at lead 12
-            Row("v-2b", 24, v24, 9.0),   // 2b champion at lead 24+
-            Row("v-2c", 24, v24, 9.3),
-        };
-        var input = MakeEmptyForecastInput() with
-        {
-            GeneratedAtUtc = generatedAt,
-            Predictions = preds,
-            CurrentVersion = "v-2b",
-            ChampionByLead = new Dictionary<int, string> { [12] = "v-2d" },
-        };
-
-        var html = SitePages.RenderIndex(input, dayOffset: 1);
-
-        // Tomorrow's noon tile must show 12.5°C (2d), not 11.0/11.5 (2b/2c).
-        html.Should().Contain("12.5°C");
-        html.Should().NotContain("11.0°C");
-        html.Should().NotContain("11.5°C");
-    }
-
-    [Fact]
     public void RenderIndex_today_falls_back_to_previous_champion_phase_bundle()
     {
         // Regression for the 2026-05-26 Membury "no forward predictions in
@@ -2754,11 +2707,12 @@ public class SitePagesTests
     public void RenderModels_orders_champion_above_challenger_per_target()
     {
         // Card order within a composite (e.g. one temperature block) should be
-        // champion → challenger so the lean blender always sits on top, even
-        // when the challenger was trained later in the cycle. Earlier behaviour
-        // sorted by TrainedAtUtc descending, which let an accident of training
-        // order put the rich card first and made readers misread "all green at
-        // top" as the lean blender's deltas.
+        // champion → challenger so the champion always sits on top, even when a
+        // challenger was trained later in the cycle. Earlier behaviour sorted by
+        // TrainedAtUtc descending, which let an accident of training order pick
+        // the top card. Since 2026-06-15 the temperature champion is 2c (rich),
+        // so the rich card sits ABOVE the lean 2b — same as the precip 3c-above-3a
+        // case below, and still driven by PhasePriority, not list/trained order.
         var trainedLean = new DateTime(2026, 4, 20, 12, 0, 0, DateTimeKind.Utc);
         var trainedRich = trainedLean.AddSeconds(30);  // rich trained later
         var perLead = new Dictionary<int, SitePages.PerLeadMetric>
@@ -2785,7 +2739,7 @@ public class SitePagesTests
         var rainHtml = SitePages.RenderModels(input, "precipitation");
         var dryHtml  = SitePages.RenderModels(input, "dry_window");
 
-        tempHtml.IndexOf("v_lean").Should().BeLessThan(tempHtml.IndexOf("v_rich"));
+        tempHtml.IndexOf("v_rich").Should().BeLessThan(tempHtml.IndexOf("v_lean"));
         // Precipitation lineup is 3o → 3c → 3a since 2026-06-06 (3a demoted
         // from champion to the universal fallback). With only 3c + 3a in this
         // fixture, the richer 3c (v_rich_p) now sits ABOVE the lean 3a
