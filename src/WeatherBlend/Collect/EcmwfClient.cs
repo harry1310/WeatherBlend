@@ -158,13 +158,21 @@ public sealed class EcmwfClient
         };
 
         var rows = new List<ForecastRow>();
+        // Deaccumulation anchor for ssrd (accumulated-since-start) — the previous
+        // successfully-fetched lead's cumulative value + its lead hours.
+        double? prevShortwaveCumulative = null;
+        int prevLeadHours = 0;
         foreach (var lead in leadHours.OrderBy(h => h))
         {
             ct.ThrowIfCancellationRequested();
             try
             {
-                var row = await FetchLeadAsync(location, cycleDate, cycleHour, stream, modelId, lead, runTime, scratchDir, apiBaseUrl, ct);
+                var (row, swCum) = await FetchLeadAsync(location, cycleDate, cycleHour, stream, modelId,
+                    lead, runTime, scratchDir, apiBaseUrl, prevShortwaveCumulative, prevLeadHours, ct);
                 if (row is not null) rows.Add(row);
+                // Advance the anchor only when this lead carried ssrd; a missing
+                // lead just widens the next deaccumulation window.
+                if (swCum is not null) { prevShortwaveCumulative = swCum; prevLeadHours = lead; }
             }
             catch (HttpRequestException e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
@@ -175,9 +183,10 @@ public sealed class EcmwfClient
         return rows;
     }
 
-    private async Task<ForecastRow?> FetchLeadAsync(
+    private async Task<(ForecastRow? Row, double? ShortwaveCumulative)> FetchLeadAsync(
         LocationConfig loc, DateOnly date, int cycleHour, string stream, string modelId,
-        int lead, DateTime runTime, string scratchDir, string apiBaseUrl, CancellationToken ct)
+        int lead, DateTime runTime, string scratchDir, string apiBaseUrl,
+        double? prevShortwaveCumulative, int prevLeadHours, CancellationToken ct)
     {
         // Path is `{date}/{HH}z/{streamSubpath}/0p25/{streamFolder}/{date}{HH}0000-{lead}h-{streamFolder}-fc.{grib2|index}`
         // where streamSubpath ∈ {ifs, aifs-single} (or aifs legacy) and the
@@ -245,9 +254,9 @@ public sealed class EcmwfClient
         {
             // Every candidate 404'd — rethrow so FetchCycleAsync logs "Missing".
             if (lastNotFound is not null) throw lastNotFound;
-            return null;
+            return (null, null);
         }
-        if (indexEntries.Count == 0) return null;
+        if (indexEntries.Count == 0) return (null, null);
 
         // 2) For each variable we want, find the FIRST matching index entry
         //    by exact param match. ECMWF param codes ARE unique per (param,
@@ -274,7 +283,7 @@ public sealed class EcmwfClient
         if (picks.Count == 0)
         {
             _log.LogWarning("No matching variables in .index for {Stem}", stem);
-            return null;
+            return (null, null);
         }
 
         // Sort picks by byte offset. Step 3 requests the ranges in this
@@ -342,7 +351,7 @@ public sealed class EcmwfClient
             if (raw.Temperature2m is double tC && raw.DewPoint2m is double tdC)
                 rh2m = MagnusRh(tC, tdC);
 
-            return new ForecastRow
+            var row = new ForecastRow
             {
                 LocationName = loc.Name,
                 Model = modelId,
@@ -358,10 +367,19 @@ public sealed class EcmwfClient
                 WindGusts10m = raw.WindGusts10m,
                 SurfacePressure = raw.SurfacePressure,
                 PressureMsl = raw.PressureMsl,
-                CloudCover = raw.CloudCover,
+                // AIFS tcc arrives already as a percentage — undo the shared
+                // VarMap's ×100 (IFS tcc is a fraction); clamp to [0,100].
+                CloudCover = NormalizeCloudPct(raw.CloudCover, modelId),
                 Cape = raw.Cape,
+                // tp (precip) is ALSO accumulated-since-start, but it feeds the
+                // exact precip model (3d) — left cumulative pending a coordinated
+                // backfill + retrain so live/train scales stay consistent.
                 Precipitation = raw.Precipitation,
-                ShortwaveRadiation = raw.ShortwaveRadiation,
+                // ssrd is accumulated-since-start; deaccumulate to the per-window
+                // mean W/m². Unused by any blender (the SW blend uses the OM
+                // *_025/_seamless variants), so safe to correct without backfill.
+                ShortwaveRadiation = DeaccumulateMeanFlux(
+                    raw.ShortwaveRadiation, prevShortwaveCumulative, lead, prevLeadHours),
                 Temperature850hPa = raw.Temperature850hPa,
                 Temperature700hPa = raw.Temperature700hPa,
                 Temperature500hPa = raw.Temperature500hPa,
@@ -373,6 +391,9 @@ public sealed class EcmwfClient
                 WindSpeed500hPa = raw.U500 is { } u500 && raw.V500 is { } v500 ? Math.Sqrt(u500 * u500 + v500 * v500) : null,
                 WindDirection500hPa = raw.U500 is { } u500d && raw.V500 is { } v500d ? WindDirection(u500d, v500d) : null,
             };
+            // Return the row plus the still-CUMULATIVE ssrd (raw.ShortwaveRadiation,
+            // = mean×leadHours) so the caller can deaccumulate the next lead.
+            return (row, raw.ShortwaveRadiation);
         }
         finally
         {
@@ -521,6 +542,38 @@ public sealed class EcmwfClient
             yield return body.AsMemory(payloadStart, payloadEnd - payloadStart);
             pos = payloadEnd;
         }
+    }
+
+    /// <summary>
+    /// Deaccumulate a mean-flux field ECMWF publishes accumulated from forecast
+    /// start. The <c>ssrd</c> VarMap already divides the accumulated J/m² by
+    /// 3600, so the stored value equals mean-W/m² × leadHours (the 0→lead mean
+    /// times elapsed hours). The per-window mean over (prevLead, lead] is
+    /// therefore (cum[lead] − cum[prevLead]) / (lead − prevLead). First lead
+    /// (prevLead = 0) → the 0→lead mean. Null in → null out; non-positive window
+    /// → value unchanged (can't deaccumulate); clamped ≥ 0. Without this, the
+    /// cumulative value /3600 grows ~linearly with lead (≈7900 W/m² at +24h).
+    /// </summary>
+    internal static double? DeaccumulateMeanFlux(
+        double? cumThisLead, double? cumPrevLead, int leadHours, int prevLeadHours)
+    {
+        if (cumThisLead is not double cur) return null;
+        var dLead = leadHours - prevLeadHours;
+        if (dLead <= 0) return Math.Max(0.0, cur);
+        return Math.Max(0.0, (cur - (cumPrevLead ?? 0.0)) / dLead);
+    }
+
+    /// <summary>
+    /// Normalise total cloud cover to percent [0,100]. The shared <c>tcc</c>
+    /// VarMap multiplies by 100 — correct for IFS (tcc is a 0..1 fraction) but
+    /// AIFS publishes tcc already as a percentage, so that ×100 over-scales it
+    /// (e.g. 9274 for 92.74%). Undo the extra ×100 for AIFS; clamp all to [0,100].
+    /// </summary>
+    internal static double? NormalizeCloudPct(double? rawPct, string modelId)
+    {
+        if (rawPct is not double c) return null;
+        if (modelId == "ecmwf_aifs_oper") c /= 100.0;
+        return Math.Clamp(c, 0.0, 100.0);
     }
 
     /// <summary>
