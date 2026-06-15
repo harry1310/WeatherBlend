@@ -727,43 +727,19 @@ FROM latest WHERE rn = 1;";
                         candidates.Add(($"b{l}x{h}", "blend", new List<int> { l, h }));
                 if (candidates.Count == 0) continue;   // no in-window model (shouldn't happen — baseline covers it)
 
-                // 1. Pick on SELECT.
-                var pick = candidates.OrderBy(c => SelB(c.Series)).First();
-                // 2. Hysteresis vs incumbent: a different challenger must beat the
-                //    incumbent on SCORE by HysteresisPct or the incumbent stays.
                 var inc = incumbent?.Lookup(phase, lo);
-                string IncSeries(PrecipLeadPolicy.BandEntry e) =>
-                    e.Kind == "blend" ? $"b{e.Leads[0]}x{e.Leads[1]}" : $"s{e.Leads[0]}";
-                if (inc is not null)
-                {
-                    var incSco = ScoB(IncSeries(inc));
-                    if (!double.IsNaN(incSco)
-                        && IncSeries(inc) != pick.Series
-                        && !(ScoB(pick.Series) <= incSco * (1 - thresholds.HysteresisPct / 100.0)))
-                        pick = candidates.First(c => c.Series == IncSeries(inc));
-                }
-                // 3. Margin gate vs baseline on SCORE. Incumbents re-qualify at
-                //    (margin − hysteresis) so a sub-threshold wobble can't churn them out.
-                var pickSco = ScoB(pick.Series);
-                var isIncumbentPick = inc is not null && IncSeries(inc) == pick.Series;
-                var requiredPct = isIncumbentPick
-                    ? Math.Max(0.0, thresholds.MarginPct - thresholds.HysteresisPct)
-                    : thresholds.MarginPct;
-                var isBaselinePick = pick.Kind == "single" && pick.Leads[0] == baseLead;
-                var passes = !isBaselinePick && pickSco <= baseSco * (1 - requiredPct / 100.0);
-
-                var deltaPct = 100.0 * (baseSco - pickSco) / baseSco;
-                var decision = passes
+                var pick = DecideBand(candidates, SelB, ScoB, baseLead, baseSco, inc, thresholds);
+                var decision = pick.Passes
                     ? (pick.Kind == "blend" ? $"blend {pick.Leads[0]}+{pick.Leads[1]}" : $"m{pick.Leads[0]}")
                     : $"baseline m{baseLead}";
-                Console.WriteLine($"  {lo + "-" + hi + "h",9} {nSco,6} {$"m{baseLead} {baseSco:F4}",13} {$"{pick.Series} sel",16} {pickSco,8:F4} {decision,18}{(passes ? $"  (+{deltaPct:F2}%)" : "")}");
+                Console.WriteLine($"  {lo + "-" + hi + "h",9} {nSco,6} {$"m{baseLead} {baseSco:F4}",13} {$"{pick.Series} sel",16} {pick.ScoreBrier,8:F4} {decision,18}{(pick.Passes ? $"  (+{pick.DeltaPct:F2}%)" : "")}");
 
-                if (passes)
+                if (pick.Passes)
                     entries.Add(new PrecipLeadPolicy.BandEntry
                     {
                         LeadLo = lo, LeadHi = hi, Kind = pick.Kind, Leads = pick.Leads,
-                        BaselineBrier = baseSco, PolicyBrier = pickSco,
-                        DeltaPct = deltaPct, ScoreN = nSco,
+                        BaselineBrier = baseSco, PolicyBrier = pick.ScoreBrier,
+                        DeltaPct = pick.DeltaPct, ScoreN = nSco,
                     });
             }
             if (entries.Count > 0) policy.Phases[phase] = entries;
@@ -775,6 +751,72 @@ FROM latest WHERE rn = 1;";
                           $"({policy.Phases.Sum(p => p.Value.Count)} deviation band(s); absent bands = production buckets)");
         return 0;
     }
+
+    /// <summary>
+    /// One band's model choice for a lead policy: SELECT-pick → hysteresis vs the
+    /// live incumbent → margin gate vs the production bucket baseline. Shared by
+    /// the precipitation (3c/3o) and temperature (2c) producers so the two can't
+    /// drift apart — which is exactly how the 2026-06-15 crash arose: the precip
+    /// copy kept the incumbent with a throwing <c>candidates.First(...)</c>, so an
+    /// incumbent band whose model had fallen OUTSIDE the ±24h candidate window
+    /// (e.g. a global-file 3c@84-90h = lead-48, with only {72,96} in window) threw
+    /// "Sequence contains no matching element" and killed the whole fit before any
+    /// policy was saved. An out-of-window incumbent isn't on the menu, so it can't
+    /// be kept — FirstOrDefault falls back to the SELECT pick.
+    /// </summary>
+    /// <param name="candidates">In-window models for this band (singles, plus
+    /// blends when the phase allows). Must be non-empty.</param>
+    /// <param name="selScore">Series → SELECT-slice error (lower better).</param>
+    /// <param name="scoScore">Series → SCORE-slice error (lower better); returns
+    /// NaN for a series with no held-out rows.</param>
+    /// <param name="baseLead">Production bucket model lead for this band.</param>
+    /// <param name="baseSco">SCORE-slice error of the baseline bucket model.</param>
+    /// <param name="incumbent">The live policy's entry for this band, or null.</param>
+    internal static BandPick DecideBand(
+        IReadOnlyList<(string Series, string Kind, List<int> Leads)> candidates,
+        Func<string, double> selScore,
+        Func<string, double> scoScore,
+        int baseLead,
+        double baseSco,
+        PrecipLeadPolicy.BandEntry? incumbent,
+        PrecipLeadPolicy.ThresholdsBlock thresholds)
+    {
+        static string IncSeries(PrecipLeadPolicy.BandEntry e) =>
+            e.Kind == "blend" ? $"b{e.Leads[0]}x{e.Leads[1]}" : $"s{e.Leads[0]}";
+
+        // 1. Pick on SELECT (lowest error on the slice no candidate trained on).
+        var pick = candidates.OrderBy(c => selScore(c.Series)).First();
+
+        // 2. Hysteresis: a DIFFERENT challenger must beat the incumbent on SCORE by
+        //    HysteresisPct, else the incumbent stays — but only when the incumbent
+        //    is STILL an in-window candidate (FirstOrDefault falls back to `pick`).
+        if (incumbent is not null)
+        {
+            var incSco = scoScore(IncSeries(incumbent));
+            if (!double.IsNaN(incSco)
+                && IncSeries(incumbent) != pick.Series
+                && !(scoScore(pick.Series) <= incSco * (1 - thresholds.HysteresisPct / 100.0)))
+                pick = candidates.FirstOrDefault(c => c.Series == IncSeries(incumbent), pick);
+        }
+
+        // 3. Margin gate vs baseline on SCORE. Incumbents re-qualify at
+        //    (margin − hysteresis) so a sub-threshold wobble can't churn them out.
+        var pickSco = scoScore(pick.Series);
+        var isIncumbentPick = incumbent is not null && IncSeries(incumbent) == pick.Series;
+        var requiredPct = isIncumbentPick
+            ? Math.Max(0.0, thresholds.MarginPct - thresholds.HysteresisPct)
+            : thresholds.MarginPct;
+        var isBaselinePick = pick.Kind == "single" && pick.Leads[0] == baseLead;
+        var passes = !isBaselinePick && pickSco <= baseSco * (1 - requiredPct / 100.0);
+        var deltaPct = 100.0 * (baseSco - pickSco) / baseSco;
+
+        return new BandPick(pick.Series, pick.Kind, pick.Leads, pickSco, deltaPct, passes);
+    }
+
+    /// <summary>The resolved choice for one 6h band — see <see cref="DecideBand"/>.
+    /// <c>Passes</c> false means "stay on the baseline bucket model" (no entry).</summary>
+    internal readonly record struct BandPick(
+        string Series, string Kind, List<int> Leads, double ScoreBrier, double DeltaPct, bool Passes);
 
     // ===================== TEMPERATURE per-lead policy producer (target-generic) =====================
     //
@@ -913,26 +955,12 @@ FROM latest WHERE rn = 1;";
             foreach (var (l, h) in pairs.Where(p => InWindow(p.Lo) && InWindow(p.Hi) && models.ContainsKey(p.Lo) && models.ContainsKey(p.Hi)))
                 candidates.Add(($"b{l}x{h}", "blend", new List<int> { l, h }));
             if (candidates.Count == 0) continue;
-            var pick = candidates.OrderBy(c => SelB(c.Series)).First();
             var inc = incumbent?.Lookup(phase, lo);
-            string IncSeries(PrecipLeadPolicy.BandEntry e) => e.Kind == "blend" ? $"b{e.Leads[0]}x{e.Leads[1]}" : $"s{e.Leads[0]}";
-            if (inc is not null)
-            {
-                var incSco = ScoB(IncSeries(inc));
-                if (!double.IsNaN(incSco) && IncSeries(inc) != pick.Series
-                    && !(ScoB(pick.Series) <= incSco * (1 - thresholds.HysteresisPct / 100.0)))
-                    pick = candidates.FirstOrDefault(c => c.Series == IncSeries(inc), pick);
-            }
-            var pickSco = ScoB(pick.Series);
-            var isIncumbentPick = inc is not null && IncSeries(inc) == pick.Series;
-            var requiredPct = isIncumbentPick ? Math.Max(0.0, thresholds.MarginPct - thresholds.HysteresisPct) : thresholds.MarginPct;
-            var isBaselinePick = pick.Kind == "single" && pick.Leads[0] == baseLead;
-            var passes = !isBaselinePick && pickSco <= baseSco * (1 - requiredPct / 100.0);
-            var deltaPct = 100.0 * (baseSco - pickSco) / baseSco;
-            var decision = passes ? (pick.Kind == "blend" ? $"blend {pick.Leads[0]}+{pick.Leads[1]}" : $"m{pick.Leads[0]}") : $"baseline m{baseLead}";
-            Console.WriteLine($"  {lo + "-" + (lo + 6) + "h",9} {nSco,6} {$"m{baseLead} {baseSco:F3}",13} {$"{pick.Series}",14} {pickSco,8:F3} {decision,16}{(passes ? $"  (+{deltaPct:F2}%)" : "")}");
-            if (passes)
-                entries.Add(new PrecipLeadPolicy.BandEntry { LeadLo = lo, LeadHi = lo + 6, Kind = pick.Kind, Leads = pick.Leads, BaselineBrier = baseSco, PolicyBrier = pickSco, DeltaPct = deltaPct, ScoreN = nSco });
+            var pick = DecideBand(candidates, SelB, ScoB, baseLead, baseSco, inc, thresholds);
+            var decision = pick.Passes ? (pick.Kind == "blend" ? $"blend {pick.Leads[0]}+{pick.Leads[1]}" : $"m{pick.Leads[0]}") : $"baseline m{baseLead}";
+            Console.WriteLine($"  {lo + "-" + (lo + 6) + "h",9} {nSco,6} {$"m{baseLead} {baseSco:F3}",13} {$"{pick.Series}",14} {pick.ScoreBrier,8:F3} {decision,16}{(pick.Passes ? $"  (+{pick.DeltaPct:F2}%)" : "")}");
+            if (pick.Passes)
+                entries.Add(new PrecipLeadPolicy.BandEntry { LeadLo = lo, LeadHi = lo + 6, Kind = pick.Kind, Leads = pick.Leads, BaselineBrier = baseSco, PolicyBrier = pick.ScoreBrier, DeltaPct = pick.DeltaPct, ScoreN = nSco });
         }
         if (entries.Count > 0) policy.Phases[phase] = entries;
         policy.Save(modelsRoot, "temperature", location.Name);
