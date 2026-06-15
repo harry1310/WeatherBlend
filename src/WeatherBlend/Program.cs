@@ -174,18 +174,44 @@ public static class Program
                     opts.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(240);
                 });
 
-                // ECMWF S3 archive — same Range-download shape as GFS, same
-                // resilience profile. Reuses Wgrib2 singleton below.
+                // ECMWF S3 archive — same Range-download shape as GFS, but the
+                // AWS Open Data mirror imposes a per-prefix request-rate cap and
+                // returns `503 SlowDown` in BURSTS under a sustained backfill
+                // (the bucket is heavily used by all clients). The default
+                // resilience profile turned that into a ruined run: the breaker
+                // opened at a 10% failure ratio, then fast-failed every following
+                // cycle with BrokenCircuitException (which the retry doesn't
+                // catch) — the 2026-06 IFS pilot wrote 1432 rows but logged 121
+                // errors that way. Two-part fix (HttpClient.Timeout must stay
+                // >= TotalRequestTimeout or it caps the retry budget early):
+                //   * Retry harder with exponential backoff + jitter. The backoff
+                //     IS adaptive pacing — it only slows when 503s appear, then
+                //     speeds back up — so no fixed inter-request sleep is needed
+                //     (that would tax every backfill, throttled or not).
+                //   * Make the breaker tolerant of throttling: only trip on a
+                //     near-total failure rate (a real outage), not on the
+                //     intermittent 503s a backfill EXPECTS and can retry through.
+                // AIFS uses this same client but is unaffected by the change
+                // (smaller files, fewer GETs/file → far less rate pressure).
                 services.AddHttpClient<EcmwfClient>(c =>
                 {
-                    c.Timeout = TimeSpan.FromSeconds(120);
+                    c.Timeout = TimeSpan.FromSeconds(300);
                     c.DefaultRequestHeaders.UserAgent.ParseAdd(cfg.Http.UserAgent);
                 })
                 .AddStandardResilienceHandler(opts =>
                 {
                     opts.AttemptTimeout.Timeout = TimeSpan.FromSeconds(60);
-                    opts.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(180);
+                    opts.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(240);
+                    // 5 retries (6 tries total) with exponential backoff + jitter
+                    // (base 2s → ~2/4/8/16/32s): rides out a SlowDown burst that
+                    // the default 3 tries gave up on.
+                    opts.Retry.MaxRetryAttempts = 5;
+                    opts.Retry.Delay = TimeSpan.FromSeconds(2);
+                    // SamplingDuration must be >= 2 x AttemptTimeout (120s here).
                     opts.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(240);
+                    opts.CircuitBreaker.MinimumThroughput = 100;
+                    opts.CircuitBreaker.FailureRatio = 0.9;
+                    opts.CircuitBreaker.BreakDuration = TimeSpan.FromSeconds(30);
                 });
 
                 services.AddSingleton<Wgrib2>(sp =>
