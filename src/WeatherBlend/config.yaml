@@ -795,6 +795,13 @@ rockSurface:
   tauDaySeconds: 86400.0
   tauLongSeconds: 86400.0
   fSky: 1.0
+  # Representative direct-beam factor (whole-crag horizontal mode only — Bonehill):
+  # the fraction of the DIRECT solar beam the rock actually catches. 1.0 = full
+  # horizontal SW (today's behaviour). Lower it (~0.3-0.5) to damp the clear-sky
+  # daytime peak — boulder self-shading + the steep climbing faces rarely catch
+  # the full noon beam — WITHOUT assuming a compass aspect. IR-gun calibration
+  # target (set from field readings, not guessed). Ignored in cliff-face mode.
+  directBeamFactor: 1.0
   lwClearK: 1.0
   lwCloudK: 0.54
   muScale: 0.3

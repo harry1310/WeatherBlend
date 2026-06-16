@@ -38,6 +38,32 @@ public class RockSurfacePhysicsTests
     private static IEnumerable<RockHour> AfterSpinup(IReadOnlyList<RockHour> r) => r.Skip(Spinup);
 
     [Fact]
+    public void DampedHorizontalSw_scales_only_the_direct_beam()
+    {
+        // 600 W/m² horizontal, 70% direct / 30% diffuse.
+        DampedHorizontalSw(600, 0.7, 1.0).Should().BeApproximately(600, 1e-9); // unchanged
+        DampedHorizontalSw(600, 0.7, 0.0).Should().BeApproximately(180, 1e-9); // diffuse only = 600×0.3
+        DampedHorizontalSw(600, 0.7, 0.5).Should().BeApproximately(390, 1e-9); // 180 + 0.5×420
+        DampedHorizontalSw(300, 0.0, 0.2).Should().BeApproximately(300, 1e-9); // all-diffuse sky → factor irrelevant
+        DampedHorizontalSw(500, 1.5, 0.0).Should().BeApproximately(0, 1e-9);   // directFrac clamps to [0,1]
+    }
+
+    [Fact]
+    public void Damped_direct_beam_lowers_the_midday_rock_peak()
+    {
+        // Same forcing, but pre-damp the direct beam exactly as the pipeline's
+        // horizontal branch does before Integrate. The damped run must sit cooler
+        // above air at midday; night (SW=0) is unaffected by construction.
+        var full = MakeForcing(10, cloudFrac: 0.2, windMs: 2.0);
+        var damped = full
+            .Select(h => h with { ShortwaveWm2 = DampedHorizontalSw(h.ShortwaveWm2, 0.7, 0.4) })
+            .ToList();
+        double Peak(IReadOnlyList<RockHour> r) => AfterSpinup(r).Max(h => h.RockTempC - h.AirTempC);
+        Peak(Integrate(damped, Cfg)).Should().BeLessThan(Peak(Integrate(full, Cfg)),
+            "damping the direct beam cuts daytime absorbed SW, so the rock runs less far above air");
+    }
+
+    [Fact]
     public void Clear_calm_night_cools_below_air()
     {
         var r = Integrate(MakeForcing(10, cloudFrac: 0.0, windMs: 1.0), Cfg);

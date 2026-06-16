@@ -181,13 +181,23 @@ public static class RockSurfacePredictPipeline
             var forcing = new List<RockSurfacePhysics.ForcingHour>(baseHours.Count);
             foreach (var b in baseHours)
             {
-                var sw = b.SwHorizontalWm2;
+                double sw;
                 if (face is not null)
                 {
                     var (elev, az) = SolarGeometry.SolarPosition(
                         b.ValidTimeUtc.AddMinutes(-30), location.Latitude, location.Longitude);
                     sw = SolarGeometry.FaceIncidentSw(
                         b.SwHorizontalWm2, b.DirectFrac, elev, az, face.AspectDeg, face.SlopeDeg, cfg.FSky);
+                }
+                else
+                {
+                    // Whole-crag horizontal mode: damp the direct beam by the
+                    // representative direct-beam factor (boulder self-shading +
+                    // steep climbing faces rarely catch the full noon beam).
+                    // Diffuse untouched, no aspect assumed. factor 1.0 (default)
+                    // leaves the horizontal SW unmodified.
+                    sw = RockSurfacePhysics.DampedHorizontalSw(
+                        b.SwHorizontalWm2, b.DirectFrac, cfg.DirectBeamFactor);
                 }
                 swByValid[b.ValidTimeUtc] = sw;
                 forcing.Add(new RockSurfacePhysics.ForcingHour(

@@ -50,6 +50,17 @@ public sealed class RockSurfaceConfig
     /// field where neighbours block part of the cold sky). Bonehill-specific knob.</summary>
     public double FSky { get; set; } = 1.0;
 
+    /// <summary>Representative fraction of the DIRECT solar beam the modelled
+    /// surface actually catches, in whole-crag horizontal mode (no faces). The
+    /// effective shortwave becomes diffuse + DirectBeamFactor·direct, with the
+    /// direct/diffuse split taken from the NWP radiation fields. 1.0 (default) =
+    /// today's full-horizontal behaviour; &lt;1 damps the clear-sky daytime peak
+    /// to represent boulder self-shading and the steep climbing faces that rarely
+    /// catch the full noon beam — WITHOUT assuming any compass aspect. A P2
+    /// IR-gun calibration target (Bonehill). Ignored in cliff-face mode, where the
+    /// per-face projection already handles the beam geometry.</summary>
+    public double DirectBeamFactor { get; set; } = 1.0;
+
     /// <summary>Clear-sky emissivity scale (Brutsaert). GFS-calibrated ≈1.0.</summary>
     public double LwClearK { get; set; } = 1.0;
 
@@ -102,6 +113,7 @@ public sealed class RockSurfaceConfig
             TauDaySeconds  = o.TauDaySeconds  ?? TauDaySeconds,
             TauLongSeconds = o.TauLongSeconds ?? TauLongSeconds,
             FSky           = o.FSky           ?? FSky,
+            DirectBeamFactor = o.DirectBeamFactor ?? DirectBeamFactor,
             LwClearK       = o.LwClearK       ?? LwClearK,
             LwCloudK       = o.LwCloudK       ?? LwCloudK,
             MuScale        = o.MuScale        ?? MuScale,
@@ -148,6 +160,7 @@ public sealed class RockSurfaceOverrideConfig
     public double? TauDaySeconds { get; set; }
     public double? TauLongSeconds { get; set; }
     public double? FSky { get; set; }
+    public double? DirectBeamFactor { get; set; }
     public double? LwClearK { get; set; }
     public double? LwCloudK { get; set; }
     public double? MuScale { get; set; }

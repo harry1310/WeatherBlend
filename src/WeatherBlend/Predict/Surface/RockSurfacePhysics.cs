@@ -68,6 +68,23 @@ public static class RockSurfacePhysics
         return Math.Sqrt(p.Lambda * p.Rho * p.CpRock / (2.0 * omega)) * p.MuScale;
     }
 
+    /// <summary>
+    /// Whole-crag horizontal shortwave with the DIRECT beam damped by a
+    /// representative factor (boulder self-shading / steep climbing faces rarely
+    /// catch the full noon beam). Diffuse is untouched and NO aspect is assumed:
+    /// SW_eff = diffuse + factor·direct = SW·(1 − directFrac·(1 − factor)).
+    /// <paramref name="directBeamFactor"/> = 1 → unchanged; 0 → diffuse only.
+    /// <paramref name="directFrac"/> (the direct share of horizontal SW) comes
+    /// from the NWP radiation split. Cliff-face mode does NOT use this — its
+    /// per-face projection handles the beam geometry directly.
+    /// </summary>
+    public static double DampedHorizontalSw(double swHorizontalWm2, double directFrac, double directBeamFactor)
+    {
+        var df = Math.Clamp(directFrac, 0.0, 1.0);
+        var direct = swHorizontalWm2 * df;
+        return swHorizontalWm2 - direct * (1.0 - directBeamFactor);
+    }
+
     /// <summary>One hour of forcing for the integrator. <paramref name="SeaTempC"/>
     /// is the sea surface temperature filling the rock's non-sky view (sea-cliff
     /// mode); null = exchange-neutral surroundings (boulder field / pre-S4).</summary>
