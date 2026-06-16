@@ -155,7 +155,10 @@ public static partial class SitePages
         int OverviewLastVisibleHourUtcExclusive,
         VillageRainSpec? VillageRain = null,
         SeaStateBadgeSpec? SeaStateBadge = null,
-        bool ShowClimbingConditions = false)
+        bool ShowClimbingConditions = false,
+        // Terrain noun for the low-cloud alert wording ("cloud base below the
+        // {tor|cliff}") — a Dartmoor tor vs a sea cliff. Defaults to "tor".
+        string CloudFeatureNoun = "tor")
     {
         /// <summary>True iff <paramref name="tab"/> is in <see cref="Tabs"/> (case-insensitive).</summary>
         public bool HasTab(string tab) =>
@@ -1079,7 +1082,10 @@ public static partial class SitePages
            fill the row, matching the size of the multi-tile case. Changed
            2026-05-07 after a low-tile-count day stretched one tile to
            full row width. */
-        .forecast-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.75rem; }
+        /* align-items: start so opening a drawer on one tile grows only THAT
+           tile — without it the grid stretches every tile in the row to the
+           tallest, so an open drawer dragged its neighbours' bottoms down. */
+        .forecast-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.75rem; align-items: start; }
         /* Per-lead wind page direction-circle row. One cell per UTC hour
            in [HomeFirstVisibleHourUtc, HomeLastVisibleHourUtcExclusive); each
            cell stacks hour label / SVG circle / speed text. Wraps on narrow
@@ -1143,10 +1149,15 @@ public static partial class SitePages
         .forecast-card .drawer-body { padding: 0.1rem 0.75rem 0.6rem; font-size: 0.8rem; color: var(--pico-color); }
         .forecast-card .drawer-body .why { color: var(--pico-muted-color); margin: 0 0 0.3rem; }
         .forecast-card .drawer-body .made-line { margin-top: 0.35rem; font-size: 0.75rem; }
+        /* overflow-wrap (and NO white-space:nowrap) so values wrap inside the
+           narrow tile instead of running off the right edge — the old
+           nowrap on the value column pushed "9.1 mph · gust 16.0 mph" off-screen.
+           Auto table-layout fits both the 2-col UTCI table (label + value) and
+           the 3-col conditions table (factor + score + detail) to 100% width. */
         .forecast-card .drawer-table { width: 100%; border-collapse: collapse; }
-        .forecast-card .drawer-table td { padding: 0.12rem 0; vertical-align: top; }
-        .forecast-card .drawer-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; padding-left: 0.5rem; }
-        .forecast-card .drawer-table td.det { color: var(--pico-muted-color); padding-left: 0.6rem; }
+        .forecast-card .drawer-table td { padding: 0.12rem 0; vertical-align: top; overflow-wrap: anywhere; }
+        .forecast-card .drawer-table td.num { text-align: right; font-variant-numeric: tabular-nums; padding-left: 0.4rem; }
+        .forecast-card .drawer-table td.det { color: var(--pico-muted-color); padding-left: 0.5rem; font-size: 0.75rem; }
         .forecast-card .alert-line { display: flex; gap: 0.5rem; align-items: baseline; padding: 0.18rem 0; }
         .forecast-card .alert-line .pip { font-weight: 700; flex: none; }
 

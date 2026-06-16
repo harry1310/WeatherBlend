@@ -203,7 +203,8 @@ public static partial class SitePages
                 }
                 tiles.Append(RenderHourTile(p, feelsLikeByValid, pwetByValid, lowCloudByValid, rockByValid,
                     seaSpec, waveByValid, windSpeedMsByValid, windDirDegByValid,
-                    input.WindGustByValidMs, conditions, popoverId++));
+                    input.WindGustByValidMs, conditions,
+                    input.RenderingFor?.CloudFeatureNoun ?? "tor", popoverId++));
             }
             tilesHtml = string.Create(Ci, $"<div class=\"forecast-grid\">{tiles}</div>");
         }
@@ -509,6 +510,7 @@ public static partial class SitePages
         IReadOnlyDictionary<DateTime, double> windDirDegByValid,
         IReadOnlyDictionary<DateTime, double> windGustByValidMs,
         ClimbingConditions.Result? conditions,
+        string cloudFeatureNoun,
         int popoverId)
     {
         // ---- Alerts (low-cloud / rock / sea) collected as drawer lines ----
@@ -542,7 +544,7 @@ public static partial class SitePages
                 if (visFired)
                     parts.Add(string.Create(Ci, $"{lc.VisFiredCount}/{lc.VisTotalCount} NWPs: mist (vis &lt; 1 km)"));
                 if (cbFired)
-                    parts.Add(string.Create(Ci, $"{lc.CloudBaseFiredCount}/{lc.CloudBaseTotalCount} NWPs: cloud base below tor (T−Td &lt; 1.5°C)"));
+                    parts.Add(string.Create(Ci, $"{lc.CloudBaseFiredCount}/{lc.CloudBaseTotalCount} NWPs: cloud base below {cloudFeatureNoun} (T−Td &lt; 1.5°C)"));
                 AddAlert(severity, "☁", $"Low cloud — {string.Join("; ", parts)}");
             }
         }

@@ -123,8 +123,11 @@ public static class ClimbingConditions
             return Gate(ConditionsTier.Off, "Dark — sun below the horizon");
         if (pWet is double pw && pw >= RainGateProb)
             return Gate(ConditionsTier.Off, $"Rain likely ({pw * 100:0}%)");
-        if (rock is { GreasinessStatus: RockSurfacePhysics.StatusCondensation })
-            return Gate(ConditionsTier.Off, "Rock wet — condensation");
+        if (rock is { GreasinessStatus: RockSurfacePhysics.StatusCondensation } rkc)
+            // Spell out the why (surface ≤ dew point) — the gate returns no
+            // factor table, so without this the verdict was a bare "Rock wet".
+            return Gate(ConditionsTier.Off,
+                $"Rock wet — condensation (surface {rkc.RockSurfaceTempC:0.0}°C ≤ dew point {rkc.DewPointC:0.0}°C, margin {rkc.CondensationMarginC:+0.0;-0.0;0.0}°C)");
 
         // ---- Quality factors ----
         var factors = new List<Factor>(4);

@@ -268,7 +268,9 @@ public sealed class RenderSiteCommand
                     WindSectorFromDeg: ssb.WindSectorFromDeg,
                     WindSectorToDeg: ssb.WindSectorToDeg)
                 : null,
-            ShowClimbingConditions: loc.ShowClimbingConditions)).ToList();
+            ShowClimbingConditions: loc.ShowClimbingConditions,
+            // Marine location (has a sea-state block) = sea cliff; else a tor.
+            CloudFeatureNoun: loc.Marine?.SeaStateBadge is not null ? "cliff" : "tor")).ToList();
 
         // Top-level model summaries / feature spec rows surface ALL locations'
         // active versions on /specs.html. Per-loc Models page recomputes with
