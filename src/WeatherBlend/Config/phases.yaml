@@ -409,7 +409,12 @@ targets:
       - id: "wind_blend"
         role: challenger
         impl: dotnet
-        locations: ["bonehill_rocks"]
+        # Sennen added 2026-06-16 alongside wind_speed_lgb — the blend is the
+        # equal-weight mean of champion wind + wind_speed_lgb, so it lights up at
+        # Sennen automatically once wind_speed_lgb trains (WindBlendPredictCommand
+        # iterates all configured locations and soft-skips members that aren't
+        # there yet).
+        locations: ["bonehill_rocks", "sennen_cove"]
         # Composed live at predict time (wind-blend-predict: equal-weight
         # mean of champion wind + wind_speed_lgb). No trainer / no bundle —
         # exclude from the train fanout.
