@@ -362,8 +362,8 @@ public class BadgeTests
 
         var html = SitePages.RenderIndex(input, dayOffset: 0);
 
-        html.Should().Contain("sea-badge").And.Contain("🌊 sea state");
-        html.Should().Contain("badge-red");
+        html.Should().Contain("alert-drawer").And.Contain("🌊").And.Contain("Sea state");
+        html.Should().Contain("s-red");
         html.Should().Contain("tide +2.0 m (≥ +1.71)");
         html.Should().Contain("run-up proxy 20.8 = √3.0 m × 12.0 s (≥ 12)");
         html.Should().Contain("wind 22 mph from 290° (≥ 15 from 225–335°)");
@@ -384,8 +384,8 @@ public class BadgeTests
 
         var html = SitePages.RenderIndex(input, dayOffset: 0);
 
-        html.Should().Contain("sea-badge").And.Contain("badge-amber");
-        html.Should().NotContain("badge-red");
+        html.Should().Contain("alert-drawer").And.Contain("s-amber");
+        html.Should().NotContain("s-red");
         html.Should().Contain("tide +2.0 m");
         html.Should().NotContain("wind 45 mph");
     }
@@ -398,14 +398,14 @@ public class BadgeTests
         {
             WavePredictions = new[] { WaveRow(hs: 5.0, swellPeriod: 15.0, tide: 3.0) },
         };
-        SitePages.RenderIndex(noSpec, dayOffset: 0).Should().NotContain("sea-badge");
+        SitePages.RenderIndex(noSpec, dayOffset: 0).Should().NotContain("🌊");
 
         // Spec present but nothing fired → no badge either.
         var calm = MakeTileInput(Spec) with
         {
             WavePredictions = new[] { WaveRow(hs: 0.4, swellPeriod: 5.0, tide: -1.2) },
         };
-        SitePages.RenderIndex(calm, dayOffset: 0).Should().NotContain("sea-badge");
+        SitePages.RenderIndex(calm, dayOffset: 0).Should().NotContain("🌊");
     }
 
     [Fact]
@@ -421,7 +421,7 @@ public class BadgeTests
             },
         };
         var amberHtml = SitePages.RenderIndex(oneSignal, dayOffset: 0);
-        amberHtml.Should().Contain("low-cloud-badge badge-amber").And.Contain("low cloud");
+        amberHtml.Should().Contain("s-amber").And.Contain("Low cloud");
         amberHtml.Should().Contain("cloud base below tor").And.NotContain("mist (vis");
 
         // Both signals → red pill, both pop-out lines retained.
@@ -434,7 +434,7 @@ public class BadgeTests
             },
         };
         var redHtml = SitePages.RenderIndex(bothSignals, dayOffset: 0);
-        redHtml.Should().Contain("low-cloud-badge badge-red");
+        redHtml.Should().Contain("s-red");
         redHtml.Should().Contain("mist (vis").And.Contain("cloud base below tor");
     }
 
@@ -451,11 +451,11 @@ public class BadgeTests
 
         var greasyHtml = SitePages.RenderIndex(
             MakeTileInput(spec: null) with { RockSurfacePredictions = new[] { rock } }, dayOffset: 0);
-        greasyHtml.Should().Contain("rock-greasy badge-amber").And.Contain("rock greasy?");
+        greasyHtml.Should().Contain("s-amber").And.Contain("Rock greasy?");
 
         var wet = rock with { CondensationMarginC = -0.3, GreasinessStatus = "condensation" };
         var wetHtml = SitePages.RenderIndex(
             MakeTileInput(spec: null) with { RockSurfacePredictions = new[] { wet } }, dayOffset: 0);
-        wetHtml.Should().Contain("rock-wet badge-red").And.Contain("rock wet");
+        wetHtml.Should().Contain("s-red").And.Contain("Rock wet");
     }
 }

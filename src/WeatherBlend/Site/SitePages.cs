@@ -1091,149 +1091,71 @@ public static partial class SitePages
         .wind-dir-svg { display: block; }
         .wind-dir-empty { opacity: 0.6; }
         .wind-day-label { margin-top: 0.5rem; margin-bottom: 0.25rem; }
-        /* Flex layout so the footer pins to the cell's lower edge regardless of
-           whether the feels-like chip is present — cards with shorter content
-           (e.g. 96/120h leads with no feels-like row) used to float the footer
-           up, leaving made-time misaligned across the grid. */
-        .forecast-card { padding: 0.75rem 0.85rem; display: flex; flex-direction: column; }
-        .forecast-card h3 { margin: 0 0 0.1rem; font-size: 1rem; }
-        .forecast-card header small { color: var(--pico-muted-color); font-size: 0.8rem; }
-        /* Pico v2 wraps <article> > header in its own padded container; on
-           a tight tile that opens an extra ~0.5rem gap below the time
-           heading. Override to zero so the temperature sits snug under the
-           time. Tightened 2026-05-07 per user feedback. */
-        .forecast-card > header { margin-bottom: 0; padding-bottom: 0; }
-        .forecast-card .temp { font-size: 2rem; font-weight: 700; color: var(--temp-color, var(--brand)); line-height: 1.1; margin: 0.1rem 0 0.25rem; }
-        .forecast-card-empty .temp { color: var(--pico-muted-color); }
-        .forecast-card .pwet { font-size: 0.9rem; color: var(--pwet); margin: 0 0 0.35rem; font-variant-numeric: tabular-nums; }
+        /* ===== Overview forecast tiles — Material cards with expandable
+           drawers (2026-06-16 redesign). Every card has an IDENTICAL face
+           (time · temp · feels/UTCI · P(wet)); all variable content lives in
+           coloured <details> drawers (Conditions / Alerts / Detail) closed by
+           default. Replaced the inline badge pills + conditions strip + ⓘ
+           pop-out, which made tiles different heights and looked cluttered
+           when expanded. Only the overview renders .forecast-card. ===== */
+        .forecast-card {
+          --alert-amber: #f59f00; --alert-red: #d32f2f;
+          padding: 0; overflow: hidden; border-radius: 12px;
+          border: 1px solid var(--pico-card-border-color);
+          background: var(--pico-card-background-color);
+          display: flex; flex-direction: column;
+        }
+        .forecast-card .card-head {
+          display: flex; align-items: center; justify-content: space-between;
+          gap: 0.5rem; padding: 0.6rem 0.75rem 0; min-height: 1.4rem;
+        }
+        .forecast-card .time { font-weight: 600; font-size: 0.95rem; font-variant-numeric: tabular-nums; }
+        .forecast-card .status {
+          font-size: 0.72rem; font-weight: 700; line-height: 1; white-space: nowrap;
+          padding: 0.22rem 0.55rem; border-radius: 999px; color: #fff;
+          background: var(--cond-color, #607d8b);
+        }
+        .forecast-card .hero { padding: 0.15rem 0.75rem 0.7rem; }
+        .forecast-card .temp { font-size: 2rem; font-weight: 700; color: var(--temp-color, var(--brand)); line-height: 1.1; margin: 0.1rem 0 0.2rem; }
+        .forecast-card .feels { font-size: 0.85rem; color: var(--pico-muted-color); margin: 0 0 0.1rem; font-variant-numeric: tabular-nums; }
+        .forecast-card .feels strong { font-weight: 700; }
+        .forecast-card .feels .utci-band { margin-top: -0.05rem; font-style: italic; }
+        .forecast-card .pwet { font-size: 0.9rem; margin: 0.1rem 0 0; font-variant-numeric: tabular-nums; }
         .forecast-card .pwet strong { font-weight: 700; }
         .forecast-card .pwet .rain { margin-left: 0.25rem; }
-        .forecast-card .feels { font-size: 0.85rem; color: var(--pico-muted-color); margin: 0 0 0.35rem; font-variant-numeric: tabular-nums; }
-        .forecast-card .feels strong { font-weight: 700; }
-        .forecast-card .feels small { margin-left: 0.35rem; }
-        /* UTCI band on its own line under the UTCI value, italic + muted
-           so it reads as a quiet caption rather than competing with the
-           number. Margin pulls it tight under the value rather than the
-           feels-row's default 0.35rem gap. */
-        .forecast-card .feels .utci-band { margin-top: -0.1rem; font-style: italic; color: var(--pico-muted-color); }
-        .forecast-card footer { margin-top: auto; padding-top: 0.4rem; border-top: 1px solid var(--pico-muted-border-color); }
-        .forecast-card footer small { color: var(--pico-muted-color); font-size: 0.75rem; }
-        .forecast-card h4 { margin: 0; font-size: 1rem; font-variant-numeric: tabular-nums; }
-        /* Fixed header min-height pins the time row to a uniform height across
-           the grid. (Badges no longer live in the header — they sit in the
-           .tile-badges block below, whose own min-height is what now aligns the
-           temperature across badged / badge-free tiles. See .tile-badges.) */
-        .forecast-card header { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; min-height: 1.4rem; }
-        /* Low-cloud / mist badge — slate pill in the tile header. Click to
-           expand details (Pico <details>) listing which signal(s) fired and
-           the per-NWP agreement count. Tap-friendly on mobile, no hover needed. */
-        /* Low-cloud and UTCI pop-outs both float their open panel ON TOP of
-           tile contents instead of expanding inline. Without this the
-           panel inside the tile <header> shoved the temperature / feels-
-           like / P(wet) rows down — tiles ended up different heights and
-           the row alignment broke. position:relative on the <details>
-           makes the inner panel's position:absolute anchor to it. The
-           panel is invisible by default; details[open] flips it to
-           visible. Click-to-toggle is the native <details> behaviour. */
-        /* Badges live in a dedicated stacked block under the tile time (top of
-           the card), one pill per line. Previously they were flex children of
-           the <header> row, so the time + both pills laid out left-to-right and
-           a card with BOTH a low-cloud and a rock badge overflowed its width
-           onto the next tile. The column container + flex-start keeps each pill
-           on its own line, sized to its content.
-           ALWAYS rendered (even empty) with a fixed min-height sized to two
-           stacked pills (low-cloud + rock) so the temperature aligns across
-           every tile regardless of badge count — badge-free tiles show the
-           reserved space as a small blank gap, by design (2026-06-06). Margins
-           kept tight so the gap to the time above and temperature below is
-           small (was 0.2/0.35 — read as too large). */
-        /* min-height reserves space so the temperature lines up across tiles
-           regardless of 0/1/2 badges (2026-06-06). Trimmed 2.4rem->1.3rem on
-           2026-06-13: the always-present conditions strip now anchors the top
-           of every tile, so the old two-badge reserve left a big empty gap
-           between the band and the temperature on the common badge-free tile.
-           1.3rem still clears one badge (the usual case); a rare two-badge
-           tile runs a touch taller. */
-        .forecast-card .tile-badges { display: flex; flex-direction: column; align-items: flex-start; gap: 0.2rem; margin: 0.05rem 0 0.1rem; min-height: 1.3rem; }
-        /* Pico defaults <details> to margin-bottom:1rem and adds the same to an
-           open <summary>. Left un-reset, each STACKED badge added ~1rem below
-           itself, so a two-badge tile overran the reserved min-height and shoved
-           the temperature down — the real alignment bug (closed state handled by
-           the margin:0 on each .*-pop below; this line handles the open state). */
-        .forecast-card .tile-badges details[open] > summary { margin-bottom: 0; }
-        /* Shared badge pill + pop-out (low-cloud / rock / sea-state families
-           all use this one idiom — the family classes low-cloud-pop /
-           rock-pop / sea-pop stay in the markup as hooks but carry no
-           styling of their own). */
-        details.badge-pop { display: block; position: relative; margin: 0; }
-        details.badge-pop > summary.tile-badge { font-size: 0.7rem; line-height: 1.15; padding: 0.1rem 0.4rem; border-radius: 999px; cursor: pointer; white-space: nowrap; list-style: none; display: inline-block; }
-        /* Kill BOTH native marker and Pico's ::after chevron — Pico v2 adds
-           the chevron via a background-image on summary::after, which the
-           webkit rule alone doesn't reach. User wants these as plain pills. */
-        details.badge-pop > summary.tile-badge::-webkit-details-marker { display: none; }
-        details.badge-pop > summary.tile-badge::after { display: none !important; content: none !important; }
-        /* Unified amber/red severity colours (Harry 2026-06-12: one trigger =
-           amber, two-or-more = red, across every badge family — supersedes
-           the 2026-06-06 all-slate call). Amber gets DARK text: the earlier
-           red+amber rock pills died on white-on-amber contrast ("⚠ glyph
-           illegible") — the &#xFE0E; text-presentation glyphs inherit the
-           text colour, so dark-on-amber keeps both label and icon legible.
-           Amber #f59f00 sits between the site's MF orange #ffa726 and the
-           drywin-calc's #b8860b; red #d32f2f is the Material 700 sibling of
-           the PrecipProbColor ramp's #e53935 — darker so white text passes
-           contrast where the ramp's text-only red didn't need to. */
-        summary.tile-badge.badge-amber { background: #f59f00; color: #2b1d00; }
-        summary.tile-badge.badge-red { background: #d32f2f; color: #fff; }
-        details.badge-pop > ul {
-          position: absolute;
-          top: calc(100% + 0.25rem);
-          left: 0;
-          z-index: 10;
-          margin: 0;
-          padding: 0.4rem 0.6rem 0.4rem 1.5rem;
-          font-size: 0.78rem;
-          line-height: 1.35;
-          color: var(--pico-muted-color);
-          background: var(--pico-card-background-color);
-          border: 1px solid var(--pico-card-border-color);
-          border-radius: 4px;
-          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-          width: max-content;
-          max-width: 16rem;
-        }
-        details.badge-pop > ul li { margin: 0; padding: 0.05rem 0; }
 
-        /* Climbing-conditions verdict strip (idea #1). Coloured left border +
-           tinted background by tier; tier label bold, reason muted, a "why?"
-           pop-out with the per-factor breakdown table. */
-        .forecast-card .conditions-strip {
-          display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.3rem 0.5rem;
-          margin: 0.1rem 0 0.1rem; padding: 0.25rem 0.45rem;
-          border-left: 4px solid var(--cond-color, #607d8b);
-          border-radius: 3px;
-          background: color-mix(in srgb, var(--cond-color, #607d8b) 12%, transparent);
+        /* Drawers — native <details>; summary tinted by state, body hidden until open. */
+        .forecast-card details.drawer { border-top: 1px solid var(--pico-card-border-color); margin: 0; }
+        .forecast-card details.drawer > summary {
+          list-style: none; cursor: pointer; user-select: none;
+          display: flex; align-items: center; gap: 0.5rem;
+          padding: 0.5rem 0.75rem; font-size: 0.82rem; font-weight: 600;
         }
-        .forecast-card .conditions-tier { font-weight: 700; color: var(--cond-color, #607d8b); font-size: 0.95rem; }
-        .forecast-card .conditions-reason { font-size: 0.78rem; color: var(--pico-muted-color); }
-        details.conditions-pop { position: relative; display: inline-block; margin-left: auto; }
-        details.conditions-pop > summary.conditions-why {
-          font-size: 0.72rem; color: var(--pico-muted-color); cursor: pointer;
-          list-style: none; text-decoration: underline dotted;
+        .forecast-card details.drawer > summary::-webkit-details-marker { display: none; }
+        .forecast-card details.drawer > summary::after { display: none !important; content: none !important; }
+        .forecast-card .chev { margin-left: auto; font-size: 0.7rem; opacity: 0.55; transition: transform 0.18s ease; }
+        .forecast-card details.drawer[open] .chev { transform: rotate(90deg); }
+        .forecast-card .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: currentColor; opacity: 0.9; }
+        .forecast-card .count {
+          margin-left: auto; min-width: 1.15rem; height: 1.15rem; padding: 0 0.3rem;
+          border-radius: 999px; font-size: 0.72rem; line-height: 1.15rem; text-align: center; color: #fff;
         }
-        details.conditions-pop > summary.conditions-why::-webkit-details-marker { display: none; }
-        details.conditions-pop > .conditions-table {
-          position: absolute; top: calc(100% + 0.25rem); right: 0; z-index: 10;
-          font-size: 0.76rem; border-collapse: collapse;
-          background: var(--pico-card-background-color);
-          border: 1px solid var(--pico-card-border-color);
-          border-radius: 4px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-          width: max-content; max-width: 16rem;
-        }
-        details.conditions-pop > .conditions-table th,
-        details.conditions-pop > .conditions-table td { padding: 0.15rem 0.5rem; text-align: left; }
-        details.conditions-pop > .conditions-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
-        details.conditions-pop > .conditions-table thead th { color: var(--pico-muted-color); font-weight: 600; border-bottom: 1px solid var(--pico-muted-border-color); }
+        .forecast-card .drawer-body { padding: 0.1rem 0.75rem 0.6rem; font-size: 0.8rem; color: var(--pico-color); }
+        .forecast-card .drawer-body .why { color: var(--pico-muted-color); margin: 0 0 0.3rem; }
+        .forecast-card .drawer-body .made-line { margin-top: 0.35rem; font-size: 0.75rem; }
+        .forecast-card .drawer-table { width: 100%; border-collapse: collapse; }
+        .forecast-card .drawer-table td { padding: 0.12rem 0; vertical-align: top; }
+        .forecast-card .drawer-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; padding-left: 0.5rem; }
+        .forecast-card .drawer-table td.det { color: var(--pico-muted-color); padding-left: 0.6rem; }
+        .forecast-card .alert-line { display: flex; gap: 0.5rem; align-items: baseline; padding: 0.18rem 0; }
+        .forecast-card .alert-line .pip { font-weight: 700; flex: none; }
 
+        /* Drawer summary state tints (closed + open share the tint). */
+        .forecast-card summary.s-cond { background: color-mix(in srgb, var(--cond-color, #607d8b) 13%, transparent); color: var(--cond-color, #607d8b); }
+        .forecast-card summary.s-amber { background: color-mix(in srgb, var(--alert-amber) 16%, transparent); color: #8a5a00; }
+        .forecast-card summary.s-red { background: color-mix(in srgb, var(--alert-red) 12%, transparent); color: var(--alert-red); }
+        .forecast-card summary.s-none { color: var(--pico-muted-color); }
+        .forecast-card summary.s-none .dot { background: var(--pico-muted-border-color); }
         /* "Will it stay dry?" overview calculator (Phase 3p copula MC). Two
            dropdowns + a live result line; the per-(start,length) probability
            grid + JS are embedded per page by RenderDryWindowCalculator. */
@@ -1253,41 +1175,6 @@ public static partial class SitePages
         .day-block { margin: 0 0 1.5rem; padding: 0; border: 0; }
         .day-block h3 { margin: 0.75rem 0 0.25rem; }
         .day-block .skill-line { margin: 0 0 0.5rem; }
-
-        /* UTCI per-hour pop-out — Pico's <details> styled inline so the ⓘ
-           summary sits next to the band tag instead of stacking on its own
-           line. The panel itself opens below the tile contents (Pico handles
-           the toggle) and shows a tight 2-column table of the element-blender
-           values that fed UTCI. */
-        details.utci-pop { display: inline; margin-left: 0.25rem; position: relative; }
-        details.utci-pop summary { cursor: pointer; color: var(--pico-muted-color); font-size: 0.85rem; list-style: none; display: inline; }
-        details.utci-pop summary::-webkit-details-marker { display: none; }
-        /* Kill Pico v2's ::after chevron too — see low-cloud-pop. */
-        details.utci-pop summary::after { display: none !important; content: none !important; }
-        details.utci-pop[open] summary { color: var(--brand); }
-        /* Float the table on top of subsequent tile content (P(wet) row +
-           footer) for the same reason as low-cloud-pop's <ul> — keeps the
-           tile height stable when expanded so the grid stays aligned. */
-        .utci-pop-table {
-          position: absolute;
-          top: calc(100% + 0.25rem);
-          left: 0;
-          z-index: 10;
-          margin: 0;
-          font-size: 0.78rem;
-          background: var(--pico-card-background-color);
-          border: 1px solid var(--pico-card-border-color);
-          border-radius: 4px;
-          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-          padding: 0.3rem 0.5rem;
-          min-width: 14rem;
-        }
-        .utci-pop-table td { padding: 0.1rem 0.25rem; border: 0; }
-        /* Keep "Wind 10 m | XX mph · gust YY mph" on a single line — the
-           "· gust …" suffix was tipping that cell to two rows on tiles
-           with a tight column width. nowrap on the value column lets the
-           table widen as needed (min-width above absorbs the extra). */
-        .utci-pop-table td.num { white-space: nowrap; }
 
         nav.lead-nav { margin: 0 0 1.25rem; padding: 0; }
         nav.lead-nav ul { display: flex; gap: 0.75rem; list-style: none; padding: 0; margin: 0; }

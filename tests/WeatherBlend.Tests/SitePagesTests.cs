@@ -2079,12 +2079,14 @@ public class SitePagesTests
             RockSurfacePredictions = greasy,
         };
 
+        // Post-2026-06-16 redesign: rock greasiness is an alert line inside the
+        // tile's Alerts drawer, not an inline badge pill.
         var html = SitePages.RenderIndex(input, dayOffset: 0);
-        html.Should().Contain("rock-badge").And.Contain("rock greasy?");
+        html.Should().Contain("alert-drawer").And.Contain("Rock greasy?");
 
         var dry = new[] { greasy[0] with { CondensationMarginC = 8.0, GreasinessStatus = "dry" } };
         var dryHtml = SitePages.RenderIndex(input with { RockSurfacePredictions = dry }, dayOffset: 0);
-        dryHtml.Should().NotContain("rock-badge");
+        dryHtml.Should().NotContain("Rock greasy?");
     }
 
     [Fact]

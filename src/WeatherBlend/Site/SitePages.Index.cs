@@ -480,16 +480,6 @@ public static partial class SitePages
     /// denominator is much larger.</summary>
     private const int LowCloudBaseFireThreshold = 6;
 
-    /// <summary>CSS severity class for a badge pill — unified amber/red rule
-    /// (one trigger amber, two-plus red). Callers only invoke this for
-    /// severities that render, so None maps to empty.</summary>
-    private static string BadgeSeverityClass(BadgeSeverity severity) => severity switch
-    {
-        BadgeSeverity.Red => "badge-red",
-        BadgeSeverity.Amber => "badge-amber",
-        _ => "",
-    };
-
     /// <summary>Tile-badge lookup for rock surface rows: dedup smallest-lead /
     /// freshest-made PER (valid, face), then keep the WORST face per valid —
     /// the smallest condensation margin, i.e. the wall closest to sweating.
@@ -521,12 +511,26 @@ public static partial class SitePages
         ClimbingConditions.Result? conditions,
         int popoverId)
     {
-        // Low-cloud / mist warning — amber when ONE signal hits its
-        // threshold, red when BOTH do (unified badge severity, 2026-06-12).
-        // Sits at the top of the tile as a Pico <details>/<summary>
-        // pop-out so the trigger details work on touch devices (the earlier
-        // title="..." tooltip was unreachable from mobile).
-        string lowCloudBadge = "";
+        // ---- Alerts (low-cloud / rock / sea) collected as drawer lines ----
+        // Each fired family contributes one <div class="alert-line"> to the
+        // Alerts drawer body, plus to the family count and the overall severity
+        // (any red → red, else any amber → amber). Replaces the old per-badge
+        // <details> pop-outs that overflowed the tile (2026-06-16 redesign).
+        var alertLines = new StringBuilder();
+        int alertCount = 0;
+        bool anyRed = false, anyAmber = false;
+        void AddAlert(BadgeSeverity sev, string icon, string text)
+        {
+            alertCount++;
+            if (sev == BadgeSeverity.Red) anyRed = true;
+            else if (sev == BadgeSeverity.Amber) anyAmber = true;
+            var color = sev == BadgeSeverity.Red ? "var(--alert-red)" : "var(--alert-amber)";
+            alertLines.Append(Ci,
+                $"""<div class="alert-line"><span class="pip" style="color:{color}">{icon}</span><span>{text}</span></div>""");
+        }
+
+        // Low-cloud / mist — amber when ONE signal hits its threshold, red when
+        // BOTH do (unified severity, 2026-06-12). Both fired signals are listed.
         if (lowCloudByValid.TryGetValue(p.ValidTimeUtc, out var lc))
         {
             var visFired = lc.VisFiredCount >= LowCloudVisFireThreshold;
@@ -534,56 +538,31 @@ public static partial class SitePages
             var severity = LowCloudBadge.Evaluate(visFired, cbFired);
             if (severity != BadgeSeverity.None)
             {
-                var rows = new StringBuilder();
+                var parts = new List<string>();
                 if (visFired)
-                    rows.Append(Ci, $"<li>{lc.VisFiredCount}/{lc.VisTotalCount} NWPs: mist (vis &lt; 1 km)</li>");
+                    parts.Add(string.Create(Ci, $"{lc.VisFiredCount}/{lc.VisTotalCount} NWPs: mist (vis &lt; 1 km)"));
                 if (cbFired)
-                    rows.Append(Ci, $"<li>{lc.CloudBaseFiredCount}/{lc.CloudBaseTotalCount} NWPs: cloud base below tor (T−Td &lt; 1.5°C)</li>");
-                lowCloudBadge = $"""
-                    <details class="badge-pop low-cloud-pop">
-                      <summary class="tile-badge low-cloud-badge {BadgeSeverityClass(severity)}">☁ low cloud</summary>
-                      <ul>{rows}</ul>
-                    </details>
-                    """;
+                    parts.Add(string.Create(Ci, $"{lc.CloudBaseFiredCount}/{lc.CloudBaseTotalCount} NWPs: cloud base below tor (T−Td &lt; 1.5°C)"));
+                AddAlert(severity, "☁", $"Low cloud — {string.Join("; ", parts)}");
             }
         }
 
-        // Rock surface / condensation badge (Phase P1). Fires when the rock is
-        // at or near dew point: red "rock wet" for condensation (margin ≤ 0),
-        // amber "rock greasy?" for the marginal band (0 < margin ≤ greasyMargin,
-        // already encoded in GreasinessStatus). No badge when dry. Same ±1h
-        // tolerance + Pico <details> pop-out idiom as the low-cloud badge.
-        // Trigger logic untouched by the 2026-06-12 badge unification — its
-        // semantics were already two-tier; only the styling moved onto the
-        // shared badge-amber / badge-red classes.
-        string rockBadge = "";
+        // Rock surface / condensation (Phase P1): red "rock wet" (margin ≤ 0),
+        // amber "rock greasy?" (marginal band), nothing when dry. ±1h tolerance.
         if (TryNearest(rockByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var rk)
             && rk!.GreasinessStatus != Predict.Surface.RockSurfacePhysics.StatusDry)
         {
             var isCond = rk.GreasinessStatus == Predict.Surface.RockSurfacePhysics.StatusCondensation;
-            var severityCls = BadgeSeverityClass(isCond ? BadgeSeverity.Red : BadgeSeverity.Amber);
-            var cls = $"tile-badge rock-badge {(isCond ? "rock-wet" : "rock-greasy")} {severityCls}";
-            var label = isCond ? "rock wet" : "rock greasy?";
+            var label = isCond ? "Rock wet" : "Rock greasy?";
             // Cliff-face mode: rk is the WORST face this hour — name it so the
-            // pop-out says which wall is sweating (other faces may be drier;
-            // the temp tab chart shows all of them).
-            var subject = rk.Face.Length == 0 ? "Rock" : $"{char.ToUpperInvariant(rk.Face[0])}{rk.Face[1..]} face";
-            rockBadge = string.Create(Ci, $"""
-                <details class="badge-pop rock-pop">
-                  <summary class="{cls}">&#x26A0;&#xFE0E; {label}</summary>
-                  <ul><li>{subject} {rk.RockSurfaceTempC:0.0}°C vs dew point {rk.DewPointC:0.0}°C — margin {rk.CondensationMarginC:+0.0;-0.0;0.0}°C</li></ul>
-                </details>
-                """);
+            // line says which wall is sweating (the temp tab charts all faces).
+            var subject = rk.Face.Length == 0 ? "surface" : $"{char.ToUpperInvariant(rk.Face[0])}{rk.Face[1..]} face";
+            AddAlert(isCond ? BadgeSeverity.Red : BadgeSeverity.Amber, "&#x26A0;&#xFE0E;",
+                string.Create(Ci, $"{label} — {subject} {rk.RockSurfaceTempC:0.0}°C vs dew point {rk.DewPointC:0.0}°C — margin {rk.CondensationMarginC:+0.0;-0.0;0.0}°C"));
         }
 
-        // Sea-state badge (marine locations with a seaStateBadge config
-        // block — Sennen). Tide / run-up / onshore-wind triggers, amber for
-        // one fired, red for two-plus; pop-out lists each FIRED trigger with
-        // its live values. Wave + wind lookups tolerate ±1h like the other
-        // tile chips. A missing input skips its trigger inside the evaluator
-        // (e.g. no wind_mvn direction row yet → tide + waves only) — missing
-        // data never fires a trigger.
-        string seaBadge = "";
+        // Sea-state (marine locations with a seaStateBadge block — Sennen):
+        // tide / run-up / onshore-wind triggers; each FIRED trigger listed.
         if (seaSpec is not null
             && TryNearest(waveByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var wv))
         {
@@ -601,85 +580,49 @@ public static partial class SitePages
                 windDirDeg: windDir,
                 spec: seaSpec);
             if (sea.Severity != BadgeSeverity.None)
-            {
-                var rows = new StringBuilder();
-                foreach (var trigger in sea.FiredTriggers)
-                    rows.Append(Ci, $"<li>{Escape(trigger)}</li>");
-                seaBadge = $"""
-                    <details class="badge-pop sea-pop">
-                      <summary class="tile-badge sea-badge {BadgeSeverityClass(sea.Severity)}">🌊 sea state</summary>
-                      <ul>{rows}</ul>
-                    </details>
-                    """;
-            }
+                AddAlert(sea.Severity, "🌊", $"Sea state — {Escape(string.Join("; ", sea.FiredTriggers))}");
         }
 
-        // Feels-like and P(wet) tolerate ±1h drift — predict cycles can land
-        // an hour off, and we'd rather show a chip than a gap.
+        // Feels-like / UTCI face line + the element rows that explain UTCI.
+        // The "why is UTCI this value" inputs now live in the Detail drawer
+        // (detailRows) rather than an inline ⓘ pop-out. ±1h drift tolerance —
+        // predict cycles can land an hour off and we'd rather show a value.
         string feelsCell = "";
+        var detailRows = new StringBuilder();
         if (TryNearest(feelsLikeByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var fl))
         {
             var apparentColor = TemperatureColor(fl!.ApparentC);
             var utciColor = TemperatureColor(fl.UtciC);
-
-            // UTCI pop-out: only emit the toggle when at least one element
-            // value is present (older parquets pre-dating the element-input
-            // persistence have all five null and the panel would be empty).
-            string toggle = "";
-            // Temperature deliberately excluded from the gate too — only show
-            // the toggle when at least one of the four "why is UTCI this value"
-            // element fields is present.
-            if (fl.RelativeHumidityPct is not null
-                || fl.WindSpeed10mMs is not null || fl.ShortwaveDownWm2 is not null
-                || fl.CloudCoverPct is not null)
-            {
-                // Temperature row deliberately omitted — it's already the
-                // headline value on the tile, repeating it in the pop-out is
-                // noise. The other four are the "why is UTCI this value?"
-                // story the reader can't get elsewhere.
-                var rows = new StringBuilder();
-                if (fl.RelativeHumidityPct is double rh)
-                    rows.Append(Ci, $"<tr><td>Humidity</td><td class=\"num\">{rh:0} %</td></tr>");
-                if (fl.WindSpeed10mMs is double ws)
-                {
-                    // Stored as m/s; display as mph (× 2.23694) — site-wide
-                    // unit decision 2026-05-28. Gust appended inline when
-                    // materially above wind (gust mph > wind mph + 1) so
-                    // calm-wind rows don't sprout a redundant
-                    // "Wind 3, gust 3" suffix.
-                    var windMph = ws * 2.23694;
-                    string gustSuffix = "";
-                    if (windGustByValidMs.TryGetValue(p.ValidTimeUtc, out var gustMs))
-                    {
-                        var gustMph = gustMs * 2.23694;
-                        if (gustMph > windMph + 1.0)
-                            gustSuffix = string.Create(Ci, $" · gust {gustMph:0.0} mph");
-                    }
-                    rows.Append(Ci, $"<tr><td>Wind 10 m</td><td class=\"num\">{windMph:0.0} mph{gustSuffix}</td></tr>");
-                }
-                if (fl.ShortwaveDownWm2 is double sw)
-                    rows.Append(Ci, $"<tr><td>Shortwave down</td><td class=\"num\">{sw:0} W/m²</td></tr>");
-                if (fl.CloudCoverPct is double cc)
-                    rows.Append(Ci, $"<tr><td>Cloud cover</td><td class=\"num\">{cc:0} %</td></tr>");
-                toggle = $"""
-                    <details class="utci-pop">
-                      <summary title="Element values that fed UTCI for this hour">ⓘ</summary>
-                      <table class="utci-pop-table">{rows}</table>
-                    </details>
-                    """;
-            }
-            // Band label moved to its own line under the UTCI value (and
-            // wrapped in double-quotes) — the ⓘ toggle stays inline with
-            // the UTCI value so the click target is always next to the
-            // number it explains. Splits the previous one-liner into two
-            // <div>s.
+            // Feels-like + UTCI on one face line; band as a quiet caption under.
             feelsCell = string.Create(Ci, $"""
                 <div class="feels">
-                  <div>Feels like <strong style="color: {apparentColor}">{fl.ApparentC:0.0}°C</strong></div>
-                  <div>UTCI <strong style="color: {utciColor}">{fl.UtciC:0.0}°C</strong> {toggle}</div>
+                  <div>Feels like <strong style="color: {apparentColor}">{fl.ApparentC:0.0}°C</strong> · UTCI <strong style="color: {utciColor}">{fl.UtciC:0.0}°C</strong></div>
                   <div class="utci-band"><small>"{Escape(PrettyUtciBand(fl.Band))}"</small></div>
                 </div>
                 """);
+
+            // Element inputs for the Detail drawer. Temperature deliberately
+            // omitted — it's the tile headline. Stored m/s shown as mph (site
+            // unit decision 2026-05-28); gust appended only when materially
+            // above mean wind so calm rows don't read "Wind 3 · gust 3".
+            if (fl.RelativeHumidityPct is double rh)
+                detailRows.Append(Ci, $"<tr><td>Humidity</td><td class=\"num\">{rh:0} %</td></tr>");
+            if (fl.WindSpeed10mMs is double ws)
+            {
+                var windMph = ws * 2.23694;
+                string gustSuffix = "";
+                if (windGustByValidMs.TryGetValue(p.ValidTimeUtc, out var gustMs))
+                {
+                    var gustMph = gustMs * 2.23694;
+                    if (gustMph > windMph + 1.0)
+                        gustSuffix = string.Create(Ci, $" · gust {gustMph:0.0} mph");
+                }
+                detailRows.Append(Ci, $"<tr><td>Wind 10 m</td><td class=\"num\">{windMph:0.0} mph{gustSuffix}</td></tr>");
+            }
+            if (fl.ShortwaveDownWm2 is double sw)
+                detailRows.Append(Ci, $"<tr><td>Shortwave down</td><td class=\"num\">{sw:0} W/m²</td></tr>");
+            if (fl.CloudCoverPct is double cc)
+                detailRows.Append(Ci, $"<tr><td>Cloud cover</td><td class=\"num\">{cc:0} %</td></tr>");
         }
 
         string pwetCell = "";
@@ -691,54 +634,81 @@ public static partial class SitePages
             pwetCell = string.Create(Ci, $"<div class=\"pwet\">P(wet) <strong style=\"color: {pwColor}\">{(pw.ProbWet * 100):0}%</strong>{rain}</div>");
         }
 
-        // Badges sit in their own stacked block directly under the time at the
-        // TOP of the tile — vertical column, left-aligned, one pill per line —
-        // rather than as flex children of the <header> row (which laid the
-        // time + both pills out left-to-right and overflowed onto the next
-        // tile once both fired). ALWAYS emitted (even empty): the block carries
-        // a fixed reserved min-height in CSS so the temperature — the tile's
-        // main value — lines up across every tile in the grid regardless of how
-        // many badges (0/1/2) fired. Badge-free tiles show that reserved space
-        // as a small blank gap, by design (user call 2026-06-06).
-        string badgeBlock = $"""<div class="tile-badges">{lowCloudBadge}{rockBadge}{seaBadge}</div>""";
-
-        // Climbing-conditions strip (idea #1) — the tile headline when present.
-        // Coloured by tier; the reason (limiting factor, or the gate that
-        // fired) is always shown, with the full per-factor breakdown in a
-        // pop-out so the verdict is never a bare unexplained colour.
-        string conditionsStrip = "";
+        // ---- Status pill + Conditions drawer (the climbing index) ----
+        // The verdict shows as a small coloured pill on the face (at-a-glance),
+        // with the per-factor breakdown tucked into a tier-tinted drawer.
+        string statusPill = "", conditionsDrawer = "";
         if (conditions is { } c)
         {
+            statusPill = string.Create(Ci,
+                $"""<span class="status" style="--cond-color: {c.TierColor}">{Escape(c.TierLabel)}</span>""");
             var factorRows = new StringBuilder();
             foreach (var f in c.Factors)
-                factorRows.Append(Ci, $"<tr><td>{Escape(f.Name)}</td><td class=\"num\">{(f.Score * 100):0}</td><td>{Escape(f.Detail)}</td></tr>");
-            var breakdown = c.Factors.Count > 0
-                ? $"""
-                    <details class="badge-pop conditions-pop">
-                      <summary class="conditions-why">why?</summary>
-                      <table class="conditions-table"><thead><tr><th>factor</th><th>/100</th><th></th></tr></thead>{factorRows}</table>
-                    </details>
-                    """
-                : "";
-            conditionsStrip = string.Create(Ci, $"""
-                <div class="conditions-strip" style="--cond-color: {c.TierColor}">
-                  <span class="conditions-tier">{Escape(c.TierLabel)}</span>
-                  <span class="conditions-reason">{Escape(c.Reason)}</span>
-                  {breakdown}
-                </div>
+                factorRows.Append(Ci, $"<tr><td>{Escape(f.Name)}</td><td class=\"num\">{(f.Score * 100):0}</td><td class=\"det\">{Escape(f.Detail)}</td></tr>");
+            conditionsDrawer = string.Create(Ci, $"""
+                <details class="drawer cond-drawer" style="--cond-color: {c.TierColor}">
+                  <summary class="s-cond"><span class="dot"></span>Conditions<span class="chev">&#x25B6;</span></summary>
+                  <div class="drawer-body">
+                    <div class="why">{Escape(c.Reason)}</div>
+                    <table class="drawer-table">{factorRows}</table>
+                  </div>
+                </details>
                 """);
         }
+
+        // ---- Alerts drawer ----
+        // On climbing pages (conditions present) it's ALWAYS rendered — greyed
+        // to "0" when nothing fired — so every tile carries the same drawer set
+        // and the grid stays aligned. Also shown anywhere an alert fired.
+        string alertsDrawer = "";
+        if (conditions is not null || alertCount > 0)
+        {
+            string sumCls, body, countStyle;
+            if (alertCount == 0)
+            {
+                sumCls = "s-none";
+                countStyle = "background: var(--pico-muted-border-color); color: var(--pico-muted-color)";
+                body = "<div class=\"why\">Nothing firing this hour.</div>";
+            }
+            else
+            {
+                sumCls = anyRed ? "s-red" : "s-amber";
+                countStyle = anyRed ? "background: var(--alert-red)" : "background: var(--alert-amber)";
+                body = alertLines.ToString();
+            }
+            alertsDrawer = string.Create(Ci, $"""
+                <details class="drawer alert-drawer">
+                  <summary class="{sumCls}"><span class="dot"></span>Alerts<span class="count" style="{countStyle}">{alertCount}</span></summary>
+                  <div class="drawer-body">{body}</div>
+                </details>
+                """);
+        }
+
+        // ---- Detail drawer (UTCI element inputs + provenance) ----
+        // Always rendered: even with no element values it carries the
+        // lead / made-time line, so the drawer set is uniform across tiles.
+        var detailDrawer = string.Create(Ci, $"""
+            <details class="drawer detail-drawer">
+              <summary class="s-none"><span class="dot"></span>Detail<span class="chev">&#x25B6;</span></summary>
+              <div class="drawer-body">
+                <table class="drawer-table">{detailRows}</table>
+                <div class="why made-line">+{p.LeadHours}h · made {p.PredictionMadeAtUtc:MM-dd HH:mm}Z</div>
+              </div>
+            </details>
+            """);
 
         var tempColor = TemperatureColor(p.BlendTemperature);
         return string.Create(Ci, $"""
             <article class="forecast-card">
-              <header><h4>{p.ValidTimeUtc:HH:mm}Z</h4></header>
-              {conditionsStrip}
-              {badgeBlock}
-              <div class="temp" style="--temp-color: {tempColor}">{p.BlendTemperature:0.0}°C</div>
-              {feelsCell}
-              {pwetCell}
-              <footer><small>+{p.LeadHours}h · made {p.PredictionMadeAtUtc:MM-dd HH:mm}Z</small></footer>
+              <div class="card-head"><span class="time">{p.ValidTimeUtc:HH:mm}Z</span>{statusPill}</div>
+              <div class="hero">
+                <div class="temp" style="--temp-color: {tempColor}">{p.BlendTemperature:0.0}°C</div>
+                {feelsCell}
+                {pwetCell}
+              </div>
+              {conditionsDrawer}
+              {alertsDrawer}
+              {detailDrawer}
             </article>
             """);
     }
