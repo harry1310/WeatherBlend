@@ -397,7 +397,12 @@ targets:
       - id: "wind_speed_lgb"
         role: challenger
         impl: python
-        locations: ["bonehill_rocks"]
+        # Sennen added 2026-06-16 (Harry): coastal cliff has ERA5 wind truth +
+        # NWP wind + its own static/orographic/sennen_cove.json, so train_wind_
+        # speed_pi.py --location sennen_cove resolves. Trains in retrain-python's
+        # sennen matrix job; activates on the next R2 phases.yaml publish (noon
+        # previous-runs-refresh) → retrain-python.
+        locations: ["bonehill_rocks", "sennen_cove"]
         display:
           shortTitle: "Wind speed (quantile-LGB + CQR band)"
           color: "#8d6e63"
@@ -417,7 +422,12 @@ targets:
       - id: "humidity"
         role: champion
         impl: dotnet
-        locations: ["bonehill_rocks"]
+        # Sennen added 2026-06-16 (Harry): unblocks UTCI/feels-like at Sennen —
+        # it already has wind/shortwave/cloud elements; humidity was the missing
+        # 5th input the feels-like pipeline hard-requires. Sennen has ERA5 RH
+        # truth + NWP humidity, so the element harness trains it in retrain-
+        # blenders' sennen matrix job.
+        locations: ["bonehill_rocks", "sennen_cove"]
         display:
           shortTitle: "Humidity (element blender)"
           color: "#00897b"
