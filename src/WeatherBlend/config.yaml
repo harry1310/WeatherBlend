@@ -29,14 +29,12 @@ locations:
     # in Site/ClimbingConditions.cs (Harry's domain numbers).
     showClimbingConditions: true
 
-    # Outdoor walking / climbing window — sleep hours dropped from the
-    # Overview tile grid. Pre-Phase-D this was the hardcoded constant
-    # HomeFirstVisibleHourUtc=5 / HomeLastVisibleHourUtcExclusive=20 in
-    # SitePages.Index (tightened from 04→05 / 21→20 on 2026-05-07 per
-    # user feedback). Phase D moves the same numbers into per-loc config.
-    overview:
-      firstVisibleHourUtc: 5
-      lastVisibleHourUtcExclusive: 20
+    # Outdoor climbing window — sleep hours dropped from the Overview tile grid.
+    # The "climbing range" (05:00–20:00 UTC; tightened from 04→05 / 21→20 on
+    # 2026-05-07 per user feedback) now lives in ONE place — SitePages.ClimbingRange*
+    # — and Bonehill + Sennen both use it (2026-06-16). A location opts out to the
+    # full 24h day via overview.allHours (Membury). So: overview omitted here →
+    # the shared climbing range.
 
     # METAR truth sources. Exeter is nearest but lowland (~30km SE, ~30m elev).
     # Yeovilton is further but more frequent reports.
@@ -99,8 +97,9 @@ locations:
     # User cares about rainfall around the clock at Membury — Overview
     # tile grid shows the full 24h day rather than dropping sleep hours.
     overview:
-      firstVisibleHourUtc: 0
-      lastVisibleHourUtcExclusive: 24
+      # Membury is a lowland village, not a climbing crag — show the full 24h
+      # day rather than the climbing range.
+      allHours: true
 
     # METAR truth sources. EGTE (Exeter Airport) is ~25 km SW of Membury;
     # EGDY (Yeovilton) is ~35 km E. Same airports Bonehill uses — METAR
@@ -187,9 +186,8 @@ locations:
     # rock-temp (S5). Single verdict per hour until then (per-face needs rock).
     showClimbingConditions: true
 
-    overview:
-      firstVisibleHourUtc: 6
-      lastVisibleHourUtcExclusive: 21
+    # overview: omitted → uses the shared "climbing range" (05:00–20:00 UTC),
+    # aligned with Bonehill (was 06:00–21:00 here).
 
     # Rock-surface override (sea-cliff extension, 2026-06-12 —
     # docs/SENNEN_ROCK_TEMP_PLAN.md). ENABLED 2026-06-13: the cliff-aware

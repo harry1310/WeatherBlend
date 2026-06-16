@@ -248,8 +248,11 @@ public sealed class RenderSiteCommand
             RainStationSlugs: loc.Rainfall.Stations.Select(s => StationSlug.WithEaPrefix(s.Name)).ToList(),
             IsPrimary: idx == 0,
             Tabs: loc.Tabs.ToList(),
-            OverviewFirstVisibleHourUtc: loc.Overview.FirstVisibleHourUtc,
-            OverviewLastVisibleHourUtcExclusive: loc.Overview.LastVisibleHourUtcExclusive,
+            // The climbing range (05:00–20:00 UTC) is defined once in
+            // SitePages.ClimbingRange*; a non-climbing location (Membury) opts
+            // into the full 24h day via overview.allHours.
+            OverviewFirstVisibleHourUtc: loc.Overview.AllHours ? 0 : SitePages.ClimbingRangeFirstHourUtc,
+            OverviewLastVisibleHourUtcExclusive: loc.Overview.AllHours ? 24 : SitePages.ClimbingRangeLastHourExclusiveUtc,
             VillageRain: loc.VillageRain is { Weights.Count: > 0 } vr
                 ? new SitePages.VillageRainSpec(
                     Label: string.IsNullOrWhiteSpace(vr.Label) ? $"{loc.DisplayName} (on-site estimate)" : vr.Label,

@@ -17,7 +17,7 @@ public static partial class SitePages
     /// <summary>
     /// One forward-day's home page. Tiles are the champion-blender forecast
     /// at the shortest lead, filtered to "outdoor" hours
-    /// <c>[<see cref="HomeFirstVisibleHourUtc"/>, <see cref="HomeLastVisibleHourUtcExclusive"/>)</c>
+    /// <c>[<see cref="ClimbingRangeFirstHourUtc"/>, <see cref="ClimbingRangeLastHourExclusiveUtc"/>)</c>
     /// — 21:00-03:59 UTC are dropped because they're irrelevant for climbing
     /// or walking trip planning. Each tile carries a UTCI ⓘ pop-out with the
     /// element-blender values that fed it.
@@ -230,30 +230,29 @@ public static partial class SitePages
         return WrapPage(input, "Overview", "overview", body.ToString());
     }
 
-    /// <summary>Legacy default UTC hour at which the home tile grid starts.
-    /// Phase D made this per-location — see
-    /// <c>LocationConfig.Overview.FirstVisibleHourUtc</c>. Retained here for
-    /// test fixtures / callers that don't set <c>SiteInputs.RenderingFor</c>.
-    /// Bonehill's config.yaml carries 5 (matches the pre-Phase-D constant);
-    /// Membury wants the full 24h day so its config carries 0.</summary>
-    public const int HomeFirstVisibleHourUtc = 5;
+    /// <summary>The shared "climbing range" — lowest UTC hour the Overview tile
+    /// grid shows (inclusive), 05:00Z. THE single definition of the climbing
+    /// range: every climbing location uses it (Bonehill, Sennen); a non-climbing
+    /// location opts into the full day via <c>OverviewConfig.AllHours</c>. Also
+    /// the fallback for callers without <see cref="SiteInputs.RenderingFor"/>
+    /// (test fixtures).</summary>
+    public const int ClimbingRangeFirstHourUtc = 5;
 
-    /// <summary>Legacy default UTC hour at which the home tile grid ends
-    /// (exclusive). Phase D made this per-location — see
-    /// <c>LocationConfig.Overview.LastVisibleHourUtcExclusive</c>. Bonehill 20,
-    /// Membury 24.</summary>
-    public const int HomeLastVisibleHourUtcExclusive = 20;
+    /// <summary>The climbing range's exclusive upper bound — 20Z, so the grid
+    /// renders through 19:00Z. See <see cref="ClimbingRangeFirstHourUtc"/>.</summary>
+    public const int ClimbingRangeLastHourExclusiveUtc = 20;
 
     /// <summary>
-    /// Phase D — resolve the Overview tile-grid hour window from the per-loc
-    /// descriptor when <see cref="SiteInputs.RenderingFor"/> is set; fall back
-    /// to the legacy constants for test fixtures + pre-Phase-D callers.
+    /// Resolve the Overview tile-grid hour window from the per-location
+    /// descriptor (RenderSiteCommand sets it to the climbing range, or 0..24 for
+    /// an all-hours location). Falls back to the climbing range for callers with
+    /// no <see cref="SiteInputs.RenderingFor"/> (test fixtures).
     /// </summary>
     private static (int FirstHour, int LastHourExcl) OverviewWindow(SiteInputs input)
     {
         if (input.RenderingFor is { } loc)
             return (loc.OverviewFirstVisibleHourUtc, loc.OverviewLastVisibleHourUtcExclusive);
-        return (HomeFirstVisibleHourUtc, HomeLastVisibleHourUtcExclusive);
+        return (ClimbingRangeFirstHourUtc, ClimbingRangeLastHourExclusiveUtc);
     }
 
     /// <summary>

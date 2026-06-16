@@ -68,11 +68,12 @@ public class PhaseDSiteTests
     }
 
     [Fact]
-    public void LocationConfig_Overview_defaults_to_full_day()
+    public void LocationConfig_Overview_defaults_to_climbing_range_not_all_hours()
     {
+        // 2026-06-16: per-location hours replaced by a single shared climbing
+        // range; AllHours (full 24h) is the opt-in, default false.
         var cfg = new LocationConfig();
-        cfg.Overview.FirstVisibleHourUtc.Should().Be(0);
-        cfg.Overview.LastVisibleHourUtcExclusive.Should().Be(24);
+        cfg.Overview.AllHours.Should().BeFalse();
     }
 
     [Fact]

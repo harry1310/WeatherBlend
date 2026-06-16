@@ -1087,7 +1087,7 @@ public static partial class SitePages
            tallest, so an open drawer dragged its neighbours' bottoms down. */
         .forecast-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.75rem; align-items: start; }
         /* Per-lead wind page direction-circle row. One cell per UTC hour
-           in [HomeFirstVisibleHourUtc, HomeLastVisibleHourUtcExclusive); each
+           in [ClimbingRangeFirstHourUtc, ClimbingRangeLastHourExclusiveUtc); each
            cell stacks hour label / SVG circle / speed text. Wraps on narrow
            viewports — minmax(64px, 1fr) keeps the cells readable. */
         .wind-dir-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: 0.4rem; margin: 0.5rem 0 1rem; }

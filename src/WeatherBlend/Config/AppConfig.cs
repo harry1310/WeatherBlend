@@ -202,11 +202,14 @@ public sealed class VillageRainConfig
 
 public sealed class OverviewConfig
 {
-    /// <summary>Lowest UTC hour-of-day rendered on the Overview tile grid (inclusive). Default 0 (full day).</summary>
-    public int FirstVisibleHourUtc { get; set; } = 0;
-
-    /// <summary>Exclusive upper bound — <c>24</c> renders through hour 23. Default 24 (full day).</summary>
-    public int LastVisibleHourUtcExclusive { get; set; } = 24;
+    /// <summary>When false (default), the Overview tile grid shows the shared
+    /// "climbing range" — <c>SitePages.ClimbingRangeFirstHourUtc</c> ..
+    /// <c>SitePages.ClimbingRangeLastHourExclusiveUtc</c> (05:00–20:00 UTC), the
+    /// single definition every climbing location uses. Set true for a
+    /// non-climbing location (Membury) to show the full 24h day. Replaced the
+    /// per-location FirstVisibleHourUtc/LastVisibleHourUtcExclusive 2026-06-16 so
+    /// the climbing range lives in exactly one place.</summary>
+    public bool AllHours { get; set; } = false;
 }
 
 public sealed class MetarConfig

@@ -20,9 +20,9 @@ public static partial class SitePages
     ///     spread; ≥270° spread or sub-2 mph speed snaps to VARIABLE.
     ///   * mph everywhere (m/s × 2.23694).
     ///   * UTC everywhere, no local-time conversion.
-    ///   * Direction-circle hours match the home-overview window
-    ///     [<see cref="HomeFirstVisibleHourUtc"/>,
-    ///      <see cref="HomeLastVisibleHourUtcExclusive"/>) so the day's
+    ///   * Direction-circle hours match the climbing-range window
+    ///     [<see cref="ClimbingRangeFirstHourUtc"/>,
+    ///      <see cref="ClimbingRangeLastHourExclusiveUtc"/>) so the day's
     ///     story reads consistently across pages.
     /// </summary>
     public static string RenderForecastsWind(SiteInputs input, int lead)
@@ -290,8 +290,8 @@ public static partial class SitePages
             .Select(g => g.Key)
             .OrderByDescending(d => d)
             .First();
-        var firstHour = HomeFirstVisibleHourUtc;
-        var lastHourExcl = HomeLastVisibleHourUtcExclusive;
+        var firstHour = ClimbingRangeFirstHourUtc;
+        var lastHourExcl = ClimbingRangeLastHourExclusiveUtc;
 
         // Defensive dedupe by hour. >1 prediction can share a valid hour when
         // the predictions tree holds more than one wind_mvn ModelVersion (e.g.
