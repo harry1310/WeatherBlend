@@ -300,18 +300,21 @@ public static partial class SitePages
     /// </summary>
     private static string RenderDryWindowCalculator(SiteInputs input, DateTime dayUtc, string station)
     {
-        var version = DryWindowPhases.Phase3p.StartHourCurveVersion;
-        if (string.IsNullOrEmpty(version)) return "";
-
-        // Freshest forecast per (window, start) for this target day: smallest
+        // Pick the dry-window MC phase whose start-hour curve actually exists for
+        // this station — 3p at Bonehill, 3q at Sennen (copula MC over 3c). Was
+        // hardcoded to 3p, which blanked the calculator at Sennen.
+        // Freshest forecast per (window, start) for the target day: smallest
         // lead, newest made — mirrors the overview tiles' smallest-lead pick.
-        var rows = input.StartHourPredictions
-            .Where(s => s.Station == station
-                        && string.Equals(s.Version, version, StringComparison.Ordinal)
-                        && s.TargetDateUtc.Date == dayUtc.Date)
-            .LatestPerValid(s => (s.WindowHours, s.StartHourUtc), s => s.LeadHours, s => s.PredictedAtUtc)
-            .ToList();
-        if (rows.Count == 0) return "";
+        var rows = DryWindowPhases.All
+            .Where(p => !string.IsNullOrEmpty(p.StartHourCurveVersion))
+            .Select(p => input.StartHourPredictions
+                .Where(s => s.Station == station
+                            && string.Equals(s.Version, p.StartHourCurveVersion, StringComparison.Ordinal)
+                            && s.TargetDateUtc.Date == dayUtc.Date)
+                .LatestPerValid(s => (s.WindowHours, s.StartHourUtc), s => s.LeadHours, s => s.PredictedAtUtc)
+                .ToList())
+            .FirstOrDefault(r => r.Count > 0);
+        if (rows is null || rows.Count == 0) return "";
 
         // All displayed clock times on the site are UTC with a Z (overview
         // tiles, start-hour chart, every forecast page) — match that so the
