@@ -158,7 +158,12 @@ public static partial class SitePages
         bool ShowClimbingConditions = false,
         // Terrain noun for the low-cloud alert wording ("cloud base below the
         // {tor|cliff}") — a Dartmoor tor vs a sea cliff. Defaults to "tor".
-        string CloudFeatureNoun = "tor")
+        string CloudFeatureNoun = "tor",
+        // Whether the rock-surface drying model drives the climbing verdict for
+        // this location: rain-wet rock hard-gates Off (with a dry-by ETA), dew
+        // stays a friction penalty. Mirrors rockSurface.surfaceWaterEnabled,
+        // resolved per location. Default false = the pre-drying behaviour.
+        bool SurfaceWaterEnabled = false)
     {
         /// <summary>True iff <paramref name="tab"/> is in <see cref="Tabs"/> (case-insensitive).</summary>
         public bool HasTab(string tab) =>
@@ -843,6 +848,11 @@ public static partial class SitePages
         double DewPointC,
         double CondensationMarginC,
         string GreasinessStatus,
+        // Phase A drying model. SurfaceWaterMm = total film (rain + dew);
+        // RainWaterMm = the rain-derived part. Defaulted so older trees /
+        // construction sites without the columns compile and read as bone-dry.
+        double SurfaceWaterMm = 0.0,
+        double RainWaterMm = 0.0,
         string LocationName = "",
         string Face = "");
 

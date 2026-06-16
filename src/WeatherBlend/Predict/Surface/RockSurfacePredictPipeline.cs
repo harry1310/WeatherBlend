@@ -149,10 +149,10 @@ public static class RockSurfacePredictPipeline
             if (useNwp is null) { gaps++; continue; }
 
             baseHours.Add(t >= firstBlend && forwardSet.Contains(t)
-                // Blend-driven reported hour. Td (+ direct fraction) from NWP.
-                ? new BaseHour(t, temp[t].Value, useNwp.Td, cloud[t] / 100.0, EffWind(t), rad[t], useNwp.DirectFrac, lastSst)
+                // Blend-driven reported hour. Td (+ direct fraction + precip) from NWP.
+                ? new BaseHour(t, temp[t].Value, useNwp.Td, cloud[t] / 100.0, EffWind(t), rad[t], useNwp.DirectFrac, lastSst, useNwp.PrecipMm)
                 // Spin-up hour (incl. the sub-24h gap before the first blend hour).
-                : new BaseHour(t, useNwp.Ta, useNwp.Td, useNwp.CloudPct / 100.0, useNwp.WindMs, useNwp.ShortwaveWm2, useNwp.DirectFrac, lastSst));
+                : new BaseHour(t, useNwp.Ta, useNwp.Td, useNwp.CloudPct / 100.0, useNwp.WindMs, useNwp.ShortwaveWm2, useNwp.DirectFrac, lastSst, useNwp.PrecipMm));
         }
         if (gaps > 0)
             log.LogWarning("Rock-surface: {Gaps} hour(s) had no NWP forcing and were skipped — spin-up may be shorter than requested.", gaps);
@@ -201,7 +201,7 @@ public static class RockSurfacePredictPipeline
                 }
                 swByValid[b.ValidTimeUtc] = sw;
                 forcing.Add(new RockSurfacePhysics.ForcingHour(
-                    b.ValidTimeUtc, b.AirTempC, b.DewPointC, b.CloudFrac, b.WindMs, sw, b.SeaTempC));
+                    b.ValidTimeUtc, b.AirTempC, b.DewPointC, b.CloudFrac, b.WindMs, sw, b.SeaTempC, b.PrecipMm));
             }
 
             var integrated = RockSurfacePhysics.Integrate(forcing, cfg);
@@ -223,6 +223,8 @@ public static class RockSurfacePredictPipeline
                     DewPointC = h.DewPointC,
                     CondensationMarginC = margin,
                     GreasinessStatus = RockSurfacePhysics.Greasiness(margin, cfg.GreasyMarginC),
+                    SurfaceWaterMm = h.SurfaceWaterMm,
+                    RainWaterMm = h.RainWaterMm,
                     // Face mode: the FACE-INCIDENT shortwave that actually
                     // drove this row's budget, not the horizontal blend value.
                     ShortwaveDownWm2 = swByValid[h.ValidTimeUtc],
@@ -252,7 +254,7 @@ public static class RockSurfacePredictPipeline
     private readonly record struct BaseHour(
         DateTime ValidTimeUtc, double AirTempC, double DewPointC,
         double CloudFrac, double WindMs, double SwHorizontalWm2, double DirectFrac,
-        double? SeaTempC);
+        double? SeaTempC, double PrecipMm);
 
     private readonly record struct LeadValue(double Value, int Lead);
 
@@ -347,7 +349,7 @@ SELECT ValidTimeUtc, SeaSurfaceTemperature FROM ranked WHERE rn = 1 ORDER BY Val
     /// it to the blended GHI to recover the beam for the face projection.
     /// 0 when the radiation split is unavailable (all-diffuse: the face then
     /// receives only fSky-scaled diffuse, the conservative fallback).</summary>
-    private sealed record NwpMean(double Ta, double Td, double CloudPct, double WindMs, double ShortwaveWm2, double DirectFrac);
+    private sealed record NwpMean(double Ta, double Td, double CloudPct, double WindMs, double ShortwaveWm2, double DirectFrac, double PrecipMm);
 
     /// <summary>
     /// Per-valid NWP best-estimate forcing, averaged across the canonical models.
@@ -367,7 +369,7 @@ SELECT ValidTimeUtc, SeaSurfaceTemperature FROM ranked WHERE rn = 1 ORDER BY Val
         var sql = $@"
 WITH ranked AS (
     SELECT ValidTimeUtc, Model, Temperature2m, DewPoint2m, CloudCover, WindSpeed10m, ShortwaveRadiation,
-           DirectRadiation, DiffuseRadiation,
+           DirectRadiation, DiffuseRadiation, Precipitation,
            ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, Model ORDER BY LeadHours ASC, RunTimeUtc DESC) AS rn
     FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
     WHERE LocationName = '{locSql}'
@@ -386,7 +388,8 @@ SELECT ValidTimeUtc,
        avg(WindSpeed10m)      AS v,
        avg(ShortwaveRadiation) AS sw,
        avg(DirectRadiation)   AS dr,
-       avg(DiffuseRadiation)  AS df
+       avg(DiffuseRadiation)  AS df,
+       avg(Precipitation)     AS precip
 FROM ranked
 WHERE rn = 1
 GROUP BY ValidTimeUtc
@@ -420,7 +423,10 @@ ORDER BY ValidTimeUtc;";
             var directFrac = !double.IsNaN(dr) && !double.IsNaN(df) && dr + df > 1e-9
                 ? Math.Clamp(dr / (dr + df), 0.0, 1.0)
                 : 0.0;
-            result[valid] = new NwpMean(ta, td, cc, v, sw, directFrac);
+            // Precipitation (col 8) — drives the surface-water film. A model
+            // omitting it (NaN) or a negative deaccumulation artefact → 0 mm.
+            var precip = Col(8); if (double.IsNaN(precip) || precip < 0.0) precip = 0.0;
+            result[valid] = new NwpMean(ta, td, cc, v, sw, directFrac, precip);
         }
         return result;
     }

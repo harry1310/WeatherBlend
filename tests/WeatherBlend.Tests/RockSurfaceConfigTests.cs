@@ -48,6 +48,33 @@ public class RockSurfaceConfigTests
         resolved.Substeps.Should().Be(global.Substeps);
         resolved.SpinupHours.Should().Be(global.SpinupHours);
         resolved.GreasyMarginC.Should().Be(global.GreasyMarginC);
+
+        // Surface-water model: the global physics coefficients carry through.
+        resolved.SurfaceWaterEnabled.Should().Be(global.SurfaceWaterEnabled);
+        resolved.MaxSurfaceWaterMm.Should().Be(global.MaxSurfaceWaterMm);
+        resolved.WetThresholdMm.Should().Be(global.WetThresholdMm);
+        resolved.EvapVpdCoeff.Should().Be(global.EvapVpdCoeff);
+        resolved.EvapWindBase.Should().Be(global.EvapWindBase);
+        resolved.EvapWindSlope.Should().Be(global.EvapWindSlope);
+        resolved.EvapRadCoeff.Should().Be(global.EvapRadCoeff);
+        resolved.LatentHeatWm2PerMmHr.Should().Be(global.LatentHeatWm2PerMmHr);
+    }
+
+    [Fact]
+    public void SurfaceWaterEnabled_Override_FlipsPerLocation_WithGlobalCoeffsIntact()
+    {
+        // The enable switch is per-location overridable; the physics knobs stay
+        // global (so a config.yaml coefficient change still reaches an
+        // override location). Global off, location on.
+        var global = new RockSurfaceConfig { EvapVpdCoeff = 0.02, LatentHeatWm2PerMmHr = 700.0 };
+        global.SurfaceWaterEnabled.Should().BeFalse("default is off until calibrated");
+
+        var resolved = global.ResolveFor(new RockSurfaceOverrideConfig { SurfaceWaterEnabled = true });
+
+        resolved.SurfaceWaterEnabled.Should().BeTrue();
+        resolved.EvapVpdCoeff.Should().Be(0.02, "physics coefficients come from the global block");
+        resolved.LatentHeatWm2PerMmHr.Should().Be(700.0);
+        global.SurfaceWaterEnabled.Should().BeFalse("the override must not mutate the global block");
     }
 
     [Fact]

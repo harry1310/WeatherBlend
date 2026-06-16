@@ -169,6 +169,15 @@ public static partial class SitePages
             // pure renderer.
             var showConditions = input.RenderingFor?.ShowClimbingConditions == true;
 
+            // Drying-model gate (rain-wet rock → Off with a dry-by ETA), per
+            // location. Off by default until a location is calibrated + flipped;
+            // when on, precompute each rain-wet hour's "climbable from" time once
+            // from the whole rock series so each tile's gate can name it.
+            var surfaceWaterGate = input.RenderingFor?.SurfaceWaterEnabled == true;
+            var rainDryByUtc = surfaceWaterGate
+                ? ClimbingConditions.RainDryByMap(rockByValid.Values)
+                : new Dictionary<DateTime, DateTime?>();
+
             var tiles = new StringBuilder();
             int popoverId = 0;
             foreach (var p in dayPreds)
@@ -196,9 +205,13 @@ public static partial class SitePages
                             swv!.WaveHeightM, sWindMph, sWindDir, seaSpec);
                     }
 
+                    DateTime? rainDryBy = rk is { } rkp
+                        && rainDryByUtc.TryGetValue(rkp.ValidTimeUtc, out var dby) ? dby : null;
                     conditions = ClimbingConditions.Evaluate(
                         p.ValidTimeUtc, input.Latitude, input.Longitude,
-                        p.BlendTemperature, pWet, windMph, rk, sea);
+                        p.BlendTemperature, pWet, windMph, rk, sea,
+                        surfaceWaterGate: surfaceWaterGate,
+                        rainDryByUtc: rainDryBy);
                 }
                 tiles.Append(RenderHourTile(p, feelsLikeByValid, pwetByValid, lowCloudByValid, rockByValid,
                     seaSpec, waveByValid, windSpeedMsByValid, windDirDegByValid,

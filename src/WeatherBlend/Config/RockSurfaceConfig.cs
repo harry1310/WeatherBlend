@@ -88,6 +88,49 @@ public sealed class RockSurfaceConfig
     /// regime before a strict Ts ≤ Td crossing.</summary>
     public double GreasyMarginC { get; set; } = 3.0;
 
+    // ---- Surface water / drying model (Phase A, 2026-06-16) ----
+    /// <summary>Master switch for the surface-water / drying model. When false
+    /// (default) the rock model still WRITES the wetness columns for inspection,
+    /// but the climbing index IGNORES them — the existing greasy/condensation
+    /// friction behaviour stands. Flip true (per location, via the override)
+    /// once the evaporation knobs below are calibrated: then RAIN-wetted rock
+    /// hard-gates the verdict Off (with a dry-by ETA) and the water film drives
+    /// the friction penalty. Overridable so it can be enabled location-by-location.</summary>
+    public bool SurfaceWaterEnabled { get; set; } = false;
+
+    /// <summary>Max surface-water film the near-impermeable granite holds (mm);
+    /// water above this runs off. Caps the worst-case dry-out time.</summary>
+    public double MaxSurfaceWaterMm { get; set; } = 0.4;
+
+    /// <summary>Film (mm) at/above which the surface counts as "wet" (heavy
+    /// friction / the rain gate). Between this and ~0 is "damp".</summary>
+    public double WetThresholdMm { get; set; } = 0.05;
+
+    /// <summary>VPD coefficient for the moisture flux — mm/hr per hPa of vapour-
+    /// pressure deficit (e_sat(Ts) − e_air) per unit of the wind function. Drives
+    /// BOTH evaporation (VPD &gt; 0) and dew deposition (VPD &lt; 0). DRAFT —
+    /// calibrate against IR-gun "how long did it stay wet" observations.</summary>
+    public double EvapVpdCoeff { get; set; } = 0.012;
+
+    /// <summary>Wind function for the moisture flux: still-air floor
+    /// <see cref="EvapWindBase"/> + per-m/s ventilation gain <see cref="EvapWindSlope"/>·V.</summary>
+    public double EvapWindBase { get; set; } = 1.0;
+    public double EvapWindSlope { get; set; } = 0.35;
+
+    /// <summary>Radiation-driven evaporation — mm/hr per W/m² of ABSORBED short-
+    /// wave, applied only while drying (sun bakes a wet slab dry). DRAFT.</summary>
+    public double EvapRadCoeff { get; set; } = 0.0009;
+
+    /// <summary>Latent-heat feedback (Phase B): W/m² of surface cooling per mm/hr
+    /// of water evaporated (and warming per mm/hr condensed) — the slab loses
+    /// the latent heat of vaporisation as its film dries, and gains it when dew
+    /// forms. Default ≈ L_v / 3600 = 2.45×10⁶ J/kg ÷ 3600 s = 680.6 W/m² per
+    /// mm/hr (1 mm/hr over 1 m² = 1 kg/m²/hr). Applied to the energy budget ONLY
+    /// when <see cref="SurfaceWaterEnabled"/> is true, so a gate-off location's
+    /// Ts is bit-for-bit unchanged from the pre-drying model. Set 0 to disable
+    /// the feedback while still tracking the film.</summary>
+    public double LatentHeatWm2PerMmHr { get; set; } = 680.6;
+
     /// <summary>Crag faces to model (cliff-face mode, SENNEN_ROCK_TEMP_PLAN.md
     /// S3). Empty = whole-crag horizontal mode (Bonehill's all-aspect tor):
     /// the blend shortwave drives the budget unmodified and rows carry an
@@ -120,6 +163,17 @@ public sealed class RockSurfaceConfig
             Substeps       = o.Substeps       ?? Substeps,
             SpinupHours    = o.SpinupHours    ?? SpinupHours,
             GreasyMarginC  = o.GreasyMarginC  ?? GreasyMarginC,
+            // Surface-water model: the enable switch is per-location overridable;
+            // the physics coefficients are global (copied through so a global
+            // config.yaml change still reaches a location that has an override).
+            SurfaceWaterEnabled = o.SurfaceWaterEnabled ?? SurfaceWaterEnabled,
+            MaxSurfaceWaterMm = MaxSurfaceWaterMm,
+            WetThresholdMm = WetThresholdMm,
+            EvapVpdCoeff   = EvapVpdCoeff,
+            EvapWindBase   = EvapWindBase,
+            EvapWindSlope  = EvapWindSlope,
+            EvapRadCoeff   = EvapRadCoeff,
+            LatentHeatWm2PerMmHr = LatentHeatWm2PerMmHr,
             Faces          = o.Faces          ?? Faces,
         };
     }
@@ -167,6 +221,11 @@ public sealed class RockSurfaceOverrideConfig
     public int? Substeps { get; set; }
     public int? SpinupHours { get; set; }
     public double? GreasyMarginC { get; set; }
+
+    /// <summary>Per-location enable of the surface-water/drying model (the
+    /// physics coefficients stay global). Lets Bonehill and Sennen turn it on
+    /// independently once each is calibrated.</summary>
+    public bool? SurfaceWaterEnabled { get; set; }
 
     /// <summary>Replaces the global faces list WHOLESALE when set (faces are
     /// location geometry — merging two locations' lists makes no sense).</summary>

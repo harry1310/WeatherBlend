@@ -50,6 +50,13 @@ public static class ClimbingConditions
     /// <summary>At or above this hourly P(wet), the rain gate fires (Off).</summary>
     public const double RainGateProb = 0.5;
 
+    /// <summary>Rain-derived surface-water film (mm) at/above which the rock
+    /// counts as wet-from-rain and the verdict hard-gates Off (with a dry-by
+    /// ETA). The index's own copy of the rock model's <c>WetThresholdMm</c> knob
+    /// — they share a default; this is the gate-decision authority. Only consulted
+    /// when the location has the drying model enabled (Harry 2026-06-16).</summary>
+    public const double RainWetThresholdMm = 0.05;
+
     /// <summary>Solar elevation (deg) below which it's too dark to climb (gate).</summary>
     public const double DaylightMinElevationDeg = 0.0;
 
@@ -121,7 +128,10 @@ public static class ClimbingConditions
         DateTime validUtc, double latitude, double longitude,
         double airTempC, double? pWet, double? windMph,
         SitePages.RockSurfaceForecastPoint? rock,
-        Factor? sea = null)
+        Factor? sea = null,
+        bool surfaceWaterGate = false,
+        double wetThresholdMm = RainWetThresholdMm,
+        DateTime? rainDryByUtc = null)
     {
         // ---- Gates (any one → Off) ----
         var (elevDeg, _) = SolarGeometry.SolarPosition(validUtc, latitude, longitude);
@@ -129,6 +139,20 @@ public static class ClimbingConditions
             return Gate(ConditionsTier.Off, "Dark — sun below the horizon");
         if (pWet is double pw && pw >= RainGateProb)
             return Gate(ConditionsTier.Off, $"Rain likely ({pw * 100:0}%)");
+        // Rock still wet from RAIN — a hard Off gate (Harry 2026-06-16): no point
+        // calling an hour climbable when a downpour an hour or two ago left a film
+        // of standing water on the slab. Fires ONLY where the drying model is
+        // enabled for the location AND the wetness is rain-derived; the dry-by ETA
+        // (when the rain film clears) tells the reader when it comes good. Dew
+        // wetness is deliberately NOT gated here — it's the friction penalty below,
+        // because the rock-temp/dew margin is still being field-validated.
+        if (surfaceWaterGate && rock is { } wetRock && wetRock.RainWaterMm >= wetThresholdMm)
+        {
+            var eta = rainDryByUtc is { } dry
+                ? $" — drying, climbable from ~{dry:HH'Z'}"
+                : "";
+            return Gate(ConditionsTier.Off, $"Rock wet from rain{eta}");
+        }
         // NB condensation (wet rock) is NOT a gate — it's a heavy friction
         // penalty in the factor block below (Harry 2026-06-16), because the
         // rock-temp calc is still being validated and an uncertain "wet" call
@@ -208,6 +232,33 @@ public static class ClimbingConditions
 
     private static Result Gate(ConditionsTier tier, string reason)
         => new(tier, 0.0, reason, Array.Empty<Factor>());
+
+    /// <summary>
+    /// For each rain-wet hour in a rock-surface series (RainWaterMm ≥
+    /// <paramref name="wetThresholdMm"/>), the first LATER hour whose rain film
+    /// has dropped below the threshold — the "climbable from ~HHZ" ETA the Off
+    /// gate shows. A null value means the rain film never clears within the
+    /// series window (still wet to the end of the forecast). Hours that are
+    /// already dry are absent from the map. Keyed by the rock row's ValidTimeUtc.
+    /// </summary>
+    public static Dictionary<DateTime, DateTime?> RainDryByMap(
+        IEnumerable<SitePages.RockSurfaceForecastPoint> rockSeries,
+        double wetThresholdMm = RainWetThresholdMm)
+    {
+        var ordered = rockSeries.OrderBy(r => r.ValidTimeUtc).ToList();
+        var map = new Dictionary<DateTime, DateTime?>();
+        for (var i = 0; i < ordered.Count; i++)
+        {
+            if (ordered[i].RainWaterMm < wetThresholdMm) continue; // dry now
+            DateTime? dry = null;
+            for (var j = i + 1; j < ordered.Count; j++)
+            {
+                if (ordered[j].RainWaterMm < wetThresholdMm) { dry = ordered[j].ValidTimeUtc; break; }
+            }
+            map[ordered[i].ValidTimeUtc] = dry; // null = wet to end of window
+        }
+        return map;
+    }
 
     public static string TierLabel(ConditionsTier t) => t switch
     {

@@ -214,4 +214,116 @@ public class RockSurfacePhysicsTests
         for (var i = 0; i < withSea.Count; i++)
             withSea[i].RockTempC.Should().Be(without[i].RockTempC);
     }
+
+    // ------------------------------------------------------------------
+    // Surface-water drying model (Phase A) + latent-heat feedback (Phase B).
+    // The film accrues from rain (and dew), dries by VPD + radiation, runs
+    // off above the cap, and — only when SurfaceWaterEnabled — pulls latent
+    // heat out of the slab as it evaporates.
+    // ------------------------------------------------------------------
+
+    /// <summary>Rain at one hour of an otherwise-dry sunny day, holding enough
+    /// film to survive runoff, then drying out over the following hours.</summary>
+    private static List<ForcingHour> MakeForcingWithMorningRain(int days, double rainMm, int rainHod = 6)
+        => MakeForcing(days, cloudFrac: 0.1, windMs: 2.0)
+            .Select(h => h.ValidTimeUtc.Hour == rainHod ? h with { PrecipMm = rainMm } : h)
+            .ToList();
+
+    [Fact]
+    public void Rain_wets_the_film_then_it_dries_out()
+    {
+        // Generous cap so the rain isn't all shed as runoff; watch the rain
+        // film build at the rain hour then fall back toward zero over the day.
+        var cfg = new RockSurfaceConfig { MaxSurfaceWaterMm = 5.0 };
+        var r = Integrate(MakeForcingWithMorningRain(6, rainMm: 3.0), cfg);
+
+        var lastDay = r.Skip(r.Count - 24).ToList();
+        var atRain = lastDay.First(h => h.ValidTimeUtc.Hour == 6);
+        var lateAfternoon = lastDay.First(h => h.ValidTimeUtc.Hour == 16);
+
+        atRain.RainWaterMm.Should().BeGreaterThan(0.5, "rain deposits a film on the slab");
+        atRain.SurfaceWaterMm.Should().BeGreaterThanOrEqualTo(atRain.RainWaterMm);
+        lateAfternoon.RainWaterMm.Should().BeLessThan(atRain.RainWaterMm,
+            "sun + wind dry the rain film back down through the day");
+    }
+
+    [Fact]
+    public void Surface_water_never_exceeds_the_runoff_cap()
+    {
+        var cfg = new RockSurfaceConfig { MaxSurfaceWaterMm = 0.4 };
+        // Hammer it with heavy rain every hour — the film must still cap out.
+        var soaked = MakeForcing(4, 0.8, 2.0).Select(h => h with { PrecipMm = 10.0 }).ToList();
+        var r = Integrate(soaked, cfg);
+        r.Should().OnlyContain(h => h.SurfaceWaterMm <= cfg.MaxSurfaceWaterMm + 1e-9,
+            "granite holds only a thin film; the rest runs off");
+    }
+
+    [Fact]
+    public void Dew_film_is_attributed_to_dew_not_rain()
+    {
+        // Clear calm night with a high dew point forces condensation (Ts < Td);
+        // the deposited film must land in the dew bucket, leaving RainWaterMm 0.
+        var r = Integrate(MakeForcing(6, cloudFrac: 0.0, windMs: 1.0, dewC: 11.0), Cfg);
+        var condensingNight = AfterSpinup(r)
+            .Where(h => SwAt(h) < 5.0 && h.MarginC <= 0.0)
+            .ToList();
+        condensingNight.Should().NotBeEmpty("a warm-dew clear night should condense");
+        condensingNight.Should().OnlyContain(h => h.RainWaterMm <= 1e-9,
+            "no rain fell — any film is dew");
+        condensingNight.Max(h => h.SurfaceWaterMm).Should().BeGreaterThan(0.0,
+            "dew deposits a measurable film");
+    }
+
+    [Fact]
+    public void Latent_feedback_is_inert_when_the_drying_model_is_off()
+    {
+        // SurfaceWaterEnabled = false (default): rain may wet the film, but Ts
+        // must be bit-for-bit identical to a run with no rain at all — the
+        // latent term is gated off, so the film cannot touch the energy budget.
+        var cfg = new RockSurfaceConfig { MaxSurfaceWaterMm = 5.0 };
+        var wet = Integrate(MakeForcingWithMorningRain(6, rainMm: 3.0), cfg);
+        var dry = Integrate(MakeForcing(6, cloudFrac: 0.1, windMs: 2.0), cfg);
+
+        wet.Should().HaveSameCount(dry);
+        for (var i = 0; i < wet.Count; i++)
+            wet[i].RockTempC.Should().Be(dry[i].RockTempC,
+                "with the gate off the surface film must not perturb Ts");
+    }
+
+    [Fact]
+    public void Latent_cooling_pulls_a_wet_slab_below_its_dry_self()
+    {
+        // Same wet forcing, gate ON vs OFF: evaporating the film must cost the
+        // slab latent heat, so the gate-on run sits cooler while it dries.
+        var on = new RockSurfaceConfig { MaxSurfaceWaterMm = 5.0, SurfaceWaterEnabled = true };
+        var off = new RockSurfaceConfig { MaxSurfaceWaterMm = 5.0, SurfaceWaterEnabled = false };
+        var forcing = MakeForcingWithMorningRain(8, rainMm: 4.0);
+
+        var rOn = Integrate(forcing, on);
+        var rOff = Integrate(forcing, off);
+
+        // Mean Ts over the drying daytime hours (rain at 06, dries through ~17).
+        double DayMean(IReadOnlyList<RockHour> r) => r.Skip(Spinup)
+            .Where(h => h.ValidTimeUtc.Hour is >= 7 and <= 15)
+            .Average(h => h.RockTempC);
+
+        DayMean(rOn).Should().BeLessThan(DayMean(rOff),
+            "latent heat of evaporation cools the wet slab relative to the dry-physics run");
+    }
+
+    [Fact]
+    public void Latent_coeff_zero_reproduces_the_gate_off_temperatures()
+    {
+        // Belt-and-braces: even with the gate ON, a zero latent coefficient must
+        // leave Ts identical to the gate-off run — the feedback is the only path
+        // by which the film reaches the budget.
+        var zeroCoeff = new RockSurfaceConfig { MaxSurfaceWaterMm = 5.0, SurfaceWaterEnabled = true, LatentHeatWm2PerMmHr = 0.0 };
+        var off = new RockSurfaceConfig { MaxSurfaceWaterMm = 5.0, SurfaceWaterEnabled = false };
+        var forcing = MakeForcingWithMorningRain(6, rainMm: 3.0);
+
+        var rZero = Integrate(forcing, zeroCoeff);
+        var rOff = Integrate(forcing, off);
+        for (var i = 0; i < rZero.Count; i++)
+            rZero[i].RockTempC.Should().BeApproximately(rOff[i].RockTempC, 1e-9);
+    }
 }

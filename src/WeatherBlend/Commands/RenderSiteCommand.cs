@@ -273,7 +273,11 @@ public sealed class RenderSiteCommand
                 : null,
             ShowClimbingConditions: loc.ShowClimbingConditions,
             // Marine location (has a sea-state block) = sea cliff; else a tor.
-            CloudFeatureNoun: loc.Marine?.SeaStateBadge is not null ? "cliff" : "tor")).ToList();
+            CloudFeatureNoun: loc.Marine?.SeaStateBadge is not null ? "cliff" : "tor",
+            // Drying-model gate, resolved per location (global block + this
+            // location's rockSurface override). Default false keeps the verdict
+            // on the pre-drying behaviour until a location is calibrated + flipped.
+            SurfaceWaterEnabled: _cfg.RockSurface.ResolveFor(loc.RockSurface).SurfaceWaterEnabled)).ToList();
 
         // Top-level model summaries / feature spec rows surface ALL locations'
         // active versions on /specs.html. Per-loc Models page recomputes with
@@ -1517,10 +1521,16 @@ ORDER BY LocationName, LeadHours, ValidTimeUtc";
         // Face arrived with cliff-face mode (SENNEN_ROCK_TEMP_PLAN.md S3) — a
         // tree of purely pre-face files has no such column, so guard the SELECT.
         var faceCol = ParquetReader.HasColumn(conn, glob, "Face") ? "COALESCE(Face, '')" : "''";
+        // Surface-water columns arrived with the Phase A drying model — a tree
+        // predicted before then has neither, so guard each and read 0 (bone-dry).
+        var surfaceWaterCol = ParquetReader.HasColumn(conn, glob, "SurfaceWaterMm") ? "COALESCE(SurfaceWaterMm, 0.0)" : "0.0";
+        var rainWaterCol    = ParquetReader.HasColumn(conn, glob, "RainWaterMm")    ? "COALESCE(RainWaterMm, 0.0)"    : "0.0";
         var sql = $@"
 SELECT ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
        RockSurfaceTempC, AirTempC, DewPointC, CondensationMarginC, GreasinessStatus, LocationName,
-       {faceCol} AS Face
+       {faceCol} AS Face,
+       {surfaceWaterCol} AS SurfaceWaterMm,
+       {rainWaterCol} AS RainWaterMm
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
 WHERE LocationName IN ({locFilter})
   AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
@@ -1537,6 +1547,8 @@ ORDER BY LocationName, LeadHours, ValidTimeUtc";
             DewPointC:           r.GetDouble(6),
             CondensationMarginC: r.GetDouble(7),
             GreasinessStatus:    r.IsDBNull(8) ? "" : r.GetString(8),
+            SurfaceWaterMm:      r.IsDBNull(11) ? 0.0 : r.GetDouble(11),
+            RainWaterMm:         r.IsDBNull(12) ? 0.0 : r.GetDouble(12),
             LocationName:        r.GetString(9),
             Face:                r.IsDBNull(10) ? "" : r.GetString(10)),
             _log, "Rock-surface predictions tree empty — chip + chart absent.", ct);

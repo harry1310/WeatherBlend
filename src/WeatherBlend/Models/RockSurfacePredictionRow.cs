@@ -61,6 +61,19 @@ public sealed class RockSurfacePredictionRow
     /// String (not enum) for portable parquet readers.</summary>
     public required string GreasinessStatus { get; init; }
 
+    /// <summary>Total surface-water film (mm) — rain plus condensed dew — from
+    /// the Phase A drying model (VPD-driven evaporation + dew, radiation drying,
+    /// runoff cap). NOT <c>required</c>: rows written before the drying model
+    /// deserialize with the default 0. The climbing index only acts on this when
+    /// <c>rockSurface.surfaceWaterEnabled</c> is true for the location.</summary>
+    public double SurfaceWaterMm { get; init; }
+
+    /// <summary>The rain-derived part of <see cref="SurfaceWaterMm"/> (mm). Split
+    /// out so a consumer can tell "wet from rain" (the hard Off gate, with a
+    /// dry-by ETA) from "wet from dew" (a friction penalty, never a hard gate —
+    /// the rock-temp/dew margin is uncertain). NOT <c>required</c>: defaults 0.</summary>
+    public double RainWaterMm { get; init; }
+
     // ---- forcing provenance ----
     public required double ShortwaveDownWm2 { get; init; }
     public required double CloudCoverPct { get; init; }

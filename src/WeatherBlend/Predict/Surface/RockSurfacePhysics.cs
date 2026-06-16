@@ -90,13 +90,19 @@ public static class RockSurfacePhysics
     /// mode); null = exchange-neutral surroundings (boulder field / pre-S4).</summary>
     public sealed record ForcingHour(
         DateTime ValidTimeUtc, double AirTempC, double DewPointC,
-        double CloudFrac, double WindMs, double ShortwaveWm2, double? SeaTempC = null);
+        double CloudFrac, double WindMs, double ShortwaveWm2, double? SeaTempC = null,
+        double PrecipMm = 0.0);
 
     /// <summary>One integrated hour: rock surface + deep reservoir temps, the
-    /// effective LW↓ used, and the air/dew it was driven by.</summary>
+    /// effective LW↓ used, the air/dew it was driven by, and the surface-water
+    /// film (Phase A drying model). <paramref name="SurfaceWaterMm"/> is the
+    /// total film (rain + dew); <paramref name="RainWaterMm"/> is the rain-derived
+    /// part, so a consumer can tell "wet from rain" (hard-gate) from "wet from
+    /// dew" (friction penalty).</summary>
     public sealed record RockHour(
         DateTime ValidTimeUtc, double RockTempC, double DeepTempC,
-        double LongwaveDownWm2, double AirTempC, double DewPointC)
+        double LongwaveDownWm2, double AirTempC, double DewPointC,
+        double SurfaceWaterMm = 0.0, double RainWaterMm = 0.0)
     {
         /// <summary>Condensation margin m = Ts − Td. ≤ 0 ⇒ condensation.</summary>
         public double MarginC => RockTempC - DewPointC;
@@ -124,6 +130,14 @@ public static class RockSurfacePhysics
         var seedCount = Math.Min(24, n);
         var tdeepC = forcing.Take(seedCount).Average(h => h.AirTempC);
 
+        // Surface-water film (mm), tracked by source so the climbing index can
+        // tell rain-wet (hard gate) from dew-wet (friction). The film always
+        // accrues for inspection; its latent-heat feedback on Ts (Phase B) is
+        // applied ONLY when SurfaceWaterEnabled — so a gate-off location's Ts is
+        // bit-for-bit the pre-drying value.
+        double wRain = 0.0, wDew = 0.0;
+        var eAirCache = VapourPressureHpa(forcing[0].DewPointC);
+
         var outp = new List<RockHour>(n);
         foreach (var h in forcing)
         {
@@ -131,11 +145,18 @@ public static class RockSurfacePhysics
             var v = Math.Max(h.WindMs, 0.0);
             var lwDown = LongwaveDownWm2(h.DewPointC, h.AirTempC, h.CloudFrac, p.LwClearK, p.LwCloudK);
             var hConv = 5.7 + 3.8 * v;
+            var windFn = p.EvapWindBase + p.EvapWindSlope * v;
+            // Actual vapour pressure = saturation vp at the dew point (air is
+            // saturated there). Surface saturation vp uses Ts each substep.
+            eAirCache = VapourPressureHpa(h.DewPointC);
 
             // Sea longwave: σ·T_sea⁴ once per hour (SST moves slowly).
             var seaEmitWm2 = h.SeaTempC is double seaC
                 ? Sigma * Math.Pow(seaC + 273.15, 4)
                 : (double?)null;
+
+            // Rain wets the surface at the top of the hour (mm this hour).
+            wRain += Math.Max(h.PrecipMm, 0.0);
 
             for (var s = 0; s < sub; s++)
             {
@@ -146,14 +167,59 @@ public static class RockSurfacePhysics
                 if (seaEmitWm2 is double seaEmit)
                     lwNet += p.EpsRock * (1.0 - p.FSky) * (seaEmit - Sigma * tsK4);
                 var hLoss = hConv * (tsC - h.AirTempC);
-                var gNet = swAbs + lwNet - hLoss;
+
+                // --- Surface-water moisture flux for THIS substep, off the
+                //     CURRENT Ts: VPD > 0 dries the film, VPD < 0 deposits dew,
+                //     plus a radiation-driven drying term while drying. Evaporation
+                //     is capped at the water actually present (can't dry more film
+                //     than there is). ---
+                var vpd = VapourPressureHpa(tsC) - eAirCache;   // hPa, >0 dry / <0 condensing
+                var fluxMmHr = p.EvapVpdCoeff * windFn * vpd
+                             + (vpd > 0.0 ? p.EvapRadCoeff * swAbs : 0.0);
+                var deltaMm = fluxMmHr * (dt / 3600.0);          // signed mm this substep
+                var wTot = wRain + wDew;
+                var actualDeltaMm = deltaMm > 0.0 ? Math.Min(deltaMm, wTot) : deltaMm;
+
+                // Latent-heat feedback (Phase B): evaporating water cools the slab,
+                // condensing dew warms it. Gated on SurfaceWaterEnabled so a
+                // gate-off location's Ts is bit-for-bit the pre-drying value.
+                // actualDeltaMm is per substep → ÷(dt/3600) back to mm/hr.
+                var latentWm2 = p.SurfaceWaterEnabled
+                    ? p.LatentHeatWm2PerMmHr * (actualDeltaMm / (dt / 3600.0))
+                    : 0.0;
+
+                var gNet = swAbs + lwNet - hLoss - latentWm2;
                 var dts = gNet / mu - twoPiTau * (tsC - tdeepC);
                 var dtd = (tsC - tdeepC) * invTauLong;
                 tsC += dts * dt;
                 tdeepC += dtd * dt;
+
+                // Apply the moisture exchange to the bucket (evaporation removes
+                // proportionally by source so the rain/dew split is preserved).
+                if (actualDeltaMm > 0.0)
+                {
+                    if (wTot > 1e-9)
+                    {
+                        var frac = actualDeltaMm / wTot;
+                        wRain -= wRain * frac;
+                        wDew  -= wDew * frac;
+                    }
+                }
+                else
+                {
+                    wDew += -actualDeltaMm;   // dew deposits
+                }
+                // Runoff cap — granite holds only a thin film.
+                var total = wRain + wDew;
+                if (total > p.MaxSurfaceWaterMm && total > 1e-9)
+                {
+                    var k = p.MaxSurfaceWaterMm / total;
+                    wRain *= k; wDew *= k;
+                }
             }
 
-            outp.Add(new RockHour(h.ValidTimeUtc, tsC, tdeepC, lwDown, h.AirTempC, h.DewPointC));
+            outp.Add(new RockHour(h.ValidTimeUtc, tsC, tdeepC, lwDown, h.AirTempC, h.DewPointC,
+                SurfaceWaterMm: wRain + wDew, RainWaterMm: wRain));
         }
         return outp;
     }

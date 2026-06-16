@@ -15,10 +15,14 @@ public class ClimbingConditionsTests
     private const double Lat = 50.5831, Lon = -3.7931;
     private static readonly DateTime Midday = new(2026, 1, 15, 12, 0, 0, DateTimeKind.Utc);
 
-    private static SitePages.RockSurfaceForecastPoint Rock(double rockC, string greasy = "dry") => new(
-        Version: "v1", PredictedAtUtc: Midday.AddDays(-1), ValidTimeUtc: Midday, LeadHours: 24,
+    private static SitePages.RockSurfaceForecastPoint Rock(
+        double rockC, string greasy = "dry", double rainWaterMm = 0.0, double dewWaterMm = 0.0,
+        DateTime? validUtc = null) => new(
+        Version: "v1", PredictedAtUtc: Midday.AddDays(-1), ValidTimeUtc: validUtc ?? Midday, LeadHours: 24,
         RockSurfaceTempC: rockC, AirTempC: rockC + 1, DewPointC: rockC - 3,
-        CondensationMarginC: 3, GreasinessStatus: greasy, LocationName: "bonehill_rocks", Face: "");
+        CondensationMarginC: 3, GreasinessStatus: greasy,
+        SurfaceWaterMm: rainWaterMm + dewWaterMm, RainWaterMm: rainWaterMm,
+        LocationName: "bonehill_rocks", Face: "");
 
     // ---- Curve shapes ----
 
@@ -126,5 +130,86 @@ public class ClimbingConditionsTests
         // Only Friction (air proxy) + Air temp present — no wind, no dry factor.
         r.Factors.Select(f => f.Name).Should().BeEquivalentTo("Friction", "Air temp");
         r.Factors.Single(f => f.Name == "Friction").Detail.Should().Contain("air");
+    }
+
+    // ---- Surface-water drying gate (Phase A) ----
+
+    [Fact]
+    public void Rain_wet_rock_is_not_gated_when_the_drying_model_is_off()
+    {
+        // Default surfaceWaterGate=false: a wet rain film is ignored entirely,
+        // so an otherwise-perfect hour stays Prime — the pre-drying behaviour.
+        var r = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6,
+            Rock(5, rainWaterMm: 0.3));
+        r.Tier.Should().Be(ConditionsTier.Prime);
+    }
+
+    [Fact]
+    public void Rain_wet_rock_hard_gates_Off_when_the_drying_model_is_on()
+    {
+        var r = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6,
+            Rock(5, rainWaterMm: 0.3), surfaceWaterGate: true);
+        r.Tier.Should().Be(ConditionsTier.Off);
+        r.Reason.Should().Contain("wet from rain");
+    }
+
+    [Fact]
+    public void Rain_gate_names_the_dry_by_eta_when_known()
+    {
+        var dryBy = new DateTime(2026, 1, 15, 14, 0, 0, DateTimeKind.Utc);
+        var r = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6,
+            Rock(5, rainWaterMm: 0.3), surfaceWaterGate: true, rainDryByUtc: dryBy);
+        r.Tier.Should().Be(ConditionsTier.Off);
+        r.Reason.Should().Contain("14Z");
+    }
+
+    [Fact]
+    public void Dew_only_film_is_not_rain_gated_even_with_the_model_on()
+    {
+        // A dew film (RainWaterMm 0) must NOT trip the rain gate — dew is the
+        // friction penalty, not a hard Off (the rock-temp margin is uncertain).
+        var r = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6,
+            Rock(5, greasy: "condensation", dewWaterMm: 0.3), surfaceWaterGate: true);
+        r.Tier.Should().NotBe(ConditionsTier.Off);
+    }
+
+    [Fact]
+    public void Sub_threshold_rain_film_does_not_gate()
+    {
+        var r = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6,
+            Rock(5, rainWaterMm: 0.01), surfaceWaterGate: true);
+        r.Tier.Should().NotBe(ConditionsTier.Off, "a trace film below the wet threshold isn't 'wet'");
+    }
+
+    [Fact]
+    public void RainDryByMap_maps_each_wet_hour_to_its_first_dry_hour()
+    {
+        var t0 = new DateTime(2026, 1, 15, 8, 0, 0, DateTimeKind.Utc);
+        var series = new[]
+        {
+            Rock(5, rainWaterMm: 0.3, validUtc: t0),                 // wet
+            Rock(5, rainWaterMm: 0.2, validUtc: t0.AddHours(1)),     // wet
+            Rock(5, rainWaterMm: 0.01, validUtc: t0.AddHours(2)),    // dry ← ETA
+            Rock(5, rainWaterMm: 0.0, validUtc: t0.AddHours(3)),     // dry
+        };
+        var map = ClimbingConditions.RainDryByMap(series);
+
+        map.Should().ContainKey(t0);
+        map[t0].Should().Be(t0.AddHours(2));
+        map[t0.AddHours(1)].Should().Be(t0.AddHours(2));
+        map.Should().NotContainKey(t0.AddHours(2), "already-dry hours aren't in the map");
+    }
+
+    [Fact]
+    public void RainDryByMap_leaves_a_never_drying_hour_with_a_null_eta()
+    {
+        var t0 = new DateTime(2026, 1, 15, 8, 0, 0, DateTimeKind.Utc);
+        var series = new[]
+        {
+            Rock(5, rainWaterMm: 0.3, validUtc: t0),
+            Rock(5, rainWaterMm: 0.3, validUtc: t0.AddHours(1)),
+        };
+        var map = ClimbingConditions.RainDryByMap(series);
+        map[t0].Should().BeNull("the film never clears within the window");
     }
 }
