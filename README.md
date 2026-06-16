@@ -123,7 +123,7 @@ src/WeatherBlend/
   Site/                            HTML renderers (no I/O, takes pre-loaded objects)
 tests/WeatherBlend.Tests/          xUnit
 data/                              gitignored — Parquet output + rendered site + reports
-.github/workflows/                 collect / predict / render-site / verify / era5-refresh
+.github/workflows/                 collect / predict / render-site / verify / truth-refresh
 ```
 
 ## Data layout on disk
@@ -157,7 +157,7 @@ SELECT * FROM read_parquet(
 | `collect` | `:15 02, 08, 14, 20` (4× daily) | pull fresh forecasts + METAR + EA rainfall, push to R2 |
 | `predict` | `:45 02, 08, 14, 20` (4× daily) | run every active blender, push predictions |
 | `render-site` | on `predict` / `verify` completion + `0 */2 * * *` | regenerate HTML, deploy to Pages |
-| `era5-refresh` | `0 6 * * *` (daily) | fetch the latest ERA5 release, push to R2 |
+| `truth-refresh` | `0 6 * * *` (daily) | fetch the latest ERA5 release, push to R2 |
 | `verify` | `30 9 * * 1` (Mondays) | rolling MAE / Brier vs training-test, drift flag |
 
 The repo is public, so GitHub Actions minutes are unlimited. R2 storage is well

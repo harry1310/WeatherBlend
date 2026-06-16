@@ -86,8 +86,8 @@ public static partial class SitePages
                 <code>collect</code> pulls fresh NWP forecasts + observations every 6 h (08:30 / 14:30
                 / 20:30 / 02:30 UTC); <code>predict-and-render</code> runs 30 min later on the same
                 cycle, executing every blender against the freshest inputs and regenerating this
-                static site on Cloudflare Pages; <code>era5-refresh</code> backfills the daily ERA5
-                truth window at 12:00 UTC; <code>verify</code> runs Mon + Thu at 09:30 UTC and flags
+                static site on Cloudflare Pages; <code>truth-refresh</code> backfills the daily ERA5
+                + EA-rainfall truth window at 12:00 UTC; <code>verify</code> runs Mon + Thu at 09:30 UTC and flags
                 rolling-MAE / Brier drift &gt; 1.5× training-test score per (model version, lead),
                 emitting JSON sidecars that feed the Models-page verify-history tables.
               </p>

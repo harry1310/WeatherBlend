@@ -1,4 +1,4 @@
-name: era5-refresh
+name: truth-refresh
 
 env:
   # rclone hang guard — every R2 transfer in this workflow inherits these.
@@ -40,10 +40,10 @@ on:
         default: ""
 
 concurrency:
-  # era5-refresh writes only data/truth/era5/ — its own subtree, as whole
+  # truth-refresh writes only data/truth/era5/ — its own subtree, as whole
   # idempotent per-date parquet files (no read-modify-write, unlike the
   # METAR/rainfall writers). So it doesn't need the shared weatherblend-data
-  # write-lock; its own group just serialises era5-refresh against itself
+  # write-lock; its own group just serialises truth-refresh against itself
   # (e.g. a manual dispatch vs the noon scheduled run). Moved off
   # weatherblend-data 2026-05-22 — it was queueing ~8 min behind
   # previous-runs-refresh on the shared noon tick for no reason.
@@ -132,11 +132,35 @@ jobs:
             echo "No data/truth/waves tree produced this run — nothing to push."
           fi
 
+      - name: Refresh EA rainfall truth (FATAL — the EA canary)
+        # EA Hydrology rainfall gauges: precip/dry-window TRUTH + the antecedent-
+        # rain persistence feature 3c/3o/4a read at predict time. Runs AFTER the
+        # ERA5/wave pushes so an EA outage can't block those. FATAL by design (no
+        # continue-on-error): collect pulls EA best-effort every 3h and is
+        # non-fatal there, so this DAILY run is the EA canary — if EA is
+        # persistently 403ing / down this goes red and we know. Same rolling
+        # window as ERA5; the dedup writer makes re-pulls cheap.
+        run: |
+          dotnet run --project src/WeatherBlend --no-build -c Release -- \
+            backfill --source rainfall \
+            --start ${{ steps.window.outputs.start }} \
+            --end   ${{ steps.window.outputs.end }}
+
+      - name: Push rainfall tree to R2
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          if [ -d ./data/truth/rainfall ]; then
+            rclone copy ./data/truth/rainfall "r2:${R2_BUCKET}/data/truth/rainfall" --fast-list --transfers 16 --checkers 32 --progress --s3-no-check-bucket
+          else
+            echo "No data/truth/rainfall tree produced this run — nothing to push."
+          fi
+
       - name: Upload logs as artifact
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: era5-refresh-logs-${{ github.run_id }}
+          name: truth-refresh-logs-${{ github.run_id }}
           path: logs/
           retention-days: 5
           if-no-files-found: ignore

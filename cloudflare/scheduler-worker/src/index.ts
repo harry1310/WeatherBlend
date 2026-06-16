@@ -76,7 +76,7 @@ const WORKFLOW_FOR_CRON: Record<string, Dispatch[]> = {
   // writes serialise. On a Sunday, previous-runs-refresh's success
   // chains the weekly retrain (handleWorkflowRun Hop A).
   "0 12 * * *":         [
-    { workflow: "era5-refresh.yml" },
+    { workflow: "truth-refresh.yml" },
     { workflow: "previous-runs-refresh.yml" },
   ],
   "30 9 * * MON,THU":   [{ workflow: "verify.yml" }],

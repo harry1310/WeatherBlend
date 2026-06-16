@@ -13,7 +13,7 @@ Cloudflare crons (4)                          Workflow dispatched
 ─────────────────────────                    ──────────────────────
 45 2,8,14,20 * * *   (every 6h, :45)           →  collect.yml
 5 3,9,15,21 * * *    (every 6h, :05)           →  s3-collect.yml
-0 12 * * *           (daily 12:00 UTC)         →  era5-refresh + previous-runs-refresh
+0 12 * * *           (daily 12:00 UTC)         →  truth-refresh + previous-runs-refresh
 30 9 * * MON,THU     (Mon + Thu 09:30 UTC)     →  verify.yml
 
 Chained off workflow_run completions (not cron'd — see handleWorkflowRun):
@@ -44,7 +44,7 @@ Four crons. The 6-hour collect/predict slot (HH ∈ {2, 8, 14, 20}) runs:
 |------|----------|---------------|
 | `45 2,8,14,20 * * *` | `collect.yml` | Every 6h, `:45` past the hour — the offset gives Open-Meteo's GEM ingest time to land (earlier ticks went out on a stale GEM cycle). Runs in ~2.5–3.5 min. |
 | `5 3,9,15,21 * * *` | `s3-collect.yml` | Raw S3 exact-runtime cycle pulls (GFS / IFS / AIFS / MO Global / UKV / GEFS) for the 2d/3d blenders. The ~9h gap past the previous synoptic cycle clears every publisher (slowest is ECMWF IFS, ~T+7-8h). At `:05` not `:00` so the `collect → predict-4a` chain (which starts when collect finishes ~HH:50) has run-room before `predict-and-render` is chained off s3-collect. Typical runtime 5–8 min, 60-min timeout. |
-| `0 12 * * *` | `era5-refresh.yml` + `previous-runs-refresh.yml` | ECMWF publishes ERA5T ~09–10 UTC and Open-Meteo ingests within hours; 12:00 is past both, so the refresh lands on fresh data. Both pull a 14-day rolling window. On a **Sunday**, `previous-runs-refresh`'s success chains the weekly retrain. |
+| `0 12 * * *` | `truth-refresh.yml` + `previous-runs-refresh.yml` | ECMWF publishes ERA5T ~09–10 UTC and Open-Meteo ingests within hours; 12:00 is past both, so the refresh lands on fresh data. Both pull a 14-day rolling window. On a **Sunday**, `previous-runs-refresh`'s success chains the weekly retrain. |
 | `30 9 * * MON,THU` | `verify.yml` | Twice-weekly Mon + Thu 09:30 UTC. **Use day-name aliases (`MON`, `THU`) not numbers — Cloudflare cron uses 1=Sunday (not POSIX 0=Sunday), so `* * 1,4` fires Sun+Wed.** |
 
 `predict-4a` and `predict-and-render` are **not cron'd** — each is
@@ -178,7 +178,7 @@ Two easy paths:
    curl -X POST https://weatherblend-scheduler.rhcslater.workers.dev/dispatch
 
    # Pick a specific workflow:
-   curl -X POST 'https://weatherblend-scheduler.rhcslater.workers.dev/dispatch?workflow=era5-refresh.yml'
+   curl -X POST 'https://weatherblend-scheduler.rhcslater.workers.dev/dispatch?workflow=truth-refresh.yml'
    curl -X POST 'https://weatherblend-scheduler.rhcslater.workers.dev/dispatch?workflow=verify.yml'
    ```
 
@@ -214,7 +214,7 @@ and writes the GitHub error body to the log.
 | Workflow | GitHub `schedule:` removed | Notes |
 |----------|---------------------------|-------|
 | `collect.yml` | ✅ 2026-05-01 (`874653f`) | Cloudflare proven, GH cron deleted same day. |
-| `era5-refresh.yml` | ✅ 2026-05-01 (`bebca2c`) | Moved 06:00 → 12:00 UTC at the same time. |
+| `truth-refresh.yml` | ✅ 2026-05-01 (`bebca2c`) | Moved 06:00 → 12:00 UTC at the same time. |
 | `verify.yml` | ✅ 2026-05-01 (`bebca2c`) | Same Monday 09:30 UTC slot, just different scheduler. |
 | `predict-and-render.yml` | ✅ 2026-05-01 | Cron dropped to `45 2,8,14,20 * * *` (every 6h, paired with collect) on 2026-05-04 once temp predict moved to hourly per lead — see schedule rationale above. Cron itself untouched on 2026-05-07's GEM-driven shift; only the upstream collect + s3-collect timestamps moved. |
 

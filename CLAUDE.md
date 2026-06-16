@@ -130,7 +130,7 @@ back-compat. The site, train workflows, and predict/verify all read from
 the same list — adding a new phase (e.g. 5b) is mostly one entry there.
 
 **Cadence.** The Cloudflare scheduler worker's 12:00 UTC noon tick fires
-`previous-runs-refresh.yml` (alongside `era5-refresh.yml`). The worker
+`previous-runs-refresh.yml` (alongside `truth-refresh.yml`). The worker
 then chains the retrain off `workflow_run` completion webhooks, strictly
 serially: on a **Sunday** `previous-runs-refresh` success it dispatches
 `retrain-python.yml` (WeatherProbabilistic), and on `retrain-python`'s

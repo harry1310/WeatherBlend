@@ -194,13 +194,27 @@ public sealed class CollectCommand
         // a transient outage there (2026-06-02: every DataHub call timed out while
         // all 9 NWP models + EA rainfall + METAR succeeded and pushed to R2) must
         // not fail the whole cycle red. We log loudly so the gap is still visible,
-        // but the cycle stands. OM / METAR / EA failures stay fatal.
+        // but the cycle stands. OM / METAR failures stay fatal.
         if (metOfficeErrors > 0)
             _log.LogWarning(
                 "  Met Office: {N} sub-collector(s) FAILED — non-critical, NOT failing the cycle (see ERR lines above)",
                 metOfficeErrors);
 
-        if (forecastErrors > 0 || metarErrors > 0 || rainfallErrors > 0) return 1;
+        // EA rainfall is NON-FATAL in collect (2026-06-16). The flaky EA Hydrology
+        // endpoint (frequent 403 / multi-minute hangs) was failing the 3-hourly
+        // collect RED, which starved the predict-4a chain that fires only on collect
+        // SUCCESS. Rainfall is best-effort here — collect keeps the antecedent-rain
+        // persistence feature (3c/3o/4a) fresh when EA is up, and degrades to
+        // last-good when it isn't. The DAILY truth-refresh pulls EA as a FATAL step,
+        // so a persistent EA outage still surfaces as a red run there (the right
+        // cadence to alert on) without flapping the predict chain every few hours.
+        if (rainfallErrors > 0)
+            _log.LogWarning(
+                "  EA rainfall: {N} gauge(s) FAILED — non-fatal here, NOT failing the cycle; "
+                + "the daily truth-refresh is the EA canary (see ERR lines above).",
+                rainfallErrors);
+
+        if (forecastErrors > 0 || metarErrors > 0) return 1;
         return 0;
     }
 

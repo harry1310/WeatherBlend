@@ -194,7 +194,7 @@ point + wave model list + buoys) + `variables.marine` /
 (non-fatal, Met-Office-style — nothing downstream consumes it yet);
 backfill sources `era5-waves` (in "all") + `marine` & `buoys` (NOT in
 "all" — one-off gap-fills like hist-forecast); era5-waves into
-era5-refresh.yml's daily window; R2 push is the existing whole-tree
+truth-refresh.yml's daily window; R2 push is the existing whole-tree
 `rclone copy ./data` (additive); collect.yml pull step gains the waves
 tree (buoy realtime is read-modify-write; the marine FORECAST tree needs
 no pull — its writers regenerate complete files from the API each cycle).

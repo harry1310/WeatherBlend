@@ -54,7 +54,7 @@ jobs:
       # Python setup + deps removed 2026-04-29 with the Met Office AWS-archive
       # collectors. The remaining collect path is pure C# (Open-Meteo, METAR,
       # EA rainfall, MO DataHub Spot + Land Obs). ERA5 is NOT collected here —
-      # it's a separate daily job (era5-refresh.yml).
+      # it's a separate daily job (truth-refresh.yml).
 
       # rclone install + R2 remote config via the shared composite action
       # (.github/actions/setup-r2) — same call shape as verify.yml. The

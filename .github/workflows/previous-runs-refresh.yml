@@ -32,7 +32,7 @@ env:
 # pulling the overlap days is safe and cheap. (Initial draft was 14d;
 # narrowed 2026-05-09 — overkill given OM's 1-day publish cadence.)
 #
-# Schedule: noon UTC alongside era5-refresh — same logic (past Open-
+# Schedule: noon UTC alongside truth-refresh — same logic (past Open-
 # Meteo's publish window, never catches mid-publish nulls). Different
 # data trees (forecasts/ vs truth/era5/) so no R2 contention beyond the
 # weatherblend-data lock both share.
@@ -61,7 +61,7 @@ concurrency:
   # Share the data-write lock with collect / s3-collect / predict-and-render
   # so no two jobs write the data/forecasts tree at once. cancel-in-progress
   # =false so manual dispatches don't kill an in-flight scheduled run.
-  # (era5-refresh left this group 2026-05-22 — it writes only
+  # (truth-refresh left this group 2026-05-22 — it writes only
   # data/truth/era5, a disjoint subtree, so it never needed the lock.)
   group: weatherblend-data
   cancel-in-progress: false

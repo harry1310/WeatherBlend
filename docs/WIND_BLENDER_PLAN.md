@@ -259,7 +259,7 @@ verify.yml (cron Mon/Thu 09:30)
 
 Worker change: one extra dispatch in Hop C (the same hop that fires
 predict-4a). No new hops, no re-gated chains. The `Promise.allSettled`
-pattern already used by the noon refresh's `era5-refresh` +
+pattern already used by the noon refresh's `truth-refresh` +
 `previous-runs-refresh` dispatch can be reused verbatim.
 
 ### Why parallel-with-4a, not a separate hop

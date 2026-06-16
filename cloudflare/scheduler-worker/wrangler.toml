@@ -22,7 +22,7 @@ compatibility_date = "2025-04-01"
 #   "45 2,8,14,20 * * *"  → collect.yml      Open-Meteo + METAR + EA rainfall + MO DataHub
 #   "5 3,9,15,21 * * *"   → s3-collect.yml   Raw S3 exact-runtime cycles (GFS / IFS / AIFS /
 #                                            MO Global / UKV / GEFS) for the 2d/3d blenders
-#   "0 12 * * *"          → era5-refresh.yml + previous-runs-refresh.yml  (daily 12:00 UTC;
+#   "0 12 * * *"          → truth-refresh.yml + previous-runs-refresh.yml  (daily 12:00 UTC;
 #                                            run concurrently — disjoint R2 prefixes,
 #                                            data/truth/era5 vs data/forecasts)
 #   "30 9 * * MON,THU"    → verify.yml       twice-weekly Mon + Thu 09:30 UTC
