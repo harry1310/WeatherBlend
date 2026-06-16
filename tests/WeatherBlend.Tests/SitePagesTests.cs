@@ -2053,7 +2053,7 @@ public class SitePagesTests
     }
 
     [Fact]
-    public void RenderIndex_shows_rock_damp_badge_only_for_greasy_hours()
+    public void RenderIndex_rock_greasiness_is_not_an_alert_badge()
     {
         // Phase P1: the overview tile gets a "rock damp / greasy" badge when the
         // rock surface row for that hour is greasy/condensation, and none when dry.
@@ -2079,14 +2079,15 @@ public class SitePagesTests
             RockSurfacePredictions = greasy,
         };
 
-        // Post-2026-06-16 redesign: rock greasiness is an alert line inside the
-        // tile's Alerts drawer, not an inline badge pill.
+        // 2026-06-16 de-dup: rock greasiness is carried wholly by the climbing
+        // index now (friction penalty + verdict), NOT a tile alert badge — so a
+        // greasy/wet hour must no longer emit a "Rock greasy?"/"Rock wet" alert.
         var html = SitePages.RenderIndex(input, dayOffset: 0);
-        html.Should().Contain("alert-drawer").And.Contain("Rock greasy?");
+        html.Should().NotContain("Rock greasy?");
 
-        var dry = new[] { greasy[0] with { CondensationMarginC = 8.0, GreasinessStatus = "dry" } };
-        var dryHtml = SitePages.RenderIndex(input with { RockSurfacePredictions = dry }, dayOffset: 0);
-        dryHtml.Should().NotContain("Rock greasy?");
+        var wet = new[] { greasy[0] with { CondensationMarginC = -0.3, GreasinessStatus = "condensation" } };
+        var wetHtml = SitePages.RenderIndex(input with { RockSurfacePredictions = wet }, dayOffset: 0);
+        wetHtml.Should().NotContain("Rock wet");
     }
 
     [Fact]

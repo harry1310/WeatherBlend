@@ -57,6 +57,12 @@ public static class ClimbingConditions
     /// (within the greasy margin of dew point but not yet condensing).</summary>
     public const double GreasyFrictionPenalty = 0.4;
 
+    /// <summary>Friction multiplier when the rock is condensing (wet). Heavier
+    /// than greasy, but deliberately NOT a hard Off-gate (Harry 2026-06-16): the
+    /// rock-temp calc is still being field-validated, so an uncertain "wet" call
+    /// drags the verdict to Poor rather than nuking it to Off.</summary>
+    public const double WetFrictionPenalty = 0.15;
+
     // Tier thresholds on the final 0–1 score.
     public const double PrimeAt = 0.70, GoodAt = 0.50, MarginalAt = 0.30;
 
@@ -123,11 +129,10 @@ public static class ClimbingConditions
             return Gate(ConditionsTier.Off, "Dark — sun below the horizon");
         if (pWet is double pw && pw >= RainGateProb)
             return Gate(ConditionsTier.Off, $"Rain likely ({pw * 100:0}%)");
-        if (rock is { GreasinessStatus: RockSurfacePhysics.StatusCondensation } rkc)
-            // Spell out the why (surface ≤ dew point) — the gate returns no
-            // factor table, so without this the verdict was a bare "Rock wet".
-            return Gate(ConditionsTier.Off,
-                $"Rock wet — condensation (surface {rkc.RockSurfaceTempC:0.0}°C ≤ dew point {rkc.DewPointC:0.0}°C, margin {rkc.CondensationMarginC:+0.0;-0.0;0.0}°C)");
+        // NB condensation (wet rock) is NOT a gate — it's a heavy friction
+        // penalty in the factor block below (Harry 2026-06-16), because the
+        // rock-temp calc is still being validated and an uncertain "wet" call
+        // shouldn't force the whole verdict Off.
 
         // ---- Quality factors ----
         var factors = new List<Factor>(4);
@@ -145,6 +150,11 @@ public static class ClimbingConditions
             {
                 frictionScore *= GreasyFrictionPenalty;
                 frictionDetail += ", greasy";
+            }
+            else if (rk.GreasinessStatus == RockSurfacePhysics.StatusCondensation)
+            {
+                frictionScore *= WetFrictionPenalty;
+                frictionDetail += $", wet (≤ dew {rk.DewPointC:0.0}°C)";
             }
         }
         else

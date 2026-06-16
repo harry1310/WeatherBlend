@@ -193,8 +193,7 @@ public static partial class SitePages
                         double? sWindDir = TryNearest(windDirDegByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var sdir)
                             ? sdir : null;
                         sea = SeaConditions.Evaluate(
-                            swv!.TideHeightMsl, swv.WaveHeightM, swv.SwellPeriodS,
-                            sWindMph, sWindDir, seaSpec);
+                            swv!.WaveHeightM, sWindMph, sWindDir, seaSpec);
                     }
 
                     conditions = ClimbingConditions.Evaluate(
@@ -549,22 +548,14 @@ public static partial class SitePages
             }
         }
 
-        // Rock surface / condensation (Phase P1): red "rock wet" (margin ≤ 0),
-        // amber "rock greasy?" (marginal band), nothing when dry. ±1h tolerance.
-        if (TryNearest(rockByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var rk)
-            && rk!.GreasinessStatus != Predict.Surface.RockSurfacePhysics.StatusDry)
-        {
-            var isCond = rk.GreasinessStatus == Predict.Surface.RockSurfacePhysics.StatusCondensation;
-            var label = isCond ? "Rock wet" : "Rock greasy?";
-            // Cliff-face mode: rk is the WORST face this hour — name it so the
-            // line says which wall is sweating (the temp tab charts all faces).
-            var subject = rk.Face.Length == 0 ? "surface" : $"{char.ToUpperInvariant(rk.Face[0])}{rk.Face[1..]} face";
-            AddAlert(isCond ? BadgeSeverity.Red : BadgeSeverity.Amber, "&#x26A0;&#xFE0E;",
-                string.Create(Ci, $"{label} — {subject} {rk.RockSurfaceTempC:0.0}°C vs dew point {rk.DewPointC:0.0}°C — margin {rk.CondensationMarginC:+0.0;-0.0;0.0}°C"));
-        }
+        // Rock greasy/wet is NO LONGER an alert (de-dup 2026-06-16): it's carried
+        // wholly by the climbing index now — the friction factor's greasy/wet
+        // penalty + the verdict reason. Removing the badge avoids saying the same
+        // thing twice (Conditions verdict + a red/amber pill).
 
         // Sea-state (marine locations with a seaStateBadge block — Sennen):
-        // tide / run-up / onshore-wind triggers; each FIRED trigger listed.
+        // tide + run-up ACCESS triggers only now — onshore wind moved to the
+        // climbing index's "Spray" quality factor (de-dup 2026-06-16).
         if (seaSpec is not null
             && TryNearest(waveByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var wv))
         {

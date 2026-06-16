@@ -40,62 +40,34 @@ public static class SeaConditions
 
     private static double Clamp01(double x) => Math.Clamp(x, 0.0, 1.0);
 
-    /// <summary>Threshold ramp: 0 at 0.7·thr, ~0.5 at thr, 1 at 1.3·thr.
-    /// Matches "amber at the badge threshold, red well above".</summary>
-    private static double Ramp(double x, double thr)
-        => thr <= 0 ? 0.0 : Clamp01((x - 0.7 * thr) / (0.6 * thr));
-
     /// <summary>
-    /// Sea-state quality factor for one hour, or null when NO sea inputs are
-    /// available (so the conditions index simply omits the factor rather than
-    /// guessing). Each sub-factor is skipped individually when its own inputs
-    /// are missing (e.g. no wind_mvn direction row yet → no spray term, tide +
-    /// run-up still score).
+    /// Onshore-spray QUALITY factor for one hour, or null when the spray inputs
+    /// (onshore wind + waves) aren't available — the conditions index then omits
+    /// the factor rather than guessing. Spray scales as onshore × wind-strength ×
+    /// wave-energy.
+    ///
+    /// De-dup 2026-06-16 (Harry): tide + run-up are ACCESS hazards, not climbing
+    /// QUALITY, so they live SOLELY in the Alerts badge (<see cref="SeaStateBadge"/>)
+    /// now — this factor carries only the onshore spray that actually wets the
+    /// holds. The index scores quality; the badge warns of access.
     /// </summary>
     public static ClimbingConditions.Factor? Evaluate(
-        double? tideHeightMsl, double? waveHeightM, double? swellPeriodS,
-        double? windMph, double? windDirDeg, SeaStateBadgeSpec spec)
+        double? waveHeightM, double? windMph, double? windDirDeg, SeaStateBadgeSpec spec)
     {
-        var any = false;
-        double tideBad = 0, runUpBad = 0, sprayBad = 0;
+        // Needs onshore wind (speed + direction) AND waves to break — any
+        // missing and there's no spray term to score, so omit the factor.
+        if (windMph is not double mph || windDirDeg is not double dir || waveHeightM is not double hs)
+            return null;
 
-        if (tideHeightMsl is double tide)
-        {
-            any = true;
-            tideBad = Ramp(tide, spec.TideHighMsl);
-        }
+        var onshore = SeaStateBadge.DirectionInSector(dir, spec.WindSectorFromDeg, spec.WindSectorToDeg) ? 1.0 : 0.0;
+        var windStrength = Clamp01((mph - SprayWindOnsetMph) / (SprayWindHeavyMph - SprayWindOnsetMph));
+        var waveAmt = Clamp01((hs - SprayHsMinM) / (SprayHsFullM - SprayHsMinM));
+        var sprayBad = onshore * windStrength * waveAmt;
 
-        double hsForSpray = 0;
-        if (waveHeightM is double hs && swellPeriodS is double tp)
-        {
-            any = true;
-            hsForSpray = hs;
-            runUpBad = Ramp(Math.Sqrt(Math.Max(hs, 0)) * tp, spec.RunUpProxy);
-        }
+        var detail = sprayBad < 0.05
+            ? "no onshore spray"
+            : string.Create(Ci, $"onshore spray ({mph:0} mph onshore, {hs:0.0} m)");
 
-        if (windMph is double mph && windDirDeg is double dir && waveHeightM is double hs2)
-        {
-            any = true;
-            var onshore = SeaStateBadge.DirectionInSector(dir, spec.WindSectorFromDeg, spec.WindSectorToDeg) ? 1.0 : 0.0;
-            var windStrength = Clamp01((mph - SprayWindOnsetMph) / (SprayWindHeavyMph - SprayWindOnsetMph));
-            var waveAmt = Clamp01((hs2 - SprayHsMinM) / (SprayHsFullM - SprayHsMinM));
-            sprayBad = onshore * windStrength * waveAmt;
-        }
-
-        if (!any) return null;
-
-        // Worst sub-factor wins; name it so the verdict's reason is honest.
-        var badness = Math.Max(tideBad, Math.Max(runUpBad, sprayBad));
-        string detail;
-        if (badness < 0.05)
-            detail = "calm";
-        else if (sprayBad >= tideBad && sprayBad >= runUpBad)
-            detail = string.Create(Ci, $"onshore spray ({windMph:0} mph onshore, {hsForSpray:0.0} m)");
-        else if (runUpBad >= tideBad)
-            detail = string.Create(Ci, $"big swell run-up ({waveHeightM:0.0} m)");
-        else
-            detail = string.Create(Ci, $"high tide ({tideHeightMsl:+0.0;-0.0;0.0} m)");
-
-        return new ClimbingConditions.Factor("Sea", Clamp01(1.0 - badness), detail);
+        return new ClimbingConditions.Factor("Spray", Clamp01(1.0 - sprayBad), detail);
     }
 }

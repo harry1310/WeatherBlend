@@ -75,15 +75,17 @@ public class BadgeTests
     }
 
     [Fact]
-    public void SeaState_onshore_wind_alone_is_amber_with_sector_detail()
+    public void SeaState_onshore_wind_is_no_longer_a_badge_trigger()
     {
+        // De-dup 2026-06-16: onshore wind moved to the climbing index's Spray
+        // factor, so the badge ignores it — a gale with no tide/wave trigger
+        // raises no badge.
         var r = SeaStateBadge.Evaluate(
-            tideHeightMsl: 0.0, waveHeightM: 1.0, swellPeriodS: 8.0,
-            windMph: 19.0, windDirDeg: 290.0, Spec);
+            tideHeightMsl: 0.0, waveHeightM: 0.3, swellPeriodS: 5.0,
+            windMph: 30.0, windDirDeg: 290.0, Spec);
 
-        r.Severity.Should().Be(BadgeSeverity.Amber);
-        r.FiredTriggers.Should().ContainSingle()
-            .Which.Should().Be("wind 19 mph from 290° (≥ 15 from 225–335°)");
+        r.Severity.Should().Be(BadgeSeverity.None);
+        r.FiredTriggers.Should().BeEmpty();
     }
 
     [Fact]
@@ -125,36 +127,29 @@ public class BadgeTests
     }
 
     [Fact]
-    public void SeaState_tide_plus_wind_is_red()
+    public void SeaState_tide_alone_is_amber_even_with_a_gale()
     {
+        // Wind ignored now → high tide + a strong onshore wind is still just the
+        // single tide trigger (amber); the wind shows in the Spray factor.
         var r = SeaStateBadge.Evaluate(
             tideHeightMsl: 1.71, waveHeightM: 0.5, swellPeriodS: 6.0,
             windMph: 20.0, windDirDeg: 250.0, Spec);
 
-        r.Severity.Should().Be(BadgeSeverity.Red);
-        r.FiredTriggers.Should().HaveCount(2);
+        r.Severity.Should().Be(BadgeSeverity.Amber);
+        r.FiredTriggers.Should().ContainSingle().Which.Should().StartWith("tide ");
     }
 
     [Fact]
-    public void SeaState_waves_plus_wind_is_red()
+    public void SeaState_wind_never_adds_a_third_trigger()
     {
-        var r = SeaStateBadge.Evaluate(
-            tideHeightMsl: -1.0, waveHeightM: 3.0, swellPeriodS: 12.0,
-            windMph: 25.0, windDirDeg: 300.0, Spec);
-
-        r.Severity.Should().Be(BadgeSeverity.Red);
-        r.FiredTriggers.Should().HaveCount(2);
-    }
-
-    [Fact]
-    public void SeaState_all_three_triggers_is_red_listing_all()
-    {
+        // tide + waves both fire (red); a strong onshore wind does NOT add a
+        // third trigger any more — it's a Spray-factor concern, not an alert.
         var r = SeaStateBadge.Evaluate(
             tideHeightMsl: 2.0, waveHeightM: 3.0, swellPeriodS: 12.0,
             windMph: 25.0, windDirDeg: 300.0, Spec);
 
         r.Severity.Should().Be(BadgeSeverity.Red);
-        r.FiredTriggers.Should().HaveCount(3);
+        r.FiredTriggers.Should().HaveCount(2);   // tide + run-up only
     }
 
     // ------------------------------------------------------------------
@@ -240,21 +235,12 @@ public class BadgeTests
             .Severity.Should().Be(BadgeSeverity.None);
     }
 
-    [Fact]
-    public void SeaState_wind_exactly_at_speed_and_sector_edges_fires()
-    {
-        SeaStateBadge.Evaluate(null, null, null, 15.0, 225.0, Spec)
-            .Severity.Should().Be(BadgeSeverity.Amber);   // both boundaries inclusive
-        SeaStateBadge.Evaluate(null, null, null, 15.0, 335.0, Spec)
-            .Severity.Should().Be(BadgeSeverity.Amber);
-        SeaStateBadge.Evaluate(null, null, null, 15.0, 224.0, Spec)
-            .Severity.Should().Be(BadgeSeverity.None);    // just outside sector
-        SeaStateBadge.Evaluate(null, null, null, 15.0, 336.0, Spec)
-            .Severity.Should().Be(BadgeSeverity.None);
-    }
+    // (SeaState_wind_*_fires tests removed 2026-06-16 — onshore wind is no
+    // longer a badge trigger. The sector geometry itself is still covered by
+    // the DirectionInSector theories below, which SeaConditions' Spray uses.)
 
     // ------------------------------------------------------------------
-    // Sector wrap through 360
+    // Sector wrap through 360 (DirectionInSector — used by the Spray factor)
     // ------------------------------------------------------------------
 
     [Theory]
@@ -275,16 +261,6 @@ public class BadgeTests
     [InlineData(360.0, false)]   // ≡ 0, outside 225–335
     public void DirectionInSector_normalises_out_of_range_degrees(double dir, bool expected) =>
         SeaStateBadge.DirectionInSector(dir, 225.0, 335.0).Should().Be(expected);
-
-    [Fact]
-    public void SeaState_wind_fires_through_wrapping_sector()
-    {
-        var wrap = Spec with { WindSectorFromDeg = 300, WindSectorToDeg = 60 };
-        SeaStateBadge.Evaluate(null, null, null, 20.0, 10.0, wrap)
-            .Severity.Should().Be(BadgeSeverity.Amber);
-        SeaStateBadge.Evaluate(null, null, null, 20.0, 180.0, wrap)
-            .Severity.Should().Be(BadgeSeverity.None);
-    }
 
     // ------------------------------------------------------------------
     // Render-level wiring — RenderIndex tiles
@@ -350,9 +326,10 @@ public class BadgeTests
         SpeedMs: 0, SpeedCi95LoMs: 0, SpeedCi95HiMs: 0, LocationName: "sennen_cove");
 
     [Fact]
-    public void RenderIndex_sea_state_badge_red_with_all_triggers_listed()
+    public void RenderIndex_sea_state_badge_red_with_tide_and_runup_listed()
     {
-        // Tide + waves + onshore wind (10 m/s = 22.4 mph from 290°) all fire.
+        // Tide + run-up both fire → red. Onshore wind is NOT a badge trigger any
+        // more (it's the climbing Spray factor), so no wind line appears.
         var input = MakeTileInput(Spec) with
         {
             WavePredictions = new[] { WaveRow(hs: 3.0, swellPeriod: 12.0, tide: 2.0) },
@@ -366,7 +343,7 @@ public class BadgeTests
         html.Should().Contain("s-red");
         html.Should().Contain("tide +2.0 m (≥ +1.71)");
         html.Should().Contain("run-up proxy 20.8 = √3.0 m × 12.0 s (≥ 12)");
-        html.Should().Contain("wind 22 mph from 290° (≥ 15 from 225–335°)");
+        html.Should().NotContain("wind 22 mph");
     }
 
     [Fact]
@@ -439,10 +416,11 @@ public class BadgeTests
     }
 
     [Fact]
-    public void RenderIndex_rock_badge_styles_onto_shared_severity_classes()
+    public void RenderIndex_rock_greasiness_is_no_longer_an_alert()
     {
-        // Trigger logic unchanged (greasy = amber tier, condensation = red
-        // tier) — only the styling moved onto badge-amber / badge-red.
+        // De-dup 2026-06-16: rock greasy/wet moved wholly into the climbing
+        // index (friction penalty + verdict), so it must NOT also raise a tile
+        // alert badge. ClimbingConditionsTests covers the index side.
         var rock = new SitePages.RockSurfaceForecastPoint(
             "v1", GeneratedAt, Valid, 12,
             RockSurfaceTempC: 9.0, AirTempC: 11.0, DewPointC: 8.5,
@@ -451,11 +429,11 @@ public class BadgeTests
 
         var greasyHtml = SitePages.RenderIndex(
             MakeTileInput(spec: null) with { RockSurfacePredictions = new[] { rock } }, dayOffset: 0);
-        greasyHtml.Should().Contain("s-amber").And.Contain("Rock greasy?");
+        greasyHtml.Should().NotContain("Rock greasy?");
 
         var wet = rock with { CondensationMarginC = -0.3, GreasinessStatus = "condensation" };
         var wetHtml = SitePages.RenderIndex(
             MakeTileInput(spec: null) with { RockSurfacePredictions = new[] { wet } }, dayOffset: 0);
-        wetHtml.Should().Contain("s-red").And.Contain("Rock wet");
+        wetHtml.Should().NotContain("Rock wet");
     }
 }

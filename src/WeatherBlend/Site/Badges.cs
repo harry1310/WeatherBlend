@@ -136,16 +136,13 @@ public static class SeaStateBadge
             }
         }
 
-        // 3. Onshore wind. Needs BOTH speed and direction — when the
-        // direction tree hasn't landed for this hour the trigger is not
-        // evaluable and the badge runs on tide + waves alone.
-        if (windMph is double mph && windDirDeg is double dir
-            && mph >= spec.WindMinMph
-            && DirectionInSector(dir, spec.WindSectorFromDeg, spec.WindSectorToDeg))
-        {
-            fired.Add(string.Create(Ci,
-                $"wind {mph:0} mph from {Normalize(dir):0}° (≥ {spec.WindMinMph:0.##} from {Normalize(spec.WindSectorFromDeg):0}–{Normalize(spec.WindSectorToDeg):0}°)"));
-        }
+        // Onshore wind is NO LONGER a badge trigger (de-dup 2026-06-16): it's a
+        // climbing-QUALITY concern (spray on the holds), so it moved wholly to the
+        // SeaConditions "Spray" factor in the conditions index. The badge now warns
+        // only of ACCESS hazards — tide + run-up (base awash / cut off). The
+        // windMph / windDirDeg params are unused here now but kept so the call
+        // site + tests don't churn; the spec's WindMin*/WindSector ARE still used
+        // — by SeaConditions' Spray factor, not by this badge.
 
         return fired.Count == 0
             ? SeaStateBadgeResult.None

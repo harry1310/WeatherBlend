@@ -75,11 +75,18 @@ public class ClimbingConditionsTests
     }
 
     [Fact]
-    public void Condensation_on_the_rock_is_gated_Off()
+    public void Condensation_heavily_penalises_friction_without_gating_Off()
     {
-        var r = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.0, 6, Rock(5, greasy: "condensation"));
-        r.Tier.Should().Be(ConditionsTier.Off);
-        r.Reason.Should().Contain("condensation");
+        // 2026-06-16: condensation is NOT a hard Off-gate any more (the rock-temp
+        // calc is still being validated) — it's a heavy friction penalty that
+        // drags the verdict down, heavier than greasy, with the why in the detail.
+        var wet    = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.0, 6, Rock(5, greasy: "condensation"));
+        var greasy = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.0, 6, Rock(5, greasy: "potentially_greasy"));
+
+        wet.Tier.Should().NotBe(ConditionsTier.Off);
+        wet.Tier.Should().BeOneOf(ConditionsTier.Marginal, ConditionsTier.Poor);
+        wet.Score.Should().BeLessThan(greasy.Score, "wet rock is worse than merely greasy");
+        wet.Factors.Single(f => f.Name == "Friction").Detail.Should().Contain("wet");
     }
 
     // ---- End-to-end verdicts ----
