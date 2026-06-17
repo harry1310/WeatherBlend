@@ -130,4 +130,14 @@ public sealed class PrecipPredictionRow
     /// applicable", rendered as no shading.
     /// </summary>
     public bool? UpperAirIncluded { get; init; }
+
+    /// <summary>
+    /// How far back (hours) the upper-air ASOF lookup had to reach for this
+    /// valid-time: <c>ValidTime − (valid_time of the UA reading actually used)</c>.
+    /// 0 = UA was available right at the forecast hour (freshest); larger = the
+    /// only UA in hand was older. Drives the size of the UA markers on the rain
+    /// charts (fresher → larger dot). Null when no UA was used (matches
+    /// <see cref="UpperAirIncluded"/> being null/false).
+    /// </summary>
+    public double? UpperAirAgeHours { get; init; }
 }

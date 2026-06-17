@@ -194,4 +194,23 @@ public class PrecipFeatureBuilderTests
         none.Length.Should().Be(42);
         none.Should().OnlyContain(x => double.IsNaN(x));
     }
+
+    [Fact]
+    public void UpperAirAsofTime_returns_the_valid_time_of_the_selected_entry()
+    {
+        var early = new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc);
+        var late  = new DateTime(2026, 6, 1, 6, 0, 0, DateTimeKind.Utc);
+        var asof = new List<(DateTime, double[])>
+        {
+            (early, new double[1]),
+            (late,  new double[1]),
+        };
+
+        // Freshest ≤ 03:00Z is the 00:00Z entry — 3h reach-back.
+        PrecipFeatureBuilder.UpperAirAsofTime(asof, early.AddHours(3)).Should().Be(early);
+        // Exactly on the late entry → 0h reach-back (freshest).
+        PrecipFeatureBuilder.UpperAirAsofTime(asof, late).Should().Be(late);
+        // Before the first entry → null (no UA in hand).
+        PrecipFeatureBuilder.UpperAirAsofTime(asof, early.AddHours(-1)).Should().BeNull();
+    }
 }

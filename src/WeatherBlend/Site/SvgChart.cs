@@ -18,7 +18,13 @@ public sealed record LineSeries(
     string Color,
     IReadOnlyList<(double X, double Y)> Points,
     bool PointsOnly = false,
-    bool Dashed = false);
+    bool Dashed = false,
+    // Optional per-point marker radius (px), aligned 1:1 with <see cref="Points"/>.
+    // When set (with <see cref="PointsOnly"/>), each marker is drawn at its own
+    // size — used for the upper-air dots whose size encodes UA freshness. Null
+    // keeps the flat default radius. Entries for dropped (non-finite) points are
+    // filtered alongside their points by the renderer.
+    IReadOnlyList<double>? PointRadii = null);
 
 /// <summary>
 /// How the Chart.js renderer should interpret + label X values.
@@ -302,20 +308,33 @@ public static class LineChartRenderer
             // dropped here — JSON has no representation for them, so leaving them
             // in throws at JsonSerializer time and crashes the whole render.
             // Chart.js handles the resulting gaps via spanGaps:true.
-            var pts = s.Points
-                .Where(p => double.IsFinite(p.X) && double.IsFinite(p.Y))
-                .Select(p => new[] { p.X, p.Y })
-                .ToArray();
-            if (pts.Length == 0) continue;
+            // Filter non-finite points, carrying any per-point radii in lockstep
+            // so the radii array stays index-aligned with the emitted points.
+            var pts = new List<double[]>(s.Points.Count);
+            var radii = s.PointRadii is null ? null : new List<double>(s.Points.Count);
+            for (int pi = 0; pi < s.Points.Count; pi++)
+            {
+                var p = s.Points[pi];
+                if (!double.IsFinite(p.X) || !double.IsFinite(p.Y)) continue;
+                pts.Add(new[] { p.X, p.Y });
+                if (radii is not null)
+                {
+                    var r = pi < s.PointRadii!.Count ? s.PointRadii[pi] : 0.0;
+                    radii.Add(double.IsFinite(r) ? r : 0.0);
+                }
+            }
+            if (pts.Count == 0) continue;
             indexByName[s.Name] = datasets.Count;
-            datasets.Add(new Dictionary<string, object?>
+            var ds = new Dictionary<string, object?>
             {
                 ["label"] = s.Name,
                 ["color"] = s.Color,
                 ["discrete"] = s.PointsOnly,
                 ["dashed"] = s.Dashed,
-                ["points"] = pts,
-            });
+                ["points"] = pts.ToArray(),
+            };
+            if (radii is not null) ds["radii"] = radii.ToArray();
+            datasets.Add(ds);
         }
 
         // Ribbons → Chart.js `fill: <index>` + `backgroundColor`. The LOW

@@ -487,4 +487,22 @@ FROM ex WHERE rn = 1 GROUP BY valid_time_ua ORDER BY valid_time_ua;";
         outv[pc * mc + 1] = rh850N == 0 ? double.NaN : rh850Sum / rh850N;
         return outv;
     }
+
+    /// <summary>
+    /// The valid-time of the upper-air entry <see cref="UpperAirValuesFor"/> would
+    /// select for <paramref name="validTimeUtc"/> — i.e. the freshest UA whose
+    /// valid_time is ≤ the target. Pair with the target valid-time to measure how
+    /// far back the ASOF lookup had to reach (0h = UA available right at the
+    /// forecast hour; larger = staler UA). Null when nothing qualifies.
+    /// </summary>
+    public static DateTime? UpperAirAsofTime(
+        IReadOnlyList<(DateTime ValidTimeUa, double[] PerModelCol)> asof, DateTime validTimeUtc)
+    {
+        DateTime? found = null;
+        for (int i = 0; i < asof.Count; i++)
+        {
+            if (asof[i].ValidTimeUa <= validTimeUtc) found = asof[i].ValidTimeUa; else break;
+        }
+        return found;
+    }
 }

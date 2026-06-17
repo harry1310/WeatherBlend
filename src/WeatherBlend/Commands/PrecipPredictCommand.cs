@@ -576,6 +576,7 @@ public sealed class PrecipPredictCommand
             // hand for this valid-time (drives the site's UA-backed shading).
             BinaryTrainingRow row;
             bool? uaIncluded = null;
+            double? uaAgeHours = null;
             if (isRich)
             {
                 var dew    = new double[N];
@@ -598,14 +599,22 @@ public sealed class PrecipPredictCommand
                 // ≤ this valid, in the same model-major order the trainer used.
                 // Null when the schema has no UA (legacy 3c bundles) so ComposeRow
                 // emits the legacy-length vector unchanged.
+                var uaAsofRows = uaByLead.TryGetValue(lead, out var asof)
+                    ? asof : System.Array.Empty<(DateTime, double[])>();
                 double[]? uaValues = spec.FeatureNames.Contains("t850_mean")
-                    ? PrecipFeatureBuilder.UpperAirValuesFor(
-                        uaByLead.TryGetValue(lead, out var asof) ? asof : System.Array.Empty<(DateTime, double[])>(), valid)
+                    ? PrecipFeatureBuilder.UpperAirValuesFor(uaAsofRows, valid)
                     : null;
                 // UA-capable bundle (t850_mean in schema): record whether real
-                // (non-NaN) UA values were actually present for this valid-time.
+                // (non-NaN) UA values were actually present for this valid-time,
+                // and — when so — how far back the ASOF lookup reached (drives
+                // the freshness-sized UA markers on the rain charts).
                 if (spec.FeatureNames.Contains("t850_mean"))
+                {
                     uaIncluded = uaValues is not null && uaValues.Any(v => !double.IsNaN(v));
+                    if (uaIncluded == true
+                        && PrecipFeatureBuilder.UpperAirAsofTime(uaAsofRows, valid) is { } uaAsofTime)
+                        uaAgeHours = (valid - uaAsofTime).TotalHours;
+                }
                 row = PrecipRichFeatureBuilder.ComposeRow(
                     spec, valid, specPrecip, dew, rh, dewDep, pres,
                     rhMean: pivot.RhMean, dewDepressionMean: pivot.DewDepressionMean,
@@ -701,6 +710,7 @@ public sealed class PrecipPredictCommand
                     ? ModelArtifact.PredictConformalIfPresent(versionDir, lead, pWet[0])
                     : null,
                 UpperAirIncluded = uaIncluded,
+                UpperAirAgeHours = uaAgeHours,
             });
 
             _log.LogInformation(
@@ -998,9 +1008,10 @@ public sealed class PrecipPredictCommand
             // UA block lands in the rich half (richSpec.FeatureNames includes the
             // UA names when on, since UA precedes terrain in the rich-oro layout),
             // so ComposeRow fills it; terrain is appended after → [rich||UA||terrain].
+            var uaAsofRows = uaByLead.TryGetValue(lead, out var asof)
+                ? asof : System.Array.Empty<(DateTime, double[])>();
             double[]? uaValues = richSpec.FeatureNames.Contains("t850_mean")
-                ? PrecipFeatureBuilder.UpperAirValuesFor(
-                    uaByLead.TryGetValue(lead, out var asof) ? asof : System.Array.Empty<(DateTime, double[])>(), valid)
+                ? PrecipFeatureBuilder.UpperAirValuesFor(uaAsofRows, valid)
                 : null;
             var richRow = PrecipRichFeatureBuilder.ComposeRow(
                 richSpec, valid, specPrecip, dew, rh, dewDep, pres,
@@ -1101,10 +1112,16 @@ public sealed class PrecipPredictCommand
                     ? ModelArtifact.PredictConformalIfPresent(versionDir, lead, pWet[0])
                     : null,
                 // 3o always carries the UA block; flag whether real UA values
-                // were in hand for this valid-time (drives the site shading).
+                // were in hand for this valid-time (drives the site UA markers),
+                // and how far back the ASOF reached (drives their freshness size).
                 UpperAirIncluded = richSpec.FeatureNames.Contains("t850_mean")
                     ? uaValues is not null && uaValues.Any(v => !double.IsNaN(v))
                     : (bool?)null,
+                UpperAirAgeHours = richSpec.FeatureNames.Contains("t850_mean")
+                    && uaValues is not null && uaValues.Any(v => !double.IsNaN(v))
+                    && PrecipFeatureBuilder.UpperAirAsofTime(uaAsofRows, valid) is { } uaAsofTime3o
+                    ? (valid - uaAsofTime3o).TotalHours
+                    : (double?)null,
             });
             _log.LogInformation("Station {Station} lead {Lead}h → P(wet) {P:0.000} (clim {Clim:0.000}, phase={Phase}, models=[{M}])",
                 outStation, lead, pWet[0], climPWet, metadata.Phase, string.Join("+", modelLeads));

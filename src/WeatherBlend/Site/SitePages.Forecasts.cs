@@ -345,40 +345,47 @@ public static partial class SitePages
     private const string TorStationSlug = "bonehill_rocks";
 
     /// <summary>
-    /// Contiguous valid-time spans (OADate XStart..XEnd) where the prediction
-    /// had real upper-air features in hand, clipped to the visible [xMin, xMax]
-    /// window — the background-shaded "UA-backed" regions on the P(wet) chart.
-    /// Hours are grouped into runs (gap &gt; ~1h breaks a run); each run's band
-    /// runs from its first hour to one hour past its last so the shading covers
-    /// the whole hour cell. Empty when no row carries UpperAirIncluded==true
-    /// (phases that never use UA, or no UA available in the window).
+    /// A discrete marker series drawn ON the champion P(wet) line at each
+    /// valid-time where the prediction actually had real upper-air features in
+    /// hand (<c>UpperAirIncluded == true</c>), clipped to the visible
+    /// [xMin, xMax] window. Each marker's Y is the champion's P(wet) at that
+    /// hour, and its radius encodes UA freshness via <see cref="UaDotRadius"/>
+    /// (fresher UA → larger dot). Returns <c>null</c> when no row in the window
+    /// carries UA (phases that never use it, or no UA available) so the caller
+    /// can skip adding an empty legend entry.
     /// </summary>
-    private static IReadOnlyList<(double XStart, double XEnd)> BuildUpperAirBands(
+    private static LineSeries? BuildUpperAirDots(
         IReadOnlyList<PrecipForecastPoint> rows, double xMin, double xMax)
     {
-        var times = rows
-            .Where(r => r.UpperAirIncluded == true
-                        && r.ValidTimeUtc.ToOADate() >= xMin
-                        && r.ValidTimeUtc.ToOADate() <= xMax)
-            .Select(r => r.ValidTimeUtc)
-            .Distinct()
-            .OrderBy(t => t)
-            .ToList();
-        var bands = new List<(double, double)>();
-        if (times.Count == 0) return bands;
-        var runStart = times[0];
-        var prev = times[0];
-        foreach (var t in times.Skip(1))
+        var pts = new List<(double X, double Y)>();
+        var radii = new List<double>();
+        foreach (var r in rows
+            .Where(r => r.UpperAirIncluded == true)
+            .OrderBy(r => r.ValidTimeUtc))
         {
-            if ((t - prev).TotalHours > 1.5)
-            {
-                bands.Add((runStart.ToOADate(), prev.AddHours(1).ToOADate()));
-                runStart = t;
-            }
-            prev = t;
+            var oad = r.ValidTimeUtc.ToOADate();
+            if (oad < xMin || oad > xMax) continue;
+            pts.Add((oad, r.ProbWet));
+            radii.Add(UaDotRadius(r.UpperAirAgeHours));
         }
-        bands.Add((runStart.ToOADate(), prev.AddHours(1).ToOADate()));
-        return bands;
+        if (pts.Count == 0) return null;
+        // Slate marker (carries forward the old UA-band hue) sitting on the
+        // champion line; size varies per point with UA freshness.
+        return new LineSeries("Upper-air in forecast", "#90a4ae", pts,
+            PointsOnly: true, PointRadii: radii);
+    }
+
+    /// <summary>
+    /// Marker radius (px) for a UA dot from its ASOF reach-back in hours
+    /// (<see cref="PrecipForecastPoint.UpperAirAgeHours"/>): 0h (freshest) → 6px,
+    /// shrinking ~1px per 6h, clamped to [2, 6]. Unknown age (null/NaN) → a
+    /// mid 4px so the marker still shows. Fresher UA = larger dot.
+    /// </summary>
+    private static double UaDotRadius(double? ageHours)
+    {
+        if (ageHours is not { } a || double.IsNaN(a)) return 4.0;
+        var r = 6.0 - Math.Max(0.0, a) / 6.0;
+        return Math.Clamp(r, 2.0, 6.0);
     }
 
     private static string PrecipPhaseColor(string phase, bool isChampion)
@@ -671,7 +678,10 @@ public static partial class SitePages
                 if (phase == "4a") continue;
                 if (!precipByPhase.TryGetValue(phase, out var phaseRows) || phaseRows.Count == 0) continue;
                 var color = PrecipPhaseColor(phase, isChampion: i == 0);
-                var label = i == 0 ? $"P(wet) ({phase} champion)" : $"P(wet) ({phase} challenger)";
+                // Legend labels drop the redundant "P(wet)" prefix (the chart
+                // title + "Probability" axis already say it) so the 6+ phase
+                // entries don't wrap into a third legend row and crush the plot.
+                var label = i == 0 ? $"{phase} champion" : $"{phase} challenger";
                 var pts = phaseRows
                     .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet))
                     .ToList();
@@ -703,36 +713,40 @@ public static partial class SitePages
                     .ToList();
                 if (torRows.Count > 0)
                     probSeries.Add(new LineSeries(
-                        "P(wet) — Bonehill tor (3oni, experimental — not gauge-verified)",
+                        "Bonehill tor (3oni, experimental)",
                         "#e65100",
                         torRows.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet)).ToList(),
                         Dashed: true));
             }
 
-            // Upper-air-backed time spans: shade the hours where the prediction
-            // actually had …hPa features in hand. UA is pulled from the archive-
-            // forecast feed on its own schedule (uniform across lines at a given
-            // valid-time), so it's present for some hours and not others — read
-            // it off the champion-phase rows. Empty for phases that never use UA.
-            var uaBands = BuildUpperAirBands(championLatestPerValidByStation[station], pageXMin, pageXMax);
+            // Upper-air markers: a dot ON the champion line at each valid-time
+            // where the prediction actually had …hPa features in hand. UA is
+            // pulled from the archive-forecast feed on its own schedule (uniform
+            // across lines at a given valid-time), so read it off the champion-
+            // phase rows. The dot SIZE encodes UA freshness — fresher UA (the
+            // ASOF lookup reached back fewer hours) draws a larger dot. Empty
+            // for phases that never use UA.
+            var uaDots = BuildUpperAirDots(championLatestPerValidByStation[station], pageXMin, pageXMax);
 
             s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
             {
                 Title = $"P(wet) — {PrettyStation(station)} — +{lead}h",
                 XLabel = "Valid time (UTC)",
                 YLabel = "Probability",
-                Series = probSeries,
-                Height = 220,
+                Series = uaDots is null ? probSeries : probSeries.Append(uaDots).ToList(),
+                // Taller than the other charts: the P(wet) chart carries the most
+                // series (6+ phases + climatology + UA marker legend), so its
+                // legend wraps to ~3 rows. At the old 220px that left the plot a
+                // ~25px sliver and every line looked flat — give it room.
+                Height = 320,
                 FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
                 FormatY = v => v.ToString("0.00", Ci),
                 TodayLineX = input.GeneratedAtUtc.ToOADate(),
                 XMin = pageXMin,
                 XMax = pageXMax,
-                Bands = uaBands,
-                BandColor = "rgba(96, 125, 139, 0.13)",  // faint slate = "upper-air in the mix"
             }));
-            if (uaBands.Count > 0)
-                s.Append("<p class=\"chart-note\"><span style=\"background:rgba(96,125,139,0.13);padding:0 6px;\">shaded</span> = upper-air (…hPa) data included in the forecast (pulled from the archive feed on its own schedule).</p>");
+            if (uaDots is not null)
+                s.Append("<p class=\"chart-note\"><span style=\"color:#90a4ae;font-size:1.2em;line-height:0\">●</span> = upper-air (…hPa) data fed this forecast hour (pulled from the archive feed on its own schedule); a <strong>larger</strong> dot means fresher UA relative to the forecast hour.</p>");
 
             // Clip the daily-summary + hourly-confidence tables to the
             // same time window as the chart on the tab. Without this they

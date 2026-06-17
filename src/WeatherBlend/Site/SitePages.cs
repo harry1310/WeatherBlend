@@ -784,11 +784,15 @@ public static partial class SitePages
         string LocationName = "",
         // Whether real upper-air (…hPa) features were in hand for this
         // valid-time (UA-capable phases 3c-with-UA / 3o only; null = N/A).
-        // Drives the UA-backed background shading on the rain charts. UA is
+        // Drives the UA markers drawn on the champion P(wet) line. UA is
         // pulled from the archive-forecast feed on its own schedule, so it's
         // present for some hours and not others — uniform across lines at a
         // given valid-time. Defaults null so legacy/test callers still build.
-        bool? UpperAirIncluded = null);
+        bool? UpperAirIncluded = null,
+        // How far back (hours) the UA ASOF lookup reached for this valid-time
+        // (0 = freshest). Drives the UA marker SIZE — fresher → larger dot.
+        // Null when no UA / legacy rows. Defaults null for legacy callers.
+        double? UpperAirAgeHours = null);
 
     /// <summary>
     /// Per-valid-hour aggregate of NWP fog / low-cloud forecasts. Counts
@@ -1131,6 +1135,19 @@ public static partial class SitePages
           padding: 0.22rem 0.55rem; border-radius: 999px; color: #fff;
           background: var(--cond-color, #607d8b);
         }
+        /* Climbing mode (Bonehill/Sennen): the climbing index — the verdict pill
+           + the Conditions drawer — is hidden unless the reader opts in, so by
+           default the page reads like a plain weather page (as Membury does).
+           The toggle flips body.climbing-on and persists in localStorage. */
+        body:not(.climbing-on) .forecast-card .status,
+        body:not(.climbing-on) .forecast-card details.cond-drawer { display: none; }
+        .climbing-toggle { margin: 0.1rem 0 0.6rem; }
+        .climbing-toggle .ct-label {
+          display: inline-flex; align-items: center; gap: 0.45rem;
+          font-size: 0.85rem; color: var(--pico-muted-color);
+          cursor: pointer; user-select: none;
+        }
+        .climbing-toggle .ct-input { width: 1rem; height: 1rem; cursor: pointer; accent-color: var(--brand); }
         .forecast-card .hero { padding: 0.15rem 0.75rem 0.7rem; }
         .forecast-card .temp { font-size: 2rem; font-weight: 700; color: var(--temp-color, var(--brand)); line-height: 1.1; margin: 0.1rem 0 0.2rem; }
         .forecast-card .feels { font-size: 0.85rem; color: var(--pico-muted-color); margin: 0 0 0.1rem; font-variant-numeric: tabular-nums; }
@@ -1348,8 +1365,11 @@ public static partial class SitePages
               // series didn't). Discrete-truth dots stay tiny so the 0/1 indicators
               // are still readable. Hover radius stays at 4 so the picker still
               // works on bare lines.
-              pointRadius: ds.discrete ? 1.5 : 0,
-              pointHoverRadius: 4,
+              // Per-point radii (ds.radii) size each marker individually — used
+              // by the upper-air dots where size encodes UA freshness. Falls
+              // back to the flat discrete/continuous default when absent.
+              pointRadius: ds.radii ? ds.radii : (ds.discrete ? 1.5 : 0),
+              pointHoverRadius: ds.radii ? ds.radii.map(function (r) { return r + 2; }) : 4,
               showLine: !ds.discrete,
               tension: 0,
               spanGaps: true,

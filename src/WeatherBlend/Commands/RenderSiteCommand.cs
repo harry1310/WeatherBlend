@@ -106,7 +106,8 @@ public sealed class RenderSiteCommand
             ProbWetQ95:      r.ProbWetQ95,
             Ci80Width:       r.Ci80Width,
             Ci90Width:       r.Ci90Width,
-            UpperAirIncluded: r.UpperAirIncluded)).ToList();
+            UpperAirIncluded: r.UpperAirIncluded,
+            UpperAirAgeHours: r.UpperAirAgeHours)).ToList();
         _log.LogInformation("Loaded {N} precipitation prediction rows (all locations).", precipAllLocs.Count);
 
         var feelsLikeAllLocs = QueryFeelsLikePredictions(windowStart, predictionEnd, ct);
@@ -272,8 +273,13 @@ public sealed class RenderSiteCommand
                     WindSectorToDeg: ssb.WindSectorToDeg)
                 : null,
             ShowClimbingConditions: loc.ShowClimbingConditions,
-            // Marine location (has a sea-state block) = sea cliff; else a tor.
-            CloudFeatureNoun: loc.Marine?.SeaStateBadge is not null ? "cliff" : "tor",
+            // Low-cloud alert noun ("cloud base below ___"): a sea cliff for
+            // marine locations, a tor for the upland climbing crags, and "the
+            // hilltops" for lowland sites (e.g. Membury, a 120m village ringed
+            // by higher ground — calling it a "tor" was just a stale default).
+            CloudFeatureNoun: loc.Marine?.SeaStateBadge is not null ? "cliff"
+                            : loc.ShowClimbingConditions ? "tor"
+                            : "the hilltops",
             // Drying-model gate, resolved per location (global block + this
             // location's rockSurface override). Default false keeps the verdict
             // on the pre-drying behaviour until a location is calibrated + flipped.
@@ -1868,8 +1874,9 @@ ORDER BY LocationName, ValidTimeUtc";
     /// For each valid hour in [start, end], take each model's most-recent
     /// (smallest-lead) forecast and count: how many publish vis &lt; 1km
     /// (mist / fog signal — only 6 NWPs publish Visibility), and how many
-    /// have T-Td &lt; 1.5°C (Espy proxy for cloud base below 393m at the
-    /// typical SW Devon NWP grid elevation of 50-200m).
+    /// have T-Td &lt; 1.5°C (Espy proxy for near-surface saturation → cloud
+    /// base at/below the location's own grid cell; each location is evaluated
+    /// at its own configured elevation, NOT a fixed altitude).
     ///
     /// Both counts persist on the row regardless of whether they fired; the
     /// renderer applies the firing thresholds (3 of 6 vis, 6 of 11 cloud-

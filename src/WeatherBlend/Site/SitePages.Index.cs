@@ -230,6 +230,13 @@ public static partial class SitePages
                 <p>{Escape(input.LocationDisplay)} — {input.Latitude.ToString("0.0000", Ci)}°, {input.Longitude.ToString("0.0000", Ci)}°, {input.ElevationMeters.ToString("0", Ci)}m.</p>
               </hgroup>
             """);
+        // Climbing-mode toggle: only on climbing locations (Bonehill/Sennen).
+        // Default OFF → the climbing index (verdict pill + Conditions drawer) is
+        // hidden by CSS and the page reads like a plain weather page; ON reveals
+        // it. Placed before the tiles so its inline script sets body.climbing-on
+        // ahead of the tiles parsing (no flash for opted-in readers).
+        if (input.RenderingFor?.ShowClimbingConditions == true)
+            body.Append(ClimbingModeToggle());
         body.Append(daySummary);
         body.Append(tilesHtml);
         body.Append(RenderDryWindowCalculator(input, dayUtc, pwetStation));
@@ -720,6 +727,45 @@ public static partial class SitePages
             </article>
             """);
     }
+
+    /// <summary>
+    /// "Climbing mode" toggle, rendered only on climbing locations
+    /// (Bonehill/Sennen). A checkbox that flips <c>body.climbing-on</c> and
+    /// remembers the choice in localStorage. Default OFF: the CSS hides the
+    /// climbing index (verdict pill + Conditions drawer) so the page reads like
+    /// a plain weather page. The inline script applies the saved state during
+    /// parse (before the tiles) so opted-in readers don't see a flash.
+    /// </summary>
+    private static string ClimbingModeToggle() => """
+        <div class="climbing-toggle">
+          <label class="ct-label">
+            <input type="checkbox" class="ct-input" aria-label="Climbing mode">
+            <span>Climbing mode</span>
+          </label>
+        </div>
+        <script>
+        (function () {
+          var KEY = 'wb-climbing-mode';
+          var on = false;
+          try { on = localStorage.getItem(KEY) === 'on'; } catch (e) {}
+          function apply(v) { if (document.body) document.body.classList.toggle('climbing-on', v); }
+          apply(on);
+          function wire() {
+            document.querySelectorAll('.ct-input').forEach(function (cb) {
+              cb.checked = on;
+              cb.addEventListener('change', function () {
+                on = cb.checked;
+                apply(on);
+                document.querySelectorAll('.ct-input').forEach(function (o) { o.checked = on; });
+                try { localStorage.setItem(KEY, on ? 'on' : 'off'); } catch (e) {}
+              });
+            });
+          }
+          if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wire);
+          else wire();
+        })();
+        </script>
+        """;
 
     /// <summary>
     /// Exact-key lookup, falling back to the closest entry within
