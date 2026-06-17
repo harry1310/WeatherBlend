@@ -42,10 +42,25 @@ public static class ClimbingConditions
     public const double AirColdC = 5.0, AirTooHotC = 20.0;
 
     /// <summary>Wind comfort band (mph): a breeze beats dead calm, but an
-    /// exposed tor turns "pretty shite" past ~10 mph.</summary>
+    /// exposed tor turns "pretty shite" past ~10 mph, decaying toward a non-zero
+    /// floor past that (see <see cref="WindStrongFloorScore"/>).</summary>
     public const double WindIdealLoMph = 5.0, WindIdealHiMph = 7.0, WindHarshMph = 10.0;
     /// <summary>Wind-comfort floor at dead calm (no drying breeze, but fine).</summary>
     public const double WindCalmScore = 0.6;
+    /// <summary>Wind-comfort value at the harsh point (10 mph) — the anchor the
+    /// strong-wind decay starts from.</summary>
+    public const double WindHarshScore = 0.4;
+    /// <summary>Per-mph wind-comfort loss above the harsh point. 0.02/mph carries
+    /// 0.4 at 10 mph down to <see cref="WindStrongFloorScore"/> at ~25 mph.</summary>
+    public const double WindHarshSlope = 0.02;
+    /// <summary>Strong-wind floor: past ~25 mph the curve bottoms out HERE rather
+    /// than hitting zero (Harry 2026-06-17). A single 0 factor would zero the
+    /// whole weakest-link blend (the <c>min</c> term in <see cref="Evaluate"/>),
+    /// so a gale would otherwise annihilate the verdict no matter how good
+    /// everything else was — and 18 mph scored identically to a 40 mph storm.
+    /// A non-zero floor lets strong wind drag the verdict down hard while still
+    /// distinguishing "very windy" from "impossible".</summary>
+    public const double WindStrongFloorScore = 0.1;
 
     /// <summary>At or above this hourly P(wet), the rain gate fires (Off).</summary>
     public const double RainGateProb = 0.5;
@@ -94,13 +109,16 @@ public static class ClimbingConditions
     }
 
     /// <summary>Wind comfort (mph): rises from a calm-day floor to a 5–7 mph
-    /// peak, then falls off — "pretty shite" past ~10 mph on exposed ground.</summary>
+    /// peak, then falls off — "pretty shite" past ~10 mph on exposed ground —
+    /// and decays to a non-zero floor (<see cref="WindStrongFloorScore"/>) past
+    /// ~25 mph rather than hitting zero, so a gale doesn't annihilate the whole
+    /// verdict via the blend's <c>min</c> term.</summary>
     public static double WindComfort(double windMph)
     {
         if (windMph <= WindIdealLoMph) return WindCalmScore + windMph / WindIdealLoMph * (1.0 - WindCalmScore);
         if (windMph <= WindIdealHiMph) return 1.0;
-        if (windMph <= WindHarshMph) return Clamp01(1.0 - (windMph - WindIdealHiMph) / (WindHarshMph - WindIdealHiMph) * 0.6);
-        return Clamp01(0.4 - (windMph - WindHarshMph) * 0.06);
+        if (windMph <= WindHarshMph) return Clamp01(1.0 - (windMph - WindIdealHiMph) / (WindHarshMph - WindIdealHiMph) * (1.0 - WindHarshScore));
+        return Math.Max(WindStrongFloorScore, WindHarshScore - (windMph - WindHarshMph) * WindHarshSlope);
     }
 
     /// <summary>One contributing factor's score + a human detail string.</summary>

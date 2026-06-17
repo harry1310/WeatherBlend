@@ -55,8 +55,21 @@ public class ClimbingConditionsTests
         ClimbingConditions.WindComfort(6).Should().BeApproximately(1.0, 1e-9);
         ClimbingConditions.WindComfort(0).Should().BeInRange(0.5, 0.75, "calm is fine but a breeze is better");
         ClimbingConditions.WindComfort(0).Should().BeLessThan(ClimbingConditions.WindComfort(6));
-        ClimbingConditions.WindComfort(15).Should().BeLessThan(0.2, "pretty shite on an exposed tor");
+        ClimbingConditions.WindComfort(15).Should().BeLessThan(ClimbingConditions.WindComfort(10), "strong wind drags comfort down");
         ClimbingConditions.WindComfort(12).Should().BeLessThan(ClimbingConditions.WindComfort(10));
+    }
+
+    [Fact]
+    public void WindComfort_decays_to_a_nonzero_floor_not_to_zero()
+    {
+        // 2026-06-17: a gale must drag the verdict down hard but NOT zero the
+        // whole weakest-link blend. The curve bottoms out at the strong-wind
+        // floor (~25 mph+) and never goes below it.
+        ClimbingConditions.WindComfort(18).Should().BeGreaterThan(0.0, "18 mph is grim but not annihilating");
+        ClimbingConditions.WindComfort(18).Should().BeLessThan(ClimbingConditions.WindComfort(12), "but worse than 12 mph");
+        ClimbingConditions.WindComfort(40).Should().BeApproximately(
+            ClimbingConditions.WindStrongFloorScore, 1e-9, "a storm sits on the floor");
+        ClimbingConditions.WindComfort(40).Should().BeGreaterThan(0.0);
     }
 
     // ---- Gates ----
