@@ -208,7 +208,7 @@ public sealed class DryWindowPredictCommand
         {
             return await RunCopulaMcAsync(
                 versionDir, stationSlug, windowHours, versionName, metadata,
-                targets, anchorDate, predictionMadeAt, ct);
+                targets, anchorDate, predictionMadeAt, location, ct);
         }
 
         // Belt-and-braces against the 2026-05-26 regression: the dispatch
@@ -363,7 +363,7 @@ public sealed class DryWindowPredictCommand
         ModelArtifact.TrainingMetadata metadata,
         IReadOnlyList<(int Lead, DateTime Date)> targets,
         DateTime anchorDate, DateTime predictionMadeAt,
-        CancellationToken ct)
+        LocationConfig location, CancellationToken ct)
     {
         // Stage-1 precip source for this copula-MC phase (3p→3o, 3q→3c).
         var source = DryWindow3pPredictor.SourceFor(metadata.Phase);
@@ -445,7 +445,12 @@ public sealed class DryWindowPredictCommand
         var rng = new Random(metadata.Hyperparameters.HpInt("mc_seed") ?? 42);
         var predictions = new List<DryWindowPredictionRow>();
         var startHourRows = new List<StartHourPredictionRow>();
-        var primaryLocation = _cfg.Location.Name;
+        // The location ACTUALLY being predicted — NOT _cfg.Location (the legacy
+        // primary = Bonehill). Stamping the primary here mislabelled every
+        // Sennen 3q row as bonehill_rocks, so the render's per-location filter
+        // bucketed them onto the Bonehill page and the Sennen overview's
+        // dry-window calculator + dry-window page found no 3q rows (2026-06-17).
+        var locationName = location.Name;
 
         foreach (var (lead, targetDate) in targets)
         {
@@ -479,7 +484,7 @@ public sealed class DryWindowPredictCommand
 
             predictions.Add(new DryWindowPredictionRow
             {
-                LocationName = primaryLocation,
+                LocationName = locationName,
                 TruthStation = stationSlug,
                 WindowHours = windowHours,
                 ModelVersion = metadata.Version,
@@ -516,7 +521,7 @@ public sealed class DryWindowPredictCommand
                 double calibrated = cond * prob;
                 startHourRows.Add(new StartHourPredictionRow
                 {
-                    LocationName = primaryLocation,
+                    LocationName = locationName,
                     TruthStation = stationSlug,
                     WindowHours = windowHours,
                     ModelVersion = source.StartHourCurveVersion,
