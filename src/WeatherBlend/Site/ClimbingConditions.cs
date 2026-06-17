@@ -28,12 +28,24 @@ public static class ClimbingConditions
 {
     // ---- Calibration constants (Harry 2026-06-13) -----------------------
 
-    /// <summary>Rock friction peaks at this temperature: "as cold as possible
-    /// down to 5°C", below which it degrades sharply (numb hands / verglas).</summary>
-    public const double RockFrictionPeakC = 5.0;
-    /// <summary>°C above the peak at which rock friction hits zero (sun-warm rock = greasy/poor grip).</summary>
+    /// <summary>Rock friction peaks across this band: 5–10°C is the sweet spot
+    /// ("as cold as possible, but a numb-hands floor"), below which it degrades
+    /// sharply (numb hands / verglas) and above which it eases off (greasy).
+    /// Widened from a single 5°C point to a 5–10°C plateau (Harry 2026-06-17).</summary>
+    public const double RockFrictionPeakLoC = 5.0;
+    /// <summary>Top of the peak-friction band; warm decline starts above here.</summary>
+    public const double RockFrictionPeakHiC = 10.0;
+    /// <summary>°C above the peak band over which warm rock decays to
+    /// <see cref="RockFrictionWarmFloorScore"/> (rather than to zero). 15°C →
+    /// the floor is reached at 25°C rock temp (Harry 2026-06-17).</summary>
     public const double RockFrictionWarmSpanC = 15.0;
-    /// <summary>Per-°C friction loss below the peak — steep ("degrades pretty sharply").</summary>
+    /// <summary>Warm-rock friction floor: greasy sun-warm rock is poor grip but
+    /// still climbable, so it bottoms out HERE rather than at zero. A zero factor
+    /// would annihilate the weakest-link blend (the <c>min</c> term in
+    /// <see cref="Evaluate"/>) — same fix applied to strong wind
+    /// (<see cref="WindStrongFloorScore"/>). Harry 2026-06-17.</summary>
+    public const double RockFrictionWarmFloorScore = 0.25;
+    /// <summary>Per-°C friction loss below the peak band — steep ("degrades pretty sharply").</summary>
     public const double RockFrictionColdSlope = 0.17;
 
     /// <summary>Air-temperature comfort sweet spot (inclusive band).</summary>
@@ -90,11 +102,23 @@ public static class ClimbingConditions
 
     private static double Clamp01(double x) => Math.Clamp(x, 0.0, 1.0);
 
-    /// <summary>Rock-friction sub-score: peak at <see cref="RockFrictionPeakC"/>,
-    /// gradual decline as it warms, sharp drop as it cools below the peak.</summary>
-    public static double RockFriction(double rockTempC) => rockTempC >= RockFrictionPeakC
-        ? Clamp01(1.0 - (rockTempC - RockFrictionPeakC) / RockFrictionWarmSpanC)
-        : Clamp01(1.0 - (RockFrictionPeakC - rockTempC) * RockFrictionColdSlope);
+    /// <summary>Rock-friction sub-score: a flat peak across the
+    /// <see cref="RockFrictionPeakLoC"/>–<see cref="RockFrictionPeakHiC"/> band,
+    /// a gentle warm decline above it down to a non-zero floor
+    /// (<see cref="RockFrictionWarmFloorScore"/>), and a sharp cold drop below it
+    /// (numb hands / verglas).</summary>
+    public static double RockFriction(double rockTempC)
+    {
+        if (rockTempC < RockFrictionPeakLoC)
+            return Clamp01(1.0 - (RockFrictionPeakLoC - rockTempC) * RockFrictionColdSlope);
+        if (rockTempC <= RockFrictionPeakHiC)
+            return 1.0;
+        // Warm side: 1.0 at the band top decaying linearly to the floor at
+        // (PeakHi + WarmSpan)°C, then holding the floor — warm rock is poor
+        // grip but never a hard zero.
+        var warm = Clamp01(1.0 - (rockTempC - RockFrictionPeakHiC) / RockFrictionWarmSpanC);
+        return RockFrictionWarmFloorScore + (1.0 - RockFrictionWarmFloorScore) * warm;
+    }
 
     /// <summary>Air-temperature comfort: hump on <see cref="AirIdealLoC"/>..
     /// <see cref="AirIdealHiC"/>, sharp below <see cref="AirColdC"/>, falling

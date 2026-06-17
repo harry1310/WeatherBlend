@@ -27,16 +27,24 @@ public class ClimbingConditionsTests
     // ---- Curve shapes ----
 
     [Fact]
-    public void RockFriction_peaks_at_5C_and_falls_off_both_sides()
+    public void RockFriction_plateaus_5_to_10C_then_falls_off_both_sides()
     {
-        var peak = ClimbingConditions.RockFriction(5);
-        peak.Should().BeApproximately(1.0, 1e-9);
-        // Warmer rock = gradually worse grip.
-        ClimbingConditions.RockFriction(10).Should().BeLessThan(peak);
-        ClimbingConditions.RockFriction(20).Should().BeLessThan(ClimbingConditions.RockFriction(12));
-        // Below the peak degrades SHARPLY — 0°C worse than 10°C even though
-        // both are 5° off the peak.
-        ClimbingConditions.RockFriction(0).Should().BeLessThan(ClimbingConditions.RockFriction(10));
+        // Flat peak band 5–10°C — both edges score a perfect 1.0.
+        ClimbingConditions.RockFriction(5).Should().BeApproximately(1.0, 1e-9);
+        ClimbingConditions.RockFriction(10).Should().BeApproximately(1.0, 1e-9);
+        ClimbingConditions.RockFriction(7).Should().BeApproximately(1.0, 1e-9);
+        // Warmer than the band = gradually worse grip, but it bottoms out at the
+        // non-zero floor (warm rock is poor, not impossible).
+        ClimbingConditions.RockFriction(20).Should().BeLessThan(ClimbingConditions.RockFriction(15));
+        ClimbingConditions.RockFriction(25).Should().BeApproximately(
+            ClimbingConditions.RockFrictionWarmFloorScore, 1e-9);
+        // Past the floor point it holds the floor, never zero.
+        ClimbingConditions.RockFriction(35).Should().BeApproximately(
+            ClimbingConditions.RockFrictionWarmFloorScore, 1e-9);
+        // Below the band degrades SHARPLY — 0°C is well under the warm floor
+        // (verglas / numb hands genuinely near-unclimbable).
+        ClimbingConditions.RockFriction(0).Should().BeLessThan(
+            ClimbingConditions.RockFrictionWarmFloorScore);
     }
 
     [Fact]
