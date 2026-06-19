@@ -311,14 +311,16 @@ public static class ClimbingConditions
         _ => "Off",
     };
 
-    /// <summary>Tier → hex colour (greens for go, amber/red for caution,
-    /// slate for Off). Aligned with the badge palette used elsewhere.</summary>
+    /// <summary>Tier → hex colour. A grey→green ramp (slate Off → light-grey Poor
+    /// → pale-green Marginal → light-green Good → green Prime) that deliberately
+    /// avoids amber/red so the climbing verdict never clashes with the weather
+    /// alert palette (which owns amber/red). Harry 2026-06-18.</summary>
     public static string TierColor(ConditionsTier t) => t switch
     {
         ConditionsTier.Prime => "#2e7d32",     // green
         ConditionsTier.Good => "#7cb342",      // light green
-        ConditionsTier.Marginal => "#f9a825",  // amber
-        ConditionsTier.Poor => "#c62828",      // red
+        ConditionsTier.Marginal => "#aed581",  // paler green
+        ConditionsTier.Poor => "#b0bec5",      // light grey
         _ => "#607d8b",                        // slate (Off)
     };
 }

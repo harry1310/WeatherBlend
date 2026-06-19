@@ -172,6 +172,11 @@ public static partial class SitePages
         if (futureComposite.Count == 0) return "";
         var headline = RenderRainfallAmountHeadline(futureComposite);
         var ribbon = RenderRainfallAmountRibbon(composite, lead, xMin, xMax, input.GeneratedAtUtc.ToOADate());
+        // Per-day 09Z→09Z village totals (Harry 2026-06-18): the village's manual
+        // gauge is read as a 09:00Z rain-day, so this sums the composite hourly
+        // medians into the same 09Z→09Z windows the truth log uses — the at-this-
+        // lead predicted daily total to set beside each recorded day.
+        var dailyTable = RenderVillage9to9DailyTable(composite, lead);
         return $"""
             <section class="rainfall-amount village" data-station="{Escape(location.Name)}_village" data-lead="{lead}">
               <h3>{Escape(cal.Label)} — best estimate of rain at the village
@@ -184,8 +189,58 @@ public static partial class SitePages
                 threshold probabilities don't combine across gauges.</small></p>
               {headline}
               {ribbon}
+              {dailyTable}
             </section>
             """;
+    }
+
+    /// <summary>Minimum of the 24 hourly predictions a 09Z→09Z window must have
+    /// before its total is shown — a part-covered edge day would under-read and
+    /// read as a falsely dry day. 22–23h days still show, flagged with the count.</summary>
+    private const int MinHoursForDay = 22;
+
+    /// <summary>
+    /// Per-day 09Z→09Z predicted village rain totals — the table beside each
+    /// lead's village chart that lines up with the manual gauge log (read as a
+    /// 09:00Z rain-day). Each hour belongs to the rain-day that STARTS at the
+    /// most recent 09:00Z at/before it (key = <c>(valid − 9h).Date</c>), and the
+    /// day's total is the sum of the composite hourly medians — the same
+    /// "sum of hourly medians" convention the headline uses (it deliberately is
+    /// NOT the median of the daily sum; that needs MC convolution, deferred).
+    /// Window spans the chart's range (incl. the recent past), so completed
+    /// rain-days the user already has truth for sit next to the upcoming forecast
+    /// totals — every row at this lead's horizon.
+    /// </summary>
+    internal static string RenderVillage9to9DailyTable(IReadOnlyList<RainfallAmountPredictionRow> composite, int lead)
+    {
+        var days = composite
+            .GroupBy(r => r.ValidTimeUtc.AddHours(-9).Date)   // 09Z→09Z rain-day start date
+            .Select(g => (Start: g.Key.AddHours(9), Hours: g.Count(), TotalMm: g.Sum(r => r.MedianMmPerHr)))
+            .Where(d => d.Hours >= MinHoursForDay)
+            .OrderBy(d => d.Start)
+            .ToList();
+        if (days.Count == 0) return "";
+
+        var sb = new StringBuilder();
+        sb.Append(Ci, $"""
+            <details class="hourly-detail village-daily" open>
+              <summary>Predicted 09Z&rarr;09Z daily totals <small>(sum of hourly village medians, at +{lead}h)</small></summary>
+              <figure>
+                <table>
+                  <thead><tr><th>Rain-day (09Z&rarr;09Z)</th><th class="num">Predicted total</th></tr></thead>
+                  <tbody>
+            """);
+        foreach (var d in days)
+        {
+            var label = d.Start.ToString("ddd dd MMM", Ci);
+            var part = d.Hours < 24 ? $" <small>({d.Hours}h)</small>" : "";
+            sb.Append(Ci, $"""
+                    <tr><td><time datetime="{d.Start:yyyy-MM-ddTHH:mm}Z">{label}</time>{part}</td>
+                      <td class="num">{d.TotalMm.ToString("0.0", Ci)} mm</td></tr>
+                """);
+        }
+        sb.Append("</tbody></table></figure></details>");
+        return sb.ToString();
     }
 
     /// <summary>
