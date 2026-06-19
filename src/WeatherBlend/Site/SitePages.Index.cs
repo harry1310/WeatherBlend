@@ -724,9 +724,9 @@ public static partial class SitePages
         var tempColor = TemperatureColor(p.BlendTemperature);
         return string.Create(Ci, $"""
             <article class="forecast-card">
-              <div class="card-head"><span class="time">{p.ValidTimeUtc:HH:mm}Z</span><span class="head-right">{statusPill}{skyCell}</span></div>
+              <div class="card-head"><span class="time">{p.ValidTimeUtc:HH:mm}Z</span>{statusPill}</div>
               <div class="hero">
-                <div class="temp" style="--temp-color: {tempColor}">{p.BlendTemperature:0.0}°C</div>
+                <div class="temp-line"><div class="temp" style="--temp-color: {tempColor}">{p.BlendTemperature:0.0}°C</div>{skyCell}</div>
                 {feelsCell}
                 {pwetCell}
               </div>

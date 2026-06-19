@@ -344,50 +344,6 @@ public static partial class SitePages
     private const string TorReferenceGaugeSlug = "ea_bellever_dartmoor";
     private const string TorStationSlug = "bonehill_rocks";
 
-    /// <summary>
-    /// A discrete marker series drawn ON the champion P(wet) line at each
-    /// valid-time where the prediction actually had real upper-air features in
-    /// hand (<c>UpperAirIncluded == true</c>), clipped to the visible
-    /// [xMin, xMax] window. Each marker's Y is the champion's P(wet) at that
-    /// hour, and its radius encodes UA freshness via <see cref="UaDotRadius"/>
-    /// (fresher UA → larger dot). Returns <c>null</c> when no row in the window
-    /// carries UA (phases that never use it, or no UA available) so the caller
-    /// can skip adding an empty legend entry.
-    /// </summary>
-    private static LineSeries? BuildUpperAirDots(
-        IReadOnlyList<PrecipForecastPoint> rows, double xMin, double xMax)
-    {
-        var pts = new List<(double X, double Y)>();
-        var radii = new List<double>();
-        foreach (var r in rows
-            .Where(r => r.UpperAirIncluded == true)
-            .OrderBy(r => r.ValidTimeUtc))
-        {
-            var oad = r.ValidTimeUtc.ToOADate();
-            if (oad < xMin || oad > xMax) continue;
-            pts.Add((oad, r.ProbWet));
-            radii.Add(UaDotRadius(r.UpperAirAgeHours));
-        }
-        if (pts.Count == 0) return null;
-        // Slate marker (carries forward the old UA-band hue) sitting on the
-        // champion line; size varies per point with UA freshness.
-        return new LineSeries("Upper-air in forecast", "#90a4ae", pts,
-            PointsOnly: true, PointRadii: radii);
-    }
-
-    /// <summary>
-    /// Marker radius (px) for a UA dot from its ASOF reach-back in hours
-    /// (<see cref="PrecipForecastPoint.UpperAirAgeHours"/>): 0h (freshest) → 6px,
-    /// shrinking ~1px per 6h, clamped to [2, 6]. Unknown age (null/NaN) → a
-    /// mid 4px so the marker still shows. Fresher UA = larger dot.
-    /// </summary>
-    private static double UaDotRadius(double? ageHours)
-    {
-        if (ageHours is not { } a || double.IsNaN(a)) return 4.0;
-        var r = 6.0 - Math.Max(0.0, a) / 6.0;
-        return Math.Clamp(r, 2.0, 6.0);
-    }
-
     private static string PrecipPhaseColor(string phase, bool isChampion)
     {
         if (isChampion) return NwpPalette.Blend;   // brand purple
@@ -719,25 +675,16 @@ public static partial class SitePages
                         Dashed: true));
             }
 
-            // Upper-air markers: a dot ON the champion line at each valid-time
-            // where the prediction actually had …hPa features in hand. UA is
-            // pulled from the archive-forecast feed on its own schedule (uniform
-            // across lines at a given valid-time), so read it off the champion-
-            // phase rows. The dot SIZE encodes UA freshness — fresher UA (the
-            // ASOF lookup reached back fewer hours) draws a larger dot. Empty
-            // for phases that never use UA.
-            var uaDots = BuildUpperAirDots(championLatestPerValidByStation[station], pageXMin, pageXMax);
-
             s.Append(LineChartRenderer.RenderChartJs(new LineChartSpec
             {
                 Title = $"P(wet) — {PrettyStation(station)} — +{lead}h",
                 XLabel = "Valid time (UTC)",
                 YLabel = "Probability",
-                Series = uaDots is null ? probSeries : probSeries.Append(uaDots).ToList(),
+                Series = probSeries,
                 // Taller than the other charts: the P(wet) chart carries the most
-                // series (6+ phases + climatology + UA marker legend), so its
-                // legend wraps to ~3 rows. At the old 220px that left the plot a
-                // ~25px sliver and every line looked flat — give it room.
+                // series (6+ phases + climatology), so its legend wraps to ~3 rows.
+                // At the old 220px that left the plot a ~25px sliver and every line
+                // looked flat — give it room.
                 Height = 320,
                 FormatX = v => DateTime.FromOADate(v).ToString("MM-dd HH'Z'", Ci),
                 FormatY = v => v.ToString("0.00", Ci),
@@ -745,8 +692,6 @@ public static partial class SitePages
                 XMin = pageXMin,
                 XMax = pageXMax,
             }));
-            if (uaDots is not null)
-                s.Append("<p class=\"chart-note\"><span style=\"color:#90a4ae;font-size:1.2em;line-height:0\">●</span> = upper-air (…hPa) data fed this forecast hour (pulled from the archive feed on its own schedule); a <strong>larger</strong> dot means fresher UA relative to the forecast hour.</p>");
 
             // Clip the daily-summary + hourly-confidence tables to the
             // same time window as the chart on the tab. Without this they
