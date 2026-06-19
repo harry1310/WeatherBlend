@@ -1,4 +1,5 @@
 using System.Text;
+using WeatherBlend.Predict.Surface;
 
 namespace WeatherBlend.Site;
 
@@ -218,7 +219,8 @@ public static partial class SitePages
                 tiles.Append(RenderHourTile(p, feelsLikeByValid, pwetByValid, lowCloudByValid, rockByValid,
                     seaSpec, waveByValid, windSpeedMsByValid, windDirDegByValid,
                     input.WindGustByValidMs, conditions,
-                    input.RenderingFor?.CloudFeatureNoun ?? "the hilltops", popoverId++));
+                    input.RenderingFor?.CloudFeatureNoun ?? "the hilltops",
+                    input.Latitude, input.Longitude, popoverId++));
             }
             tilesHtml = string.Create(Ci, $"<div class=\"forecast-grid\">{tiles}</div>");
         }
@@ -534,6 +536,8 @@ public static partial class SitePages
         IReadOnlyDictionary<DateTime, double> windGustByValidMs,
         ClimbingConditions.Result? conditions,
         string cloudFeatureNoun,
+        double latitude,
+        double longitude,
         int popoverId)
     {
         // ---- Alerts (low-cloud / rock / sea) collected as drawer lines ----
@@ -605,9 +609,12 @@ public static partial class SitePages
         // (detailRows) rather than an inline ⓘ pop-out. ±1h drift tolerance —
         // predict cycles can land an hour off and we'd rather show a value.
         string feelsCell = "";
+        string skyCell = "";
         var detailRows = new StringBuilder();
         if (TryNearest(feelsLikeByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var fl))
         {
+            // Sky glyph (top-right of the tile) from this hour's cloud + radiation.
+            skyCell = SkyGlyph(fl!.CloudCoverPct, fl.ShortwaveDownWm2, p.ValidTimeUtc, latitude, longitude);
             var apparentColor = TemperatureColor(fl!.ApparentC);
             var utciColor = TemperatureColor(fl.UtciC);
             // Feels-like + UTCI on one face line; band as a quiet caption under.
@@ -717,7 +724,7 @@ public static partial class SitePages
         var tempColor = TemperatureColor(p.BlendTemperature);
         return string.Create(Ci, $"""
             <article class="forecast-card">
-              <div class="card-head"><span class="time">{p.ValidTimeUtc:HH:mm}Z</span>{statusPill}</div>
+              <div class="card-head"><span class="time">{p.ValidTimeUtc:HH:mm}Z</span><span class="head-right">{statusPill}{skyCell}</span></div>
               <div class="hero">
                 <div class="temp" style="--temp-color: {tempColor}">{p.BlendTemperature:0.0}°C</div>
                 {feelsCell}
@@ -728,6 +735,49 @@ public static partial class SitePages
               {detailDrawer}
             </article>
             """);
+    }
+
+    /// <summary>
+    /// Sky glyph for the tile header from the hour's cloud cover + shortwave.
+    /// Daytime folds the reported cloud fraction with the radiation "clearness
+    /// index" (actual SW ÷ clear-sky SW for the sun's elevation), so a
+    /// bright-but-cloudy hour reads sunnier than the cloud % alone would say — the
+    /// same SW-vs-cloud disagreement the rock model hit under near-total cloud.
+    /// Night (sun below the horizon) shows moon vs cloud on the cloud fraction
+    /// alone. Returns "" when there's no cloud value to show.
+    /// </summary>
+    internal static string SkyGlyph(double? cloudPct, double? swWm2, DateTime validUtc, double lat, double lon)
+    {
+        if (cloudPct is not double cloud) return "";
+        var elevDeg = SolarGeometry.SolarPosition(validUtc, lat, lon).ElevationDeg;
+        var cloudFrac = Math.Clamp(cloud / 100.0, 0.0, 1.0);
+
+        string glyph, label;
+        if (elevDeg <= 0)
+        {
+            (glyph, label) = cloudFrac < 0.5 ? ("\U0001F319", "Clear night") : ("☁️", "Cloudy night");
+        }
+        else
+        {
+            // Effective cloudiness blends the reported cloud fraction with how much
+            // sun actually reaches the ground (1 − clearness index). The radiation
+            // term is only trusted when the sun is reasonably up, where the
+            // clear-sky reference is stable.
+            var eff = cloudFrac;
+            var sinElev = Math.Sin(elevDeg * Math.PI / 180.0);
+            if (swWm2 is double sw && elevDeg > 10.0 && sinElev > 0.0)
+            {
+                var clearSky = 1098.0 * sinElev * Math.Exp(-0.057 / sinElev);   // Haurwitz clear-sky GHI
+                var k = Math.Clamp(sw / clearSky, 0.0, 1.0);                    // clearness index
+                eff = 0.5 * cloudFrac + 0.5 * (1.0 - k);
+            }
+            (glyph, label) =
+                eff < 0.20 ? ("☀️", "Sunny") :
+                eff < 0.55 ? ("\U0001F324️", "Mostly sunny") :
+                eff < 0.80 ? ("⛅", "Partly cloudy") :
+                             ("☁️", "Cloudy");
+        }
+        return string.Create(Ci, $"""<span class="sky" title="{label} · cloud {cloud:0}%">{glyph}</span>""");
     }
 
     /// <summary>

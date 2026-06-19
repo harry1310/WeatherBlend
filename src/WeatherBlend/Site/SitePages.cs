@@ -1139,6 +1139,8 @@ public static partial class SitePages
           gap: 0.5rem; padding: 0.6rem 0.75rem 0; min-height: 1.4rem;
         }
         .forecast-card .time { font-weight: 600; font-size: 0.95rem; font-variant-numeric: tabular-nums; }
+        .forecast-card .head-right { display: flex; align-items: center; gap: 0.4rem; }
+        .forecast-card .sky { font-size: 1.05rem; line-height: 1; }
         .forecast-card .status {
           font-size: 0.72rem; font-weight: 700; line-height: 1; white-space: nowrap;
           padding: 0.22rem 0.55rem; border-radius: 999px; color: #fff;
