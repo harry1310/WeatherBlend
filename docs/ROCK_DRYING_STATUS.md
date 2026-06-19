@@ -1,8 +1,8 @@
 # Rock-surface drying model — status (Phase A + B)
 
-_Built overnight 2026-06-16. Ships behind a config flag that is **OFF
-everywhere by default**, so nothing on the live site changes until a location
-is calibrated and the flag is flipped. This note is the morning review._
+_Built overnight 2026-06-16; coefficients literature-grounded and **enabled for
+Bonehill 2026-06-19** (Sennen still off — no spray coefficient). Behind a
+per-location config flag (`surfaceWaterEnabled`), default off elsewhere._
 
 ## What it does
 
@@ -45,14 +45,20 @@ bit-for-bit identical to before.
 1. The columns are now WRITTEN on every rock predict run (`SurfaceWaterMm`,
    `RainWaterMm`) — inspect them on the next predict to sanity-check the film
    behaviour before trusting the gate.
-2. To enable for a location, set `surfaceWaterEnabled: true` in that location's
-   `rockSurface:` override block in `config.yaml` (Bonehill first, after the
-   Thursday IR-gun readings).
-3. The DRAFT coefficients to calibrate live in `RockSurfaceConfig`:
-   `EvapVpdCoeff`, `EvapWindBase/Slope`, `EvapRadCoeff`, `MaxSurfaceWaterMm`,
-   `WetThresholdMm`, `LatentHeatWm2PerMmHr` (the last is physically fixed at
-   ≈680.6; the rest are guesses awaiting "how long did it actually stay wet"
-   field notes).
+2. **ENABLED for Bonehill 2026-06-19** (`surfaceWaterEnabled: true` in its
+   `rockSurface:` block). Sennen stays off (no spray coefficient yet). To enable
+   another location, set the same flag in its override block.
+3. The coefficients in `RockSurfaceConfig` are now **literature-grounded, not
+   guesses** (2026-06-19): `EvapVpdCoeff` (0.010) + `EvapWindSlope` (0.35) reproduce
+   the bulk-aerodynamic Dalton wind-term (water-vapour transfer coeff C_E ≈ 1.3×10⁻³);
+   `EvapRadCoeff` (0.0006) is anchored to the latent-heat constant (`LatentHeatWm2PerMmHr`
+   ≈ 680.6) at ~40% of absorbed SW driving evaporation; `MaxSurfaceWaterMm` (0.4) sits
+   below smooth-surface interception (~0.5 mm) for a steep runoff-shedding face.
+   `WetThresholdMm` (0.05) is the one empirical knob (a climbing "too wet" judgement).
+   Field notes ("stayed wet ~N h after rain") now VALIDATE the drying timescale
+   rather than set the numbers from scratch. **Watch the first live cycle's
+   `SurfaceWaterMm`/`RainWaterMm`** to confirm the film behaves before fully trusting
+   the dry-by ETA.
 4. The index gate threshold is `ClimbingConditions.RainWetThresholdMm` (0.05 mm),
    which shares its default with the physics `WetThresholdMm`.
 

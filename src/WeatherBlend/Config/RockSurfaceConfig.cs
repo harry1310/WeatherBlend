@@ -99,27 +99,43 @@ public sealed class RockSurfaceConfig
     public bool SurfaceWaterEnabled { get; set; } = false;
 
     /// <summary>Max surface-water film the near-impermeable granite holds (mm);
-    /// water above this runs off. Caps the worst-case dry-out time.</summary>
+    /// water above this runs off. Caps the worst-case dry-out time. Literature
+    /// anchor (2026-06-19): single-event interception/adhering water on a smooth
+    /// surface is ~0.5 mm, reduced by gravity runoff on a steep climbing face →
+    /// 0.4 mm. (Flat impervious depression storage is higher, ~1.5 mm.)</summary>
     public double MaxSurfaceWaterMm { get; set; } = 0.4;
 
     /// <summary>Film (mm) at/above which the surface counts as "wet" (heavy
-    /// friction / the rain gate). Between this and ~0 is "damp".</summary>
+    /// friction / the rain gate). Between this and ~0 is "damp". This is the one
+    /// genuinely empirical knob — a climbing "too wet" judgement, not a physics
+    /// value; 0.05 mm is a barely-visible damp sheen.</summary>
     public double WetThresholdMm { get; set; } = 0.05;
 
     /// <summary>VPD coefficient for the moisture flux — mm/hr per hPa of vapour-
     /// pressure deficit (e_sat(Ts) − e_air) per unit of the wind function. Drives
-    /// BOTH evaporation (VPD &gt; 0) and dew deposition (VPD &lt; 0). DRAFT —
-    /// calibrate against IR-gun "how long did it stay wet" observations.</summary>
-    public double EvapVpdCoeff { get; set; } = 0.012;
+    /// BOTH evaporation (VPD &gt; 0) and dew deposition (VPD &lt; 0). Literature-
+    /// grounded (2026-06-19) via the bulk-aerodynamic Dalton law E = ρ_a·C_E·U·Δq,
+    /// Δq ≈ 0.622·VPD/P: with the water-vapour transfer coefficient C_E ≈ 1.3×10⁻³
+    /// (eddy-covariance over water), ρ_a 1.2, P 1013 hPa → wind-driven term
+    /// ≈ 0.0035 mm/hr per (hPa·m/s). Our wind term is EvapVpdCoeff·EvapWindSlope·V,
+    /// so 0.010·0.35 = 0.0035 reproduces it. Field readings now VALIDATE the
+    /// drying timescale rather than set this.</summary>
+    public double EvapVpdCoeff { get; set; } = 0.010;
 
     /// <summary>Wind function for the moisture flux: still-air floor
-    /// <see cref="EvapWindBase"/> + per-m/s ventilation gain <see cref="EvapWindSlope"/>·V.</summary>
+    /// <see cref="EvapWindBase"/> + per-m/s ventilation gain <see cref="EvapWindSlope"/>·V.
+    /// The classic Penman a + b·V form; the floor is the free-convection reference
+    /// and the 0.35/m·s gain sits below open-water's ~0.5 (rough rock, partial wetting).</summary>
     public double EvapWindBase { get; set; } = 1.0;
     public double EvapWindSlope { get; set; } = 0.35;
 
     /// <summary>Radiation-driven evaporation — mm/hr per W/m² of ABSORBED short-
-    /// wave, applied only while drying (sun bakes a wet slab dry). DRAFT.</summary>
-    public double EvapRadCoeff { get; set; } = 0.0009;
+    /// wave, applied only while drying (sun bakes a wet slab dry). Anchored to the
+    /// latent-heat constant (2026-06-19): E_rad = f·SW_abs / 680.6, where 680.6 is
+    /// <see cref="LatentHeatWm2PerMmHr"/> and f is the fraction of absorbed sun that
+    /// evaporates the film rather than conducting into the slab. f ≈ 0.4 (most
+    /// absorbed SW heats the granite) → 0.4/680.6 = 0.0006.</summary>
+    public double EvapRadCoeff { get; set; } = 0.0006;
 
     /// <summary>Latent-heat feedback (Phase B): W/m² of surface cooling per mm/hr
     /// of water evaporated (and warming per mm/hr condensed) — the slab loses
