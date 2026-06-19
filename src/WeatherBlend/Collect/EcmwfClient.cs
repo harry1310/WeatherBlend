@@ -106,6 +106,7 @@ public sealed class EcmwfClient
         new VarMap("tcc",    (r, v) => r.CloudCover          = v * 100.0),   // 0..1 → %
         new VarMap("ssrd",   (r, v) => r.ShortwaveRadiation  = v / 3600.0),  // J/m² acc → W/m² avg-over-hour
         new VarMap("mucape", (r, v) => r.Cape                = v),           // J/kg
+        new VarMap("tcwv",   (r, v) => r.PrecipitableWater   = v),           // kg/m² ≈ mm (convective fuel; no CIN in the oper stream)
         // ── Added 2026-05-31: multi-level pressure fields (850/700/500 hPa) ──
         // levtype=pl entries. `gh` is geopotential height in gpm (matches OM's
         // geopotential_height); `z` (geopotential, m²/s²) is also published but
@@ -378,6 +379,7 @@ public sealed class EcmwfClient
                 // VarMap's ×100 (IFS tcc is a fraction); clamp to [0,100].
                 CloudCover = NormalizeCloudPct(raw.CloudCover, modelId),
                 Cape = raw.Cape,
+                PrecipitableWater = raw.PrecipitableWater,
                 // tp is accumulated-since-start; deaccumulate to the per-window
                 // total. 3d (exact precip) consumes ifs_oper/aifs_oper precip, so
                 // this needs a coordinated backfill + 3d retrain to keep the
@@ -645,6 +647,7 @@ public sealed class EcmwfClient
         public double? PressureMsl { get; set; }
         public double? CloudCover { get; set; }
         public double? Cape { get; set; }
+        public double? PrecipitableWater { get; set; }
         public double? Precipitation { get; set; }
         public double? ShortwaveRadiation { get; set; }
         // Pressure-level (850/700/500 hPa); wind kept as U/V per level.

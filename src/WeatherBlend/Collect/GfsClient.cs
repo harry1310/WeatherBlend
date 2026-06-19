@@ -39,6 +39,8 @@ public sealed class GfsClient
         new VarMap("PRMSL:mean sea level",   (r, v) => r.PressureMsl = v / 100.0),      // Pa→hPa
         new VarMap("TCDC:entire atmosphere", (r, v) => r.CloudCover = v),
         new VarMap("CAPE:surface",           (r, v) => r.Cape = v),
+        new VarMap("PWAT:entire atmosphere", (r, v) => r.PrecipitableWater = v),     // kg/m² ≈ mm (convective fuel)
+        new VarMap("CIN:surface",            (r, v) => r.ConvectiveInhibition = v),  // J/kg (convective lid)
         // ── Added 2026-05-04: variables that unlock new training surfaces ──
         // VIS at surface in metres — direct mist/fog signal, replaces the
         // Espy proxy in the home-page low-cloud badge once GFS rows exist
@@ -220,6 +222,8 @@ public sealed class GfsClient
                 CloudCover = raw.CloudCover,
                 CloudCoverLow = raw.CloudCoverLow,
                 Cape = raw.Cape,
+                PrecipitableWater = raw.PrecipitableWater,
+                ConvectiveInhibition = raw.ConvectiveInhibition,
                 Visibility = raw.Visibility,
                 Precipitation = raw.Precipitation,
                 CloudBaseHeightM = raw.CloudBaseHeightM,
@@ -283,6 +287,8 @@ public sealed class GfsClient
         public double? CloudCover { get; set; }
         public double? CloudCoverLow { get; set; }
         public double? Cape { get; set; }
+        public double? PrecipitableWater { get; set; }
+        public double? ConvectiveInhibition { get; set; }
         public double? Visibility { get; set; }
         public double? Precipitation { get; set; }
         public double? CloudBaseHeightM { get; set; }

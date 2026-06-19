@@ -109,6 +109,10 @@ VARIABLE_MAP: list[VarSpec] = [
     VarSpec("cloud_amount_of_medium_cloud",                       "medium_type_cloud_area_fraction", "CloudCoverMid",  lambda x: x * 100.0),
     VarSpec("cloud_amount_of_high_cloud",                         "high_type_cloud_area_fraction",   "CloudCoverHigh", lambda x: x * 100.0),
     VarSpec("CAPE_surface",                                       "atmosphere_convective_available_potential_energy", "Cape", None),
+    # CIN (convective lid) — global only; the UKV 2km dataset does NOT publish
+    # CIN_surface (404), so it's absent from met_office_ukv_archive_backfill.py.
+    # PWAT is not published by Met Office at all (no precipitable-water file).
+    VarSpec("CIN_surface",                                        "atmosphere_convective_inhibition", "ConvectiveInhibition", None),
     VarSpec("visibility_at_screen_level",                         "visibility_in_air",     "Visibility",         None),
     VarSpec("radiation_flux_in_shortwave_direct_downward_at_surface", "surface_direct_downwelling_shortwave_flux_in_air", "DirectRadiation", None),
 ]

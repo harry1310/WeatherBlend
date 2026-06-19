@@ -50,6 +50,16 @@ public sealed class ForecastRow
     /// </summary>
     public double? PressureMsl { get; init; }
     public double? Cape { get; init; }
+    /// <summary>Precipitable water / total column water vapour (kg/m² ≈ mm) — the
+    /// convective "fuel" (CAPE is the trigger). Added 2026-06-19. GFS
+    /// (PWAT:entire atmosphere), GEFS (PWAT), ECMWF IFS (tcwv). Null for sources
+    /// that don't publish it (Met Office, AIFS, OM offset_day). Nullable for back-compat.</summary>
+    public double? PrecipitableWater { get; init; }
+    /// <summary>Convective inhibition (J/kg) — the "lid" that pairs with CAPE.
+    /// Added 2026-06-19. GFS (CIN:surface), GEFS (CIN:180-0 mb above ground),
+    /// Met Office global (CIN_surface). Null for ECMWF/AIFS/UKV/OM (not published).
+    /// Sign follows each source (typically ≤ 0). Nullable for back-compat.</summary>
+    public double? ConvectiveInhibition { get; init; }
     public double? Visibility { get; init; }
     public double? ShortwaveRadiation { get; init; }
     public double? DirectRadiation { get; init; }

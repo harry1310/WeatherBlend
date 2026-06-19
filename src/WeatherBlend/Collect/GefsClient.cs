@@ -61,6 +61,10 @@ public sealed class GefsClient
         new VarMap("APCP:surface:",          (r, v) => r.Precipitation       = v),           // mm (kg/m² ≡ mm)
         new VarMap("TCDC:entire atmosphere:",(r, v) => r.CloudCover          = v),
         new VarMap("DSWRF:surface:",         (r, v) => r.ShortwaveRadiation  = v),
+        new VarMap("PWAT:entire atmosphere", (r, v) => r.PrecipitableWater    = v),     // kg/m² ≈ mm (convective fuel)
+        // GEFS pgrb2a carries CIN at the 180-0 mb layer, NOT surface (no CIN:surface
+        // in the 'a' set) — different level from GFS's CIN:surface, same concept.
+        new VarMap("CIN:180-0 mb above ground:", (r, v) => r.ConvectiveInhibition = v), // J/kg (convective lid)
         // ── Added 2026-05-31: multi-level pressure fields (850/700/500 hPa) ──
         // pgrb2a 0.5° DOES carry the isobaric TMP/HGT/RH/UGRD/VGRD set (verified
         // against the live .idx), so the ensemble mean contributes the same
@@ -207,6 +211,8 @@ public sealed class GefsClient
                 CloudCover = raw.CloudCover,
                 Precipitation = raw.Precipitation,
                 ShortwaveRadiation = raw.ShortwaveRadiation,
+                PrecipitableWater = raw.PrecipitableWater,
+                ConvectiveInhibition = raw.ConvectiveInhibition,
                 Temperature850hPa = raw.Temperature850hPa,
                 Temperature700hPa = raw.Temperature700hPa,
                 Temperature500hPa = raw.Temperature500hPa,
@@ -273,6 +279,8 @@ public sealed class GefsClient
         public double? Precipitation;
         public double? CloudCover;
         public double? ShortwaveRadiation;
+        public double? PrecipitableWater;
+        public double? ConvectiveInhibition;
         // Pressure-level (850/700/500 hPa); wind kept as U/V per level.
         public double? Temperature850hPa;
         public double? Temperature700hPa;

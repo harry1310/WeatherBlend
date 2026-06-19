@@ -131,15 +131,18 @@ public sealed class OpenMeteoClient
         DateOnly endDate,
         CancellationToken ct)
     {
-        // Open-Meteo's Previous Runs endpoint rejects pressure-level (…hPa)
-        // variables with a 400 ("Cannot initialize SurfacePressureAndHeight-
-        // Variable … from invalid String value …"). Because one bad variable
-        // fails the whole multi-variable request, every previous-runs pull 400s
-        // and the refresh writes nothing (observed 2026-05-30, having worked the
-        // day before — an OM-side validation change). The live forecast endpoint
-        // still serves these; only previous_runs dropped them. Drop them here so
-        // the surface variables — the bulk of the offset_day archive — keep
-        // flowing; the hPa columns just come back null for offset_day rows.
+        // Pressure-level (…hPa) variables are NOT available via the Previous Runs
+        // offset_day mechanism: the request uses the `_previous_dayN` suffix form
+        // (e.g. temperature_850hPa_previous_day1), and OM 400s on that for hPa
+        // ("Cannot initialize SurfacePressureAndHeightVariable … from invalid
+        // String value …"). One bad variable fails the whole multi-variable
+        // request, so drop hPa here. NB the BASE names (temperature_850hPa) DO
+        // work on this endpoint — but only the suffix form yields offset_day rows,
+        // and the suffix form rejects hPa. Same applies to PWAT
+        // (total_column_integrated_water_vapour): accepted under the suffix form
+        // but returns null for every model, so it carries no offset_day signal
+        // (verified 2026-06-19). Upper-air + PWAT for training come from the
+        // S3/exact path, not here.
         var varList = variables
             .Where(v => !v.EndsWith("hPa", StringComparison.Ordinal))
             .ToArray();
