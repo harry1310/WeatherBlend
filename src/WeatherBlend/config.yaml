@@ -262,6 +262,14 @@ locations:
         - name: "south"
           aspectDeg: 180
 
+    # Davis WeatherLink (api.weatherlink.com v2) station for close, real-
+    # instrument truth (2026-06-19). NCI Gwennap Head sits on the cliff ~3 km
+    # SSE of Sennen Cove — far nearer than Culdrose METAR (~32 km) or the
+    # inland EA gauges (≥11 km). Hourly rows aggregated from the station's
+    # 15-min archive land under data/truth/weatherlink/. Credentials are global
+    # (see the weatherLink: block); only the station id is per-location.
+    weatherLinkStationId: "115072"   # NCI Gwennap Head
+
     # Culdrose (RNAS) is the nearest reliable METAR issuer (~32 km E); Newquay
     # (St Mawgan) is the fallback. Land's End (EGHC) is closer but doesn't issue
     # reliable routine METAR. METAR is per-ICAO so these partitions are new.
@@ -565,6 +573,21 @@ metOffice:
     - geohash: "gcj9q6"
       area: "Devon"
       label: "dunkeswell_aerodrome"
+
+# Davis WeatherLink (api.weatherlink.com v2) — close, real-instrument truth.
+# Per-location station ids live on each location's `weatherLinkStationId`
+# (sennen_cove → NCI Gwennap Head 115072). These are the GLOBAL credentials.
+# WeatherLink needs TWO secrets: api-key (a QUERY param) + X-Api-Secret (a
+# request HEADER). Per value the env var wins, the file is the fallback (same
+# pattern as Met Office / R2). The key file holds two lines:
+#   key=<api-key>
+#   secret=<api-secret>
+weatherLink:
+  enabled: true
+  apiKeyEnvVar: "WEATHERLINK_API_KEY"
+  apiSecretEnvVar: "WEATHERLINK_API_SECRET"
+  # Relative to cwd (repo root). Lives one level above the repo, outside git.
+  keyFile: "../WeatherLinkKey.txt"
 
 # HTTP client settings.
 http:

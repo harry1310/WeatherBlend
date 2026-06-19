@@ -37,6 +37,7 @@ public sealed class AppConfig
     public StorageConfig Storage { get; set; } = new();
     public HttpConfig Http { get; set; } = new();
     public MetOfficeConfig MetOffice { get; set; } = new();
+    public WeatherLinkConfig WeatherLink { get; set; } = new();
     public BlendersConfig Blenders { get; set; } = new();
     public DryWindowConfig DryWindow { get; set; } = new();
     public RockSurfaceConfig RockSurface { get; set; } = new();
@@ -115,6 +116,17 @@ public sealed class LocationConfig
     public double ElevationMeters { get; set; }
     public MetarConfig Metar { get; set; } = new();
     public RainfallConfig Rainfall { get; set; } = new();
+
+    /// <summary>
+    /// Optional Davis WeatherLink (api.weatherlink.com v2) station id for a
+    /// close, real-instrument truth source (2026-06-19). Set on
+    /// <c>sennen_cove</c> to NCI Gwennap Head ("115072"); generic so any
+    /// location can add one. Null/blank = no WeatherLink collection (collect +
+    /// backfill gate on it). The credentials are global (see
+    /// <see cref="AppConfig.WeatherLink"/>), only the station id is per-location.
+    /// YAML key: <c>weatherLinkStationId</c>.
+    /// </summary>
+    public string? WeatherLinkStationId { get; set; }
 
     /// <summary>
     /// Optional marine (sea-state) collection block — Sennen sea-state
@@ -341,6 +353,7 @@ public sealed class StorageConfig
     public string PredictionsPath { get; set; } = "data/predictions";
     public string ReportsPath { get; set; } = "data/reports";
     public string MetOfficeObsPath { get; set; } = "data/truth/met_office_obs";
+    public string WeatherLinkPath { get; set; } = "data/truth/weatherlink";
     public string MarinePath { get; set; } = "data/marine";
     public string WavesPath { get; set; } = "data/truth/waves";
 
@@ -418,6 +431,27 @@ public sealed class SupplementalObsGeohash
     /// Becomes the <c>LocationName</c> column value on stored rows and the
     /// <c>location=</c> hive partition under <c>MetOfficeObsPath</c>.</summary>
     public string Label { get; set; } = "";
+}
+
+/// <summary>
+/// Global Davis WeatherLink (api.weatherlink.com v2) credentials block — mirrors
+/// <see cref="MetOfficeConfig"/>. WeatherLink needs TWO secrets: an
+/// <c>api-key</c> query parameter and an <c>X-Api-Secret</c> request header. Per
+/// value the env var wins, the file is the fallback (see
+/// <see cref="WeatherLinkSecrets"/>). The key file holds two lines:
+/// <c>key=…</c> and <c>secret=…</c>. The per-location station id lives on
+/// <see cref="LocationConfig.WeatherLinkStationId"/>, not here.
+/// </summary>
+public sealed class WeatherLinkConfig
+{
+    public bool Enabled { get; set; } = true;
+    public string ApiKeyEnvVar { get; set; } = "WEATHERLINK_API_KEY";
+    public string ApiSecretEnvVar { get; set; } = "WEATHERLINK_API_SECRET";
+
+    // Relative to cwd (repo root). Keys live one level above the repo, outside
+    // git. Env vars win over the file; CI uses env vars only — the file fallback
+    // is purely local-dev convenience. Two lines: key=… / secret=…
+    public string KeyFile { get; set; } = "../WeatherLinkKey.txt";
 }
 
 public sealed class HttpConfig

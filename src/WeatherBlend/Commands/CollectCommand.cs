@@ -21,6 +21,7 @@ public sealed class CollectCommand
     private readonly MetOfficeObservationsClient _metOfficeObs;
     private readonly MarineClient _marine;
     private readonly BuoyClient _buoys;
+    private readonly WeatherLinkClient _weatherLink;
     private readonly ILogger<CollectCommand> _log;
 
     public CollectCommand(
@@ -32,6 +33,7 @@ public sealed class CollectCommand
         MetOfficeObservationsClient metOfficeObs,
         MarineClient marine,
         BuoyClient buoys,
+        WeatherLinkClient weatherLink,
         ILogger<CollectCommand> log)
     {
         _cfg = cfg;
@@ -42,6 +44,7 @@ public sealed class CollectCommand
         _metOfficeObs = metOfficeObs;
         _marine = marine;
         _buoys = buoys;
+        _weatherLink = weatherLink;
         _log = log;
     }
 
@@ -62,10 +65,22 @@ public sealed class CollectCommand
         // Office Obs stays primary-only because the geohash is pinned at
         // the AppConfig.MetOffice level — extending it would need a
         // per-location obsGeohash field.
-        var forecastErrors = 0;
-        var metarErrors    = 0;
-        var rainfallErrors = 0;
-        var marineErrors   = 0;
+        var forecastErrors    = 0;
+        var metarErrors       = 0;
+        var rainfallErrors    = 0;
+        var marineErrors      = 0;
+        var weatherLinkErrors = 0;
+
+        // WeatherLink (Davis) creds are global — resolve once. Null = no creds;
+        // the per-location pull then skips with a clear log (like Met Office obs).
+        var wlCfg = _cfg.WeatherLink;
+        var wlCreds = wlCfg.Enabled
+            ? WeatherLinkSecrets.TryLoad(wlCfg.ApiKeyEnvVar, wlCfg.ApiSecretEnvVar, wlCfg.KeyFile)
+            : null;
+        if (wlCfg.Enabled && wlCreds is null)
+            _log.LogInformation("  WeatherLink: no credentials ({KeyEnv}/{SecretEnv} or {File}); "
+                + "skipping all WeatherLink stations this cycle.",
+                wlCfg.ApiKeyEnvVar, wlCfg.ApiSecretEnvVar, wlCfg.KeyFile);
 
         // Temporary EA-rainfall bypass. The EA Hydrology readings API
         // (/id/measures/.../readings.json) can hang server-side for minutes
@@ -178,6 +193,34 @@ public sealed class CollectCommand
             // cycle is per-lead training data lost for good.
             if (location.Marine is not null)
                 marineErrors += await CollectMarineAsync(location, ct);
+
+            // WeatherLink (Davis) — real-instrument truth for locations with a
+            // weatherLinkStationId (Sennen → NCI Gwennap Head). Pull the recent
+            // ~24h window via /historic, aggregate to hourly, write. NON-CRITICAL
+            // like Met Office obs: a supplemental truth signal that nothing
+            // downstream consumes yet, so a WeatherLink hiccup must not fail the
+            // cycle or starve the predict chain. Skipped (no error) when the
+            // station id or creds are absent.
+            if (wlCreds is { } creds && !string.IsNullOrWhiteSpace(location.WeatherLinkStationId))
+            {
+                try
+                {
+                    var end = DateTimeOffset.UtcNow;
+                    var startWindow = end - WeatherLinkClient.MaxHistoricWindow;
+                    var rows = await _weatherLink.FetchHistoricAsync(
+                        location.Name, location.WeatherLinkStationId!,
+                        startWindow, end, creds.Key, creds.Secret, ct);
+                    await ParquetWriter.WriteWeatherLinkAsync(_cfg.Storage.WeatherLinkPath, rows, ct);
+                    _log.LogInformation("  {Loc}/WeatherLink {Station}: wrote {Rows} hourly rows",
+                        location.Name, location.WeatherLinkStationId, rows.Count);
+                }
+                catch (Exception ex)
+                {
+                    weatherLinkErrors++;
+                    _log.LogError(ex, "  {Loc}/WeatherLink {Station}: FAILED (non-fatal)",
+                        location.Name, location.WeatherLinkStationId);
+                }
+            }
         }
 
         var metOfficeErrors = await CollectMetOfficeAsync(ct);
@@ -186,6 +229,14 @@ public sealed class CollectCommand
             _log.LogWarning(
                 "  Marine: {N} pull(s) FAILED — non-critical, NOT failing the cycle (see ERR lines above)",
                 marineErrors);
+
+        // WeatherLink is NON-CRITICAL (supplemental truth, no predict/retrain
+        // consumer yet) — logged loudly but deliberately excluded from the exit
+        // code, exactly like Met Office obs and marine above.
+        if (weatherLinkErrors > 0)
+            _log.LogWarning(
+                "  WeatherLink: {N} pull(s) FAILED — non-critical, NOT failing the cycle (see ERR lines above)",
+                weatherLinkErrors);
 
         // Met Office Spot + Land Obs are NON-CRITICAL and deliberately excluded
         // from the exit code. Spot is a skill-page comparison line (not a blender

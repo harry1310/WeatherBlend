@@ -138,6 +138,16 @@ public static class Program
                 })
                 .AddStandardResilienceHandler();
 
+                // Davis WeatherLink v2 — supplemental real-instrument truth
+                // (NCI Gwennap Head near Sennen). Non-critical like the Met
+                // Office obs client; standard resilience profile.
+                services.AddHttpClient<WeatherLinkClient>(c =>
+                {
+                    c.Timeout = TimeSpan.FromSeconds(cfg.Http.TimeoutSeconds);
+                    c.DefaultRequestHeaders.UserAgent.ParseAdd(cfg.Http.UserAgent);
+                })
+                .AddStandardResilienceHandler();
+
                 // OGIMET: longer timeout, no aggressive retry — the rate limit means
                 // a hammered retry loop is the fastest way to get the IP blocked.
                 services.AddHttpClient<OgimetClient>(c =>
@@ -231,6 +241,7 @@ public static class Program
                 services.AddTransient<CollectCommand>();
                 services.AddTransient<MetOfficeBootstrapCommand>();
                 services.AddTransient<BackfillCommand>();
+                services.AddTransient<WeatherLinkBackfillCommand>();
                 services.AddTransient<GfsBackfillCommand>();
                 services.AddTransient<GefsBackfillCommand>();
                 services.AddTransient<EcmwfBackfillCommand>();
@@ -364,6 +375,30 @@ public static class Program
             Environment.ExitCode = await cmd.RunAsync(source, start, end, model, location, CancellationToken.None);
         }, sourceOpt, startOpt, endOpt, modelOpt, locationOpt);
         root.AddCommand(backfill);
+
+        // WeatherLink (Davis) historical backfill — pages 24h windows from
+        // --start to --end for each location with a weatherLinkStationId,
+        // aggregates the 15-min archive to hourly truth, writes per-day parquet.
+        var wlStartOpt = new Option<DateOnly>("--start", "Start date (yyyy-MM-dd), UTC")
+            { IsRequired = true };
+        var wlEndOpt = new Option<DateOnly>(
+            name: "--end",
+            description: "End date (yyyy-MM-dd), UTC inclusive (default: yesterday)",
+            getDefaultValue: () => DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-1)));
+        var wlLocationOpt = new Option<string?>(
+            name: "--location",
+            description: "Optional: backfill only this location name (matches AppConfig.Locations[].Name). Defaults to every location with a weatherLinkStationId.",
+            getDefaultValue: () => null);
+        var weatherLinkBackfill = new Command(
+            "weatherlink-backfill",
+            "Fetch historical Davis WeatherLink observations (24h windows → hourly truth) for configured stations")
+            { wlStartOpt, wlEndOpt, wlLocationOpt };
+        weatherLinkBackfill.SetHandler(async (start, end, location) =>
+        {
+            var cmd = host.Services.GetRequiredService<WeatherLinkBackfillCommand>();
+            Environment.ExitCode = await cmd.RunAsync(start, end, location, CancellationToken.None);
+        }, wlStartOpt, wlEndOpt, wlLocationOpt);
+        root.AddCommand(weatherLinkBackfill);
 
         var gfsStartOpt = new Option<DateOnly>("--start", "Start cycle date (yyyy-MM-dd), UTC")
             { IsRequired = true };

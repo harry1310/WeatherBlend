@@ -329,6 +329,48 @@ public static class ParquetWriter
         }
     }
 
+    /// <summary>
+    /// WeatherLink (Davis) hourly observation writer — real-instrument truth,
+    /// the sibling of <see cref="WriteMetOfficeObservationsAsync"/>. Partitioned
+    /// by location/date so each file holds at most 24 hourly rows. Merges with
+    /// any existing partition file, deduping on ObservedTimeUtc with last-write-
+    /// wins — rolling live windows + re-pulled backfill days overlap, so repeated
+    /// runs must be idempotent.
+    /// Path: location=.../date=&lt;yyyy-MM-dd&gt;/observations.parquet
+    /// </summary>
+    public static async Task WriteWeatherLinkAsync(
+        string basePath,
+        IEnumerable<WeatherLinkObservationRow> rows,
+        CancellationToken ct = default)
+    {
+        var rowList = rows as IReadOnlyList<WeatherLinkObservationRow> ?? rows.ToList();
+        if (rowList.Count == 0) return;
+
+        foreach (var group in rowList.GroupBy(r => new { r.LocationName, Date = r.ObservedTimeUtc.Date }))
+        {
+            var dateStr = group.Key.Date.ToString("yyyy-MM-dd");
+            var dir = Path.Combine(
+                basePath,
+                $"location={group.Key.LocationName}",
+                $"date={dateStr}");
+            Directory.CreateDirectory(dir);
+
+            var file = Path.Combine(dir, "observations.parquet");
+            var existing = File.Exists(file)
+                ? (await ParquetSerializer.DeserializeAsync<WeatherLinkObservationRow>(file, cancellationToken: ct)).ToList()
+                : new List<WeatherLinkObservationRow>();
+
+            var merged = existing
+                .Concat(group)
+                .GroupBy(r => r.ObservedTimeUtc)
+                .Select(g => g.Last())
+                .OrderBy(r => r.ObservedTimeUtc)
+                .ToList();
+
+            await ParquetSerializer.SerializeAsync(merged, file, cancellationToken: ct);
+        }
+    }
+
     public static async Task WriteObservationsAsync(
         string basePath,
         IReadOnlyList<ObservationRow> rows,
