@@ -87,15 +87,21 @@ public static class ClimbingConditions
     /// <summary>Solar elevation (deg) below which it's too dark to climb (gate).</summary>
     public const double DaylightMinElevationDeg = 0.0;
 
-    /// <summary>Friction multiplier when the rock is flagged "potentially greasy"
-    /// (within the greasy margin of dew point but not yet condensing).</summary>
-    public const double GreasyFrictionPenalty = 0.4;
-
-    /// <summary>Friction multiplier when the rock is condensing (wet). Heavier
-    /// than greasy, but deliberately NOT a hard Off-gate (Harry 2026-06-16): the
-    /// rock-temp calc is still being field-validated, so an uncertain "wet" call
-    /// drags the verdict to Poor rather than nuking it to Off.</summary>
+    /// <summary>Friction floor when the rock is condensing (margin ≤ 0): poor grip,
+    /// but deliberately NOT a hard Off-gate (Harry 2026-06-16) — the rock-temp calc
+    /// is still being field-validated, so an uncertain "wet" call drags the verdict
+    /// to Poor rather than nuking it to Off. Also the LOW anchor of the continuous
+    /// greasiness ramp (<see cref="GreasyFrictionMultiplier"/>); the old flat
+    /// "greasy ×0.4" multiplier is gone — greasiness now scales smoothly with the
+    /// rock-vs-dew margin (Harry 2026-06-20).</summary>
     public const double WetFrictionPenalty = 0.15;
+
+    /// <summary>Fallback greasy margin (°C) when a caller doesn't supply the
+    /// location's own value — matches the global RockSurface default (Bonehill 3.0).
+    /// Sennen passes a tighter 1.5 (maritime dew point sits close to the rock). Sets
+    /// the WIDTH of the greasiness ramp: friction recovers from the wet floor to no
+    /// penalty as the rock-vs-dew margin climbs from 0 to this.</summary>
+    public const double DefaultGreasyMarginC = 3.0;
 
     // Tier thresholds on the final 0–1 score.
     public const double PrimeAt = 0.70, GoodAt = 0.50, MarginalAt = 0.30;
@@ -118,6 +124,25 @@ public static class ClimbingConditions
         // grip but never a hard zero.
         var warm = Clamp01(1.0 - (rockTempC - RockFrictionPeakHiC) / RockFrictionWarmSpanC);
         return RockFrictionWarmFloorScore + (1.0 - RockFrictionWarmFloorScore) * warm;
+    }
+
+    /// <summary>Continuous greasiness friction multiplier from the rock-vs-dew
+    /// margin <paramref name="marginC"/> (= rock temp − dew point). Replaces the
+    /// old discrete tier multiplier — a hard ×0.4 greasy / ×0.15 wet / ×1.0 dry
+    /// step that snapped the verdict a whole tier when the margin crossed the
+    /// greasy threshold by a fraction of a degree (Sennen 08→09Z 2026-06-20: rock
+    /// warming pushed the margin 1.44→1.83 across the 1.5°C cut, vaulting
+    /// Marginal→Prime). Smoothstep from the wet floor
+    /// (<see cref="WetFrictionPenalty"/>) at margin ≤ 0 up to no penalty (1.0) at
+    /// margin ≥ <paramref name="greasyMarginC"/>, so friction recovers smoothly as
+    /// the rock warms clear of the dew point.</summary>
+    public static double GreasyFrictionMultiplier(double marginC, double greasyMarginC)
+    {
+        if (marginC <= 0.0) return WetFrictionPenalty;          // condensing — wet floor
+        if (marginC >= greasyMarginC) return 1.0;               // clear of dew — dry
+        var t = marginC / greasyMarginC;                        // 0..1 across the greasy band
+        var s = t * t * (3.0 - 2.0 * t);                        // smoothstep (flat ends, no kink)
+        return WetFrictionPenalty + (1.0 - WetFrictionPenalty) * s;
     }
 
     /// <summary>Air-temperature comfort: hump on <see cref="AirIdealLoC"/>..
@@ -173,7 +198,8 @@ public static class ClimbingConditions
         Factor? sea = null,
         bool surfaceWaterGate = false,
         double wetThresholdMm = RainWetThresholdMm,
-        DateTime? rainDryByUtc = null)
+        DateTime? rainDryByUtc = null,
+        double greasyMarginC = DefaultGreasyMarginC)
     {
         // ---- Gates (any one → Off) ----
         var (elevDeg, _) = SolarGeometry.SolarPosition(validUtc, latitude, longitude);
@@ -212,16 +238,16 @@ public static class ClimbingConditions
         {
             frictionScore = RockFriction(rk.RockSurfaceTempC);
             frictionDetail = $"rock {rk.RockSurfaceTempC:0.0}°C";
+            // Greasiness scales friction CONTINUOUSLY with the rock-vs-dew margin
+            // (smooth ramp: wet floor at margin ≤ 0 → no penalty at margin ≥
+            // greasyMarginC), so the verdict glides as the rock warms past the dew
+            // point instead of snapping a whole tier at the old hard greasy/dry cut
+            // (Harry 2026-06-20). The label still names the tier for the reader.
+            frictionScore *= GreasyFrictionMultiplier(rk.CondensationMarginC, greasyMarginC);
             if (rk.GreasinessStatus == RockSurfacePhysics.StatusPotentiallyGreasy)
-            {
-                frictionScore *= GreasyFrictionPenalty;
                 frictionDetail += ", greasy";
-            }
             else if (rk.GreasinessStatus == RockSurfacePhysics.StatusCondensation)
-            {
-                frictionScore *= WetFrictionPenalty;
                 frictionDetail += $", wet (≤ dew {rk.DewPointC:0.0}°C)";
-            }
         }
         else
         {

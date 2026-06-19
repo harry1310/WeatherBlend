@@ -211,7 +211,8 @@ public static partial class SitePages
                         p.ValidTimeUtc, input.Latitude, input.Longitude,
                         p.BlendTemperature, pWet, windMph, rk, sea,
                         surfaceWaterGate: surfaceWaterGate,
-                        rainDryByUtc: rainDryBy);
+                        rainDryByUtc: rainDryBy,
+                        greasyMarginC: input.RenderingFor?.GreasyMarginC ?? ClimbingConditions.DefaultGreasyMarginC);
                 }
                 tiles.Append(RenderHourTile(p, feelsLikeByValid, pwetByValid, lowCloudByValid, rockByValid,
                     seaSpec, waveByValid, windSpeedMsByValid, windDirDegByValid,

@@ -17,12 +17,26 @@ public class ClimbingConditionsTests
 
     private static SitePages.RockSurfaceForecastPoint Rock(
         double rockC, string greasy = "dry", double rainWaterMm = 0.0, double dewWaterMm = 0.0,
-        DateTime? validUtc = null) => new(
-        Version: "v1", PredictedAtUtc: Midday.AddDays(-1), ValidTimeUtc: validUtc ?? Midday, LeadHours: 24,
-        RockSurfaceTempC: rockC, AirTempC: rockC + 1, DewPointC: rockC - 3,
-        CondensationMarginC: 3, GreasinessStatus: greasy,
-        SurfaceWaterMm: rainWaterMm + dewWaterMm, RainWaterMm: rainWaterMm,
-        LocationName: "bonehill_rocks", Face: "");
+        DateTime? validUtc = null)
+    {
+        // Keep the condensation margin consistent with the greasiness status —
+        // the climbing index's friction penalty is now a continuous function of
+        // the rock-vs-dew margin (not the status string), so a representative
+        // margin per tier is what exercises it: condensation ⇒ margin ≤ 0;
+        // potentially_greasy ⇒ mid-band (< the 3.0 default greasy margin); dry ⇒ clear.
+        double margin = greasy switch
+        {
+            "condensation" => -0.5,
+            "potentially_greasy" => 1.0,
+            _ => 4.0,
+        };
+        return new(
+            Version: "v1", PredictedAtUtc: Midday.AddDays(-1), ValidTimeUtc: validUtc ?? Midday, LeadHours: 24,
+            RockSurfaceTempC: rockC, AirTempC: rockC + 1, DewPointC: rockC - margin,
+            CondensationMarginC: margin, GreasinessStatus: greasy,
+            SurfaceWaterMm: rainWaterMm + dewWaterMm, RainWaterMm: rainWaterMm,
+            LocationName: "bonehill_rocks", Face: "");
+    }
 
     // ---- Curve shapes ----
 
@@ -113,6 +127,59 @@ public class ClimbingConditionsTests
         wet.Score.Should().BeLessThan(greasy.Score, "wet rock is worse than merely greasy");
         wet.Factors.Single(f => f.Name == "Friction").Detail.Should().Contain("wet");
     }
+
+    // ---- Continuous greasiness ramp (no hard snap) ----
+
+    [Fact]
+    public void GreasyFrictionMultiplier_is_continuous_across_the_dry_threshold()
+    {
+        // The old hard cut jumped ×0.4 → ×1.0 at the greasy margin. The ramp must
+        // be continuous: a hair below the threshold ≈ a hair above (≈ 1.0).
+        const double g = 1.5;
+        var justUnder = ClimbingConditions.GreasyFrictionMultiplier(1.49, g);
+        var justOver  = ClimbingConditions.GreasyFrictionMultiplier(1.51, g);
+        justOver.Should().Be(1.0);
+        justUnder.Should().BeApproximately(1.0, 0.02);
+        (justOver - justUnder).Should().BeLessThan(0.05);
+    }
+
+    [Fact]
+    public void GreasyFrictionMultiplier_floors_at_wet_and_climbs_monotonically()
+    {
+        const double g = 1.5;
+        ClimbingConditions.GreasyFrictionMultiplier(0.0, g).Should().Be(ClimbingConditions.WetFrictionPenalty);
+        ClimbingConditions.GreasyFrictionMultiplier(-2.0, g).Should().Be(ClimbingConditions.WetFrictionPenalty);
+        ClimbingConditions.GreasyFrictionMultiplier(3.0, g).Should().Be(1.0);
+        // Strictly increasing across the band.
+        var prev = -1.0;
+        foreach (var m in new[] { 0.1, 0.4, 0.7, 1.0, 1.3 })
+        {
+            var v = ClimbingConditions.GreasyFrictionMultiplier(m, g);
+            v.Should().BeGreaterThan(prev);
+            prev = v;
+        }
+    }
+
+    [Fact]
+    public void Greasy_to_dry_no_longer_snaps_a_whole_tier_as_the_rock_warms()
+    {
+        // The Sennen 08→09Z case: rock warming nudged the margin 1.44 → 1.83 across
+        // the 1.5°C maritime greasy cut and the verdict vaulted Marginal→Prime. With
+        // the continuous ramp the two adjacent hours must sit close, not snap.
+        const double g = 1.5;
+        var eightZ = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6, RockMargin(15.0, 1.44), greasyMarginC: g);
+        var nineZ  = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6, RockMargin(15.4, 1.83), greasyMarginC: g);
+        (nineZ.Score - eightZ.Score).Should().BeLessThan(0.10, "the verdict should glide, not snap a tier");
+    }
+
+    // Rock point at an explicit condensation margin (dew = rock − margin), greasy
+    // status derived from the margin so the detail label stays sensible.
+    private static SitePages.RockSurfaceForecastPoint RockMargin(double rockC, double marginC) => new(
+        Version: "v1", PredictedAtUtc: Midday.AddDays(-1), ValidTimeUtc: Midday, LeadHours: 24,
+        RockSurfaceTempC: rockC, AirTempC: rockC + 1, DewPointC: rockC - marginC,
+        CondensationMarginC: marginC,
+        GreasinessStatus: marginC <= 0 ? "condensation" : marginC <= 1.5 ? "potentially_greasy" : "dry",
+        LocationName: "sennen_cove", Face: "south");
 
     // ---- End-to-end verdicts ----
 

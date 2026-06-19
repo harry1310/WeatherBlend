@@ -163,7 +163,11 @@ public static partial class SitePages
         // this location: rain-wet rock hard-gates Off (with a dry-by ETA), dew
         // stays a friction penalty. Mirrors rockSurface.surfaceWaterEnabled,
         // resolved per location. Default false = the pre-drying behaviour.
-        bool SurfaceWaterEnabled = false)
+        bool SurfaceWaterEnabled = false,
+        // Per-location greasy margin (°C) — the width of the climbing index's
+        // continuous greasiness friction ramp. Mirrors rockSurface.greasyMarginC
+        // (Bonehill 3.0, Sennen 1.5 maritime). Default matches the global block.
+        double GreasyMarginC = ClimbingConditions.DefaultGreasyMarginC)
     {
         /// <summary>True iff <paramref name="tab"/> is in <see cref="Tabs"/> (case-insensitive).</summary>
         public bool HasTab(string tab) =>

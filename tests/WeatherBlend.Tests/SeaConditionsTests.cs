@@ -64,6 +64,25 @@ public class SeaConditionsTests
     }
 
     [Fact]
+    public void OnshoreWeight_feathers_the_sector_edge_instead_of_snapping()
+    {
+        // Sector 225–335°. Old behaviour: 1.0 at 335°, 0.0 at 336° — a unit jump
+        // that snapped the Sea factor as the wind backed across the edge. Now it
+        // ramps smoothly: full weight well inside, ~half at the edge, fading out.
+        SeaConditions.OnshoreWeight(280, 225, 335).Should().Be(1.0);   // well inside
+        SeaConditions.OnshoreWeight(90, 225, 335).Should().Be(0.0);    // well outside
+        var inEdge  = SeaConditions.OnshoreWeight(334, 225, 335);
+        var atEdge  = SeaConditions.OnshoreWeight(335, 225, 335);
+        var outEdge = SeaConditions.OnshoreWeight(336, 225, 335);
+        atEdge.Should().BeApproximately(0.5, 0.05);                    // edge ≈ half weight
+        inEdge.Should().BeGreaterThan(atEdge);
+        atEdge.Should().BeGreaterThan(outEdge);
+        // No snap: a 1°-either-side wind shift moves the weight only a little
+        // (was a full 1.0 jump).
+        (inEdge - outEdge).Should().BeLessThan(0.25);
+    }
+
+    [Fact]
     public void Spray_factor_drags_the_overall_conditions_verdict()
     {
         // A cold, dry, light-wind day that would otherwise be fine, but heavy

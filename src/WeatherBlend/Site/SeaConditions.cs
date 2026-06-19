@@ -38,7 +38,35 @@ public static class SeaConditions
     /// <summary>Hs (m) at/above which wave energy fully enables spray.</summary>
     public const double SprayHsFullM = 1.8;
 
+    /// <summary>Full angular width (deg) of the soft edge on the onshore sector —
+    /// the spray drive ramps 0↔1 across this band straddling each sector edge
+    /// rather than flipping fully on/off as the wind direction crosses it (Harry
+    /// 2026-06-20, same anti-snap fix as the rock greasiness ramp). ±10° of
+    /// wind-direction fuzz is well within NWP directional error.</summary>
+    public const double SprayOnshoreFeatherDeg = 20.0;
+
     private static double Clamp01(double x) => Math.Clamp(x, 0.0, 1.0);
+
+    /// <summary>Soft onshore membership in [0,1]: 1.0 well inside the sector,
+    /// ramping smoothly to 0.0 just outside via a <see cref="SprayOnshoreFeatherDeg"/>-
+    /// wide smoothstep feather centred on the nearest sector edge. The Alerts badge
+    /// keeps the hard <see cref="SeaStateBadge.DirectionInSector"/> test (a discrete
+    /// trigger); this graded version stops a wind shift across the edge snapping the
+    /// Sea quality factor on/off.</summary>
+    internal static double OnshoreWeight(double dirDeg, double fromDeg, double toDeg)
+    {
+        static double Norm(double d) => ((d % 360.0) + 360.0) % 360.0;
+        var w = Norm(toDeg - fromDeg);                 // sector width, clockwise from→to
+        if (w <= 0.0) return 0.0;                       // degenerate / empty sector
+        var a = Norm(dirDeg - fromDeg);                 // wind position from the From edge
+        // Signed penetration depth (deg): ≥0 inside (distance to nearest edge),
+        // <0 outside (−distance to nearest edge).
+        var depth = a <= w
+            ? Math.Min(a, w - a)
+            : -Math.Min(a - w, 360.0 - a);
+        var t = Clamp01(depth / SprayOnshoreFeatherDeg + 0.5);
+        return t * t * (3.0 - 2.0 * t);                 // smoothstep (flat ends, no kink)
+    }
 
     /// <summary>
     /// Onshore-spray QUALITY factor for one hour, or null when the spray inputs
@@ -59,7 +87,7 @@ public static class SeaConditions
         if (windMph is not double mph || windDirDeg is not double dir || waveHeightM is not double hs)
             return null;
 
-        var onshore = SeaStateBadge.DirectionInSector(dir, spec.WindSectorFromDeg, spec.WindSectorToDeg) ? 1.0 : 0.0;
+        var onshore = OnshoreWeight(dir, spec.WindSectorFromDeg, spec.WindSectorToDeg);
         var windStrength = Clamp01((mph - SprayWindOnsetMph) / (SprayWindHeavyMph - SprayWindOnsetMph));
         var waveAmt = Clamp01((hs - SprayHsMinM) / (SprayHsFullM - SprayHsMinM));
         var sprayBad = onshore * windStrength * waveAmt;

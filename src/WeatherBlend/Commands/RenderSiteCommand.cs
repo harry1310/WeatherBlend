@@ -283,7 +283,10 @@ public sealed class RenderSiteCommand
             // Drying-model gate, resolved per location (global block + this
             // location's rockSurface override). Default false keeps the verdict
             // on the pre-drying behaviour until a location is calibrated + flipped.
-            SurfaceWaterEnabled: _cfg.RockSurface.ResolveFor(loc.RockSurface).SurfaceWaterEnabled)).ToList();
+            SurfaceWaterEnabled: _cfg.RockSurface.ResolveFor(loc.RockSurface).SurfaceWaterEnabled,
+            // Greasy-margin width for the climbing index's continuous greasiness
+            // ramp, resolved per location (global block + this location's override).
+            GreasyMarginC: _cfg.RockSurface.ResolveFor(loc.RockSurface).GreasyMarginC)).ToList();
 
         // Top-level model summaries / feature spec rows surface ALL locations'
         // active versions on /specs.html. Per-loc Models page recomputes with
