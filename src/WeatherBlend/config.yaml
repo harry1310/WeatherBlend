@@ -246,6 +246,14 @@ locations:
       enabled: true
       fSky: 0.5
       greasyMarginC: 1.5
+      # Drying model LIVE for Sennen too (2026-06-19). The rain Off-gate + dew +
+      # latent feedback are the same physics as Bonehill (no guessed numbers).
+      # Spray-as-film-wetting is still NOT modelled (no deposition coefficient) —
+      # but that's covered for the verdict by the index's separate Spray quality
+      # factor (SeaConditions), so spray-soaked rock isn't falsely called "good";
+      # it just won't trigger the rain Off-gate. Caveat: Sennen rock-temp isn't
+      # IR-validated yet — tomorrow's readings validate the Ts the drying VPD rides on.
+      surfaceWaterEnabled: true
       faces:
         - name: "west"
           aspectDeg: 270

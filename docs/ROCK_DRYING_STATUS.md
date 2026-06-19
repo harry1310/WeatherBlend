@@ -1,8 +1,11 @@
 # Rock-surface drying model — status (Phase A + B)
 
 _Built overnight 2026-06-16; coefficients literature-grounded and **enabled for
-Bonehill 2026-06-19** (Sennen still off — no spray coefficient). Behind a
-per-location config flag (`surfaceWaterEnabled`), default off elsewhere._
+Bonehill AND Sennen 2026-06-19**. Spray-as-film-wetting is still not modelled at
+Sennen (no coefficient), but the rain Off-gate + dew + drying physics are the
+same everywhere, and spray's effect on the verdict is carried by the separate
+Spray quality factor. Behind a per-location config flag (`surfaceWaterEnabled`),
+default off elsewhere._
 
 ## What it does
 
