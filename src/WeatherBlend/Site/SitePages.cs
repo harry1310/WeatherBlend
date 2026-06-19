@@ -168,7 +168,11 @@ public static partial class SitePages
         // Per-location greasy margin (°C) — the width of the climbing index's
         // continuous greasiness friction ramp. Mirrors rockSurface.greasyMarginC
         // (Bonehill 3.0, Sennen 1.5 maritime). Default matches the global block.
-        double GreasyMarginC = ClimbingConditions.DefaultGreasyMarginC)
+        double GreasyMarginC = ClimbingConditions.DefaultGreasyMarginC,
+        // Per-location wind-exposure multiplier for the climbing index's wind
+        // factor (mirrors config windExposure). 1.0 = the exposed-tor curve as-is
+        // (Bonehill); sheltered crags scale down (Sennen ≈ 0.65).
+        double WindExposure = 1.0)
     {
         /// <summary>True iff <paramref name="tab"/> is in <see cref="Tabs"/> (case-insensitive).</summary>
         public bool HasTab(string tab) =>

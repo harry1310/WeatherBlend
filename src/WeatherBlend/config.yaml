@@ -203,6 +203,13 @@ locations:
     # rock-temp (S5). Single verdict per hour until then (per-face needs rock).
     showClimbingConditions: true
 
+    # Wind-exposure multiplier for the climbing index (Harry 2026-06-20): the
+    # wind-comfort curve is calibrated to the exposed Bonehill tor, but Sennen's
+    # cove is far more sheltered — 20 mph here is comfortable. Scale the forecast
+    # wind to ~⅔ before the comfort curve so wind stops being a false limiter.
+    # DRAFT — tune against on-site feel. Bonehill omits this (default 1.0).
+    windExposure: 0.65
+
     # overview: omitted → uses the shared "climbing range" (05:00–20:00 UTC),
     # aligned with Bonehill (was 06:00–21:00 here).
 

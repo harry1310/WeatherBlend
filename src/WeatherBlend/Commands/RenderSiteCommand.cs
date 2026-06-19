@@ -287,7 +287,10 @@ public sealed class RenderSiteCommand
             SurfaceWaterEnabled: _cfg.RockSurface.ResolveFor(loc.RockSurface).SurfaceWaterEnabled,
             // Greasy-margin width for the climbing index's continuous greasiness
             // ramp, resolved per location (global block + this location's override).
-            GreasyMarginC: _cfg.RockSurface.ResolveFor(loc.RockSurface).GreasyMarginC)).ToList();
+            GreasyMarginC: _cfg.RockSurface.ResolveFor(loc.RockSurface).GreasyMarginC,
+            // Wind-exposure multiplier for the climbing index's wind factor
+            // (1.0 = exposed-tor curve as-is; sheltered crags scale down).
+            WindExposure: loc.WindExposure)).ToList();
 
         // Top-level model summaries / feature spec rows surface ALL locations'
         // active versions on /specs.html. Per-loc Models page recomputes with

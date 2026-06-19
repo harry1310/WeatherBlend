@@ -176,6 +176,15 @@ public sealed class LocationConfig
     /// </summary>
     public bool ShowClimbingConditions { get; set; }
 
+    /// <summary>
+    /// Wind-exposure multiplier applied to the forecast wind speed before the
+    /// climbing index's wind-comfort curve (Harry 2026-06-20). The curve itself
+    /// is calibrated to the exposed Bonehill tor, so 1.0 (the default) = no
+    /// change; sheltered crags scale DOWN (Sennen ≈ 0.65 — the cove takes ~⅓ off
+    /// the forecast 10 m wind). YAML key: <c>windExposure</c>.
+    /// </summary>
+    public double WindExposure { get; set; } = 1.0;
+
     /// <summary>True iff <paramref name="tab"/> appears in <see cref="Tabs"/> (case-insensitive).</summary>
     public bool HasTab(string tab) =>
         Tabs.Any(t => string.Equals(t, tab, StringComparison.OrdinalIgnoreCase));

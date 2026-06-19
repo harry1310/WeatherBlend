@@ -181,6 +181,35 @@ public class ClimbingConditionsTests
         GreasinessStatus: marginC <= 0 ? "condensation" : marginC <= 1.5 ? "potentially_greasy" : "dry",
         LocationName: "sennen_cove", Face: "south");
 
+    // ---- Per-location wind exposure ----
+
+    [Fact]
+    public void Wind_exposure_scales_the_forecast_wind_before_the_comfort_curve()
+    {
+        // Same 20 mph forecast: an exposed crag (1.0) scores it worse than a
+        // sheltered one (0.65), because sheltering scales the wind down first.
+        var exposed   = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 20, Rock(5), windExposure: 1.0);
+        var sheltered = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 20, Rock(5), windExposure: 0.65);
+
+        double WindScore(ClimbingConditions.Result r) => r.Factors.Single(f => f.Name == "Wind").Score;
+        WindScore(sheltered).Should().BeGreaterThan(WindScore(exposed));
+        // Sheltered 20 mph scores like a lower wind: equal to the same crag fed
+        // the already-scaled 13 mph at full exposure.
+        var equivalent = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 20 * 0.65, Rock(5), windExposure: 1.0);
+        WindScore(sheltered).Should().BeApproximately(WindScore(equivalent), 1e-9);
+        // The sheltered detail surfaces the effective wind; the exposed one doesn't.
+        sheltered.Factors.Single(f => f.Name == "Wind").Detail.Should().Contain("here");
+        exposed.Factors.Single(f => f.Name == "Wind").Detail.Should().NotContain("here");
+    }
+
+    [Fact]
+    public void Wind_exposure_default_is_neutral()
+    {
+        var a = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 18, Rock(5));
+        var b = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 18, Rock(5), windExposure: 1.0);
+        a.Score.Should().Be(b.Score);
+    }
+
     // ---- End-to-end verdicts ----
 
     [Fact]

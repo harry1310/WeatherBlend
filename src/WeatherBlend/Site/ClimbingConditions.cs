@@ -199,7 +199,8 @@ public static class ClimbingConditions
         bool surfaceWaterGate = false,
         double wetThresholdMm = RainWetThresholdMm,
         DateTime? rainDryByUtc = null,
-        double greasyMarginC = DefaultGreasyMarginC)
+        double greasyMarginC = DefaultGreasyMarginC,
+        double windExposure = 1.0)
     {
         // ---- Gates (any one → Off) ----
         var (elevDeg, _) = SolarGeometry.SolarPosition(validUtc, latitude, longitude);
@@ -259,7 +260,15 @@ public static class ClimbingConditions
         factors.Add(new Factor("Air temp", AirComfort(airTempC), $"{airTempC:0.0}°C"));
 
         if (windMph is double mph)
-            factors.Add(new Factor("Wind", WindComfort(mph), $"{mph:0} mph"));
+        {
+            // Per-location exposure scales the forecast wind before the comfort
+            // curve (the curve is tuned to the exposed tor; sheltered crags scale
+            // down). Detail shows the forecast wind, plus the effective sheltered
+            // wind the score actually used when exposure ≠ 1.
+            var effMph = mph * windExposure;
+            var windDetail = windExposure == 1.0 ? $"{mph:0} mph" : $"{mph:0} mph (≈{effMph:0} mph here)";
+            factors.Add(new Factor("Wind", WindComfort(effMph), windDetail));
+        }
 
         if (pWet is double pwet)
             factors.Add(new Factor("Dry", Clamp01(1.0 - pwet), $"P(wet) {pwet * 100:0}%"));
