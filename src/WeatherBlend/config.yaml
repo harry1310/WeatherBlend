@@ -75,6 +75,23 @@ locations:
         - id: "f0676423-f697-4dec-8958-440f335cce9a"
           name: "Princetown"
 
+    # Rock surface modelled as a single SUNLIT VERTICAL face (2026-06-20). The
+    # whole-crag horizontal mode ran ~4°C warm vs the vertical rock climbers are
+    # actually on — IR-gun field check 18 Jun 12Z (docs/ROCK_IR_CALIBRATION.md):
+    # horizontal-in-sun 25°C, vertical-in-sun 20°C, vertical-in-shade 18°C, vs the
+    # model's whole-crag 23.6°C. A south-facing (180°) vertical wall is the
+    # sunlit-aspect proxy until real per-route bearings are surveyed. fSky 0.5: a
+    # vertical wall sees ~half sky / half ground, so it doesn't cool below air in
+    # shade — matching the 18°C (≈ air+2) shaded reading, which the whole-crag
+    # fSky 1.0 would over-cool. directBeamFactor is ignored in face mode (the
+    # per-face projection handles beam geometry directly).
+    rockSurface:
+      fSky: 0.5
+      faces:
+        - name: "sunlit"
+          aspectDeg: 180   # south — sunlit vertical proxy; real bearings TODO
+          slopeDeg: 90     # vertical wall (default, explicit)
+
   # Membury, East Devon — added 2026-05-11. Lowland village (~120m
   # elevation), valley climate (lower wet rate than Dartmoor's moor),
   # ~equilateral triangulation by 3 EA gauges at 6-7 km radius
