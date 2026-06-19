@@ -21,6 +21,9 @@ namespace WeatherBlend.Models;
 ///   <item>RainRateMmHr — mm/hr, the hour's peak rate</item>
 ///   <item>WindSpeed10m / WindGust10m — m/s (WeatherLink delivers mph)</item>
 ///   <item>WindDirection10m — degrees [0,360), circular mean over the hour</item>
+///   <item>SolarRadiation — W/m² (hour mean). NOTE: only populated if the
+///     station has a calibrated solar sensor; many citizen stations report a raw
+///     voltage but no <c>solar_rad_avg</c>, so this lands null for them.</item>
 /// </list>
 /// </summary>
 public sealed class WeatherLinkObservationRow
@@ -46,4 +49,5 @@ public sealed class WeatherLinkObservationRow
     public double? WindSpeed10m { get; init; }
     public double? WindGust10m { get; init; }
     public double? WindDirection10m { get; init; }
+    public double? SolarRadiation { get; init; }
 }

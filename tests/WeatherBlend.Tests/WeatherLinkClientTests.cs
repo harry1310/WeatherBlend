@@ -127,7 +127,7 @@ public class WeatherLinkClientTests
                 TempAvgC: null, TempHiC: null, TempLoC: null,
                 HumidityPct: 80, DewPointC: null,
                 RainfallMm: 0.5, RainRateMmHr: 1.0,
-                WindSpeedMs: 3.0, WindGustMs: 5.0, WindDirDeg: 90),
+                WindSpeedMs: 3.0, WindGustMs: 5.0, WindDirDeg: 90, SolarRadWm2: null),
         };
 
         WeatherLinkClient.AggregateHourly(records, Loc, Station).Should().BeEmpty();

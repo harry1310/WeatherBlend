@@ -136,7 +136,8 @@ public sealed class WeatherLinkClient
                     RainRateMmHr: GetDouble(rec, "rain_rate_hi_mm"),
                     WindSpeedMs: MphToMs(GetDouble(rec, "wind_speed_avg")),
                     WindGustMs: MphToMs(GetDouble(rec, "wind_speed_hi")),
-                    WindDirDeg: GetDouble(rec, "wind_dir_of_prevail")));
+                    WindDirDeg: GetDouble(rec, "wind_dir_of_prevail"),
+                    SolarRadWm2: GetDouble(rec, "solar_rad_avg")));
             }
         }
 
@@ -180,6 +181,7 @@ public sealed class WeatherLinkClient
                 WindSpeed10m = Mean(hourRecords.Select(r => r.WindSpeedMs)),
                 WindGust10m = Max(hourRecords.Select(r => r.WindGustMs)),
                 WindDirection10m = CircularMeanDegrees(hourRecords.Select(r => r.WindDirDeg)),
+                SolarRadiation = Mean(hourRecords.Select(r => r.SolarRadWm2)),
             });
         }
 
@@ -198,7 +200,8 @@ public sealed class WeatherLinkClient
         double? RainRateMmHr,
         double? WindSpeedMs,
         double? WindGustMs,
-        double? WindDirDeg);
+        double? WindDirDeg,
+        double? SolarRadWm2);
 
     // ---- aggregation helpers (null-safe; null if no non-null values) ----------
 

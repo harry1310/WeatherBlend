@@ -17,6 +17,13 @@ locations:
     longitude: -3.7931
     elevationMeters: 393
 
+    # Manaton WeatherLink station (Davis, station 197218, ~4.2km N, real terrain
+    # ~345m ≈ Bonehill's elevation): the closest real obs to the tor, a live
+    # verification truth + wind/humidity/dew for the climbing index. Hourly rows
+    # land under data/truth/weatherlink/. Creds are global (weatherLink: block).
+    # Archive starts ~Nov 2024; solar present but uncalibrated by the owner (null).
+    weatherLinkStationId: "197218"   # Manaton
+
     # Phase D nav tabs (2026-05-20). Bonehill is the full-stack location —
     # temperature, rain, dry-window forecasts, plus skill + models. Listed
     # order matches the site-nav left-to-right.
