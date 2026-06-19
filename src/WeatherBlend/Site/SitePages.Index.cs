@@ -217,7 +217,7 @@ public static partial class SitePages
                 tiles.Append(RenderHourTile(p, feelsLikeByValid, pwetByValid, lowCloudByValid, rockByValid,
                     seaSpec, waveByValid, windSpeedMsByValid, windDirDegByValid,
                     input.WindGustByValidMs, conditions,
-                    input.RenderingFor?.CloudFeatureNoun ?? "tor", popoverId++));
+                    input.RenderingFor?.CloudFeatureNoun ?? "the hilltops", popoverId++));
             }
             tilesHtml = string.Create(Ci, $"<div class=\"forecast-grid\">{tiles}</div>");
         }

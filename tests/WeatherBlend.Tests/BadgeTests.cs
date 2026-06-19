@@ -399,7 +399,7 @@ public class BadgeTests
         };
         var amberHtml = SitePages.RenderIndex(oneSignal, dayOffset: 0);
         amberHtml.Should().Contain("s-amber").And.Contain("Low cloud");
-        amberHtml.Should().Contain("cloud base below tor").And.NotContain("mist (vis");
+        amberHtml.Should().Contain("cloud base below the hilltops").And.NotContain("mist (vis");
 
         // Both signals → red pill, both pop-out lines retained.
         var bothSignals = MakeTileInput(spec: null) with
@@ -412,7 +412,7 @@ public class BadgeTests
         };
         var redHtml = SitePages.RenderIndex(bothSignals, dayOffset: 0);
         redHtml.Should().Contain("s-red");
-        redHtml.Should().Contain("mist (vis").And.Contain("cloud base below tor");
+        redHtml.Should().Contain("mist (vis").And.Contain("cloud base below the hilltops");
     }
 
     [Fact]

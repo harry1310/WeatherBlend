@@ -273,12 +273,13 @@ public sealed class RenderSiteCommand
                     WindSectorToDeg: ssb.WindSectorToDeg)
                 : null,
             ShowClimbingConditions: loc.ShowClimbingConditions,
-            // Low-cloud alert noun ("cloud base below ___"): a sea cliff for
-            // marine locations, a tor for the upland climbing crags, and "the
-            // hilltops" for lowland sites (e.g. Membury, a 120m village ringed
-            // by higher ground — calling it a "tor" was just a stale default).
-            CloudFeatureNoun: loc.Marine?.SeaStateBadge is not null ? "cliff"
-                            : loc.ShowClimbingConditions ? "tor"
+            // Low-cloud alert noun ("cloud base below ___"): "tor" only for an
+            // INLAND climbing crag (Bonehill); every other location — marine
+            // crags (Sennen: Harry prefers "hilltops" over "cliff" for the
+            // inland high ground the cloud actually sits on, 2026-06-20) and
+            // lowland sites (Membury) — uses the default "the hilltops".
+            CloudFeatureNoun: loc.ShowClimbingConditions && loc.Marine?.SeaStateBadge is null
+                            ? "tor"
                             : "the hilltops",
             // Drying-model gate, resolved per location (global block + this
             // location's rockSurface override). Default false keeps the verdict

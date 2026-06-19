@@ -156,9 +156,10 @@ public static partial class SitePages
         VillageRainSpec? VillageRain = null,
         SeaStateBadgeSpec? SeaStateBadge = null,
         bool ShowClimbingConditions = false,
-        // Terrain noun for the low-cloud alert wording ("cloud base below the
-        // {tor|cliff}") — a Dartmoor tor vs a sea cliff. Defaults to "tor".
-        string CloudFeatureNoun = "tor",
+        // Terrain noun for the low-cloud alert wording ("cloud base below ___").
+        // "tor" for an inland climbing crag (Bonehill); default "the hilltops"
+        // for everything else (Sennen, Membury, lowland sites).
+        string CloudFeatureNoun = "the hilltops",
         // Whether the rock-surface drying model drives the climbing verdict for
         // this location: rain-wet rock hard-gates Off (with a dry-by ETA), dew
         // stays a friction penalty. Mirrors rockSurface.surfaceWaterEnabled,
