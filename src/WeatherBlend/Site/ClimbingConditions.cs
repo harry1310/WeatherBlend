@@ -344,10 +344,18 @@ public static class ClimbingConditions
             frictionScore *= Math.Min(dewGreasy, saltGreasy);
             if (saltGreasy < dewGreasy)
                 frictionDetail += $", salt-damp (RH {rhPct:0}%)";
-            else if (rk.GreasinessStatus == RockSurfacePhysics.StatusPotentiallyGreasy)
-                frictionDetail += ", greasy";
-            else if (rk.GreasinessStatus == RockSurfacePhysics.StatusCondensation)
-                frictionDetail += $", wet (≤ dew {rk.DewPointC:0.0}°C)";
+            else if (dewGreasy < 1.0)
+            {
+                // Within the greasy band (rock within greasyMarginC of the dew point):
+                // ALWAYS name the dew point, not just when condensing — if friction is
+                // limiting, the reader needs the rock-vs-dew gap to see why (Harry
+                // 2026-06-20). ≤ 0 margin = condensing (dew at/above rock); 0–band =
+                // greasy-but-above with the gap spelt out.
+                if (rk.CondensationMarginC <= 0.0)
+                    frictionDetail += $", wet (≤ dew {rk.DewPointC:0.0}°C)";
+                else
+                    frictionDetail += $", greasy (dew {rk.DewPointC:0.0}°C, {rk.CondensationMarginC:0.0}°C off)";
+            }
 
             // Rain film in the damp-drying band (below the Off gate) — a graded
             // friction penalty that eases as the slab dries, with the wet-event

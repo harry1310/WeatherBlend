@@ -133,6 +133,20 @@ public class ClimbingConditionsTests
         wet.Factors.Single(f => f.Name == "Friction").Detail.Should().Contain("wet");
     }
 
+    [Fact]
+    public void Greasy_band_above_the_dew_point_still_names_the_dew_point()
+    {
+        // In the greasy band but rock still ABOVE the dew point: the friction detail
+        // must name the dew point (and the gap), not just say "greasy" — if friction
+        // is the limiting factor the reader needs the rock-vs-dew margin to see why,
+        // as soon as we're in the band, not only once condensing (Harry 2026-06-20).
+        var r = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6, RockMargin(15.0, 1.0));
+        var detail = r.Factors.Single(f => f.Name == "Friction").Detail;
+        detail.Should().Contain("greasy");
+        detail.Should().Contain("dew");
+        detail.Should().Contain("14.0", "dew = rock 15.0 − margin 1.0");
+    }
+
     // ---- Continuous greasiness ramp (no hard snap) ----
 
     [Fact]
