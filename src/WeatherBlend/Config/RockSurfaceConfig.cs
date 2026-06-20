@@ -93,9 +93,10 @@ public sealed class RockSurfaceConfig
     /// (default) the rock model still WRITES the wetness columns for inspection,
     /// but the climbing index IGNORES them — the existing greasy/condensation
     /// friction behaviour stands. Flip true (per location, via the override)
-    /// once the evaporation knobs below are calibrated: then RAIN-wetted rock
-    /// hard-gates the verdict Off (with a dry-by ETA) and the water film drives
-    /// the friction penalty. Overridable so it can be enabled location-by-location.</summary>
+    /// once the evaporation knobs below are calibrated: then genuinely-wet RAIN-
+    /// wetted rock gates the verdict Off and the verdict climbs back up the tiers
+    /// as the film dries (Harry 2026-06-20 — a graded ladder, not the old Off→Prime
+    /// snap). Overridable so it can be enabled location-by-location.</summary>
     public bool SurfaceWaterEnabled { get; set; } = false;
 
     /// <summary>Max surface-water film the near-impermeable granite holds (mm);
@@ -147,6 +148,25 @@ public sealed class RockSurfaceConfig
     /// the feedback while still tracking the film.</summary>
     public double LatentHeatWm2PerMmHr { get; set; } = 680.6;
 
+    // ---- Gravity drainage (vertical-face runoff, 2026-06-20) ----
+    /// <summary>Retained surface-water film (mm) a sloped face holds AFTER gravity
+    /// has drained the bulk — the roughness/capillary residual gravity can't shed.
+    /// Below it the film only evaporates. This is the "what stays after rain" number
+    /// for a steep face: a vertical wall sheds to this within ~an hour (Jeffreys/
+    /// Nusselt drainage, <see cref="RockSurfacePhysics.Integrate"/>), then evaporates
+    /// the residual over ~1–2 h — instead of evaporating the whole runoff cap. Order
+    /// 0.05–0.15 mm on rough granite; the knob to validate against "stayed wet ~N h"
+    /// field notes. (The old behaviour — evaporate the full <see cref="MaxSurfaceWaterMm"/>
+    /// — was the horizontal-slab assumption, wrong for a vertical climbing face.)</summary>
+    public double RetainedFilmMm { get; set; } = 0.1;
+
+    /// <summary>Characteristic vertical drainage length (m) for the gravity-runoff
+    /// term — the height of the wet streak the film drains down. The Nusselt drainage
+    /// rate ∝ 1/L, but the term is fast (minutes) across any plausible L, so this is
+    /// not sensitive. Drainage scales with sin(face slope): a vertical wall sheds
+    /// fast, a horizontal slab (slope 0) doesn't drain at all — it ponds (correct).</summary>
+    public double DrainagePathLengthM { get; set; } = 2.5;
+
     /// <summary>Crag faces to model (cliff-face mode, SENNEN_ROCK_TEMP_PLAN.md
     /// S3). Empty = whole-crag horizontal mode (Bonehill's all-aspect tor):
     /// the blend shortwave drives the budget unmodified and rows carry an
@@ -190,6 +210,8 @@ public sealed class RockSurfaceConfig
             EvapWindSlope  = EvapWindSlope,
             EvapRadCoeff   = EvapRadCoeff,
             LatentHeatWm2PerMmHr = LatentHeatWm2PerMmHr,
+            RetainedFilmMm = RetainedFilmMm,
+            DrainagePathLengthM = DrainagePathLengthM,
             Faces          = o.Faces          ?? Faces,
         };
     }

@@ -204,7 +204,13 @@ public static class RockSurfacePredictPipeline
                     b.ValidTimeUtc, b.AirTempC, b.DewPointC, b.CloudFrac, b.WindMs, sw, b.SeaTempC, b.PrecipMm));
             }
 
-            var integrated = RockSurfacePhysics.Integrate(forcing, cfg);
+            // Gravity drainage acts along the face: sin(steepness) — 1 for a vertical
+            // wall (sheds fast), 0 for a horizontal slab (ponds). Whole-crag mode (no
+            // face) is treated as horizontal → no drainage.
+            var drainageSlopeSine = face is not null
+                ? Math.Sin(face.SlopeDeg * Math.PI / 180.0)
+                : 0.0;
+            var integrated = RockSurfacePhysics.Integrate(forcing, cfg, drainageSlopeSine);
             foreach (var h in integrated)
             {
                 if (h.ValidTimeUtc < firstBlend || !forwardSet.Contains(h.ValidTimeUtc)) continue; // spin-up
@@ -225,6 +231,7 @@ public static class RockSurfacePredictPipeline
                     GreasinessStatus = RockSurfacePhysics.Greasiness(margin, cfg.GreasyMarginC),
                     SurfaceWaterMm = h.SurfaceWaterMm,
                     RainWaterMm = h.RainWaterMm,
+                    LastRainAtUtc = h.LastRainAtUtc,
                     // Face mode: the FACE-INCIDENT shortwave that actually
                     // drove this row's budget, not the horizontal blend value.
                     ShortwaveDownWm2 = swByValid[h.ValidTimeUtc],

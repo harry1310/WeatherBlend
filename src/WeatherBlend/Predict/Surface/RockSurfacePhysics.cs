@@ -31,6 +31,16 @@ public static class RockSurfacePhysics
     /// <summary>Stefan–Boltzmann constant (W/m²/K⁴).</summary>
     public const double Sigma = 5.670374419e-8;
 
+    // --- Gravity-drainage (Jeffreys 1930 / Nusselt thin-film) constants ---
+    /// <summary>Water density (kg/m³) for the gravity-drainage flux.</summary>
+    private const double WaterDensityKgM3 = 1000.0;
+    /// <summary>Gravitational acceleration (m/s²).</summary>
+    private const double GravityMS2 = 9.81;
+    /// <summary>Dynamic viscosity of water (Pa·s) at a cool ~10 °C wet-rock
+    /// temperature. The drainage term is fast across any plausible value, so this
+    /// is not sensitive.</summary>
+    private const double WaterViscosityPaS = 1.3e-3;
+
     /// <summary>Magnus vapour pressure (hPa) from dew point (°C).</summary>
     public static double VapourPressureHpa(double dewPointC)
         => 6.112 * Math.Exp(17.62 * dewPointC / (243.12 + dewPointC));
@@ -93,16 +103,26 @@ public static class RockSurfacePhysics
         double CloudFrac, double WindMs, double ShortwaveWm2, double? SeaTempC = null,
         double PrecipMm = 0.0);
 
+    /// <summary>Hourly precipitation (mm) at/above which an hour counts as the
+    /// "wet event" that <see cref="RockHour.LastRainAtUtc"/> records — a noticeable
+    /// shower, not a trace. The film itself accrues from ANY precip; this only
+    /// gates the human-facing "wet from rain since HHZ" timestamp.</summary>
+    public const double RainEventThresholdMm = 0.1;
+
     /// <summary>One integrated hour: rock surface + deep reservoir temps, the
     /// effective LW↓ used, the air/dew it was driven by, and the surface-water
     /// film (Phase A drying model). <paramref name="SurfaceWaterMm"/> is the
     /// total film (rain + dew); <paramref name="RainWaterMm"/> is the rain-derived
-    /// part, so a consumer can tell "wet from rain" (hard-gate) from "wet from
-    /// dew" (friction penalty).</summary>
+    /// part, so a consumer can tell "wet from rain" from "wet from dew".
+    /// <paramref name="LastRainAtUtc"/> is the most recent hour (including the
+    /// hidden spin-up) with rain ≥ <see cref="RainEventThresholdMm"/> — so the site
+    /// can say WHEN the rock got wet even when the wetting happened before the
+    /// reported window; null = no rain seen yet this trajectory.</summary>
     public sealed record RockHour(
         DateTime ValidTimeUtc, double RockTempC, double DeepTempC,
         double LongwaveDownWm2, double AirTempC, double DewPointC,
-        double SurfaceWaterMm = 0.0, double RainWaterMm = 0.0)
+        double SurfaceWaterMm = 0.0, double RainWaterMm = 0.0,
+        DateTime? LastRainAtUtc = null)
     {
         /// <summary>Condensation margin m = Ts − Td. ≤ 0 ⇒ condensation.</summary>
         public double MarginC => RockTempC - DewPointC;
@@ -114,8 +134,14 @@ public static class RockSurfacePhysics
     /// Seeds Ts = first hour's air temp and the deep reservoir = mean of the
     /// first 24 h of air temp (matches the spike). Caller is responsible for
     /// prepending spin-up hours and slicing reported hours off the result.
+    /// <para><paramref name="drainageSlopeSine"/> = sin(face steepness): 1 for a
+    /// vertical wall (the rain film sheds the bulk under gravity within ~an hour,
+    /// Jeffreys/Nusselt), 0 for a horizontal slab (no drainage — it ponds, which
+    /// is the right behaviour and the legacy default). Whole-crag/horizontal
+    /// callers leave it 0.</para>
     /// </summary>
-    public static IReadOnlyList<RockHour> Integrate(IReadOnlyList<ForcingHour> forcing, RockSurfaceConfig p)
+    public static IReadOnlyList<RockHour> Integrate(
+        IReadOnlyList<ForcingHour> forcing, RockSurfaceConfig p, double drainageSlopeSine = 0.0)
     {
         var n = forcing.Count;
         if (n == 0) return Array.Empty<RockHour>();
@@ -136,6 +162,9 @@ public static class RockSurfacePhysics
         // applied ONLY when SurfaceWaterEnabled — so a gate-off location's Ts is
         // bit-for-bit the pre-drying value.
         double wRain = 0.0, wDew = 0.0;
+        // Most recent hour with a meaningful shower — carried forward (incl. spin-up)
+        // so each emitted hour knows when the rock last got rained on.
+        DateTime? lastRainAt = null;
         var eAirCache = VapourPressureHpa(forcing[0].DewPointC);
 
         var outp = new List<RockHour>(n);
@@ -157,6 +186,7 @@ public static class RockSurfacePhysics
 
             // Rain wets the surface at the top of the hour (mm this hour).
             wRain += Math.Max(h.PrecipMm, 0.0);
+            if (h.PrecipMm >= RainEventThresholdMm) lastRainAt = h.ValidTimeUtc;
 
             for (var s = 0; s < sub; s++)
             {
@@ -209,17 +239,50 @@ public static class RockSurfacePhysics
                 {
                     wDew += -actualDeltaMm;   // dew deposits
                 }
-                // Runoff cap — granite holds only a thin film.
+                // Runoff cap — most water a face holds even instantaneously, before
+                // gravity drainage acts (a backstop; drainage below does the real
+                // shedding on a sloped face).
                 var total = wRain + wDew;
                 if (total > p.MaxSurfaceWaterMm && total > 1e-9)
                 {
                     var k = p.MaxSurfaceWaterMm / total;
                     wRain *= k; wDew *= k;
                 }
+
+                // --- Gravity drainage (Jeffreys 1930 / Nusselt thin-film): on a
+                //     SLOPED face the film above the retained residual sheds under
+                //     gravity. The film flux is the Nusselt result q = ρ·g·sinθ·h³/3μ;
+                //     for a lumped streak of length L that gives dh/dt = -k·h³ with
+                //     k = ρ·g·sinθ/(3·μ·L). Integrated ANALYTICALLY over the substep
+                //     (h(t) = h₀/√(1 + 2k·h₀²·t)) so it's stable at this dt — explicit
+                //     Euler on the stiff h³ term would overshoot wildly. Acts on the
+                //     drainable EXCESS above RetainedFilmMm; a vertical wall drains the
+                //     bulk in minutes, a horizontal slab (sinθ=0) doesn't drain at all
+                //     (it ponds — evaporation only). Removes proportionally by source.
+                //     Evaporation (above) still clears the retained residual to zero. ---
+                if (drainageSlopeSine > 0.0)
+                {
+                    var excessMm = wRain + wDew - p.RetainedFilmMm;
+                    if (excessMm > 0.0)
+                    {
+                        var excessM = excessMm * 1e-3;
+                        var kDrain = WaterDensityKgM3 * GravityMS2 * drainageSlopeSine
+                                     / (3.0 * WaterViscosityPaS * Math.Max(p.DrainagePathLengthM, 1e-3));
+                        var drainedM = excessM / Math.Sqrt(1.0 + 2.0 * kDrain * excessM * excessM * dt);
+                        var removedMm = (excessM - drainedM) * 1e3;
+                        var tot = wRain + wDew;
+                        if (removedMm > 0.0 && tot > 1e-9)
+                        {
+                            var frac = removedMm / tot;
+                            wRain -= wRain * frac;
+                            wDew  -= wDew * frac;
+                        }
+                    }
+                }
             }
 
             outp.Add(new RockHour(h.ValidTimeUtc, tsC, tdeepC, lwDown, h.AirTempC, h.DewPointC,
-                SurfaceWaterMm: wRain + wDew, RainWaterMm: wRain));
+                SurfaceWaterMm: wRain + wDew, RainWaterMm: wRain, LastRainAtUtc: lastRainAt));
         }
         return outp;
     }

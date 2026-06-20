@@ -69,10 +69,17 @@ public sealed class RockSurfacePredictionRow
     public double SurfaceWaterMm { get; init; }
 
     /// <summary>The rain-derived part of <see cref="SurfaceWaterMm"/> (mm). Split
-    /// out so a consumer can tell "wet from rain" (the hard Off gate, with a
-    /// dry-by ETA) from "wet from dew" (a friction penalty, never a hard gate —
-    /// the rock-temp/dew margin is uncertain). NOT <c>required</c>: defaults 0.</summary>
+    /// out so a consumer can tell "wet from rain" (a heavy, continuous friction
+    /// penalty that eases as the film dries) from "wet from dew" (the greasiness
+    /// penalty). NOT <c>required</c>: defaults 0.</summary>
     public double RainWaterMm { get; init; }
+
+    /// <summary>Most recent hour (UTC) at which a meaningful shower last wet the
+    /// rock — INCLUDING the model's hidden spin-up window, so the site can say
+    /// "wet from rain since HHZ" even when the wetting happened before the
+    /// reported forecast hours. Null = no rain on this trajectory. NOT
+    /// <c>required</c>: rows written before this column deserialize as null.</summary>
+    public DateTime? LastRainAtUtc { get; init; }
 
     // ---- forcing provenance ----
     public required double ShortwaveDownWm2 { get; init; }

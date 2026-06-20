@@ -17,12 +17,18 @@ namespace WeatherBlend.Site;
 ///
 /// Two layers (climbers don't average — one dealbreaker kills the session):
 ///   * GATES → <see cref="ConditionsTier.Off"/>: no daylight; rain likely now;
-///     rock wet from condensation.
+///     rock genuinely WET from rain (film ≥ <see cref="RainOffGateMm"/>).
 ///   * QUALITY (for surviving hours): a weakest-link blend of dryness, friction,
 ///     wind comfort, air-temp comfort. The blend is sqrt(geomean × min) so one
 ///     poor factor drags the verdict down hard (matching "12 mph on an exposed
 ///     tor is off-putting no matter how nice everything else is") without a
 ///     single mediocre factor zeroing it outright.
+/// Rain wetness is a LADDER, not a snap (Harry 2026-06-20): genuinely-wet rock is
+/// Off, then as the film dries it climbs Off→Poor→Marginal→Good→Prime through the
+/// damp-drying band (a graded friction penalty below the gate) — instead of the old
+/// hard threshold that jumped Off→Prime the instant the film cleared. The note
+/// carries the "wet from rain since HHZ, drying — climbable ~HHZ" provenance.
+/// Condensation (dew) is the separate greasiness friction penalty, never a gate.
 /// </summary>
 public static class ClimbingConditions
 {
@@ -77,12 +83,27 @@ public static class ClimbingConditions
     /// <summary>At or above this hourly P(wet), the rain gate fires (Off).</summary>
     public const double RainGateProb = 0.5;
 
-    /// <summary>Rain-derived surface-water film (mm) at/above which the rock
-    /// counts as wet-from-rain and the verdict hard-gates Off (with a dry-by
-    /// ETA). The index's own copy of the rock model's <c>WetThresholdMm</c> knob
-    /// — they share a default; this is the gate-decision authority. Only consulted
-    /// when the location has the drying model enabled (Harry 2026-06-16).</summary>
+    /// <summary>Rain-derived surface-water film (mm) at/below which the rock counts
+    /// as dry again (no rain penalty). The index's own copy of the rock model's
+    /// <c>WetThresholdMm</c> — they share a default. The DRY end of the damp-drying
+    /// ramp (<see cref="RainWetnessFrictionMultiplier"/>); only consulted when the
+    /// location has the drying model enabled.</summary>
     public const double RainWetThresholdMm = 0.05;
+
+    /// <summary>Rain film (mm) at/above which the rock is genuinely WET and the
+    /// verdict hard-gates Off — you wouldn't climb a slab this wet (Harry 2026-06-20).
+    /// Below it (down to <see cref="RainWetThresholdMm"/>) is the "damp, drying"
+    /// band where the verdict climbs back up through the tiers. Half the rock
+    /// model's 0.4 mm runoff cap: the upper half-film is "wet", the lower half is
+    /// "draining/coming good". A calibration knob — raise it to call rock climbable
+    /// sooner, lower it to hold Off longer.</summary>
+    public const double RainOffGateMm = 0.2;
+
+    /// <summary>Friction floor for a just-below-the-gate rain film — the WET end of
+    /// the damp-drying ramp. Lower than the dew floor (<see cref="WetFrictionPenalty"/>):
+    /// a rain-soaked slab gives worse grip than dew-greasy rock, so a slab that has
+    /// only just dropped out of the Off gate reads Poor, then climbs as it dries.</summary>
+    public const double RainWetFloorScore = 0.08;
 
     /// <summary>Solar elevation (deg) below which it's too dark to climb (gate).</summary>
     public const double DaylightMinElevationDeg = 0.0;
@@ -143,6 +164,24 @@ public static class ClimbingConditions
         var t = marginC / greasyMarginC;                        // 0..1 across the greasy band
         var s = t * t * (3.0 - 2.0 * t);                        // smoothstep (flat ends, no kink)
         return WetFrictionPenalty + (1.0 - WetFrictionPenalty) * s;
+    }
+
+    /// <summary>Graded rain-film friction multiplier across the DAMP-DRYING band
+    /// (below the Off gate). Genuinely-wet rock (≥ <paramref name="offGateMm"/>)
+    /// gates Off in <see cref="Evaluate"/> and never reaches here; this shapes the
+    /// recovery once the film has dropped out of Off. Smoothstep from the rain-wet
+    /// floor (<see cref="RainWetFloorScore"/>) at the gate down to no penalty (1.0)
+    /// at a dried-out film (≤ <paramref name="dryThresholdMm"/>), so the verdict
+    /// climbs Poor→Marginal→Good→Prime as the slab dries. Decreasing in film: more
+    /// water ⇒ lower multiplier.</summary>
+    public static double RainWetnessFrictionMultiplier(
+        double rainWaterMm, double dryThresholdMm = RainWetThresholdMm, double offGateMm = RainOffGateMm)
+    {
+        if (rainWaterMm <= dryThresholdMm) return 1.0;          // dried out — no penalty
+        if (rainWaterMm >= offGateMm) return RainWetFloorScore; // at the gate — wet floor
+        var t = (rainWaterMm - dryThresholdMm) / (offGateMm - dryThresholdMm); // 0 dry → 1 at gate
+        var s = t * t * (3.0 - 2.0 * t);                        // smoothstep (flat ends, no kink)
+        return 1.0 - (1.0 - RainWetFloorScore) * s;             // 1.0 at dry → floor at the gate
     }
 
     /// <summary>Air-temperature comfort: hump on <see cref="AirIdealLoC"/>..
@@ -208,24 +247,28 @@ public static class ClimbingConditions
             return Gate(ConditionsTier.Off, "Dark — sun below the horizon");
         if (pWet is double pw && pw >= RainGateProb)
             return Gate(ConditionsTier.Off, $"Rain likely ({pw * 100:0}%)");
-        // Rock still wet from RAIN — a hard Off gate (Harry 2026-06-16): no point
-        // calling an hour climbable when a downpour an hour or two ago left a film
-        // of standing water on the slab. Fires ONLY where the drying model is
-        // enabled for the location AND the wetness is rain-derived; the dry-by ETA
-        // (when the rain film clears) tells the reader when it comes good. Dew
-        // wetness is deliberately NOT gated here — it's the friction penalty below,
-        // because the rock-temp/dew margin is still being field-validated.
-        if (surfaceWaterGate && rock is { } wetRock && wetRock.RainWaterMm >= wetThresholdMm)
+        // Rock wet from RAIN — a LADDER, not a snap (Harry 2026-06-20). The old
+        // code snapped Off→Prime the instant the film cleared a threshold ("complete
+        // rubbish"); the new shape keeps genuinely-wet rock OFF, then lets the
+        // verdict climb Off→Poor→Marginal→Good→Prime through a damp-drying band as
+        // the film evaporates:
+        //   * film ≥ RainOffGateMm  → Off (genuinely wet — you wouldn't climb it).
+        //   * RainWetThresholdMm < film < RainOffGateMm → a graded friction penalty
+        //     (the factor block below), recovering as it dries.
+        //   * film ≤ RainWetThresholdMm → dry, no penalty.
+        // Either way the note names WHEN it last rained + the dry-by (off-gate-clear)
+        // ETA. Dew wetness is the separate greasiness penalty, never a gate.
+        string rainNote = "";
+        double rainFrictionMult = 1.0;
+        if (surfaceWaterGate && rock is { } wetRock && wetRock.RainWaterMm > wetThresholdMm)
         {
-            var eta = rainDryByUtc is { } dry
-                ? $" — drying, climbable from ~{dry:HH'Z'}"
-                : "";
-            return Gate(ConditionsTier.Off, $"Rock wet from rain{eta}");
+            var since = wetRock.LastRainAtUtc is { } lr ? $" since {lr:HH'Z'}" : "";
+            var eta = rainDryByUtc is { } dry ? $", drying — climbable ~{dry:HH'Z'}" : ", still drying";
+            rainNote = $"wet from rain{since} (~{wetRock.RainWaterMm:0.0} mm){eta}";
+            if (wetRock.RainWaterMm >= RainOffGateMm)
+                return Gate(ConditionsTier.Off, $"Rock {rainNote}");
+            rainFrictionMult = RainWetnessFrictionMultiplier(wetRock.RainWaterMm, wetThresholdMm);
         }
-        // NB condensation (wet rock) is NOT a gate — it's a heavy friction
-        // penalty in the factor block below (Harry 2026-06-16), because the
-        // rock-temp calc is still being validated and an uncertain "wet" call
-        // shouldn't force the whole verdict Off.
 
         // ---- Quality factors ----
         var factors = new List<Factor>(4);
@@ -249,6 +292,13 @@ public static class ClimbingConditions
                 frictionDetail += ", greasy";
             else if (rk.GreasinessStatus == RockSurfacePhysics.StatusCondensation)
                 frictionDetail += $", wet (≤ dew {rk.DewPointC:0.0}°C)";
+
+            // Rain film in the damp-drying band (below the Off gate) — a graded
+            // friction penalty that eases as the slab dries, with the wet-event
+            // provenance. Soaked rock (≥ the gate) never reaches here; it returned
+            // Off above. rainFrictionMult/rainNote were computed there.
+            frictionScore *= rainFrictionMult;
+            if (rainNote.Length > 0) frictionDetail += $", {rainNote}";
         }
         else
         {

@@ -49,4 +49,36 @@ public class SitePagesSkyGlyphTests
         s.Should().NotContain("☁");
         s.Should().Contain("⛅");
     }
+
+    // ---- Rain folded into the glyph (umbrella moved off the P(wet) line, 2026-06-20) ----
+
+    [Fact]
+    public void High_pwet_shows_steady_rain()
+    {
+        var s = SitePages.SkyGlyph(90, 80, new DateTime(2026, 6, 21, 12, 0, 0, DateTimeKind.Utc), Lat, Lon, pWet: 0.8);
+        s.Should().Contain("\U0001F327").And.Contain("Rain likely");
+    }
+
+    [Fact]
+    public void Showery_pwet_in_daytime_shows_a_sun_and_rain_glyph()
+    {
+        var s = SitePages.SkyGlyph(60, 250, new DateTime(2026, 6, 21, 12, 0, 0, DateTimeKind.Utc), Lat, Lon, pWet: 0.30);
+        s.Should().Contain("\U0001F326").And.Contain("Showers");
+    }
+
+    [Fact]
+    public void Rain_overrides_an_otherwise_sunny_glyph()
+    {
+        // Clear bright sky but a high rain chance: rain wins the icon.
+        var s = SitePages.SkyGlyph(5, 850, new DateTime(2026, 6, 21, 12, 0, 0, DateTimeKind.Utc), Lat, Lon, pWet: 0.7);
+        s.Should().NotContain("☀");
+        s.Should().Contain("\U0001F327");
+    }
+
+    [Fact]
+    public void Low_pwet_keeps_the_plain_sky_glyph()
+    {
+        var s = SitePages.SkyGlyph(5, 850, new DateTime(2026, 6, 21, 12, 0, 0, DateTimeKind.Utc), Lat, Lon, pWet: 0.10);
+        s.Should().Contain("☀").And.Contain("Sunny");
+    }
 }

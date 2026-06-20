@@ -866,6 +866,9 @@ public static partial class SitePages
         // construction sites without the columns compile and read as bone-dry.
         double SurfaceWaterMm = 0.0,
         double RainWaterMm = 0.0,
+        // When the rock last got rained on (incl. hidden spin-up) — drives the
+        // "wet from rain since HHZ" detail. Null = no rain / pre-column tree.
+        DateTime? LastRainAtUtc = null,
         string LocationName = "",
         string Face = "");
 
@@ -1140,7 +1143,10 @@ public static partial class SitePages
         }
         .forecast-card .time { font-weight: 600; font-size: 0.95rem; font-variant-numeric: tabular-nums; }
         .forecast-card .temp-line { display: flex; align-items: center; gap: 0.5rem; }
-        .forecast-card .sky { font-size: 1.05rem; line-height: 1; }
+        /* Sky glyph: a touch larger and pushed to the right edge of the temp line
+           (margin-left:auto), kept vertically centred on the temperature (Harry
+           2026-06-20). */
+        .forecast-card .sky { font-size: 1.4rem; line-height: 1; margin-left: auto; }
         .forecast-card .status {
           font-size: 0.72rem; font-weight: 700; line-height: 1; white-space: nowrap;
           padding: 0.22rem 0.55rem; border-radius: 999px; color: #fff;
@@ -1166,7 +1172,6 @@ public static partial class SitePages
         .forecast-card .feels .utci-band { margin-top: -0.05rem; font-style: italic; }
         .forecast-card .pwet { font-size: 0.9rem; margin: 0.1rem 0 0; font-variant-numeric: tabular-nums; }
         .forecast-card .pwet strong { font-weight: 700; }
-        .forecast-card .pwet .rain { margin-left: 0.25rem; }
 
         /* Drawers — native <details>; summary tinted by state, body hidden until open. */
         .forecast-card details.drawer { border-top: 1px solid var(--pico-card-border-color); margin: 0; }

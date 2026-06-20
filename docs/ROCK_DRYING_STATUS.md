@@ -14,9 +14,20 @@ slab, alongside the existing temperature + condensation outputs:
 
 - **Rain** wets the film (NWP precipitation, summed per hour at predict time).
 - **Dew** wets it when the surface is below the dew point (condensation).
-- The film **dries** by a vapour-pressure-deficit flux (warmer/drier/windier =
-  faster) plus a radiation term (sun bakes a wet slab), and **runs off** above a
-  thin cap (granite holds almost nothing).
+- On a **sloped face the film drains under gravity** (Jeffreys 1930 / Nusselt
+  thin-film, `dh/dt = −ρ·g·sinθ·h³/3μL`, integrated analytically per substep) down
+  to a thin **retained residual** (`RetainedFilmMm`) within ~an hour — a vertical
+  wall sheds the bulk fast, a horizontal slab (sinθ=0) doesn't drain at all (it
+  ponds). This is the 2026-06-20 vertical-face fix: previously the film could only
+  leave by evaporation, which is the *horizontal-slab* assumption — wrong for a
+  vertical climbing face, and the cause of "takes too long to dry" (façade
+  literature, Blocken & Carmeliet: on a vertical surface runoff carries ~75–95% of
+  the water, evaporation only 4–26%).
+- The residual then **dries by a vapour-pressure-deficit flux** (warmer/drier/
+  windier = faster) plus a radiation term (sun bakes a wet slab). Drainage gets the
+  film to the residual in ~an hour; evaporation clears the residual over ~1–2 h.
+- A **runoff cap** (`MaxSurfaceWaterMm`) is a backstop on the instantaneous film;
+  the gravity-drainage term does the real shedding on a sloped face.
 - The film is tracked **by source** — `RainWaterMm` vs total `SurfaceWaterMm` —
   so the climbing index can treat rain-wet and dew-wet differently.
 
@@ -28,12 +39,29 @@ bit-for-bit identical to before.
 
 ## How it changes the climbing verdict (when enabled)
 
-- **Rain-wet rock → hard Off gate**, with a dry-by ETA in the reason line
-  ("Rock wet from rain — drying, climbable from ~14Z"). This is the
-  "no point saying good-to-climb in hour X if X−1 had a downpour" rule.
+- **Rain-wet rock → a LADDER, not a snap** (Harry 2026-06-20). The original code
+  snapped the verdict Off→Prime the instant the film cleared a threshold —
+  "complete rubbish", because a slab comes good *gradually* as it dries. The shape
+  now is:
+  - **film ≥ `RainOffGateMm` (0.2 mm) → Off** — genuinely wet, you wouldn't climb it.
+  - **dry threshold (0.05 mm) < film < gate → a graded friction penalty** that
+    eases as the film dries (`RainWetnessFrictionMultiplier`, a smoothstep from the
+    rain-wet floor at the gate up to no penalty at the dry threshold), so the
+    verdict climbs **Off→Poor→Marginal→Good→Prime**.
+  - **film ≤ 0.05 mm → dry**, no penalty.
+  Either way the reason/friction detail names the wet event and the "climbable
+  from" ETA (when the film drops back below the Off gate): "wet from rain since 04Z
+  (~0.3 mm), drying — climbable ~13Z".
 - **Dew/condensation → friction penalty, NOT a gate** (unchanged from the
   2026-06-16 decision) — the rock-temp/dew margin is still being field-validated,
-  so an uncertain "wet" call drags the verdict to Poor rather than nuking it.
+  so an uncertain "wet" call drags the verdict down rather than nuking it.
+- The wet-event time (`LastRainAtUtc`) is tracked across the hidden spin-up
+  window, so the site can say *when* it last rained even when the wetting
+  happened before the first reported forecast hour.
+
+**Drying speed is unchanged (Harry 2026-06-20):** the physics coefficients were
+left as-is — the presentation fix (continuous recovery + naming the wet event)
+came first, to be eyeballed live before any evaporation retune.
 
 ## What is NOT done (deliberately deferred)
 

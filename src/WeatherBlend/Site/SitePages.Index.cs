@@ -175,8 +175,11 @@ public static partial class SitePages
             // when on, precompute each rain-wet hour's "climbable from" time once
             // from the whole rock series so each tile's gate can name it.
             var surfaceWaterGate = input.RenderingFor?.SurfaceWaterEnabled == true;
+            // "climbable from" = the first hour the rain film drops below the Off
+            // gate (the rock stops being too wet to climb), not when it's bone dry —
+            // it comes good gradually after that. So key the ETA on the gate level.
             var rainDryByUtc = surfaceWaterGate
-                ? ClimbingConditions.RainDryByMap(rockByValid.Values)
+                ? ClimbingConditions.RainDryByMap(rockByValid.Values, ClimbingConditions.RainOffGateMm)
                 : new Dictionary<DateTime, DateTime?>();
 
             var tiles = new StringBuilder();
@@ -608,19 +611,29 @@ public static partial class SitePages
         // The "why is UTCI this value" inputs now live in the Detail drawer
         // (detailRows) rather than an inline ⓘ pop-out. ±1h drift tolerance —
         // predict cycles can land an hour off and we'd rather show a value.
+        // P(wet) for this hour, looked up once: it feeds BOTH the sky glyph (rain
+        // is now folded into the tile's weather icon) and the P(wet) line below.
+        PrecipForecastPoint? pwPoint =
+            TryNearest(pwetByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var pwHit) ? pwHit : null;
+
         string feelsCell = "";
         string skyCell = "";
         var detailRows = new StringBuilder();
         if (TryNearest(feelsLikeByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var fl))
         {
-            // Sky glyph (top-right of the tile) from this hour's cloud + radiation.
-            skyCell = SkyGlyph(fl!.CloudCoverPct, fl.ShortwaveDownWm2, p.ValidTimeUtc, latitude, longitude);
+            // Sky glyph (top-right of the tile) from this hour's cloud + radiation,
+            // now also showing rain when P(wet) is high (the umbrella moved here off
+            // the P(wet) line, Harry 2026-06-20).
+            skyCell = SkyGlyph(fl!.CloudCoverPct, fl.ShortwaveDownWm2, p.ValidTimeUtc, latitude, longitude, pwPoint?.ProbWet);
             var apparentColor = TemperatureColor(fl!.ApparentC);
             var utciColor = TemperatureColor(fl.UtciC);
-            // Feels-like + UTCI on one face line; band as a quiet caption under.
+            // Feels-like and UTCI on their OWN lines (Harry 2026-06-20: UTCI was
+            // wrapping onto the wrong line when it shared a row with feels-like);
+            // band as a quiet caption under.
             feelsCell = string.Create(Ci, $"""
                 <div class="feels">
-                  <div>Feels like <strong style="color: {apparentColor}">{fl.ApparentC:0.0}°C</strong> · UTCI <strong style="color: {utciColor}">{fl.UtciC:0.0}°C</strong></div>
+                  <div>Feels like <strong style="color: {apparentColor}">{fl.ApparentC:0.0}°C</strong></div>
+                  <div>UTCI <strong style="color: {utciColor}">{fl.UtciC:0.0}°C</strong></div>
                   <div class="utci-band"><small>"{Escape(PrettyUtciBand(fl.Band))}"</small></div>
                 </div>
                 """);
@@ -650,12 +663,12 @@ public static partial class SitePages
         }
 
         string pwetCell = "";
-        if (TryNearest(pwetByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var pw))
+        if (pwPoint is { } pw)
         {
-            // ☔ when the displayed P(wet) rounds to ≥ 25%
-            var rain = pw!.ProbWet >= 0.245 ? " <span class=\"rain\">&#x2614;</span>" : "";
+            // Umbrella removed (Harry 2026-06-20): rain now lives in the sky glyph,
+            // so the P(wet) line is just the number.
             var pwColor = PrecipProbColor(pw.ProbWet);
-            pwetCell = string.Create(Ci, $"<div class=\"pwet\">P(wet) <strong style=\"color: {pwColor}\">{(pw.ProbWet * 100):0}%</strong>{rain}</div>");
+            pwetCell = string.Create(Ci, $"<div class=\"pwet\">P(wet) <strong style=\"color: {pwColor}\">{(pw.ProbWet * 100):0}%</strong></div>");
         }
 
         // ---- Status pill + Conditions drawer (the climbing index) ----
@@ -746,11 +759,31 @@ public static partial class SitePages
     /// Night (sun below the horizon) shows moon vs cloud on the cloud fraction
     /// alone. Returns "" when there's no cloud value to show.
     /// </summary>
-    internal static string SkyGlyph(double? cloudPct, double? swWm2, DateTime validUtc, double lat, double lon)
+    /// <summary>At/above this hourly P(wet) the sky glyph shows steady rain (🌧️);
+    /// between <see cref="SkyShowerProb"/> and here it shows showers (🌦️ by day).
+    /// Mirrors the P(wet)-line umbrella threshold that used to live on the P(wet)
+    /// line (0.245) — the umbrella was folded into the weather icon here so the
+    /// P(wet) line could lose it (Harry 2026-06-20).</summary>
+    private const double SkyShowerProb = 0.245;
+    private const double SkyRainLikelyProb = 0.45;
+
+    internal static string SkyGlyph(double? cloudPct, double? swWm2, DateTime validUtc, double lat, double lon, double? pWet = null)
     {
         if (cloudPct is not double cloud) return "";
         var elevDeg = SolarGeometry.SolarPosition(validUtc, lat, lon).ElevationDeg;
         var cloudFrac = Math.Clamp(cloud / 100.0, 0.0, 1.0);
+
+        // Rain takes visual priority over the sun/cloud split — a wet hour reads as
+        // rain first. By day a shower keeps a hint of sun (🌦️); steady rain or a
+        // night shower is a plain rain cloud (🌧️).
+        if (pWet is double pw && pw >= SkyShowerProb)
+        {
+            var (rainGlyph, rainLabel) = pw >= SkyRainLikelyProb
+                ? ("\U0001F327️", "Rain likely")                                  // 🌧️
+                : elevDeg > 0 ? ("\U0001F326️", "Showers possible")               // 🌦️ (day)
+                              : ("\U0001F327️", "Showers possible");              // 🌧️ (night)
+            return string.Create(Ci, $"""<span class="sky" title="{rainLabel} · cloud {cloud:0}% · P(wet) {pw * 100:0}%">{rainGlyph}</span>""");
+        }
 
         string glyph, label;
         if (elevDeg <= 0)

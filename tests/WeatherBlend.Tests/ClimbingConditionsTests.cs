@@ -17,7 +17,7 @@ public class ClimbingConditionsTests
 
     private static SitePages.RockSurfaceForecastPoint Rock(
         double rockC, string greasy = "dry", double rainWaterMm = 0.0, double dewWaterMm = 0.0,
-        DateTime? validUtc = null)
+        DateTime? validUtc = null, DateTime? lastRainAtUtc = null)
     {
         // Keep the condensation margin consistent with the greasiness status —
         // the climbing index's friction penalty is now a continuous function of
@@ -35,6 +35,7 @@ public class ClimbingConditionsTests
             RockSurfaceTempC: rockC, AirTempC: rockC + 1, DewPointC: rockC - margin,
             CondensationMarginC: margin, GreasinessStatus: greasy,
             SurfaceWaterMm: rainWaterMm + dewWaterMm, RainWaterMm: rainWaterMm,
+            LastRainAtUtc: lastRainAtUtc,
             LocationName: "bonehill_rocks", Face: "");
     }
 
@@ -249,10 +250,29 @@ public class ClimbingConditionsTests
         r.Factors.Single(f => f.Name == "Friction").Detail.Should().Contain("air");
     }
 
-    // ---- Surface-water drying gate (Phase A) ----
+    // ---- Surface-water drying: Off when wet, a graded ladder as it dries (Phase A) ----
 
     [Fact]
-    public void Rain_wet_rock_is_not_gated_when_the_drying_model_is_off()
+    public void RainWetnessFrictionMultiplier_floors_at_the_gate_and_climbs_as_it_dries()
+    {
+        // At/above the Off gate it sits on the rain-wet floor (the gate hands off
+        // to the hard Off in Evaluate); dried-out (≤ wet threshold) has no penalty;
+        // strictly increasing as the film thins across the damp band.
+        ClimbingConditions.RainWetnessFrictionMultiplier(ClimbingConditions.RainOffGateMm)
+            .Should().Be(ClimbingConditions.RainWetFloorScore);
+        ClimbingConditions.RainWetnessFrictionMultiplier(0.05).Should().Be(1.0);
+        ClimbingConditions.RainWetnessFrictionMultiplier(0.0).Should().Be(1.0);
+        var prev = 2.0;
+        foreach (var f in new[] { 0.06, 0.10, 0.14, 0.18 })
+        {
+            var v = ClimbingConditions.RainWetnessFrictionMultiplier(f);
+            v.Should().BeLessThan(prev, "wetter film ⇒ lower multiplier");
+            prev = v;
+        }
+    }
+
+    [Fact]
+    public void Rain_wet_rock_is_ignored_when_the_drying_model_is_off()
     {
         // Default surfaceWaterGate=false: a wet rain film is ignored entirely,
         // so an otherwise-perfect hour stays Prime — the pre-drying behaviour.
@@ -262,40 +282,68 @@ public class ClimbingConditionsTests
     }
 
     [Fact]
-    public void Rain_wet_rock_hard_gates_Off_when_the_drying_model_is_on()
+    public void Genuinely_wet_rock_gates_Off_and_names_the_wet_event()
     {
-        var r = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6,
-            Rock(5, rainWaterMm: 0.3), surfaceWaterGate: true);
-        r.Tier.Should().Be(ConditionsTier.Off);
-        r.Reason.Should().Contain("wet from rain");
-    }
-
-    [Fact]
-    public void Rain_gate_names_the_dry_by_eta_when_known()
-    {
+        // A soaked slab (film ≥ the Off gate) is OFF — you wouldn't climb it — with
+        // WHEN it last rained and the dry-by ETA in the reason (Harry 2026-06-20).
         var dryBy = new DateTime(2026, 1, 15, 14, 0, 0, DateTimeKind.Utc);
         var r = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6,
-            Rock(5, rainWaterMm: 0.3), surfaceWaterGate: true, rainDryByUtc: dryBy);
+            Rock(5, rainWaterMm: 0.3, lastRainAtUtc: new DateTime(2026, 1, 15, 4, 0, 0, DateTimeKind.Utc)),
+            surfaceWaterGate: true, rainDryByUtc: dryBy);
         r.Tier.Should().Be(ConditionsTier.Off);
+        r.Reason.Should().Contain("wet from rain");
+        r.Reason.Should().Contain("since 04Z");
         r.Reason.Should().Contain("14Z");
     }
 
     [Fact]
-    public void Dew_only_film_is_not_rain_gated_even_with_the_model_on()
+    public void Damp_drying_rock_is_not_Off_and_improves_as_it_dries()
     {
-        // A dew film (RainWaterMm 0) must NOT trip the rain gate — dew is the
-        // friction penalty, not a hard Off (the rock-temp margin is uncertain).
-        var r = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6,
-            Rock(5, greasy: "condensation", dewWaterMm: 0.3), surfaceWaterGate: true);
-        r.Tier.Should().NotBe(ConditionsTier.Off);
+        // Below the Off gate the verdict is no longer Off and climbs the ladder as
+        // the film thins — NOT a snap to Prime. Score strictly improves drier.
+        double Score(double film) => ClimbingConditions.Evaluate(
+            Midday, Lat, Lon, 9, 0.02, 6, Rock(5, rainWaterMm: film), surfaceWaterGate: true).Score;
+
+        var damp = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6,
+            Rock(5, rainWaterMm: 0.10, lastRainAtUtc: Midday.AddHours(-4)), surfaceWaterGate: true);
+        damp.Tier.Should().NotBe(ConditionsTier.Off, "a damp-but-draining slab is climbable, if poor");
+        damp.Factors.Single(f => f.Name == "Friction").Detail.Should().Contain("wet from rain");
+
+        Score(0.07).Should().BeGreaterThan(Score(0.12));
+        Score(0.12).Should().BeGreaterThan(Score(0.18));
     }
 
     [Fact]
-    public void Sub_threshold_rain_film_does_not_gate()
+    public void Rain_ladder_runs_Off_through_the_tiers_to_Prime_as_it_dries()
+    {
+        // The end-to-end shape Harry asked for: soaked → Off, then a graded climb
+        // as the film dries, ending Prime when bone dry — never an Off→Prime snap.
+        ConditionsTier Tier(double film) => ClimbingConditions.Evaluate(
+            Midday, Lat, Lon, 9, 0.02, 6, Rock(5, rainWaterMm: film), surfaceWaterGate: true).Tier;
+        Tier(0.30).Should().Be(ConditionsTier.Off, "soaked");
+        // Just out of Off, still damp — Poor/Marginal, NOT a jump to Prime.
+        Tier(0.18).Should().BeOneOf(ConditionsTier.Poor, ConditionsTier.Marginal);
+        Tier(0.00).Should().Be(ConditionsTier.Prime, "bone dry on an otherwise perfect day");
+    }
+
+    [Fact]
+    public void Dew_only_film_is_not_treated_as_rain_even_with_the_model_on()
+    {
+        // A dew film (RainWaterMm 0) must NOT trip the rain path — dew is the
+        // greasiness penalty. Not Off, and the friction detail must not say "rain".
+        var r = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6,
+            Rock(5, greasy: "condensation", dewWaterMm: 0.3), surfaceWaterGate: true);
+        r.Tier.Should().NotBe(ConditionsTier.Off);
+        r.Factors.Single(f => f.Name == "Friction").Detail.Should().NotContain("rain");
+    }
+
+    [Fact]
+    public void Sub_threshold_rain_film_carries_no_penalty()
     {
         var r = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6,
             Rock(5, rainWaterMm: 0.01), surfaceWaterGate: true);
-        r.Tier.Should().NotBe(ConditionsTier.Off, "a trace film below the wet threshold isn't 'wet'");
+        r.Tier.Should().Be(ConditionsTier.Prime, "a trace film below the wet threshold isn't 'wet'");
+        r.Factors.Single(f => f.Name == "Friction").Detail.Should().NotContain("rain");
     }
 
     [Fact]

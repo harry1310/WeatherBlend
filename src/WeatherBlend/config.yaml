@@ -94,9 +94,11 @@ locations:
     # per-face projection handles beam geometry directly).
     rockSurface:
       fSky: 0.5
-      # Drying model LIVE for Bonehill (2026-06-19): rain-wet rock hard-gates the
-      # climbing verdict Off with a dry-by ETA, and the film's latent-heat feedback
-      # cools the slab as it dries. Enabled now that the drying-rate coefficients are
+      # Drying model LIVE for Bonehill (2026-06-19): genuinely wet rock gates the
+      # climbing verdict Off, then the verdict climbs Off→Poor→Marginal→Good→Prime
+      # as the film dries (Harry 2026-06-20 — a graded ladder, no longer the old
+      # Off→Prime snap), and the film's latent-heat feedback cools the slab as it
+      # dries. Enabled now that the drying-rate coefficients are
       # literature-grounded (bulk-aerodynamic Dalton + latent-heat energy balance —
       # see RockSurfaceConfig); IR-gun + "stayed wet ~N h" field notes now VALIDATE
       # the drying timescale rather than block go-live. Sennen stays off (no spray

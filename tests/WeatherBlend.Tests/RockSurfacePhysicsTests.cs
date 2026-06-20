@@ -245,6 +245,48 @@ public class RockSurfacePhysicsTests
         atRain.SurfaceWaterMm.Should().BeGreaterThanOrEqualTo(atRain.RainWaterMm);
         lateAfternoon.RainWaterMm.Should().BeLessThan(atRain.RainWaterMm,
             "sun + wind dry the rain film back down through the day");
+
+        // The wet-event timestamp is stamped at the rain hour and carried forward
+        // (so a later, still-drying hour still knows when it last rained).
+        atRain.LastRainAtUtc.Should().Be(atRain.ValidTimeUtc);
+        lateAfternoon.LastRainAtUtc.Should().Be(atRain.ValidTimeUtc,
+            "the wet-event time persists after the rain stops, while the film dries");
+    }
+
+    [Fact]
+    public void Vertical_face_drains_the_rain_film_far_faster_than_a_horizontal_slab()
+    {
+        // The vertical-face fix (2026-06-20): gravity drainage sheds the bulk of the
+        // rain film within ~an hour, leaving only the retained residual to evaporate
+        // — so a vertical wall (sinθ=1) is much drier an hour or two after rain than
+        // a horizontal slab (sinθ=0, evaporation only — the legacy behaviour).
+        var cfg = new RockSurfaceConfig { MaxSurfaceWaterMm = 0.4, RetainedFilmMm = 0.1 };
+        var forcing = MakeForcingWithMorningRain(6, rainMm: 3.0);
+
+        var horizontal = Integrate(forcing, cfg);                          // sinθ default 0 → ponds
+        var vertical   = Integrate(forcing, cfg, drainageSlopeSine: 1.0);  // vertical wall → drains
+
+        // Two hours after the 06Z rain, on the last modelled day.
+        var hHor = horizontal.Last(h => h.ValidTimeUtc.Hour == 8);
+        var hVer = vertical.Last(h => h.ValidTimeUtc.Hour == 8);
+
+        hVer.RainWaterMm.Should().BeLessThan(hHor.RainWaterMm,
+            "the vertical face sheds water by gravity; the horizontal slab can only evaporate it");
+        hVer.RainWaterMm.Should().BeLessThan(cfg.RetainedFilmMm + 0.05,
+            "a vertical face drains to near the retained residual within an hour or two");
+    }
+
+    [Fact]
+    public void Horizontal_slab_is_unaffected_by_the_drainage_term()
+    {
+        // sinθ = 0 (the default) must reproduce the pre-drainage behaviour exactly —
+        // a horizontal slab ponds; nothing drains.
+        var cfg = new RockSurfaceConfig { MaxSurfaceWaterMm = 5.0, RetainedFilmMm = 0.1 };
+        var forcing = MakeForcingWithMorningRain(6, rainMm: 3.0);
+        var noArg = Integrate(forcing, cfg);
+        var explicitZero = Integrate(forcing, cfg, drainageSlopeSine: 0.0);
+        for (var i = 0; i < noArg.Count; i++)
+            explicitZero[i].SurfaceWaterMm.Should().Be(noArg[i].SurfaceWaterMm);
     }
 
     [Fact]
