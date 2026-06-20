@@ -6,9 +6,10 @@ namespace WeatherBlend.Tests;
 
 /// <summary>
 /// Face-aware rock-surface rendering (SENNEN_ROCK_TEMP_PLAN.md S5): the
-/// overview tile badge collapses multi-face hours to the WORST face (smallest
-/// condensation margin) after per-face lead dedup, and the chart helpers give
-/// each face a stable label/colour distinct from the shared dew/air lines.
+/// overview tile badge collapses multi-face hours to the BEST (driest,
+/// furthest-from-dew) face after per-face lead dedup — the climbable aspect —
+/// and the chart helpers give each face a stable label/colour distinct from
+/// the shared dew/air lines.
 /// </summary>
 public class SitePagesRockFaceTests
 {
@@ -27,23 +28,23 @@ public class SitePagesRockFaceTests
         Face: face);
 
     [Fact]
-    public void Worst_face_wins_the_tile_badge()
+    public void Best_face_wins_the_tile_badge()
     {
         var rows = new[] { Row("west", 4.0), Row("southwest", 2.5), Row("south", -0.5) };
 
-        var byValid = SitePages.CollapseRockToWorstFace(rows);
+        var byValid = SitePages.CollapseRockToBestFace(rows);
 
         byValid.Should().HaveCount(1);
-        byValid.Values.Single().Face.Should().Be("south", "the wall closest to sweating is the conservative summary");
-        byValid.Values.Single().GreasinessStatus.Should().Be("condensation");
+        byValid.Values.Single().Face.Should().Be("west", "the driest, furthest-from-dew wall is the climbable aspect");
+        byValid.Values.Single().GreasinessStatus.Should().Be("dry");
     }
 
     [Fact]
-    public void Stale_lead_rows_are_deduped_per_face_before_the_worst_face_pick()
+    public void Stale_lead_rows_are_deduped_per_face_before_the_best_face_pick()
     {
         // West's lead-48 row (stale cycle) shows margin −1, but its fresh
         // lead-24 row is dry at +5 — the badge must reflect fresh data, so the
-        // worst face is southwest at +2, not the stale west −1.
+        // best face is west at +5, not the stale −1.
         var rows = new[]
         {
             Row("west", -1.0, leadHours: 48),
@@ -51,10 +52,10 @@ public class SitePagesRockFaceTests
             Row("southwest", 2.0, leadHours: 24),
         };
 
-        var worst = SitePages.CollapseRockToWorstFace(rows).Values.Single();
+        var best = SitePages.CollapseRockToBestFace(rows).Values.Single();
 
-        worst.Face.Should().Be("southwest");
-        worst.CondensationMarginC.Should().Be(2.0);
+        best.Face.Should().Be("west");
+        best.CondensationMarginC.Should().Be(5.0);
     }
 
     [Fact]
@@ -62,7 +63,7 @@ public class SitePagesRockFaceTests
     {
         var rows = new[] { Row("", 1.5, leadHours: 48), Row("", 2.5, leadHours: 24) };
 
-        var byValid = SitePages.CollapseRockToWorstFace(rows);
+        var byValid = SitePages.CollapseRockToBestFace(rows);
 
         byValid.Should().HaveCount(1);
         byValid.Values.Single().LeadHours.Should().Be(24, "whole-crag mode keeps the smallest-lead-per-valid rule");

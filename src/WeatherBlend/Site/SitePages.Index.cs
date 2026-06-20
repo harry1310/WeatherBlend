@@ -92,11 +92,11 @@ public static partial class SitePages
         var lowCloudByValid = input.LowCloudByValid;
 
         // Rock surface / condensation (Phase P1) — smallest-lead-per-valid,
-        // freshest made on ties, PER FACE, then collapsed to the WORST face
-        // per hour (smallest condensation margin — the conservative summary a
-        // one-chip tile can carry; the temp tab charts every face). Whole-crag
-        // locations have a single empty face, so this is the old behaviour.
-        var rockByValid = CollapseRockToWorstFace(input.RockSurfacePredictions);
+        // freshest made on ties, PER FACE, then collapsed to the BEST (driest,
+        // furthest-from-dew) face per hour — the climbable aspect a one-chip tile
+        // should summarise; the temp tab charts every face. Whole-crag locations
+        // have a single empty face, so this is the old behaviour.
+        var rockByValid = CollapseRockToBestFace(input.RockSurfacePredictions);
 
         // Sea-state badge inputs (marine locations with a seaStateBadge
         // config block — Sennen). Wave rows arrive pre-collapsed to one row
@@ -516,11 +516,13 @@ public static partial class SitePages
     private const int LowCloudBaseFireThreshold = 6;
 
     /// <summary>Tile-badge lookup for rock surface rows: dedup smallest-lead /
-    /// freshest-made PER (valid, face), then keep the WORST face per valid —
-    /// the smallest condensation margin, i.e. the wall closest to sweating.
-    /// Single-face locations (Bonehill, empty face) reduce to the original
-    /// one-row-per-valid behaviour. Internal for tests.</summary>
-    internal static Dictionary<DateTime, RockSurfaceForecastPoint> CollapseRockToWorstFace(
+    /// freshest-made PER (valid, face), then keep the BEST face per valid — the
+    /// driest wall (least surface water), and among equally-dry walls the one
+    /// furthest from its dew point. On a sea cliff you climb the dry aspect, so
+    /// the badge reflects what's climbable; the wetter faces stay in the temp-tab
+    /// chart + drawer (Harry 2026-06-20, was worst-face). Single-face locations
+    /// (Bonehill, empty face) reduce to one-row-per-valid. Internal for tests.</summary>
+    internal static Dictionary<DateTime, RockSurfaceForecastPoint> CollapseRockToBestFace(
         IReadOnlyList<RockSurfaceForecastPoint> rows)
         => rows
             .GroupBy(r => r.Face)
@@ -528,8 +530,9 @@ public static partial class SitePages
             .GroupBy(r => r.ValidTimeUtc)
             .ToDictionary(
                 g => g.Key,
-                g => g.OrderBy(r => r.CondensationMarginC)
-                      .ThenBy(r => r.Face, StringComparer.Ordinal) // deterministic on margin ties
+                g => g.OrderBy(r => r.SurfaceWaterMm)                 // driest face first
+                      .ThenByDescending(r => r.CondensationMarginC)   // then furthest from the dew point
+                      .ThenBy(r => r.Face, StringComparer.Ordinal)    // deterministic on ties
                       .First());
 
     private static string RenderHourTile(

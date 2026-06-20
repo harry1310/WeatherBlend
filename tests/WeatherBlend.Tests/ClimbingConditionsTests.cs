@@ -147,6 +147,36 @@ public class ClimbingConditionsTests
         detail.Should().Contain("14.0", "dew = rock 15.0 − margin 1.0");
     }
 
+    [Fact]
+    public void Condensing_rock_reads_as_condensation_not_stale_rain()
+    {
+        // The Sennen west-face bug: a shaded face condensing all day (margin ≤ 0) with a
+        // thin film + a days-old LastRainAtUtc was labelled "wet from rain since 02Z".
+        // Condensation must be named as dew, with no stale rain timestamp stapled on.
+        var staleRain = new DateTime(2026, 1, 13, 2, 0, 0, DateTimeKind.Utc);   // ~2 days before Midday
+        var r = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6,
+            Rock(5, greasy: "condensation", rainWaterMm: 0.06, lastRainAtUtc: staleRain),
+            surfaceWaterGate: true);
+        var detail = r.Factors.Single(f => f.Name == "Friction").Detail;
+        detail.Should().NotContain("rain", "a condensing face is wet from dew, not rain");
+        detail.Should().NotContain("02Z", "a 2-day-old rain timestamp must not be stapled on");
+        detail.Should().Contain("dew");
+    }
+
+    [Fact]
+    public void Stale_last_rain_timestamp_is_not_cited_on_a_drying_face()
+    {
+        // Rock genuinely drying from rain (margin > 0) but the last ≥0.1 mm shower was
+        // 2 days ago — name it "wet from rain, drying" WITHOUT the misleading "since".
+        var staleRain = new DateTime(2026, 1, 13, 2, 0, 0, DateTimeKind.Utc);
+        var r = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6,
+            Rock(5, greasy: "dry", rainWaterMm: 0.03, lastRainAtUtc: staleRain),
+            surfaceWaterGate: true);
+        var detail = r.Factors.Single(f => f.Name == "Friction").Detail;
+        detail.Should().Contain("wet from rain");
+        detail.Should().NotContain("since", "a 2-day-old timestamp isn't why this film is here");
+    }
+
     // ---- Continuous greasiness ramp (no hard snap) ----
 
     [Fact]

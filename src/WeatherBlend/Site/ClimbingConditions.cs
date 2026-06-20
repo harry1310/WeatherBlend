@@ -307,12 +307,26 @@ public static class ClimbingConditions
         double rainFrictionMult = 1.0;
         if (surfaceWaterGate && rock is { } wetRock && wetRock.RainWaterMm > wetThresholdMm)
         {
-            var since = wetRock.LastRainAtUtc is { } lr ? $" since {lr:HH'Z'}" : "";
-            var eta = rainDryByUtc is { } dry ? $", drying — climbable ~{dry:HH'Z'}" : ", still drying";
-            rainNote = $"wet from rain{since} (~{wetRock.RainWaterMm:0.0} mm){eta}";
-            if (wetRock.RainWaterMm >= RainOffGateMm)
-                return Gate(ConditionsTier.Off, $"Rock {rainNote}");
             rainFrictionMult = RainWetnessFrictionMultiplier(wetRock.RainWaterMm, wetThresholdMm);
+            // Only call the film "rain" when the rock is NOT condensing. A face at or
+            // below the dew point (margin ≤ 0) is wet from CONDENSATION — the dew note
+            // in the friction block names it (≤ dew X°C); stapling a (here 2-day-old)
+            // LastRainAtUtc onto it is the "wet from rain since 02Z" bug seen on the
+            // shaded, all-day-condensing west face at Sennen (Harry 2026-06-20). And
+            // cite "since X" only when X is recent (<24h) — older = the last real
+            // shower, not why this film is here.
+            if (wetRock.CondensationMarginC > 0.0)
+            {
+                var recent = wetRock.LastRainAtUtc is { } lr && (validUtc - lr).TotalHours < 24.0;
+                var since = recent ? $" since {wetRock.LastRainAtUtc:HH'Z'}" : "";
+                var eta = rainDryByUtc is { } dry ? $", drying — climbable ~{dry:HH'Z'}" : ", drying";
+                rainNote = $"wet from rain{since} (~{wetRock.RainWaterMm:0.0} mm){eta}";
+            }
+            // Soaked rock is Off whatever the source — name the source correctly.
+            if (wetRock.RainWaterMm >= RainOffGateMm)
+                return Gate(ConditionsTier.Off, rainNote.Length > 0
+                    ? $"Rock {rainNote}"
+                    : $"Rock wet — condensing (≤ dew {wetRock.DewPointC:0.0}°C)");
         }
 
         // ---- Quality factors ----
