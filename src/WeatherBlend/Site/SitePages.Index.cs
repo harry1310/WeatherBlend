@@ -710,11 +710,13 @@ public static partial class SitePages
                 $"""<span class="status" style="--cond-color: {c.TierColor}">{Escape(c.TierLabel)}{nowcastTag}</span>""");
             var factorRows = new StringBuilder();
             foreach (var f in c.Factors)
+            {
                 // Abbreviate the one long factor name in the narrow drawer column so
                 // it fits one line without forcing the column wide (the full word still
                 // shows in the "limited by condensation" reason). Harry 2026-06-20.
                 var factorLabel = f.Name == "Condensation" ? "Cond." : f.Name;
                 factorRows.Append(Ci, $"<tr><td>{Escape(factorLabel)}</td><td class=\"num\">{(f.Score * 100):0}</td><td class=\"det\">{Escape(f.Detail)}</td></tr>");
+            }
             conditionsDrawer = string.Create(Ci, $"""
                 <details class="drawer cond-drawer" style="--cond-color: {c.TierColor}">
                   <summary class="s-cond"><span class="dot"></span>Conditions<span class="chev">&#x25B6;</span></summary>
