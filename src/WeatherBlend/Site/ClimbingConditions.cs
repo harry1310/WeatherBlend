@@ -59,17 +59,21 @@ public static class ClimbingConditions
     /// <summary>Below this, air is "bad" (sharp penalty); above <see cref="AirTooHotC"/> it's too hot.</summary>
     public const double AirColdC = 5.0, AirTooHotC = 20.0;
 
-    /// <summary>Wind comfort band (mph): a breeze beats dead calm, but an
-    /// exposed tor turns "pretty shite" past ~10 mph, decaying toward a non-zero
-    /// floor past that (see <see cref="WindStrongFloorScore"/>).</summary>
-    public const double WindIdealLoMph = 5.0, WindIdealHiMph = 7.0, WindHarshMph = 10.0;
+    /// <summary>Wind comfort band (mph, on the EFFECTIVE wind after per-location
+    /// exposure): a breeze beats dead calm; best conditions hold across a wide
+    /// 5–10 mph plateau, then drop linearly to <see cref="WindHarshScore"/> by the
+    /// harsh point (15 mph), then decay toward a non-zero floor
+    /// (<see cref="WindStrongFloorScore"/>). Widened from the old 7 mph peak / 10 mph
+    /// harsh knee (Harry 2026-06-20: the curve tanked too early — 11 mph effective
+    /// shouldn't be near-Poor).</summary>
+    public const double WindIdealLoMph = 5.0, WindIdealHiMph = 10.0, WindHarshMph = 15.0;
     /// <summary>Wind-comfort floor at dead calm (no drying breeze, but fine).</summary>
     public const double WindCalmScore = 0.6;
-    /// <summary>Wind-comfort value at the harsh point (10 mph) — the anchor the
+    /// <summary>Wind-comfort value at the harsh point (15 mph) — the anchor the
     /// strong-wind decay starts from.</summary>
-    public const double WindHarshScore = 0.4;
+    public const double WindHarshScore = 0.5;
     /// <summary>Per-mph wind-comfort loss above the harsh point. 0.02/mph carries
-    /// 0.4 at 10 mph down to <see cref="WindStrongFloorScore"/> at ~25 mph.</summary>
+    /// 0.5 at 15 mph down to <see cref="WindStrongFloorScore"/> at ~35 mph.</summary>
     public const double WindHarshSlope = 0.02;
     /// <summary>Strong-wind floor: past ~25 mph the curve bottoms out HERE rather
     /// than hitting zero (Harry 2026-06-17). A single 0 factor would zero the
@@ -235,11 +239,12 @@ public static class ClimbingConditions
         return Clamp01(0.15 - (airTempC - AirTooHotC) * 0.03);
     }
 
-    /// <summary>Wind comfort (mph): rises from a calm-day floor to a 5–7 mph
-    /// peak, then falls off — "pretty shite" past ~10 mph on exposed ground —
-    /// and decays to a non-zero floor (<see cref="WindStrongFloorScore"/>) past
-    /// ~25 mph rather than hitting zero, so a gale doesn't annihilate the whole
-    /// verdict via the blend's <c>min</c> term.</summary>
+    /// <summary>Wind comfort (mph): rises from a calm-day floor to a 5–10 mph
+    /// best-conditions plateau, falls linearly to <see cref="WindHarshScore"/>
+    /// (0.5) by 15 mph, then decays to a non-zero floor
+    /// (<see cref="WindStrongFloorScore"/>) past ~35 mph rather than hitting zero,
+    /// so a gale doesn't annihilate the whole verdict via the blend's <c>min</c>
+    /// term.</summary>
     public static double WindComfort(double windMph)
     {
         if (windMph <= WindIdealLoMph) return WindCalmScore + windMph / WindIdealLoMph * (1.0 - WindCalmScore);

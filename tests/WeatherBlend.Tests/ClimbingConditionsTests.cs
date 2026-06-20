@@ -73,12 +73,16 @@ public class ClimbingConditionsTests
     }
 
     [Fact]
-    public void WindComfort_peaks_at_a_light_breeze_and_tanks_past_10mph()
+    public void WindComfort_holds_a_5_to_10_plateau_then_eases_to_15mph()
     {
+        // Widened 2026-06-20: best conditions hold 5–10 mph, then drop linearly to
+        // 0.5 at 15 mph (so 11 mph effective is barely off peak, not near-Poor).
         ClimbingConditions.WindComfort(6).Should().BeApproximately(1.0, 1e-9);
+        ClimbingConditions.WindComfort(10).Should().BeApproximately(1.0, 1e-9, "best extends to 10 mph");
+        ClimbingConditions.WindComfort(11).Should().BeGreaterThan(0.85, "11 mph effective is barely off peak now");
+        ClimbingConditions.WindComfort(15).Should().BeApproximately(0.5, 1e-9, "0.5 at the 15 mph harsh point");
         ClimbingConditions.WindComfort(0).Should().BeInRange(0.5, 0.75, "calm is fine but a breeze is better");
         ClimbingConditions.WindComfort(0).Should().BeLessThan(ClimbingConditions.WindComfort(6));
-        ClimbingConditions.WindComfort(15).Should().BeLessThan(ClimbingConditions.WindComfort(10), "strong wind drags comfort down");
         ClimbingConditions.WindComfort(12).Should().BeLessThan(ClimbingConditions.WindComfort(10));
     }
 
@@ -87,9 +91,9 @@ public class ClimbingConditionsTests
     {
         // 2026-06-17: a gale must drag the verdict down hard but NOT zero the
         // whole weakest-link blend. The curve bottoms out at the strong-wind
-        // floor (~25 mph+) and never goes below it.
-        ClimbingConditions.WindComfort(18).Should().BeGreaterThan(0.0, "18 mph is grim but not annihilating");
-        ClimbingConditions.WindComfort(18).Should().BeLessThan(ClimbingConditions.WindComfort(12), "but worse than 12 mph");
+        // floor (~35 mph+) and never goes below it.
+        ClimbingConditions.WindComfort(22).Should().BeGreaterThan(0.0, "22 mph is grim but not annihilating");
+        ClimbingConditions.WindComfort(22).Should().BeLessThan(ClimbingConditions.WindComfort(15), "but worse than the harsh point");
         ClimbingConditions.WindComfort(40).Should().BeApproximately(
             ClimbingConditions.WindStrongFloorScore, 1e-9, "a storm sits on the floor");
         ClimbingConditions.WindComfort(40).Should().BeGreaterThan(0.0);
@@ -225,7 +229,7 @@ public class ClimbingConditionsTests
     public void Strong_wind_alone_drags_an_otherwise_perfect_day_down()
     {
         var calm = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6, Rock(5));
-        var windy = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 18, Rock(5));
+        var windy = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 28, Rock(5));
         windy.Score.Should().BeLessThan(calm.Score);
         windy.Tier.Should().BeOneOf(ConditionsTier.Marginal, ConditionsTier.Poor);
         windy.Reason.Should().Contain("wind");
