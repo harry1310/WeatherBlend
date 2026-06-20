@@ -84,25 +84,32 @@ public static class ClimbingConditions
     public const double RainGateProb = 0.5;
 
     /// <summary>Rain-derived surface-water film (mm) at/below which the rock counts
-    /// as dry again (no rain penalty). The index's own copy of the rock model's
-    /// <c>WetThresholdMm</c> — they share a default. The DRY end of the damp-drying
-    /// ramp (<see cref="RainWetnessFrictionMultiplier"/>); only consulted when the
-    /// location has the drying model enabled.</summary>
-    public const double RainWetThresholdMm = 0.05;
+    /// as dry / climbable again (no rain penalty). The DRY end of the evaporation
+    /// ramp. Lowered to 0.01 mm (2026-06-20) — drainage leaves a damp residual at
+    /// <see cref="RainFullyWetMm"/>, and the rock stays "wet, drying, not climbable"
+    /// while that evaporates down to here (~20–60 min at 15 °C / 10 mph in normal
+    /// humidity). You can't climb 10 min after a downpour, so dry sits well below the
+    /// drained residual.</summary>
+    public const double RainWetThresholdMm = 0.01;
 
-    /// <summary>Rain film (mm) at/above which the rock is genuinely WET and the
+    /// <summary>Rain film (mm) at/above which the rock is "fully wet" — the WET end of
+    /// the evaporation ramp, where friction sits on the rain-wet floor. This is the
+    /// damp residual gravity drainage leaves (mirrors the rock model's
+    /// <c>RetainedFilmMm</c> 0.05): a freshly-drained face reads fully wet here, then
+    /// the verdict climbs back up as the residual evaporates toward
+    /// <see cref="RainWetThresholdMm"/>.</summary>
+    public const double RainFullyWetMm = 0.05;
+
+    /// <summary>Rain film (mm) at/above which the rock is genuinely SOAKED and the
     /// verdict hard-gates Off — you wouldn't climb a slab this wet (Harry 2026-06-20).
-    /// Below it (down to <see cref="RainWetThresholdMm"/>) is the "damp, drying"
-    /// band where the verdict climbs back up through the tiers. Half the rock
-    /// model's 0.4 mm runoff cap: the upper half-film is "wet", the lower half is
-    /// "draining/coming good". A calibration knob — raise it to call rock climbable
-    /// sooner, lower it to hold Off longer.</summary>
+    /// Above <see cref="RainFullyWetMm"/> the rock is wet (Poor) but not yet Off;
+    /// this is the line where it becomes a hard Off. A calibration knob.</summary>
     public const double RainOffGateMm = 0.2;
 
-    /// <summary>Friction floor for a just-below-the-gate rain film — the WET end of
-    /// the damp-drying ramp. Lower than the dew floor (<see cref="WetFrictionPenalty"/>):
-    /// a rain-soaked slab gives worse grip than dew-greasy rock, so a slab that has
-    /// only just dropped out of the Off gate reads Poor, then climbs as it dries.</summary>
+    /// <summary>Friction floor for a fully-wet rain film (the drained-but-undried
+    /// residual). Lower than the dew floor (<see cref="WetFrictionPenalty"/>): a
+    /// rain-wet slab gives worse grip than dew-greasy rock, so a just-drained face
+    /// reads Poor, then climbs as the residual evaporates.</summary>
     public const double RainWetFloorScore = 0.08;
 
     /// <summary>Solar elevation (deg) below which it's too dark to climb (gate).</summary>
@@ -166,22 +173,23 @@ public static class ClimbingConditions
         return WetFrictionPenalty + (1.0 - WetFrictionPenalty) * s;
     }
 
-    /// <summary>Graded rain-film friction multiplier across the DAMP-DRYING band
-    /// (below the Off gate). Genuinely-wet rock (≥ <paramref name="offGateMm"/>)
-    /// gates Off in <see cref="Evaluate"/> and never reaches here; this shapes the
-    /// recovery once the film has dropped out of Off. Smoothstep from the rain-wet
-    /// floor (<see cref="RainWetFloorScore"/>) at the gate down to no penalty (1.0)
-    /// at a dried-out film (≤ <paramref name="dryThresholdMm"/>), so the verdict
-    /// climbs Poor→Marginal→Good→Prime as the slab dries. Decreasing in film: more
-    /// water ⇒ lower multiplier.</summary>
+    /// <summary>Graded rain-film friction multiplier across the EVAPORATION band: from
+    /// "fully wet" at the drained residual (≥ <paramref name="fullyWetMm"/> → the
+    /// rain-wet floor <see cref="RainWetFloorScore"/>) up to no penalty (1.0) at a
+    /// dried-out film (≤ <paramref name="dryThresholdMm"/>). A freshly-drained face
+    /// reads fully wet (Poor), then climbs Poor→Marginal→Good→Prime as the residual
+    /// EVAPORATES toward dry — the "drying, becoming climbable" gradient. A film above
+    /// the residual (between fully-wet and the Off gate) is also fully wet; soaked rock
+    /// (≥ the Off gate) gates Off in <see cref="Evaluate"/> and never reaches here.
+    /// Decreasing in film: more water ⇒ lower multiplier.</summary>
     public static double RainWetnessFrictionMultiplier(
-        double rainWaterMm, double dryThresholdMm = RainWetThresholdMm, double offGateMm = RainOffGateMm)
+        double rainWaterMm, double dryThresholdMm = RainWetThresholdMm, double fullyWetMm = RainFullyWetMm)
     {
         if (rainWaterMm <= dryThresholdMm) return 1.0;          // dried out — no penalty
-        if (rainWaterMm >= offGateMm) return RainWetFloorScore; // at the gate — wet floor
-        var t = (rainWaterMm - dryThresholdMm) / (offGateMm - dryThresholdMm); // 0 dry → 1 at gate
+        if (rainWaterMm >= fullyWetMm) return RainWetFloorScore; // drained residual or wetter — wet floor
+        var t = (rainWaterMm - dryThresholdMm) / (fullyWetMm - dryThresholdMm); // 0 dry → 1 fully wet
         var s = t * t * (3.0 - 2.0 * t);                        // smoothstep (flat ends, no kink)
-        return 1.0 - (1.0 - RainWetFloorScore) * s;             // 1.0 at dry → floor at the gate
+        return 1.0 - (1.0 - RainWetFloorScore) * s;             // 1.0 at dry → floor at fully-wet
     }
 
     /// <summary>Ambient relative humidity (%) at/below which the rock reads dry —

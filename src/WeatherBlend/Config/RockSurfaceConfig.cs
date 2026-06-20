@@ -150,15 +150,20 @@ public sealed class RockSurfaceConfig
 
     // ---- Gravity drainage (vertical-face runoff, 2026-06-20) ----
     /// <summary>Retained surface-water film (mm) a sloped face holds AFTER gravity
-    /// has drained the bulk — the roughness/capillary residual gravity can't shed.
-    /// Below it the film only evaporates. This is the "what stays after rain" number
-    /// for a steep face: a vertical wall sheds to this within ~an hour (Jeffreys/
-    /// Nusselt drainage, <see cref="RockSurfacePhysics.Integrate"/>), then evaporates
-    /// the residual over ~1–2 h — instead of evaporating the whole runoff cap. Order
-    /// 0.05–0.15 mm on rough granite; the knob to validate against "stayed wet ~N h"
-    /// field notes. (The old behaviour — evaporate the full <see cref="MaxSurfaceWaterMm"/>
-    /// — was the horizontal-slab assumption, wrong for a vertical climbing face.)</summary>
-    public double RetainedFilmMm { get; set; } = 0.1;
+    /// has drained the bulk — the damp residual gravity can't shed; below it the film
+    /// only evaporates. A vertical wall sheds to this in minutes (Jeffreys/Nusselt
+    /// drainage, <see cref="RockSurfacePhysics.Integrate"/>), then evaporates the
+    /// residual — that evaporation IS the "drying, not yet climbable" period (you
+    /// can't climb 10 min after a downpour). Set to 0.05 mm (2026-06-20): the literature
+    /// post-drainage residual is microns (a few μm draining in seconds–minutes), but
+    /// rough natural rock + the vertical-plate simplification hold more, and a damp
+    /// residual that still needs to dry is the realistic climbing behaviour. The
+    /// climbing index reads it as wet down to ~0.01 mm
+    /// (<see cref="ClimbingConditions.RainWetThresholdMm"/>) — evaporating 0.05→0.01
+    /// is ~20–60 min at 15 °C / 10 mph in normal humidity. Knob to validate against
+    /// "stayed wet ~N h" field notes. (Was 0.1 mm, which sat above the old 0.05 wet
+    /// line and doubled the dry-out — the bug behind the 5-hour traces.)</summary>
+    public double RetainedFilmMm { get; set; } = 0.05;
 
     /// <summary>Characteristic vertical drainage length (m) for the gravity-runoff
     /// term — the height of the wet streak the film drains down. The Nusselt drainage

@@ -253,17 +253,19 @@ public class ClimbingConditionsTests
     // ---- Surface-water drying: Off when wet, a graded ladder as it dries (Phase A) ----
 
     [Fact]
-    public void RainWetnessFrictionMultiplier_floors_at_the_gate_and_climbs_as_it_dries()
+    public void RainWetnessFrictionMultiplier_floors_when_fully_wet_and_climbs_as_it_evaporates()
     {
-        // At/above the Off gate it sits on the rain-wet floor (the gate hands off
-        // to the hard Off in Evaluate); dried-out (≤ wet threshold) has no penalty;
-        // strictly increasing as the film thins across the damp band.
-        ClimbingConditions.RainWetnessFrictionMultiplier(ClimbingConditions.RainOffGateMm)
+        // The drained residual (fully-wet) and anything wetter up to the Off gate sit
+        // on the rain-wet floor; dried-out (≤ wet threshold, 0.01) has no penalty;
+        // strictly increasing as the residual evaporates across the [0.01, 0.05] band.
+        ClimbingConditions.RainWetnessFrictionMultiplier(ClimbingConditions.RainFullyWetMm)
             .Should().Be(ClimbingConditions.RainWetFloorScore);
-        ClimbingConditions.RainWetnessFrictionMultiplier(0.05).Should().Be(1.0);
+        ClimbingConditions.RainWetnessFrictionMultiplier(ClimbingConditions.RainOffGateMm)
+            .Should().Be(ClimbingConditions.RainWetFloorScore, "wetter than fully-wet is also on the floor");
+        ClimbingConditions.RainWetnessFrictionMultiplier(ClimbingConditions.RainWetThresholdMm).Should().Be(1.0);
         ClimbingConditions.RainWetnessFrictionMultiplier(0.0).Should().Be(1.0);
         var prev = 2.0;
-        foreach (var f in new[] { 0.06, 0.10, 0.14, 0.18 })
+        foreach (var f in new[] { 0.015, 0.025, 0.035, 0.045 })
         {
             var v = ClimbingConditions.RainWetnessFrictionMultiplier(f);
             v.Should().BeLessThan(prev, "wetter film ⇒ lower multiplier");
@@ -305,12 +307,13 @@ public class ClimbingConditionsTests
             Midday, Lat, Lon, 9, 0.02, 6, Rock(5, rainWaterMm: film), surfaceWaterGate: true).Score;
 
         var damp = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6,
-            Rock(5, rainWaterMm: 0.10, lastRainAtUtc: Midday.AddHours(-4)), surfaceWaterGate: true);
-        damp.Tier.Should().NotBe(ConditionsTier.Off, "a damp-but-draining slab is climbable, if poor");
+            Rock(5, rainWaterMm: 0.03, lastRainAtUtc: Midday.AddHours(-4)), surfaceWaterGate: true);
+        damp.Tier.Should().NotBe(ConditionsTier.Off, "a damp-but-evaporating slab is climbable, if poor");
         damp.Factors.Single(f => f.Name == "Friction").Detail.Should().Contain("wet from rain");
 
-        Score(0.07).Should().BeGreaterThan(Score(0.12));
-        Score(0.12).Should().BeGreaterThan(Score(0.18));
+        // Improvement happens across the evaporation band [0.01, 0.05].
+        Score(0.02).Should().BeGreaterThan(Score(0.035));
+        Score(0.035).Should().BeGreaterThan(Score(0.045));
     }
 
     [Fact]
@@ -341,7 +344,7 @@ public class ClimbingConditionsTests
     public void Sub_threshold_rain_film_carries_no_penalty()
     {
         var r = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6,
-            Rock(5, rainWaterMm: 0.01), surfaceWaterGate: true);
+            Rock(5, rainWaterMm: 0.005), surfaceWaterGate: true);
         r.Tier.Should().Be(ConditionsTier.Prime, "a trace film below the wet threshold isn't 'wet'");
         r.Factors.Single(f => f.Name == "Friction").Detail.Should().NotContain("rain");
     }
@@ -407,7 +410,7 @@ public class ClimbingConditionsTests
         {
             Rock(5, rainWaterMm: 0.3, validUtc: t0),                 // wet
             Rock(5, rainWaterMm: 0.2, validUtc: t0.AddHours(1)),     // wet
-            Rock(5, rainWaterMm: 0.01, validUtc: t0.AddHours(2)),    // dry ← ETA
+            Rock(5, rainWaterMm: 0.005, validUtc: t0.AddHours(2)),   // dry (< 0.01 threshold) ← ETA
             Rock(5, rainWaterMm: 0.0, validUtc: t0.AddHours(3)),     // dry
         };
         var map = ClimbingConditions.RainDryByMap(series);
