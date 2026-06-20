@@ -308,82 +308,60 @@ public static class ClimbingConditions
         if (surfaceWaterGate && rock is { } wetRock && wetRock.RainWaterMm > wetThresholdMm)
         {
             rainFrictionMult = RainWetnessFrictionMultiplier(wetRock.RainWaterMm, wetThresholdMm);
-            // Only call the film "rain" when the rock is NOT condensing. A face at or
-            // below the dew point (margin ≤ 0) is wet from CONDENSATION — the dew note
-            // in the friction block names it (≤ dew X°C); stapling a (here 2-day-old)
-            // LastRainAtUtc onto it is the "wet from rain since 02Z" bug seen on the
-            // shaded, all-day-condensing west face at Sennen (Harry 2026-06-20). And
-            // cite "since X" only when X is recent (<24h) — older = the last real
-            // shower, not why this film is here.
-            if (wetRock.CondensationMarginC > 0.0)
-            {
-                var recent = wetRock.LastRainAtUtc is { } lr && (validUtc - lr).TotalHours < 24.0;
-                var since = recent ? $" since {wetRock.LastRainAtUtc:HH'Z'}" : "";
-                var eta = rainDryByUtc is { } dry ? $", drying — climbable ~{dry:HH'Z'}" : ", drying";
-                rainNote = $"wet from rain{since} (~{wetRock.RainWaterMm:0.0} mm){eta}";
-            }
-            // Soaked rock is Off whatever the source — name the source correctly.
+            // Rain is its OWN weakest-link factor now (separate from Condensation), so
+            // name the rain film plainly. Cite "since X" ONLY when X is recent (<24h) —
+            // a days-old LastRainAtUtc is the last real shower, not why this film is
+            // here (the "wet from rain since 02Z" bug on the all-day-condensing west
+            // face at Sennen, Harry 2026-06-20).
+            var recent = wetRock.LastRainAtUtc is { } lr && (validUtc - lr).TotalHours < 24.0;
+            var since = recent ? $" since {wetRock.LastRainAtUtc:HH'Z'}" : "";
+            var eta = rainDryByUtc is { } dry ? $", drying — climbable ~{dry:HH'Z'}" : ", drying";
+            rainNote = $"wet from rain{since} (~{wetRock.RainWaterMm:0.0} mm){eta}";
+            // Soaked WITH RAIN → Off. Condensation is never a gate, only a penalty.
             if (wetRock.RainWaterMm >= RainOffGateMm)
-                return Gate(ConditionsTier.Off, rainNote.Length > 0
-                    ? $"Rock {rainNote}"
-                    : $"Rock wet — condensing (≤ dew {wetRock.DewPointC:0.0}°C)");
+                return Gate(ConditionsTier.Off, $"Rock {rainNote}");
         }
 
         // ---- Quality factors ----
-        var factors = new List<Factor>(4);
+        var factors = new List<Factor>(7);
 
-        // Friction: from rock temp when present (the rock-surface model's
-        // payoff), else an air-temp proxy. A "potentially greasy" flag knocks
-        // friction down without gating outright.
-        double frictionScore;
-        string frictionDetail;
+        // The rock-surface model splits into THREE independent weakest-link factors
+        // (Harry 2026-06-20) so a wet/greasy verdict names ONE cause instead of
+        // compounding them into one opaque "friction" product:
+        //   * Friction     — rock-temperature grip × hygroscopic SALT greasiness (RH,
+        //                     sea cliffs only). Pure grip, no surface water.
+        //   * Condensation — the rock-vs-dew margin: wet at/below the dew point, drying
+        //                     as the face warms clear of it (near-dew greasy = the top
+        //                     of the ramp). Always present with the rock model.
+        //   * Rain         — the rain-water film (wRain): wet from rain, drying via the
+        //                     drainage→evaporation ladder (drying model / gate only).
+        // The blend takes the MIN, so these no longer MULTIPLY together (the old single
+        // Friction factor compounded all three, cratering wet verdicts). Inland crags
+        // with no rock model fall back to an air-temp friction proxy.
         if (rock is { } rk)
         {
-            frictionScore = RockFriction(rk.RockSurfaceTempC);
-            frictionDetail = $"rock {rk.RockSurfaceTempC:0.0}°C";
-            // Greasiness scales friction CONTINUOUSLY with the rock-vs-dew margin
-            // (smooth ramp: wet floor at margin ≤ 0 → no penalty at margin ≥
-            // greasyMarginC), so the verdict glides as the rock warms past the dew
-            // point instead of snapping a whole tier at the old hard greasy/dry cut
-            // (Harry 2026-06-20). The label still names the tier for the reader.
-            // Humidity-driven greasiness = the WORSE of two mechanisms (don't
-            // double-count "it's humid"): the rock cooling toward its dew point
-            // (margin-based, all locations) and — where ambient RH is supplied
-            // (sea cliffs) — hygroscopic SALT going damp from the air, which fires
-            // even on a warm face the dew margin calls dry (Harry 2026-06-20).
-            // Clean inland crags pass no RH → salt term = 1.0 (no-op).
-            var dewGreasy = GreasyFrictionMultiplier(rk.CondensationMarginC, greasyMarginC);
             var rhPct = ambientRhPct ?? double.NaN;
             var saltGreasy = double.IsNaN(rhPct) ? 1.0 : SaltRhFrictionMultiplier(rhPct);
-            frictionScore *= Math.Min(dewGreasy, saltGreasy);
-            if (saltGreasy < dewGreasy)
-                frictionDetail += $", salt-damp (RH {rhPct:0}%)";
-            else if (dewGreasy < 1.0)
-            {
-                // Within the greasy band (rock within greasyMarginC of the dew point):
-                // ALWAYS name the dew point, not just when condensing — if friction is
-                // limiting, the reader needs the rock-vs-dew gap to see why (Harry
-                // 2026-06-20). ≤ 0 margin = condensing (dew at/above rock); 0–band =
-                // greasy-but-above with the gap spelt out.
-                if (rk.CondensationMarginC <= 0.0)
-                    frictionDetail += $", wet (≤ dew {rk.DewPointC:0.0}°C)";
-                else
-                    frictionDetail += $", greasy (dew {rk.DewPointC:0.0}°C, {rk.CondensationMarginC:0.0}°C off)";
-            }
+            var frictionDetail = saltGreasy < 1.0
+                ? $"rock {rk.RockSurfaceTempC:0.0}°C, salt-damp (RH {rhPct:0}%)"
+                : $"rock {rk.RockSurfaceTempC:0.0}°C";
+            factors.Add(new Factor("Friction", RockFriction(rk.RockSurfaceTempC) * saltGreasy, frictionDetail));
 
-            // Rain film in the damp-drying band (below the Off gate) — a graded
-            // friction penalty that eases as the slab dries, with the wet-event
-            // provenance. Soaked rock (≥ the gate) never reaches here; it returned
-            // Off above. rainFrictionMult/rainNote were computed there.
-            frictionScore *= rainFrictionMult;
-            if (rainNote.Length > 0) frictionDetail += $", {rainNote}";
+            var condScore = GreasyFrictionMultiplier(rk.CondensationMarginC, greasyMarginC);
+            var condDetail = rk.CondensationMarginC <= 0.0
+                ? $"on the dew point (≤ dew {rk.DewPointC:0.0}°C)"
+                : condScore < 1.0
+                    ? $"near the dew point (dew {rk.DewPointC:0.0}°C, {rk.CondensationMarginC:0.0}°C off)"
+                    : $"clear ({rk.CondensationMarginC:0.0}°C above dew)";
+            factors.Add(new Factor("Condensation", condScore, condDetail));
+
+            if (surfaceWaterGate)
+                factors.Add(new Factor("Rain", rainFrictionMult, rainNote.Length > 0 ? rainNote : "dry"));
         }
         else
         {
-            frictionScore = RockFriction(airTempC);
-            frictionDetail = $"~{airTempC:0.0}°C (from air)";
+            factors.Add(new Factor("Friction", RockFriction(airTempC), $"~{airTempC:0.0}°C (from air)"));
         }
-        factors.Add(new Factor("Friction", frictionScore, frictionDetail));
 
         factors.Add(new Factor("Air temp", AirComfort(airTempC), $"{airTempC:0.0}°C"));
 

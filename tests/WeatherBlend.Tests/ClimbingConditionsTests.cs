@@ -130,19 +130,18 @@ public class ClimbingConditionsTests
         wet.Tier.Should().NotBe(ConditionsTier.Off);
         wet.Tier.Should().BeOneOf(ConditionsTier.Marginal, ConditionsTier.Poor);
         wet.Score.Should().BeLessThan(greasy.Score, "wet rock is worse than merely greasy");
-        wet.Factors.Single(f => f.Name == "Friction").Detail.Should().Contain("wet");
+        wet.Factors.Single(f => f.Name == "Condensation").Detail.Should().Contain("dew");
     }
 
     [Fact]
     public void Greasy_band_above_the_dew_point_still_names_the_dew_point()
     {
-        // In the greasy band but rock still ABOVE the dew point: the friction detail
-        // must name the dew point (and the gap), not just say "greasy" — if friction
-        // is the limiting factor the reader needs the rock-vs-dew margin to see why,
-        // as soon as we're in the band, not only once condensing (Harry 2026-06-20).
+        // In the greasy band but rock still ABOVE the dew point: the Condensation
+        // factor must name the dew point (and the gap), not just say "greasy" — the
+        // reader needs the rock-vs-dew margin to see why, as soon as we're in the
+        // band, not only once condensing (Harry 2026-06-20).
         var r = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6, RockMargin(15.0, 1.0));
-        var detail = r.Factors.Single(f => f.Name == "Friction").Detail;
-        detail.Should().Contain("greasy");
+        var detail = r.Factors.Single(f => f.Name == "Condensation").Detail;
         detail.Should().Contain("dew");
         detail.Should().Contain("14.0", "dew = rock 15.0 − margin 1.0");
     }
@@ -152,15 +151,17 @@ public class ClimbingConditionsTests
     {
         // The Sennen west-face bug: a shaded face condensing all day (margin ≤ 0) with a
         // thin film + a days-old LastRainAtUtc was labelled "wet from rain since 02Z".
-        // Condensation must be named as dew, with no stale rain timestamp stapled on.
+        // Now Condensation names the dew point on its own factor, and no factor carries
+        // the stale rain timestamp.
         var staleRain = new DateTime(2026, 1, 13, 2, 0, 0, DateTimeKind.Utc);   // ~2 days before Midday
         var r = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6,
             Rock(5, greasy: "condensation", rainWaterMm: 0.06, lastRainAtUtc: staleRain),
             surfaceWaterGate: true);
-        var detail = r.Factors.Single(f => f.Name == "Friction").Detail;
-        detail.Should().NotContain("rain", "a condensing face is wet from dew, not rain");
-        detail.Should().NotContain("02Z", "a 2-day-old rain timestamp must not be stapled on");
-        detail.Should().Contain("dew");
+        r.Factors.Single(f => f.Name == "Condensation").Detail.Should().Contain("dew");
+        r.Factors.Should().NotContain(f => f.Detail.Contains("02Z"),
+            "a 2-day-old rain timestamp must not be stapled onto any factor");
+        r.Factors.Single(f => f.Name == "Rain").Detail.Should().NotContain("since",
+            "the stale shower isn't why this film is here");
     }
 
     [Fact]
@@ -172,7 +173,7 @@ public class ClimbingConditionsTests
         var r = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6,
             Rock(5, greasy: "dry", rainWaterMm: 0.03, lastRainAtUtc: staleRain),
             surfaceWaterGate: true);
-        var detail = r.Factors.Single(f => f.Name == "Friction").Detail;
+        var detail = r.Factors.Single(f => f.Name == "Rain").Detail;
         detail.Should().Contain("wet from rain");
         detail.Should().NotContain("since", "a 2-day-old timestamp isn't why this film is here");
     }
@@ -357,7 +358,7 @@ public class ClimbingConditionsTests
         var damp = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6,
             Rock(5, rainWaterMm: 0.03, lastRainAtUtc: Midday.AddHours(-4)), surfaceWaterGate: true);
         damp.Tier.Should().NotBe(ConditionsTier.Off, "a damp-but-evaporating slab is climbable, if poor");
-        damp.Factors.Single(f => f.Name == "Friction").Detail.Should().Contain("wet from rain");
+        damp.Factors.Single(f => f.Name == "Rain").Detail.Should().Contain("wet from rain");
 
         // Improvement happens across the evaporation band [0.01, 0.05].
         Score(0.02).Should().BeGreaterThan(Score(0.035));
