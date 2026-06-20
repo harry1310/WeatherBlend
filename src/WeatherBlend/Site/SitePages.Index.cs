@@ -181,6 +181,11 @@ public static partial class SitePages
             var rainDryByUtc = surfaceWaterGate
                 ? ClimbingConditions.RainDryByMap(rockByValid.Values, ClimbingConditions.RainOffGateMm)
                 : new Dictionary<DateTime, DateTime?>();
+            // "wet from rain since ~HHZ" — when each wet hour's rain film actually
+            // started (its contiguous wet spell), not the stale LastRainAtUtc stamp.
+            var rainWetSinceUtc = surfaceWaterGate
+                ? ClimbingConditions.RainWetSinceMap(rockByValid.Values)
+                : new Dictionary<DateTime, DateTime>();
 
             var tiles = new StringBuilder();
             int popoverId = 0;
@@ -211,6 +216,8 @@ public static partial class SitePages
 
                     DateTime? rainDryBy = rk is { } rkp
                         && rainDryByUtc.TryGetValue(rkp.ValidTimeUtc, out var dby) ? dby : null;
+                    DateTime? rainWetSince = rk is { } rkp2
+                        && rainWetSinceUtc.TryGetValue(rkp2.ValidTimeUtc, out var wsv) ? wsv : null;
                     // Sea-cliff SALT greasiness: feed ambient RH for marine locations
                     // (those with a sea-state block — Sennen) only. Inland crags pass
                     // null → the salt term is inert. Skipped when RH is unknown (NaN).
@@ -223,7 +230,8 @@ public static partial class SitePages
                         rainDryByUtc: rainDryBy,
                         greasyMarginC: input.RenderingFor?.GreasyMarginC ?? ClimbingConditions.DefaultGreasyMarginC,
                         windExposure: input.RenderingFor?.WindExposure ?? 1.0,
-                        ambientRhPct: ambientRh);
+                        ambientRhPct: ambientRh,
+                        rainWetSinceUtc: rainWetSince);
                 }
                 tiles.Append(RenderHourTile(p, feelsLikeByValid, pwetByValid, lowCloudByValid, rockByValid,
                     seaSpec, waveByValid, windSpeedMsByValid, windDirDegByValid,

@@ -284,7 +284,8 @@ public static class ClimbingConditions
         DateTime? rainDryByUtc = null,
         double greasyMarginC = DefaultGreasyMarginC,
         double windExposure = 1.0,
-        double? ambientRhPct = null)
+        double? ambientRhPct = null,
+        DateTime? rainWetSinceUtc = null)
     {
         // ---- Gates (any one → Off) ----
         var (elevDeg, _) = SolarGeometry.SolarPosition(validUtc, latitude, longitude);
@@ -308,13 +309,12 @@ public static class ClimbingConditions
         if (surfaceWaterGate && rock is { } wetRock && wetRock.RainWaterMm > wetThresholdMm)
         {
             rainFrictionMult = RainWetnessFrictionMultiplier(wetRock.RainWaterMm, wetThresholdMm);
-            // Rain is its OWN weakest-link factor now (separate from Condensation), so
-            // name the rain film plainly. Cite "since X" ONLY when X is recent (<24h) —
-            // a days-old LastRainAtUtc is the last real shower, not why this film is
-            // here (the "wet from rain since 02Z" bug on the all-day-condensing west
-            // face at Sennen, Harry 2026-06-20).
-            var recent = wetRock.LastRainAtUtc is { } lr && (validUtc - lr).TotalHours < 24.0;
-            var since = recent ? $" since {wetRock.LastRainAtUtc:HH'Z'}" : "";
+            // "since X" = when THIS wet spell started (the rain-film onset the caller
+            // computes from the series, RainWetSinceMap), NOT the rock model's
+            // LastRainAtUtc (the last ≥0.1 mm shower, which can be days stale while a
+            // sub-threshold trace + condensation is what's actually wetting the rock —
+            // the "since 02Z" bug at Sennen, Harry 2026-06-20).
+            var since = rainWetSinceUtc is { } ws ? $" since {ws:HH'Z'}" : "";
             var eta = rainDryByUtc is { } dry ? $", drying — climbable ~{dry:HH'Z'}" : ", drying";
             rainNote = $"wet from rain{since} (~{wetRock.RainWaterMm:0.0} mm){eta}";
             // Soaked WITH RAIN → Off. Condensation is never a gate, only a penalty.
@@ -354,9 +354,6 @@ public static class ClimbingConditions
                     ? $"near the dew point (dew {rk.DewPointC:0.0}°C, {rk.CondensationMarginC:0.0}°C off)"
                     : $"clear ({rk.CondensationMarginC:0.0}°C above dew)";
             factors.Add(new Factor("Condensation", condScore, condDetail));
-
-            if (surfaceWaterGate)
-                factors.Add(new Factor("Rain", rainFrictionMult, rainNote.Length > 0 ? rainNote : "dry"));
         }
         else
         {
@@ -376,8 +373,20 @@ public static class ClimbingConditions
             factors.Add(new Factor("Wind", WindComfort(effMph), windDetail));
         }
 
-        if (pWet is double pwet)
-            factors.Add(new Factor("Dry", Clamp01(1.0 - pwet), $"P(wet) {pwet * 100:0}%"));
+        // Rain — the single rain axis (Harry 2026-06-20): the WORSE of the precip
+        // forecast (1 − P(wet)) and the rock's own rain film (wRain). The old separate
+        // Dry (forecast) and Rain (film) asked the same question — is it / has it
+        // rained — so weakest-link them into one factor that names whichever binds.
+        double? pWetScore = pWet is double pwet ? Clamp01(1.0 - pwet) : null;
+        double? filmScore = surfaceWaterGate && rock is not null ? rainFrictionMult : null;
+        if (pWetScore is not null || filmScore is not null)
+        {
+            if (filmScore is double fs && (pWetScore is not double ps || fs <= ps))
+                factors.Add(new Factor("Rain", fs, rainNote.Length > 0 ? rainNote
+                    : pWet is double pwd ? $"P(wet) {pwd * 100:0}%" : "dry"));
+            else
+                factors.Add(new Factor("Rain", pWetScore!.Value, $"P(wet) {pWet!.Value * 100:0}%"));
+        }
 
         // Sea state (sea-cliff locations) — tide / run-up / onshore spray folded
         // into one factor by SeaConditions; null for inland crags.
@@ -439,6 +448,29 @@ public static class ClimbingConditions
                 if (ordered[j].RainWaterMm < wetThresholdMm) { dry = ordered[j].ValidTimeUtc; break; }
             }
             map[ordered[i].ValidTimeUtc] = dry; // null = wet to end of window
+        }
+        return map;
+    }
+
+    /// <summary>
+    /// For each rain-wet hour (RainWaterMm ≥ <paramref name="wetThresholdMm"/>), the
+    /// FIRST hour of its contiguous wet spell — when the rain film actually started
+    /// (the "wet from rain since ~HHZ" the Rain factor shows). This is what's wetting
+    /// the rock NOW, unlike the rock model's LastRainAtUtc (the last ≥0.1 mm shower,
+    /// which can be days stale). Already-dry hours are absent. Keyed by ValidTimeUtc.
+    /// </summary>
+    public static Dictionary<DateTime, DateTime> RainWetSinceMap(
+        IEnumerable<SitePages.RockSurfaceForecastPoint> rockSeries,
+        double wetThresholdMm = RainWetThresholdMm)
+    {
+        var ordered = rockSeries.OrderBy(r => r.ValidTimeUtc).ToList();
+        var map = new Dictionary<DateTime, DateTime>();
+        for (var i = 0; i < ordered.Count; i++)
+        {
+            if (ordered[i].RainWaterMm < wetThresholdMm) continue; // dry now
+            var j = i;
+            while (j > 0 && ordered[j - 1].RainWaterMm >= wetThresholdMm) j--; // walk back over the wet run
+            map[ordered[i].ValidTimeUtc] = ordered[j].ValidTimeUtc;
         }
         return map;
     }

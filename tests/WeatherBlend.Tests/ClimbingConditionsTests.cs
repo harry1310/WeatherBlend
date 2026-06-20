@@ -338,9 +338,10 @@ public class ClimbingConditionsTests
         // A soaked slab (film ≥ the Off gate) is OFF — you wouldn't climb it — with
         // WHEN it last rained and the dry-by ETA in the reason (Harry 2026-06-20).
         var dryBy = new DateTime(2026, 1, 15, 14, 0, 0, DateTimeKind.Utc);
+        var wetSince = new DateTime(2026, 1, 15, 4, 0, 0, DateTimeKind.Utc);
         var r = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6,
-            Rock(5, rainWaterMm: 0.3, lastRainAtUtc: new DateTime(2026, 1, 15, 4, 0, 0, DateTimeKind.Utc)),
-            surfaceWaterGate: true, rainDryByUtc: dryBy);
+            Rock(5, rainWaterMm: 0.3),
+            surfaceWaterGate: true, rainDryByUtc: dryBy, rainWetSinceUtc: wetSince);
         r.Tier.Should().Be(ConditionsTier.Off);
         r.Reason.Should().Contain("wet from rain");
         r.Reason.Should().Contain("since 04Z");
@@ -481,5 +482,37 @@ public class ClimbingConditionsTests
         };
         var map = ClimbingConditions.RainDryByMap(series);
         map[t0].Should().BeNull("the film never clears within the window");
+    }
+
+    [Fact]
+    public void RainWetSinceMap_finds_the_start_of_each_wet_spell()
+    {
+        var t0 = new DateTime(2026, 1, 15, 5, 0, 0, DateTimeKind.Utc);
+        var series = new[]
+        {
+            Rock(5, rainWaterMm: 0.0, validUtc: t0),                  // dry
+            Rock(5, rainWaterMm: 0.06, validUtc: t0.AddHours(1)),     // wet ← spell start (06Z)
+            Rock(5, rainWaterMm: 0.04, validUtc: t0.AddHours(2)),     // wet
+            Rock(5, rainWaterMm: 0.02, validUtc: t0.AddHours(3)),     // wet
+        };
+        var map = ClimbingConditions.RainWetSinceMap(series);
+        map[t0.AddHours(3)].Should().Be(t0.AddHours(1), "the spell started at 06Z, not a stale stamp");
+        map.Should().NotContainKey(t0, "a dry hour has no wet-since");
+    }
+
+    [Fact]
+    public void Rain_factor_is_the_worse_of_the_precip_forecast_and_the_rock_film()
+    {
+        // P(wet) and the rain film are ONE "Rain" axis now — no separate "Dry" factor.
+        var forecast = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.4, 6, Rock(5), surfaceWaterGate: true);
+        forecast.Factors.Should().NotContain(f => f.Name == "Dry", "Dry folded into Rain");
+        forecast.Factors.Single(f => f.Name == "Rain").Detail.Should().Contain("P(wet)",
+            "dry rock + a wet forecast → the forecast binds");
+
+        var wet = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.0, 6,
+            Rock(5, rainWaterMm: 0.04), surfaceWaterGate: true, rainWetSinceUtc: Midday.AddHours(-2));
+        var rain = wet.Factors.Single(f => f.Name == "Rain");
+        rain.Detail.Should().Contain("wet from rain", "a wet film beats a dry forecast");
+        rain.Detail.Should().Contain("since 10Z", "the wet-spell onset, 2h before midday");
     }
 }
