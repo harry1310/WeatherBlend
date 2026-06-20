@@ -211,13 +211,19 @@ public static partial class SitePages
 
                     DateTime? rainDryBy = rk is { } rkp
                         && rainDryByUtc.TryGetValue(rkp.ValidTimeUtc, out var dby) ? dby : null;
+                    // Sea-cliff SALT greasiness: feed ambient RH for marine locations
+                    // (those with a sea-state block — Sennen) only. Inland crags pass
+                    // null → the salt term is inert. Skipped when RH is unknown (NaN).
+                    double? ambientRh = seaSpec is not null && rk is { } rkRh && !double.IsNaN(rkRh.AmbientRhPct)
+                        ? rkRh.AmbientRhPct : null;
                     conditions = ClimbingConditions.Evaluate(
                         p.ValidTimeUtc, input.Latitude, input.Longitude,
                         p.BlendTemperature, pWet, windMph, rk, sea,
                         surfaceWaterGate: surfaceWaterGate,
                         rainDryByUtc: rainDryBy,
                         greasyMarginC: input.RenderingFor?.GreasyMarginC ?? ClimbingConditions.DefaultGreasyMarginC,
-                        windExposure: input.RenderingFor?.WindExposure ?? 1.0);
+                        windExposure: input.RenderingFor?.WindExposure ?? 1.0,
+                        ambientRhPct: ambientRh);
                 }
                 tiles.Append(RenderHourTile(p, feelsLikeByValid, pwetByValid, lowCloudByValid, rockByValid,
                     seaSpec, waveByValid, windSpeedMsByValid, windDirDegByValid,

@@ -873,7 +873,10 @@ public static partial class SitePages
         string Face = "",
         // "blend" (≥24h, full element blends) or "nowcast" (<24h, wind/sun/cloud
         // from raw NWP) — drives the "<24h estimate" tile marker. "" = pre-column.
-        string ForcingTier = "");
+        string ForcingTier = "",
+        // Ambient 2m RH (%) — humidity blend / NWP. Feeds the sea-cliff salt
+        // greasiness factor. NaN = unknown / pre-column tree.
+        double AmbientRhPct = double.NaN);
 
     public sealed record DryWindowForecastPoint(
         string Station,

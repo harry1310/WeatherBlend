@@ -89,6 +89,13 @@ public sealed class RockSurfacePredictionRow
     /// <c>required</c>: pre-column rows deserialize as "" (treated as blend).</summary>
     public string ForcingTier { get; init; } = "";
 
+    /// <summary>Ambient 2 m relative humidity (%) — the humidity blend (≥ ~24h) or
+    /// the NWP mean (&lt; 24h), same blend/NWP split as the other forcing. Feeds the
+    /// climbing index's sea-cliff SALT-deliquescence greasiness (salty rock goes damp
+    /// from humid air regardless of rock temperature). NaN = unknown / pre-column
+    /// tree. NOT <c>required</c>.</summary>
+    public double AmbientRhPct { get; init; } = double.NaN;
+
     // ---- forcing provenance ----
     public required double ShortwaveDownWm2 { get; init; }
     public required double CloudCoverPct { get; init; }

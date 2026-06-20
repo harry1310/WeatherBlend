@@ -97,6 +97,16 @@ public static class RockSurfacePredictPipeline
         var rad = await LoadElementByValidAsync(predictionsRoot, ElementTargets.ShortwaveRadiation, loc, radV, anchor, ct);
         var cloud = await LoadElementByValidAsync(predictionsRoot, ElementTargets.CloudCover, loc, cloudV, anchor, ct);
 
+        // Humidity champion (relative_humidity_2m %) — OPTIONAL, feeds the ambient
+        // RH stamped on each row for the climbing index's sea-cliff salt greasiness.
+        // Blend on the ≥24h hours; the near-term hours fall back to the NWP RH mean.
+        // Missing humidity champion → empty dict → NWP RH everywhere (the salt factor
+        // still works off NWP, just not the bias-corrected blend).
+        var humidV = ModelArtifact.ResolveStationChampionVersion(modelsRoot, ElementTargets.Humidity.ModelDirName, loc);
+        var humid = string.IsNullOrEmpty(humidV)
+            ? new Dictionary<DateTime, double>()
+            : await LoadElementByValidAsync(predictionsRoot, ElementTargets.Humidity, loc, humidV, anchor, ct);
+
         // Gust champion (wind_gust_lgb) — the convective-cooling wind forcing uses
         // mean(champion wind, gust), not the mean wind alone. Field validation
         // (Bonehill IR-gun 2026-06-07) showed the rock model UNDER-cools because it
@@ -163,6 +173,10 @@ public static class RockSurfacePredictPipeline
         //     cadence stays intact. ---
         var forwardSet = new HashSet<DateTime>(forwardValids);
         var baseHours = new List<BaseHour>();
+        // Ambient RH (%) per valid for the salt greasiness: humidity blend on the
+        // forward (≥24h) hours, NWP mean otherwise — same blend/NWP split as the
+        // other forcing. Not part of the Force-Restore budget, so kept aside.
+        var rhByValid = new Dictionary<DateTime, double>();
         NwpMean? lastNwp = null;
         double? lastSst = null;
         var gaps = 0;
@@ -176,6 +190,9 @@ public static class RockSurfacePredictPipeline
 
             // Air temp: temperature blend down to 0h, else NWP mean.
             var ta = temp.TryGetValue(t, out var tv) ? tv.Value : useNwp.Ta;
+            rhByValid[t] = forwardSet.Contains(t) && humid.TryGetValue(t, out var hb)
+                ? hb                  // humidity blend on the ≥24h hours
+                : useNwp.RhPct;       // NWP mean on the near-term / spin-up hours
             baseHours.Add(forwardSet.Contains(t)
                 // Blend-driven hour: wind/shortwave/cloud from the element blends.
                 ? new BaseHour(t, ta, useNwp.Td, cloud[t] / 100.0, EffWind(t), rad[t], useNwp.DirectFrac, lastSst, useNwp.PrecipMm)
@@ -272,6 +289,7 @@ public static class RockSurfacePredictPipeline
                     RainWaterMm = h.RainWaterMm,
                     LastRainAtUtc = h.LastRainAtUtc,
                     ForcingTier = isBlend ? ForcingTierBlend : ForcingTierNowcast,
+                    AmbientRhPct = rhByValid.TryGetValue(h.ValidTimeUtc, out var rhv) ? rhv : double.NaN,
                     // Face mode: the FACE-INCIDENT shortwave that actually drove this
                     // row's budget. Cloud + wind = what was ACTUALLY used (blend on
                     // forward hours, NWP mean on near-term) — read from the base hour.
@@ -399,7 +417,7 @@ SELECT ValidTimeUtc, SeaSurfaceTemperature FROM ranked WHERE rn = 1 ORDER BY Val
     /// it to the blended GHI to recover the beam for the face projection.
     /// 0 when the radiation split is unavailable (all-diffuse: the face then
     /// receives only fSky-scaled diffuse, the conservative fallback).</summary>
-    private sealed record NwpMean(double Ta, double Td, double CloudPct, double WindMs, double ShortwaveWm2, double DirectFrac, double PrecipMm);
+    private sealed record NwpMean(double Ta, double Td, double CloudPct, double WindMs, double ShortwaveWm2, double DirectFrac, double PrecipMm, double RhPct);
 
     /// <summary>
     /// Per-valid NWP best-estimate forcing, averaged across the canonical models.
@@ -419,7 +437,7 @@ SELECT ValidTimeUtc, SeaSurfaceTemperature FROM ranked WHERE rn = 1 ORDER BY Val
         var sql = $@"
 WITH ranked AS (
     SELECT ValidTimeUtc, Model, Temperature2m, DewPoint2m, CloudCover, WindSpeed10m, ShortwaveRadiation,
-           DirectRadiation, DiffuseRadiation, Precipitation,
+           DirectRadiation, DiffuseRadiation, Precipitation, RelativeHumidity2m,
            ROW_NUMBER() OVER (PARTITION BY ValidTimeUtc, Model ORDER BY LeadHours ASC, RunTimeUtc DESC) AS rn
     FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)
     WHERE LocationName = '{locSql}'
@@ -439,7 +457,8 @@ SELECT ValidTimeUtc,
        avg(ShortwaveRadiation) AS sw,
        avg(DirectRadiation)   AS dr,
        avg(DiffuseRadiation)  AS df,
-       avg(Precipitation)     AS precip
+       avg(Precipitation)     AS precip,
+       avg(RelativeHumidity2m) AS rh
 FROM ranked
 WHERE rn = 1
 GROUP BY ValidTimeUtc
@@ -476,7 +495,13 @@ ORDER BY ValidTimeUtc;";
             // Precipitation (col 8) — drives the surface-water film. A model
             // omitting it (NaN) or a negative deaccumulation artefact → 0 mm.
             var precip = Col(8); if (double.IsNaN(precip) || precip < 0.0) precip = 0.0;
-            result[valid] = new NwpMean(ta, td, cc, v, sw, directFrac, precip);
+            // Relative humidity (col 9, %) — for the salt greasiness. If a model
+            // omits it, derive from the dew point + air temp (e(Td)/e(Ta)).
+            var rh = Col(9);
+            if (double.IsNaN(rh))
+                rh = 100.0 * RockSurfacePhysics.VapourPressureHpa(td) / RockSurfacePhysics.VapourPressureHpa(ta);
+            rh = Math.Clamp(rh, 0.0, 100.0);
+            result[valid] = new NwpMean(ta, td, cc, v, sw, directFrac, precip, rh);
         }
         return result;
     }

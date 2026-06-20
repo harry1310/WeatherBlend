@@ -184,6 +184,37 @@ public static class ClimbingConditions
         return 1.0 - (1.0 - RainWetFloorScore) * s;             // 1.0 at dry → floor at the gate
     }
 
+    /// <summary>Ambient relative humidity (%) at/below which the rock reads dry —
+    /// the CLIMBING-relevant greasy onset. NaCl deliquesces ~75%, but a drained,
+    /// breezy, sunny face genuinely feels fine at ~90%, so the climbing onset sits
+    /// higher: set to 85% from Harry's field calls 2026-06-20 (Sennen 100% fog =
+    /// greasy; ~90% drying afternoon = good). Salt only bites in the 85–100% band.
+    /// PROVISIONAL — to be confirmed against Gwennap Head observed RH once its feed
+    /// catches up.</summary>
+    public const double SaltDeliquescenceOnsetRhPct = 85.0;
+    /// <summary>Friction floor for fully salt-damp rock (ambient RH ≥ 100%, saturated
+    /// air). Not zero — salt-damp sea-cliff rock is greasy/marginal, still climbable —
+    /// so a saturated day lands Marginal/Poor, never Off (Harry 2026-06-20).</summary>
+    public const double SaltWetFloorScore = 0.35;
+
+    /// <summary>Continuous salt-deliquescence friction multiplier from the AMBIENT
+    /// relative humidity <paramref name="rhPct"/> (sea-cliff locations only). Salt
+    /// deposits are hygroscopic: they pull moisture from the air and go greasy once
+    /// the air's RH passes the salt's deliquescence point — INDEPENDENT of the rock
+    /// temperature, so a warm sunlit face the dew-margin calls "dry" is still greasy
+    /// in humid sea air. Smoothstep from no penalty (1.0) at
+    /// <see cref="SaltDeliquescenceOnsetRhPct"/> down to <see cref="SaltWetFloorScore"/>
+    /// at saturation (100%). Clean inland granite has no salt → callers pass no RH and
+    /// this never fires (Harry 2026-06-20; the factor the dew-only model was missing).</summary>
+    public static double SaltRhFrictionMultiplier(double rhPct)
+    {
+        if (rhPct <= SaltDeliquescenceOnsetRhPct) return 1.0;   // salt dry
+        if (rhPct >= 100.0) return SaltWetFloorScore;           // saturated — fully damp
+        var t = (rhPct - SaltDeliquescenceOnsetRhPct) / (100.0 - SaltDeliquescenceOnsetRhPct); // 0..1
+        var s = t * t * (3.0 - 2.0 * t);                        // smoothstep (flat ends)
+        return 1.0 - (1.0 - SaltWetFloorScore) * s;             // 1.0 at onset → floor at saturation
+    }
+
     /// <summary>Air-temperature comfort: hump on <see cref="AirIdealLoC"/>..
     /// <see cref="AirIdealHiC"/>, sharp below <see cref="AirColdC"/>, falling
     /// off above to "too hot" past <see cref="AirTooHotC"/>.</summary>
@@ -239,7 +270,8 @@ public static class ClimbingConditions
         double wetThresholdMm = RainWetThresholdMm,
         DateTime? rainDryByUtc = null,
         double greasyMarginC = DefaultGreasyMarginC,
-        double windExposure = 1.0)
+        double windExposure = 1.0,
+        double? ambientRhPct = null)
     {
         // ---- Gates (any one → Off) ----
         var (elevDeg, _) = SolarGeometry.SolarPosition(validUtc, latitude, longitude);
@@ -287,8 +319,19 @@ public static class ClimbingConditions
             // greasyMarginC), so the verdict glides as the rock warms past the dew
             // point instead of snapping a whole tier at the old hard greasy/dry cut
             // (Harry 2026-06-20). The label still names the tier for the reader.
-            frictionScore *= GreasyFrictionMultiplier(rk.CondensationMarginC, greasyMarginC);
-            if (rk.GreasinessStatus == RockSurfacePhysics.StatusPotentiallyGreasy)
+            // Humidity-driven greasiness = the WORSE of two mechanisms (don't
+            // double-count "it's humid"): the rock cooling toward its dew point
+            // (margin-based, all locations) and — where ambient RH is supplied
+            // (sea cliffs) — hygroscopic SALT going damp from the air, which fires
+            // even on a warm face the dew margin calls dry (Harry 2026-06-20).
+            // Clean inland crags pass no RH → salt term = 1.0 (no-op).
+            var dewGreasy = GreasyFrictionMultiplier(rk.CondensationMarginC, greasyMarginC);
+            var rhPct = ambientRhPct ?? double.NaN;
+            var saltGreasy = double.IsNaN(rhPct) ? 1.0 : SaltRhFrictionMultiplier(rhPct);
+            frictionScore *= Math.Min(dewGreasy, saltGreasy);
+            if (saltGreasy < dewGreasy)
+                frictionDetail += $", salt-damp (RH {rhPct:0}%)";
+            else if (rk.GreasinessStatus == RockSurfacePhysics.StatusPotentiallyGreasy)
                 frictionDetail += ", greasy";
             else if (rk.GreasinessStatus == RockSurfacePhysics.StatusCondensation)
                 frictionDetail += $", wet (≤ dew {rk.DewPointC:0.0}°C)";

@@ -244,17 +244,21 @@ locations:
     # defaults to 90 (vertical wall) — refine per-crag when Harry confirms
     # real bearings/steepness. Each face is its own Force-Restore
     # integration + margin series (rows stamped Face=name).
-    # greasyMarginC 1.5 (vs Bonehill's 3.0): maritime dew point sits close to
-    # air temp here, so the Bonehill band would flag "greasy?" ~35% of visible
-    # hours — meaningless. 1.5 flags the most-marginal ~10% (hindcast over 2y
-    # of Sennen ERA5, scripts/sennen_rock_margin_sanity.py, 2026-06-13:
-    # visible-hours amber 0.5C=1.5% / 1.0C=4.6% / 1.5C=10.4% / 3.0C=34.9%;
-    # true condensation ~0.4% of hours once the sea-LW term is in). DRAFT —
-    # refine with the IR-gun readings.
+    # greasyMarginC 2.0 — matches the global/Bonehill band (2026-06-20, was 1.5).
+    # The old 1.5 was an ALERT-era setting to avoid flagging ~35% of Sennen hours
+    # amber (hindcast scripts/sennen_rock_margin_sanity.py 2026-06-13: visible-hours
+    # amber 0.5C=1.5% / 1.0C=4.6% / 1.5C=10.4% / 3.0C=34.9%). Now greasiness is a
+    # CONTINUOUS index penalty, not a binary alert, so over-flagging isn't the same
+    # concern. NOTE (Harry 2026-06-20): a NARROWER band than Bonehill was physically
+    # backwards — sea-cliff rock should be GREASIER (salt). The margin (Ts−Td)
+    # already carries humidity, but the missing factor is SALT deliquescence (damp at
+    # ~75–80% RH, i.e. margin ~3–4°C, well before saturation) — clean inland granite
+    # doesn't do this. A wider band is only a proxy; the real fix is an RH/salt term.
+    # Holding at 2.0 (= Bonehill) until that's built. DRAFT — refine with IR readings.
     rockSurface:
       enabled: true
       fSky: 0.5
-      greasyMarginC: 1.5
+      greasyMarginC: 2.0
       # Drying model LIVE for Sennen too (2026-06-19). The rain Off-gate + dew +
       # latent feedback are the same physics as Bonehill (no guessed numbers).
       # Spray-as-film-wetting is still NOT modelled (no deposition coefficient) —

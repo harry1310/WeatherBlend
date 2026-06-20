@@ -346,6 +346,59 @@ public class ClimbingConditionsTests
         r.Factors.Single(f => f.Name == "Friction").Detail.Should().NotContain("rain");
     }
 
+    // ---- Sea-cliff salt deliquescence greasiness (ambient RH) ----
+
+    [Fact]
+    public void SaltRhFrictionMultiplier_dry_below_onset_floors_at_saturation()
+    {
+        ClimbingConditions.SaltRhFrictionMultiplier(70).Should().Be(1.0, "below the deliquescence onset salt is dry");
+        ClimbingConditions.SaltRhFrictionMultiplier(ClimbingConditions.SaltDeliquescenceOnsetRhPct).Should().Be(1.0);
+        ClimbingConditions.SaltRhFrictionMultiplier(100).Should().Be(ClimbingConditions.SaltWetFloorScore);
+        ClimbingConditions.SaltRhFrictionMultiplier(120).Should().Be(ClimbingConditions.SaltWetFloorScore);
+        // Strictly decreasing across the deliquescence band (above the onset).
+        var prev = 2.0;
+        foreach (var rh in new[] { 88.0, 92.0, 96.0, 100.0 })
+        {
+            var v = ClimbingConditions.SaltRhFrictionMultiplier(rh);
+            v.Should().BeLessThan(prev, "wetter air ⇒ lower multiplier");
+            prev = v;
+        }
+    }
+
+    [Fact]
+    public void Salt_damp_air_penalises_a_warm_dry_face_at_a_marine_location()
+    {
+        // A warm sunlit face the dew margin calls bone-dry (margin +4) — but in
+        // saturated sea air the salt goes greasy regardless of rock temperature.
+        var noSalt = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6, Rock(15));
+        var salty  = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6, Rock(15), ambientRhPct: 100);
+
+        salty.Score.Should().BeLessThan(noSalt.Score, "salt-damp air drags friction down");
+        // Marginal-to-poor, never Off — salt-damp rock is still climbable.
+        salty.Tier.Should().BeOneOf(ConditionsTier.Marginal, ConditionsTier.Poor);
+        salty.Tier.Should().NotBe(ConditionsTier.Off);
+        salty.Factors.Single(f => f.Name == "Friction").Detail.Should().Contain("salt-damp");
+    }
+
+    [Fact]
+    public void Dry_air_below_onset_leaves_the_verdict_unchanged()
+    {
+        var noRh = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6, Rock(7));
+        var dryAir = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6, Rock(7), ambientRhPct: 60);
+        dryAir.Score.Should().Be(noRh.Score, "RH below the salt onset has no effect");
+        dryAir.Factors.Single(f => f.Name == "Friction").Detail.Should().NotContain("salt");
+    }
+
+    [Fact]
+    public void Inland_crag_ignores_ambient_RH_even_when_high()
+    {
+        // The render only passes RH for marine locations; an inland call passes
+        // null, so high humidity must not penalise (no salt on inland granite).
+        var r = ClimbingConditions.Evaluate(Midday, Lat, Lon, 9, 0.02, 6, Rock(7), ambientRhPct: null);
+        r.Tier.Should().Be(ConditionsTier.Prime);
+        r.Factors.Single(f => f.Name == "Friction").Detail.Should().NotContain("salt");
+    }
+
     [Fact]
     public void RainDryByMap_maps_each_wet_hour_to_its_first_dry_hour()
     {

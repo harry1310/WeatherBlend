@@ -1544,6 +1544,9 @@ ORDER BY LocationName, LeadHours, ValidTimeUtc";
         // ForcingTier arrived with the near-term emit — guard it; a pre-column tree
         // yields '' (treated as blend, no "<24h" marker).
         var forcingTierCol  = ParquetReader.HasColumn(conn, glob, "ForcingTier")    ? "COALESCE(ForcingTier, '')" : "''";
+        // AmbientRhPct arrived with the sea-cliff salt greasiness — guard it; a
+        // pre-column tree yields NaN (salt factor skipped).
+        var ambientRhCol    = ParquetReader.HasColumn(conn, glob, "AmbientRhPct")   ? "AmbientRhPct" : "CAST('NaN' AS DOUBLE)";
         var sql = $@"
 SELECT ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
        RockSurfaceTempC, AirTempC, DewPointC, CondensationMarginC, GreasinessStatus, LocationName,
@@ -1551,7 +1554,8 @@ SELECT ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
        {surfaceWaterCol} AS SurfaceWaterMm,
        {rainWaterCol} AS RainWaterMm,
        {lastRainCol} AS LastRainAtUtc,
-       {forcingTierCol} AS ForcingTier
+       {forcingTierCol} AS ForcingTier,
+       {ambientRhCol} AS AmbientRhPct
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
 WHERE LocationName IN ({locFilter})
   AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
@@ -1573,7 +1577,8 @@ ORDER BY LocationName, LeadHours, ValidTimeUtc";
             LastRainAtUtc:       r.IsDBNull(13) ? (DateTime?)null : r.GetDateTime(13),
             LocationName:        r.GetString(9),
             Face:                r.IsDBNull(10) ? "" : r.GetString(10),
-            ForcingTier:         r.IsDBNull(14) ? "" : r.GetString(14)),
+            ForcingTier:         r.IsDBNull(14) ? "" : r.GetString(14),
+            AmbientRhPct:        r.IsDBNull(15) ? double.NaN : r.GetDouble(15)),
             _log, "Rock-surface predictions tree empty — chip + chart absent.", ct);
     }
 
