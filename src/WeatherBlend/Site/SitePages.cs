@@ -1210,6 +1210,14 @@ public static partial class SitePages
         .forecast-card .drawer-table td { padding: 0.12rem 0; vertical-align: top; overflow-wrap: anywhere; }
         .forecast-card .drawer-table td.num { text-align: right; font-variant-numeric: tabular-nums; padding-left: 0.4rem; }
         .forecast-card .drawer-table td.det { color: var(--pico-muted-color); padding-left: 0.5rem; font-size: 0.75rem; }
+        /* Conditions drawer (3-col): the shared overflow-wrap:anywhere was breaking
+           "Friction"/"Condensation" mid-word and the score between its digits. Keep the
+           name + score columns on one line, give the score ~3 chars, and match the
+           name/score text size to the detail column so the three read uniformly
+           (Harry 2026-06-20). */
+        .forecast-card .drawer-table.cond td { font-size: 0.75rem; }
+        .forecast-card .drawer-table.cond td:first-child { white-space: nowrap; }
+        .forecast-card .drawer-table.cond td.num { white-space: nowrap; min-width: 2.6ch; }
         .forecast-card .alert-line { display: flex; gap: 0.5rem; align-items: baseline; padding: 0.18rem 0; }
         .forecast-card .alert-line .pip { font-weight: 700; flex: none; }
 

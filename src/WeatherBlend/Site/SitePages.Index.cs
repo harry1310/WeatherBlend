@@ -717,7 +717,7 @@ public static partial class SitePages
                   <div class="drawer-body">
                     <div class="why">{Escape(c.Reason)}</div>
                     {nowcastNote}
-                    <table class="drawer-table">{factorRows}</table>
+                    <table class="drawer-table cond">{factorRows}</table>
                   </div>
                 </details>
                 """);
