@@ -63,6 +63,25 @@ bit-for-bit identical to before.
 left as-is — the presentation fix (continuous recovery + naming the wet event)
 came first, to be eyeballed live before any evaporation retune.
 
+## Near-term coverage (2026-06-20)
+
+The rock model used to report only the blend-driven window (≥ 24h), so the verdict
+for **today** was always a ≥ 24h-old run — model changes took a day to show. It now
+emits the **near-term hours too** ([now, first blend hour)):
+
+- **Air temp** stays on the temperature blend, which predicts down to **0h**.
+- **Wind / shortwave / cloud** come from the **raw NWP model-mean** for those hours,
+  because the element blenders don't predict inside ~24h (their earliest valid is
+  ~tomorrow). Dew point + precip are NWP throughout, as before.
+- The pre-report spin-up (48h before now) is still all-NWP and discarded — it only
+  settles Ts.
+
+Each row carries a `ForcingTier` (`blend` ≥24h / `nowcast` <24h). Near-term
+(`nowcast`) tiles show a small **"≈ <24h estimate"** marker on the climbing verdict
++ a note in the Conditions drawer, so it's clear the wind/sun/cloud there are rawer
+than the +24h blend tiles. Gravity drainage (above) is the contained physics change
+that, with this near-term emit, finally makes "today" dry sensibly on the live site.
+
 ## What is NOT done (deliberately deferred)
 
 - **Sennen wave-spray wetting** — spray adding to the film at the sea cliff.

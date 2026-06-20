@@ -81,6 +81,14 @@ public sealed class RockSurfacePredictionRow
     /// <c>required</c>: rows written before this column deserialize as null.</summary>
     public DateTime? LastRainAtUtc { get; init; }
 
+    /// <summary>Which forcing fed this hour: <c>"blend"</c> (≥ ~24h — air temp +
+    /// the wind/shortwave/cloud element blenders) or <c>"nowcast"</c> (&lt; 24h —
+    /// air temp still from the temperature blend down to 0h, but wind/shortwave/
+    /// cloud from the raw NWP model-mean because the element blenders don't predict
+    /// that close). Drives the site's "&lt; 24h estimate" tile marker. NOT
+    /// <c>required</c>: pre-column rows deserialize as "" (treated as blend).</summary>
+    public string ForcingTier { get; init; } = "";
+
     // ---- forcing provenance ----
     public required double ShortwaveDownWm2 { get; init; }
     public required double CloudCoverPct { get; init; }

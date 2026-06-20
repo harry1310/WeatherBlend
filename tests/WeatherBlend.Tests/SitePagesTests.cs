@@ -2091,6 +2091,50 @@ public class SitePagesTests
     }
 
     [Fact]
+    public void RenderIndex_flags_near_term_rock_verdict_as_a_sub_24h_estimate()
+    {
+        // Near-term rock hours run the calc on raw NWP wind/sun/cloud (ForcingTier
+        // "nowcast" — air temp stays on the blend); the tile must flag that so the
+        // reader knows it's a touch rawer than the +24h blend tiles. A "blend"
+        // hour carries no flag. (Harry 2026-06-20.)
+        var generatedAt = new DateTime(2026, 6, 21, 6, 0, 0, DateTimeKind.Utc);
+        var valid = new DateTime(2026, 6, 21, 12, 0, 0, DateTimeKind.Utc); // summer noon → daylight gate open
+        var loc = new SitePages.LocationDescriptor(
+            Name: "bonehill_rocks", DisplayName: "Bonehill",
+            RainStationSlugs: new[] { "ea_bellever_dartmoor" }, IsPrimary: true,
+            Tabs: new[] { "overview" },
+            OverviewFirstVisibleHourUtc: 5, OverviewLastVisibleHourUtcExclusive: 20,
+            ShowClimbingConditions: true, SurfaceWaterEnabled: true);
+        var preds = new[]
+        {
+            new TempPredictionRow
+            {
+                LocationName = "bonehill_rocks", ModelVersion = "v", PredictionMadeAtUtc = generatedAt,
+                ValidTimeUtc = valid, LeadHours = 6, BlendTemperature = 9.0, FeatureVectorHash = "",
+            },
+        };
+        // Cold-dry-calm rock → a real (non-gated) verdict, so the marker hangs off it.
+        SitePages.RockSurfaceForecastPoint Rock(string tier) => new(
+            "v1", generatedAt, valid, 6,
+            RockSurfaceTempC: 7.0, AirTempC: 9.0, DewPointC: 3.0, CondensationMarginC: 4.0,
+            GreasinessStatus: "dry", LocationName: "bonehill_rocks", ForcingTier: tier);
+
+        var baseInput = MakeEmptyForecastInput() with
+        {
+            GeneratedAtUtc = generatedAt, RenderingFor = loc, CurrentVersion = "",
+            Latitude = 50.5831, Longitude = -3.7931, Predictions = preds,
+        };
+
+        var nowcast = SitePages.RenderIndex(
+            baseInput with { RockSurfacePredictions = new[] { Rock("nowcast") } }, dayOffset: 0);
+        nowcast.Should().Contain("&lt;24h estimate");
+
+        var blend = SitePages.RenderIndex(
+            baseInput with { RockSurfacePredictions = new[] { Rock("blend") } }, dayOffset: 0);
+        blend.Should().NotContain("&lt;24h estimate");
+    }
+
+    [Fact]
     public void RenderForecastsTemp_includes_rock_surface_chart_when_rows_present()
     {
         // The temp tab early-returns when there's no temperature forecast at the

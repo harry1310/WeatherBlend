@@ -677,8 +677,20 @@ public static partial class SitePages
         string statusPill = "", conditionsDrawer = "";
         if (conditions is { } c)
         {
+            // "<24h estimate" marker: near-term hours run the rock calc on raw NWP
+            // wind/sun/cloud (air temp stays on the blend) because those element
+            // blenders don't predict inside 24h. Flag it so the reader knows the
+            // verdict here is a touch rawer than the +24h-onward tiles (Harry 2026-06-20).
+            var nearTerm = TryNearest(rockByValid, p.ValidTimeUtc, TimeSpan.FromHours(1), out var rkTier)
+                && rkTier?.ForcingTier == RockSurfacePredictPipeline.ForcingTierNowcast;
+            var nowcastNote = nearTerm
+                ? "<div class=\"why nowcast-note\">&#8776; &lt;24h estimate — wind, sun &amp; cloud from raw NWP (blends start +24h)</div>"
+                : "";
+            var nowcastTag = nearTerm
+                ? "<span class=\"nowcast-tag\" title=\"&lt;24h estimate — wind/sun/cloud from raw NWP\">&#8776;</span>"
+                : "";
             statusPill = string.Create(Ci,
-                $"""<span class="status" style="--cond-color: {c.TierColor}">{Escape(c.TierLabel)}</span>""");
+                $"""<span class="status" style="--cond-color: {c.TierColor}">{Escape(c.TierLabel)}{nowcastTag}</span>""");
             var factorRows = new StringBuilder();
             foreach (var f in c.Factors)
                 factorRows.Append(Ci, $"<tr><td>{Escape(f.Name)}</td><td class=\"num\">{(f.Score * 100):0}</td><td class=\"det\">{Escape(f.Detail)}</td></tr>");
@@ -687,6 +699,7 @@ public static partial class SitePages
                   <summary class="s-cond"><span class="dot"></span>Conditions<span class="chev">&#x25B6;</span></summary>
                   <div class="drawer-body">
                     <div class="why">{Escape(c.Reason)}</div>
+                    {nowcastNote}
                     <table class="drawer-table">{factorRows}</table>
                   </div>
                 </details>

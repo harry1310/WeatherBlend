@@ -16,16 +16,19 @@ namespace WeatherBlend.Predict.Surface;
 /// this pipeline assembles one and marches the ODE over it
 /// (<see cref="RockSurfacePhysics.Integrate"/>).
 ///
-/// Forcing (decision 2026-06-05 — blends, 3-day horizon):
-///  - FORWARD window (the reported hours): Ta / SW / cloud / wind from the
-///    BLENDS — temperature champion (2b) + the wind / shortwave_radiation /
-///    cloud_cover element champions — collapsed to smallest-lead-per-valid so
-///    they tile a contiguous hourly series across +24h..+72h (element blenders
-///    only train to lead 72).
+/// Forcing (decision 2026-06-05 — blends, 3-day horizon; near-term emit 2026-06-20):
+///  - BLEND window (≥ ~24h): Ta / SW / cloud / wind from the BLENDS — temperature
+///    champion + the wind / shortwave_radiation / cloud_cover element champions —
+///    smallest-lead-per-valid, tiling +24h..+72h. Tier <c>"blend"</c>.
+///  - NEAR-TERM window ([anchor, first blend hour)): the element blenders don't
+///    predict this close, so wind / SW / cloud come from the NWP model-mean — but
+///    Ta stays on the temperature blend, which DOES predict down to 0h. Reported
+///    so "today" reflects the live model instead of a ≥24h-old run. Tier
+///    <c>"nowcast"</c> (drives the site's "&lt; 24h estimate" marker).
 ///  - SPIN-UP window (the <see cref="RockSurfaceConfig.SpinupHours"/> before the
-///    first blend hour, incl. the sub-24h gap): Ta / SW / cloud / wind from
-///    recent NWP best-estimate (smallest-lead-per-valid mean across models).
-///    Discarded after integration — it only settles Ts + the deep reservoir.
+///    anchor): all-NWP best-estimate. Discarded after integration — it only
+///    settles Ts + the deep reservoir.
+///  - Td (+ precip) is NWP best-estimate throughout.
 ///  - DEW POINT (Td): NWP DewPoint2m directly throughout (mean across models),
 ///    per §4 — drives both the condensation margin and the clear-sky LW↓.
 ///
@@ -50,6 +53,17 @@ public static class RockSurfacePredictPipeline
     public const string OutputModelVersion = "v1";
 
     private const string DewPointSourceTag = "nwp_mean";
+
+    /// <summary>Forcing-tier tag for hours driven by the full element blends (≥ ~24h).</summary>
+    public const string ForcingTierBlend = "blend";
+    /// <summary>Forcing-tier tag for near-term hours (&lt; 24h): air temp from the
+    /// temperature blend (it predicts down to 0h), but wind / shortwave / cloud from
+    /// the raw NWP model-mean, because the element blenders don't predict that close.
+    /// Drives the site's "&lt; 24h estimate" marker.</summary>
+    public const string ForcingTierNowcast = "nowcast";
+    /// <summary>Source tag stamped on a row's model-version fields for inputs taken
+    /// from the raw NWP model-mean rather than a trained blend (near-term hours).</summary>
+    private const string NwpForcingTag = "nwp_mean";
 
     public static async Task<List<RockSurfacePredictionRow>> ComposeForAnchorAsync(
         ILogger log,
@@ -111,7 +125,16 @@ public static class RockSurfacePredictPipeline
 
         var firstBlend = forwardValids[0];
         var lastBlend = forwardValids[^1];
-        var spinupStart = firstBlend.AddHours(-Math.Max(0, cfg.SpinupHours));
+        // Report from the anchor (≈ now) onward, not just the blend window: the
+        // near-term hours [anchor, firstBlend) are emitted too, driven by the
+        // temperature blend (which predicts down to 0h) for air temp + the raw NWP
+        // model-mean for wind/shortwave/cloud (the element blenders don't reach
+        // < 24h). Without this the rock verdict for "today" was always a ≥24h-old
+        // run (Harry 2026-06-20). Clamp so a backfill whose anchor sits past the
+        // blend window still has a sane (empty near-term) window.
+        var reportStart = anchor <= firstBlend ? anchor : firstBlend;
+        // Keep the full settling spin-up BEFORE the (now earlier) reported start.
+        var spinupStart = reportStart.AddHours(-Math.Max(0, cfg.SpinupHours));
 
         // --- NWP best-estimate (mean across models) over [spinupStart, lastBlend] ---
         // Td for the whole reported window + all forcing for the spin-up hours.
@@ -130,11 +153,14 @@ public static class RockSurfacePredictPipeline
         if (location.Marine is not null && sst.Count == 0)
             log.LogWarning("Rock-surface: no best_match SST rows for {Loc} — sea longwave term disabled this run (neutral surroundings fallback).", loc);
 
-        // --- Assemble the contiguous hourly BASE trajectory: spin-up (NWP)
-        //     then forward (blends). Horizontal SW and the NWP direct fraction
-        //     are kept separate so cliff-face mode can re-project the beam per
-        //     face below. Td always NWP. Hold-forward across the rare NWP gap
-        //     so the Euler 1h cadence stays intact. ---
+        // --- Assemble the contiguous hourly BASE trajectory. Air temp uses the
+        //     temperature BLEND wherever it exists (it predicts down to 0h), else
+        //     the NWP mean (deep spin-up). Wind/shortwave/cloud use the element
+        //     BLENDS only on the forward (≥24h) hours, else the NWP mean. Td (+
+        //     direct fraction + precip) always NWP. Horizontal SW and direct
+        //     fraction stay separate so cliff-face mode re-projects the beam per
+        //     face below. Hold NWP forward across the rare gap so the Euler 1h
+        //     cadence stays intact. ---
         var forwardSet = new HashSet<DateTime>(forwardValids);
         var baseHours = new List<BaseHour>();
         NwpMean? lastNwp = null;
@@ -148,11 +174,13 @@ public static class RockSurfacePredictPipeline
             var useNwp = lastNwp;
             if (useNwp is null) { gaps++; continue; }
 
-            baseHours.Add(t >= firstBlend && forwardSet.Contains(t)
-                // Blend-driven reported hour. Td (+ direct fraction + precip) from NWP.
-                ? new BaseHour(t, temp[t].Value, useNwp.Td, cloud[t] / 100.0, EffWind(t), rad[t], useNwp.DirectFrac, lastSst, useNwp.PrecipMm)
-                // Spin-up hour (incl. the sub-24h gap before the first blend hour).
-                : new BaseHour(t, useNwp.Ta, useNwp.Td, useNwp.CloudPct / 100.0, useNwp.WindMs, useNwp.ShortwaveWm2, useNwp.DirectFrac, lastSst, useNwp.PrecipMm));
+            // Air temp: temperature blend down to 0h, else NWP mean.
+            var ta = temp.TryGetValue(t, out var tv) ? tv.Value : useNwp.Ta;
+            baseHours.Add(forwardSet.Contains(t)
+                // Blend-driven hour: wind/shortwave/cloud from the element blends.
+                ? new BaseHour(t, ta, useNwp.Td, cloud[t] / 100.0, EffWind(t), rad[t], useNwp.DirectFrac, lastSst, useNwp.PrecipMm)
+                // Near-term / spin-up hour: wind/shortwave/cloud from the NWP mean.
+                : new BaseHour(t, ta, useNwp.Td, useNwp.CloudPct / 100.0, useNwp.WindMs, useNwp.ShortwaveWm2, useNwp.DirectFrac, lastSst, useNwp.PrecipMm));
         }
         if (gaps > 0)
             log.LogWarning("Rock-surface: {Gaps} hour(s) had no NWP forcing and were skipped — spin-up may be shorter than requested.", gaps);
@@ -167,13 +195,18 @@ public static class RockSurfacePredictPipeline
         //     else one per configured face with the direct beam projected onto
         //     its plane (S3). Solar position is evaluated at the half-hour
         //     midpoint because the hourly SW value is the mean over the
-        //     PRECEDING hour (Open-Meteo convention). Emit ONLY the
-        //     blend-driven reported hours. ---
+        //     PRECEDING hour (Open-Meteo convention). Emit every hour from
+        //     reportStart (≈ now) onward — near-term + blend — and drop the
+        //     pre-report spin-up. ---
         var surfaces = cfg.Faces.Count == 0
             ? new List<RockSurfaceFaceConfig?> { null }
             : cfg.Faces.Select(f => (RockSurfaceFaceConfig?)f).ToList();
 
         var sstByValid = baseHours.ToDictionary(b => b.ValidTimeUtc, b => b.SeaTempC);
+        // Cloud + wind ACTUALLY used per hour (blend on forward hours, NWP mean on
+        // near-term) — emitted rows read these, not the blend dicts (which have no
+        // near-term keys).
+        var baseByValid = baseHours.ToDictionary(b => b.ValidTimeUtc);
         var rows = new List<RockSurfacePredictionRow>();
         foreach (var face in surfaces)
         {
@@ -213,8 +246,14 @@ public static class RockSurfacePredictPipeline
             var integrated = RockSurfacePhysics.Integrate(forcing, cfg, drainageSlopeSine);
             foreach (var h in integrated)
             {
-                if (h.ValidTimeUtc < firstBlend || !forwardSet.Contains(h.ValidTimeUtc)) continue; // spin-up
-                var lead = temp[h.ValidTimeUtc].Lead;
+                if (h.ValidTimeUtc < reportStart) continue; // pre-report spin-up (discarded)
+                var isBlend = forwardSet.Contains(h.ValidTimeUtc);
+                // Lead from the temperature blend's bucket where present (it covers
+                // the near-term), else the actual hours from the anchor.
+                var lead = temp.TryGetValue(h.ValidTimeUtc, out var tvLead)
+                    ? tvLead.Lead
+                    : Math.Max(0, (int)Math.Round((h.ValidTimeUtc - anchor).TotalHours));
+                var b = baseByValid[h.ValidTimeUtc];
                 var margin = h.MarginC;
                 rows.Add(new RockSurfacePredictionRow
                 {
@@ -232,18 +271,22 @@ public static class RockSurfacePredictPipeline
                     SurfaceWaterMm = h.SurfaceWaterMm,
                     RainWaterMm = h.RainWaterMm,
                     LastRainAtUtc = h.LastRainAtUtc,
-                    // Face mode: the FACE-INCIDENT shortwave that actually
-                    // drove this row's budget, not the horizontal blend value.
+                    ForcingTier = isBlend ? ForcingTierBlend : ForcingTierNowcast,
+                    // Face mode: the FACE-INCIDENT shortwave that actually drove this
+                    // row's budget. Cloud + wind = what was ACTUALLY used (blend on
+                    // forward hours, NWP mean on near-term) — read from the base hour.
                     ShortwaveDownWm2 = swByValid[h.ValidTimeUtc],
-                    CloudCoverPct = cloud[h.ValidTimeUtc],
-                    WindSpeed10mMs = EffWind(h.ValidTimeUtc),
+                    CloudCoverPct = b.CloudFrac * 100.0,
+                    WindSpeed10mMs = b.WindMs,
                     LongwaveDownWm2 = h.LongwaveDownWm2,
                     DeepTempC = h.DeepTempC,
                     SeaSurfaceTempC = sstByValid[h.ValidTimeUtc],
-                    TempModelVersion = tempV,
-                    WindModelVersion = windV,
-                    RadiationModelVersion = radV,
-                    CloudModelVersion = cloudV,
+                    // Provenance: air temp stays on the temperature blend down to 0h;
+                    // wind/shortwave/cloud fall back to the NWP mean on near-term hours.
+                    TempModelVersion = temp.ContainsKey(h.ValidTimeUtc) ? tempV : NwpForcingTag,
+                    WindModelVersion = isBlend ? windV : NwpForcingTag,
+                    RadiationModelVersion = isBlend ? radV : NwpForcingTag,
+                    CloudModelVersion = isBlend ? cloudV : NwpForcingTag,
                     DewPointSource = DewPointSourceTag,
                 });
             }

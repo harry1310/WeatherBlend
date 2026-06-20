@@ -1541,13 +1541,17 @@ ORDER BY LocationName, LeadHours, ValidTimeUtc";
         // LastRainAtUtc arrived with the "wet from rain since HHZ" display — guard
         // it too; a pre-column tree yields NULL (no wet-event timestamp shown).
         var lastRainCol     = ParquetReader.HasColumn(conn, glob, "LastRainAtUtc")  ? "LastRainAtUtc" : "CAST(NULL AS TIMESTAMP)";
+        // ForcingTier arrived with the near-term emit — guard it; a pre-column tree
+        // yields '' (treated as blend, no "<24h" marker).
+        var forcingTierCol  = ParquetReader.HasColumn(conn, glob, "ForcingTier")    ? "COALESCE(ForcingTier, '')" : "''";
         var sql = $@"
 SELECT ModelVersion, PredictionMadeAtUtc, ValidTimeUtc, LeadHours,
        RockSurfaceTempC, AirTempC, DewPointC, CondensationMarginC, GreasinessStatus, LocationName,
        {faceCol} AS Face,
        {surfaceWaterCol} AS SurfaceWaterMm,
        {rainWaterCol} AS RainWaterMm,
-       {lastRainCol} AS LastRainAtUtc
+       {lastRainCol} AS LastRainAtUtc,
+       {forcingTierCol} AS ForcingTier
 FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
 WHERE LocationName IN ({locFilter})
   AND ValidTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
@@ -1568,7 +1572,8 @@ ORDER BY LocationName, LeadHours, ValidTimeUtc";
             RainWaterMm:         r.IsDBNull(12) ? 0.0 : r.GetDouble(12),
             LastRainAtUtc:       r.IsDBNull(13) ? (DateTime?)null : r.GetDateTime(13),
             LocationName:        r.GetString(9),
-            Face:                r.IsDBNull(10) ? "" : r.GetString(10)),
+            Face:                r.IsDBNull(10) ? "" : r.GetString(10),
+            ForcingTier:         r.IsDBNull(14) ? "" : r.GetString(14)),
             _log, "Rock-surface predictions tree empty — chip + chart absent.", ct);
     }
 

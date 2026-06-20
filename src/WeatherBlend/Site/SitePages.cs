@@ -870,7 +870,10 @@ public static partial class SitePages
         // "wet from rain since HHZ" detail. Null = no rain / pre-column tree.
         DateTime? LastRainAtUtc = null,
         string LocationName = "",
-        string Face = "");
+        string Face = "",
+        // "blend" (≥24h, full element blends) or "nowcast" (<24h, wind/sun/cloud
+        // from raw NWP) — drives the "<24h estimate" tile marker. "" = pre-column.
+        string ForcingTier = "");
 
     public sealed record DryWindowForecastPoint(
         string Station,
@@ -1191,6 +1194,9 @@ public static partial class SitePages
         }
         .forecast-card .drawer-body { padding: 0.1rem 0.75rem 0.6rem; font-size: 0.8rem; color: var(--pico-color); }
         .forecast-card .drawer-body .why { color: var(--pico-muted-color); margin: 0 0 0.3rem; }
+        /* "<24h estimate" marker — near-term rock calc on raw NWP wind/sun/cloud. */
+        .forecast-card .nowcast-note { font-style: italic; font-size: 0.75rem; opacity: 0.8; }
+        .forecast-card .status .nowcast-tag { margin-left: 0.25rem; font-weight: 700; opacity: 0.85; }
         .forecast-card .drawer-body .made-line { margin-top: 0.35rem; font-size: 0.75rem; }
         /* overflow-wrap (and NO white-space:nowrap) so values wrap inside the
            narrow tile instead of running off the right edge — the old
