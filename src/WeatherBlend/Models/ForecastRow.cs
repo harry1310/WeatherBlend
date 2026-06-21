@@ -87,6 +87,19 @@ public sealed class ForecastRow
     /// </summary>
     public double? CloudBaseHeightM { get; init; }
 
+    // ---- Surface / boundary-layer fields — added 2026-06-21 ----
+    // Collected for the temp/precip boundary-layer + upper-air feature
+    // experiment. Not yet consumed by any blender; nullable for back-compat.
+    public double? SoilTemperature0to7cm { get; init; }
+    public double? SoilMoisture0to7cm { get; init; }
+    public double? BoundaryLayerHeight { get; init; }
+    public double? FreezingLevelHeight { get; init; }
+    public double? Et0FaoEvapotranspiration { get; init; }
+    // Surface turbulent heat fluxes — GRIB-only (Open-Meteo doesn't expose them),
+    // sourced from the S3 exact archive (GFS SHTFL/LHTFL etc.). W/m².
+    public double? SensibleHeatFlux { get; init; }
+    public double? LatentHeatFlux { get; init; }
+
     // ---- Multi-level (pressure-level) fields — added 2026-05-29 ----
     // Open-Meteo per-model exposure varies; absent levels arrive as NULL and
     // are safe to ignore at training time. Not yet consumed by any blender
@@ -101,4 +114,15 @@ public sealed class ForecastRow
     public double? WindDirection850hPa { get; init; }
     public double? WindDirection500hPa { get; init; }
     public double? RelativeHumidity850hPa { get; init; }
+    // Additional pressure-level fields — added 2026-06-21 for the temp/precip
+    // boundary-layer + upper-air feature experiment.
+    public double? VerticalVelocity700hPa { get; init; }
+    public double? VerticalVelocity500hPa { get; init; }
+    public double? RelativeHumidity925hPa { get; init; }
+    public double? RelativeHumidity700hPa { get; init; }
+    public double? RelativeHumidity500hPa { get; init; }
+    public double? WindSpeed700hPa { get; init; }
+    public double? WindDirection700hPa { get; init; }
+    public double? Temperature925hPa { get; init; }
+    public double? GeopotentialHeight700hPa { get; init; }
 }

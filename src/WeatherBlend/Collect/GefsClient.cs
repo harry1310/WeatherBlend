@@ -81,6 +81,26 @@ public sealed class GefsClient
         new VarMap("VGRD:850 mb:", (r, v) => r.V850 = v),
         new VarMap("UGRD:500 mb:", (r, v) => r.U500 = v),
         new VarMap("VGRD:500 mb:", (r, v) => r.V500 = v),
+        // ── Added 2026-06-21: boundary-layer / upper-air / heat-flux bands ──
+        // Verified against a live geavg.t00z.pgrb2a.0p50.f024.idx (2026-06-19).
+        // The pgrb2a 'a' product is a REDUCED set vs GFS pgrb2: it DOES carry
+        // RH at 925/700/500, TMP:925, HGT:700, UGRD/VGRD:700, TSOIL/SOILW
+        // (0-0.1 m), and SHTFL/LHTFL surface fluxes — but it has VVEL ONLY at
+        // 850 mb (no 700/500), and NO HPBL (boundary-layer height) and NO
+        // 0°C-isotherm freezing level. Those four columns therefore stay null
+        // for GEFS. Substrings anchor on the (var, level) prefix; the GEFS idx
+        // appends ":…ave fcst:ens mean" which the substring matcher ignores.
+        new VarMap("RH:925 mb:",   (r, v) => r.RelativeHumidity925hPa = v),
+        new VarMap("RH:700 mb:",   (r, v) => r.RelativeHumidity700hPa = v),
+        new VarMap("RH:500 mb:",   (r, v) => r.RelativeHumidity500hPa = v),
+        new VarMap("TMP:925 mb:",  (r, v) => r.Temperature925hPa = v - 273.15),  // K→°C
+        new VarMap("HGT:700 mb:",  (r, v) => r.GeopotentialHeight700hPa = v),    // gpm
+        new VarMap("UGRD:700 mb:", (r, v) => r.U700 = v),
+        new VarMap("VGRD:700 mb:", (r, v) => r.V700 = v),
+        new VarMap("TSOIL:0-0.1 m below ground:", (r, v) => r.SoilTemperature0to7cm = v - 273.15),  // K→°C
+        new VarMap("SOILW:0-0.1 m below ground:", (r, v) => r.SoilMoisture0to7cm = v),              // fraction
+        new VarMap("SHTFL:surface:", (r, v) => r.SensibleHeatFlux = v),  // W/m²
+        new VarMap("LHTFL:surface:", (r, v) => r.LatentHeatFlux = v),    // W/m²
     };
 
     private readonly HttpClient _http;
@@ -223,6 +243,19 @@ public sealed class GefsClient
                 WindDirection850hPa = raw.U850 is { } u850d && raw.V850 is { } v850d ? WindDirection(u850d, v850d) : null,
                 WindSpeed500hPa = raw.U500 is { } u500 && raw.V500 is { } v500 ? Math.Sqrt(u500 * u500 + v500 * v500) : null,
                 WindDirection500hPa = raw.U500 is { } u500d && raw.V500 is { } v500d ? WindDirection(u500d, v500d) : null,
+                // BL / upper-air / heat-flux bands (added 2026-06-21). VVEL700/500,
+                // HPBL and freezing-level are absent from pgrb2a → stay null.
+                RelativeHumidity925hPa = raw.RelativeHumidity925hPa,
+                RelativeHumidity700hPa = raw.RelativeHumidity700hPa,
+                RelativeHumidity500hPa = raw.RelativeHumidity500hPa,
+                Temperature925hPa = raw.Temperature925hPa,
+                GeopotentialHeight700hPa = raw.GeopotentialHeight700hPa,
+                WindSpeed700hPa = raw.U700 is { } u700 && raw.V700 is { } v700 ? Math.Sqrt(u700 * u700 + v700 * v700) : null,
+                WindDirection700hPa = raw.U700 is { } u700d && raw.V700 is { } v700d ? WindDirection(u700d, v700d) : null,
+                SoilTemperature0to7cm = raw.SoilTemperature0to7cm,
+                SoilMoisture0to7cm = raw.SoilMoisture0to7cm,
+                SensibleHeatFlux = raw.SensibleHeatFlux,
+                LatentHeatFlux = raw.LatentHeatFlux,
             };
         }
         finally
@@ -292,5 +325,17 @@ public sealed class GefsClient
         public double? V850;
         public double? U500;
         public double? V500;
+        // BL / upper-air / heat-flux bands (added 2026-06-21).
+        public double? RelativeHumidity925hPa;
+        public double? RelativeHumidity700hPa;
+        public double? RelativeHumidity500hPa;
+        public double? Temperature925hPa;
+        public double? GeopotentialHeight700hPa;
+        public double? U700;
+        public double? V700;
+        public double? SoilTemperature0to7cm;
+        public double? SoilMoisture0to7cm;
+        public double? SensibleHeatFlux;
+        public double? LatentHeatFlux;
     }
 }

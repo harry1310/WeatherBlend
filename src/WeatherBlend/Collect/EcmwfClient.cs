@@ -124,6 +124,31 @@ public sealed class EcmwfClient
         new VarMap("v",  (r, v) => r.V850 = v, "pl", "850"),
         new VarMap("u",  (r, v) => r.U500 = v, "pl", "500"),
         new VarMap("v",  (r, v) => r.V500 = v, "pl", "500"),
+        // ── Added 2026-06-21: boundary-layer / upper-air / soil bands ──
+        // Verified against live IFS + AIFS-single .index files (2026-06-19 00Z).
+        // The ECMWF oper stream (both IFS and AIFS) publishes:
+        //   * levtype=pl: t/gh/u/v/w/q at all levels incl 925/700/500, plus r
+        //     on IFS only (AIFS has q but NO r — its RH columns stay null).
+        //   * levtype=sol: sot (soil temperature, K) + vsw (volumetric soil
+        //     water, m³/m³) at levels 1-4 (IFS) / 1-2 (AIFS). Level 1 is the
+        //     top soil layer (≈ 0-7 cm) ≈ the GFS/OM 0-7cm band.
+        // It publishes NO blh (boundary-layer height), NO sshf/slhf (sensible/
+        // latent heat flux), NO deg0l (freezing level) and NO et0 in this
+        // stream — so BoundaryLayerHeight / SensibleHeatFlux / LatentHeatFlux /
+        // FreezingLevelHeight / Et0FaoEvapotranspiration stay null for ECMWF.
+        // `w` is omega in Pa/s (same convention as GFS VVEL; AIFS carries it
+        // too, so AIFS gets vertical velocity even though it lacks r).
+        new VarMap("t",  (r, v) => r.Temperature925hPa = v - 273.15, "pl", "925"),
+        new VarMap("gh", (r, v) => r.GeopotentialHeight700hPa = v, "pl", "700"),  // gpm
+        new VarMap("r",  (r, v) => r.RelativeHumidity925hPa = v, "pl", "925"),    // % (IFS only)
+        new VarMap("r",  (r, v) => r.RelativeHumidity700hPa = v, "pl", "700"),    // % (IFS only)
+        new VarMap("r",  (r, v) => r.RelativeHumidity500hPa = v, "pl", "500"),    // % (IFS only)
+        new VarMap("u",  (r, v) => r.U700 = v, "pl", "700"),
+        new VarMap("v",  (r, v) => r.V700 = v, "pl", "700"),
+        new VarMap("w",  (r, v) => r.VerticalVelocity700hPa = v, "pl", "700"),    // Pa/s (omega)
+        new VarMap("w",  (r, v) => r.VerticalVelocity500hPa = v, "pl", "500"),
+        new VarMap("sot",(r, v) => r.SoilTemperature0to7cm = v - 273.15, "sol", "1"),  // K→°C, top layer
+        new VarMap("vsw",(r, v) => r.SoilMoisture0to7cm = v, "sol", "1"),               // m³/m³, top layer
     };
 
     private readonly HttpClient _http;
@@ -401,6 +426,19 @@ public sealed class EcmwfClient
                 WindDirection850hPa = raw.U850 is { } u850d && raw.V850 is { } v850d ? WindDirection(u850d, v850d) : null,
                 WindSpeed500hPa = raw.U500 is { } u500 && raw.V500 is { } v500 ? Math.Sqrt(u500 * u500 + v500 * v500) : null,
                 WindDirection500hPa = raw.U500 is { } u500d && raw.V500 is { } v500d ? WindDirection(u500d, v500d) : null,
+                // BL / upper-air / soil bands (added 2026-06-21). AIFS lacks `r`
+                // → its RH columns stay null; blh/flux/freezing absent → null.
+                Temperature925hPa = raw.Temperature925hPa,
+                GeopotentialHeight700hPa = raw.GeopotentialHeight700hPa,
+                RelativeHumidity925hPa = raw.RelativeHumidity925hPa,
+                RelativeHumidity700hPa = raw.RelativeHumidity700hPa,
+                RelativeHumidity500hPa = raw.RelativeHumidity500hPa,
+                WindSpeed700hPa = raw.U700 is { } u700 && raw.V700 is { } v700 ? Math.Sqrt(u700 * u700 + v700 * v700) : null,
+                WindDirection700hPa = raw.U700 is { } u700d && raw.V700 is { } v700d ? WindDirection(u700d, v700d) : null,
+                VerticalVelocity700hPa = raw.VerticalVelocity700hPa,
+                VerticalVelocity500hPa = raw.VerticalVelocity500hPa,
+                SoilTemperature0to7cm = raw.SoilTemperature0to7cm,
+                SoilMoisture0to7cm = raw.SoilMoisture0to7cm,
             };
             // Return the row plus the still-CUMULATIVE ssrd (raw.ShortwaveRadiation,
             // = mean×leadHours) so the caller can deaccumulate the next lead.
@@ -661,5 +699,17 @@ public sealed class EcmwfClient
         public double? V850 { get; set; }
         public double? U500 { get; set; }
         public double? V500 { get; set; }
+        // BL / upper-air / soil bands (added 2026-06-21).
+        public double? Temperature925hPa { get; set; }
+        public double? GeopotentialHeight700hPa { get; set; }
+        public double? RelativeHumidity925hPa { get; set; }
+        public double? RelativeHumidity700hPa { get; set; }
+        public double? RelativeHumidity500hPa { get; set; }
+        public double? U700 { get; set; }
+        public double? V700 { get; set; }
+        public double? VerticalVelocity700hPa { get; set; }
+        public double? VerticalVelocity500hPa { get; set; }
+        public double? SoilTemperature0to7cm { get; set; }
+        public double? SoilMoisture0to7cm { get; set; }
     }
 }

@@ -101,6 +101,7 @@ class VarSpec:
     nc_data_var: str        # the actual variable inside the NetCDF (CF standard name)
     forecast_row_col: str   # ForecastRow column name (PascalCase, matches C# property)
     convert: callable | None = None
+    pressure_pa: float | None = None  # select this isobaric level (Pa) from an on-pressure-levels file
 
 
 # Map of Met Office variables → ForecastRow columns. Order is just for log readability.
@@ -127,6 +128,24 @@ VARIABLE_MAP: list[VarSpec] = [
     # UKV-only bonus over the 10km global: separate diffuse + total SW splits.
     VarSpec("radiation_flux_in_shortwave_diffuse_downward_at_surface", "surface_diffuse_downwelling_shortwave_flux_in_air", "DiffuseRadiation",   None),
     VarSpec("radiation_flux_in_shortwave_total_downward_at_surface",   "surface_downwelling_shortwave_flux_in_air",         "ShortwaveRadiation", None),
+    # ── Added 2026-06-21: boundary-layer / upper-air bands ──
+    # Verified present in the UKV 2km cycle listing (2026-06-19 03Z). The UKV
+    # 2km dataset publishes surface SENSIBLE heat flux + a freezing-level
+    # height, but NO latent heat flux, NO soil temp/moisture, NO boundary-layer
+    # height, NO et0, and NO vertical-velocity-on-pressure-levels file — so
+    # LatentHeatFlux / SoilTemperature0to7cm / SoilMoisture0to7cm /
+    # BoundaryLayerHeight / Et0FaoEvapotranspiration / VerticalVelocity700hPa /
+    # VerticalVelocity500hPa stay NULL from this source. RH on pressure levels
+    # is a 0..1 fraction (units "1") → ×100 to match the % convention.
+    VarSpec("sensible_heat_flux_at_surface",       "surface_upward_sensible_heat_flux", "SensibleHeatFlux", None),  # W/m²
+    VarSpec("height_AGL_at_freezing_level",        "freezing_level_height",  "FreezingLevelHeight", None),         # m AGL
+    VarSpec("temperature_on_pressure_levels",      "air_temperature",     "Temperature925hPa", lambda x: x - 273.15, pressure_pa=92500.0),
+    VarSpec("relative_humidity_on_pressure_levels","relative_humidity",   "RelativeHumidity925hPa", lambda x: x * 100.0, pressure_pa=92500.0),
+    VarSpec("relative_humidity_on_pressure_levels","relative_humidity",   "RelativeHumidity700hPa", lambda x: x * 100.0, pressure_pa=70000.0),
+    VarSpec("relative_humidity_on_pressure_levels","relative_humidity",   "RelativeHumidity500hPa", lambda x: x * 100.0, pressure_pa=50000.0),
+    VarSpec("geopotential_height_on_pressure_levels","geopotential_height","GeopotentialHeight700hPa", None, pressure_pa=70000.0),
+    VarSpec("wind_speed_on_pressure_levels",       "wind_speed",          "WindSpeed700hPa",   None, pressure_pa=70000.0),
+    VarSpec("wind_direction_on_pressure_levels",   "wind_from_direction", "WindDirection700hPa", None, pressure_pa=70000.0),
 ]
 
 
@@ -156,6 +175,13 @@ def _extract_cell(nc_bytes: bytes, var: VarSpec, lat: float, lon: float) -> tupl
                 if not candidates:
                     return (None, f"no 2D data vars (found: {list(ds.data_vars)})")
                 da = ds[candidates[0]]
+            # Pressure-level files carry a `pressure` coord (Pascals). Select the
+            # requested level first so the spatial .sel below is 2D. Surface
+            # files have pressure_pa=None and skip this.
+            if var.pressure_pa is not None:
+                if "pressure" not in da.coords and "pressure" not in da.dims:
+                    return (None, f"no 'pressure' coord (coords: {list(da.coords)})")
+                da = da.sel(pressure=var.pressure_pa, method="nearest")
             sel = da.sel(
                 projection_x_coordinate=_BONEHILL_X,
                 projection_y_coordinate=_BONEHILL_Y,

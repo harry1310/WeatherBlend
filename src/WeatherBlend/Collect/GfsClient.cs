@@ -90,6 +90,32 @@ public sealed class GfsClient
         new VarMap("VGRD:850 mb:", (r, v) => r.V850 = v),
         new VarMap("UGRD:500 mb:", (r, v) => r.U500 = v),
         new VarMap("VGRD:500 mb:", (r, v) => r.V500 = v),
+        // ── Added 2026-06-21: boundary-layer / upper-air / heat-flux bands ──
+        // For the temp/precip BL + upper-air feature experiment. All verified
+        // against a live pgrb2.0p25 .idx (gfs.t00z…f024.idx, 2026-06-19 cycle).
+        // 700 hPa completes the 850/500 isobaric pair already collected: TMP +
+        // HGT + RH + UGRD/VGRD (→ speed/dir, derived at row-assembly like 850/500).
+        new VarMap("RH:925 mb:",   (r, v) => r.RelativeHumidity925hPa = v),
+        new VarMap("RH:700 mb:",   (r, v) => r.RelativeHumidity700hPa = v),
+        new VarMap("RH:500 mb:",   (r, v) => r.RelativeHumidity500hPa = v),
+        new VarMap("VVEL:700 mb:", (r, v) => r.VerticalVelocity700hPa = v),  // Pa/s
+        new VarMap("VVEL:500 mb:", (r, v) => r.VerticalVelocity500hPa = v),
+        new VarMap("TMP:925 mb:",  (r, v) => r.Temperature925hPa = v - 273.15),  // K→°C
+        new VarMap("HGT:700 mb:",  (r, v) => r.GeopotentialHeight700hPa = v),  // gpm
+        new VarMap("UGRD:700 mb:", (r, v) => r.U700 = v),
+        new VarMap("VGRD:700 mb:", (r, v) => r.V700 = v),
+        // Surface / boundary-layer diagnostics. TSOIL/SOILW use the 0-0.1 m
+        // (top 10 cm) layer ≈ Open-Meteo's 0-7cm band. HPBL/SHTFL/LHTFL are
+        // surface; the .idx tags fluxes with an averaging window ("…ave fcst")
+        // but the substring still anchors on "SHTFL:surface:". Freezing level is
+        // the 0°C isotherm height (verified present despite the prompt's "skip"
+        // note — the column exists and the band is real, so it's collected).
+        new VarMap("TSOIL:0-0.1 m below ground:", (r, v) => r.SoilTemperature0to7cm = v - 273.15),  // K→°C
+        new VarMap("SOILW:0-0.1 m below ground:", (r, v) => r.SoilMoisture0to7cm = v),              // fraction
+        new VarMap("HPBL:surface:",  (r, v) => r.BoundaryLayerHeight = v),   // m
+        new VarMap("HGT:0C isotherm:",(r, v) => r.FreezingLevelHeight = v),  // gpm (freezing-level height)
+        new VarMap("SHTFL:surface:", (r, v) => r.SensibleHeatFlux = v),      // W/m²
+        new VarMap("LHTFL:surface:", (r, v) => r.LatentHeatFlux = v),        // W/m²
     };
 
     private readonly HttpClient _http;
@@ -239,6 +265,22 @@ public sealed class GfsClient
                 WindDirection850hPa = raw.U850 is { } u850d && raw.V850 is { } v850d ? WindDirection(u850d, v850d) : null,
                 WindSpeed500hPa = raw.U500 is { } u500 && raw.V500 is { } v500 ? Math.Sqrt(u500 * u500 + v500 * v500) : null,
                 WindDirection500hPa = raw.U500 is { } u500d && raw.V500 is { } v500d ? WindDirection(u500d, v500d) : null,
+                // Boundary-layer / upper-air / heat-flux bands (added 2026-06-21).
+                RelativeHumidity925hPa = raw.RelativeHumidity925hPa,
+                RelativeHumidity700hPa = raw.RelativeHumidity700hPa,
+                RelativeHumidity500hPa = raw.RelativeHumidity500hPa,
+                VerticalVelocity700hPa = raw.VerticalVelocity700hPa,
+                VerticalVelocity500hPa = raw.VerticalVelocity500hPa,
+                Temperature925hPa = raw.Temperature925hPa,
+                GeopotentialHeight700hPa = raw.GeopotentialHeight700hPa,
+                WindSpeed700hPa = raw.U700 is { } u700 && raw.V700 is { } v700 ? Math.Sqrt(u700 * u700 + v700 * v700) : null,
+                WindDirection700hPa = raw.U700 is { } u700d && raw.V700 is { } v700d ? WindDirection(u700d, v700d) : null,
+                SoilTemperature0to7cm = raw.SoilTemperature0to7cm,
+                SoilMoisture0to7cm = raw.SoilMoisture0to7cm,
+                BoundaryLayerHeight = raw.BoundaryLayerHeight,
+                FreezingLevelHeight = raw.FreezingLevelHeight,
+                SensibleHeatFlux = raw.SensibleHeatFlux,
+                LatentHeatFlux = raw.LatentHeatFlux,
             };
         }
         finally
@@ -306,5 +348,21 @@ public sealed class GfsClient
         public double? V850 { get; set; }
         public double? U500 { get; set; }
         public double? V500 { get; set; }
+        // Boundary-layer / upper-air / heat-flux bands (added 2026-06-21).
+        public double? RelativeHumidity925hPa { get; set; }
+        public double? RelativeHumidity700hPa { get; set; }
+        public double? RelativeHumidity500hPa { get; set; }
+        public double? VerticalVelocity700hPa { get; set; }
+        public double? VerticalVelocity500hPa { get; set; }
+        public double? Temperature925hPa { get; set; }
+        public double? GeopotentialHeight700hPa { get; set; }
+        public double? U700 { get; set; }
+        public double? V700 { get; set; }
+        public double? SoilTemperature0to7cm { get; set; }
+        public double? SoilMoisture0to7cm { get; set; }
+        public double? BoundaryLayerHeight { get; set; }
+        public double? FreezingLevelHeight { get; set; }
+        public double? SensibleHeatFlux { get; set; }
+        public double? LatentHeatFlux { get; set; }
     }
 }

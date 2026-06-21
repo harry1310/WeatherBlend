@@ -83,11 +83,20 @@ class VarSpec:
 
     `convert` is applied to the raw numeric value before assignment. None means
     pass-through. xarray gives us back numpy scalars; we cast to float for parquet.
+
+    `pressure_pa` selects one isobaric level from an "*_on_pressure_levels" file
+    (the `pressure` coord is in Pascals: 92500 = 925 hPa). None = a single-level
+    surface/screen file (the historical case). Several VarSpecs can point at the
+    same `nc_variable_name` file at different `pressure_pa` — they each fetch the
+    file independently (one HTTP GET per (var, lead), so per level here); the
+    bandwidth cost of re-pulling the multi-level file per level is accepted for
+    code simplicity on a single-site backfill.
     """
     nc_variable_name: str   # filename suffix, e.g. "temperature_at_screen_level"
     nc_data_var: str        # the actual variable inside the NetCDF (CF standard name)
     forecast_row_col: str   # ForecastRow column name (PascalCase, matches C# property)
     convert: callable | None = None
+    pressure_pa: float | None = None  # select this isobaric level (Pa) from an on-pressure-levels file
 
 
 # Map of Met Office variables → ForecastRow columns. Order is just for log readability.
@@ -115,6 +124,28 @@ VARIABLE_MAP: list[VarSpec] = [
     VarSpec("CIN_surface",                                        "atmosphere_convective_inhibition", "ConvectiveInhibition", None),
     VarSpec("visibility_at_screen_level",                         "visibility_in_air",     "Visibility",         None),
     VarSpec("radiation_flux_in_shortwave_direct_downward_at_surface", "surface_direct_downwelling_shortwave_flux_in_air", "DirectRadiation", None),
+    # ── Added 2026-06-21: boundary-layer / upper-air bands ──
+    # All verified present in the global 10km cycle listing (2026-06-19 00Z).
+    # The Global Det 10km dataset publishes NO soil temp/moisture, NO boundary-
+    # layer height, NO 0°C freezing level, NO surface sensible/latent heat flux
+    # and NO et0 file — so SoilTemperature0to7cm / SoilMoisture0to7cm /
+    # BoundaryLayerHeight / FreezingLevelHeight / SensibleHeatFlux /
+    # LatentHeatFlux / Et0FaoEvapotranspiration stay NULL from this source.
+    # Pressure-level files carry a `pressure` coord in Pa (92500 = 925 hPa);
+    # RH on pressure levels is a 0..1 fraction (units "1"), ×100 to match the
+    # screen-level RH and the GFS/ECMWF % convention. Vertical velocity is
+    # `upward_air_velocity` in m/s (UPWARD positive) — a DIFFERENT quantity and
+    # sign from GFS's VVEL omega (Pa/s, downward positive). Collected raw; any
+    # cross-source comparison must account for the units/sign difference.
+    VarSpec("temperature_on_pressure_levels",      "air_temperature",     "Temperature925hPa", lambda x: x - 273.15, pressure_pa=92500.0),
+    VarSpec("relative_humidity_on_pressure_levels","relative_humidity",   "RelativeHumidity925hPa", lambda x: x * 100.0, pressure_pa=92500.0),
+    VarSpec("relative_humidity_on_pressure_levels","relative_humidity",   "RelativeHumidity700hPa", lambda x: x * 100.0, pressure_pa=70000.0),
+    VarSpec("relative_humidity_on_pressure_levels","relative_humidity",   "RelativeHumidity500hPa", lambda x: x * 100.0, pressure_pa=50000.0),
+    VarSpec("geopotential_height_on_pressure_levels","geopotential_height","GeopotentialHeight700hPa", None, pressure_pa=70000.0),
+    VarSpec("wind_speed_on_pressure_levels",       "wind_speed",          "WindSpeed700hPa",   None, pressure_pa=70000.0),
+    VarSpec("wind_direction_on_pressure_levels",   "wind_from_direction", "WindDirection700hPa", None, pressure_pa=70000.0),
+    VarSpec("wind_vertical_velocity_on_pressure_levels", "upward_air_velocity", "VerticalVelocity700hPa", None, pressure_pa=70000.0),  # m/s, upward+
+    VarSpec("wind_vertical_velocity_on_pressure_levels", "upward_air_velocity", "VerticalVelocity500hPa", None, pressure_pa=50000.0),
 ]
 
 
@@ -137,6 +168,13 @@ def _extract_cell(nc_bytes: bytes, var: VarSpec, lat: float, lon: float) -> tupl
                 if not candidates:
                     return (None, f"no 2D data vars (found: {list(ds.data_vars)})")
                 da = ds[candidates[0]]
+            # Pressure-level files carry a `pressure` coord (Pascals). Select the
+            # requested level first so the spatial .sel below is 2D. Surface
+            # files have pressure_pa=None and skip this.
+            if var.pressure_pa is not None:
+                if "pressure" not in da.coords and "pressure" not in da.dims:
+                    return (None, f"no 'pressure' coord (coords: {list(da.coords)})")
+                da = da.sel(pressure=var.pressure_pa, method="nearest")
             sel = da.sel(latitude=lat, longitude=lon, method="nearest")
             v = float(sel.values)
             if not np.isfinite(v):
