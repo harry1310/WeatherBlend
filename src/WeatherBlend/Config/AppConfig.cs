@@ -129,6 +129,17 @@ public sealed class LocationConfig
     public string? WeatherLinkStationId { get; set; }
 
     /// <summary>
+    /// When true, the per-variable HUMIDITY element blender trains AND verifies
+    /// against this location's WeatherLink station relative humidity instead of
+    /// ERA5 (Sennen 2026-06-21: ERA5 RH runs ~6.5% dry vs Gwennap Head over ~29
+    /// months, r 0.81 — that dry bias under-fires the sea-cliff salt/greasiness
+    /// model, which keys on RH near 85–90%). Other locations and other elements
+    /// stay on ERA5. Requires <see cref="WeatherLinkStationId"/> to be set.
+    /// YAML key: <c>humidityTruthWeatherLink</c>.
+    /// </summary>
+    public bool HumidityTruthWeatherLink { get; set; }
+
+    /// <summary>
     /// Optional marine (sea-state) collection block — Sennen sea-state
     /// Phase 0, 2026-06-11. Present only on sea-cliff locations; null means
     /// no marine collection (collect + backfill gate on it). Holds the

@@ -53,13 +53,30 @@ public static class HumidityFeatureBuilder
         });
 
     public static List<RegressionTrainingRow> BuildForLead(
-        string forecastsPath, string era5Path, string locationName, BlenderSpec spec, CancellationToken ct = default)
+        string forecastsPath, string era5Path, string locationName, BlenderSpec spec,
+        CancellationToken ct = default, string? weatherLinkTruthPath = null)
     {
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
 
         var fcGlob  = SqlGlob.Escape(Path.Combine(forecastsPath, "**", "*.parquet"));
         var eraGlob = SqlGlob.Escape(Path.Combine(era5Path, "**", "*.parquet"));
+        // Truth: ERA5 RelativeHumidity2m by default; a location can opt into its own
+        // WeatherLink station RH instead (Sennen → Gwennap Head, 2026-06-21). The
+        // WeatherLink obs are ~hourly, so collapse to an hourly mean keyed on the
+        // truncated hour to align with the forecast ValidTimeUtc.
+        var truthCte = weatherLinkTruthPath is null
+            ? $@"truth AS (
+    SELECT ValidTimeUtc, RelativeHumidity2m AS truth
+    FROM read_parquet('{eraGlob}', hive_partitioning = false, union_by_name = true)
+    WHERE LocationName = '{locationName}' AND RelativeHumidity2m IS NOT NULL
+)"
+            : $@"truth AS (
+    SELECT date_trunc('hour', ObservedTimeUtc) AS ValidTimeUtc, AVG(Humidity) AS truth
+    FROM read_parquet('{SqlGlob.Escape(Path.Combine(weatherLinkTruthPath, "**", "*.parquet"))}', hive_partitioning = false, union_by_name = true)
+    WHERE LocationName = '{locationName}' AND Humidity IS NOT NULL
+    GROUP BY 1
+)";
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
         var n = spec.Models.Count;
 
@@ -100,15 +117,11 @@ pivoted AS (
         AVG(WindSpeed10m)               AS wind_mean
     FROM latest WHERE rn = 1 GROUP BY ValidTimeUtc
 ),
-era5 AS (
-    SELECT ValidTimeUtc, RelativeHumidity2m AS truth
-    FROM read_parquet('{eraGlob}', hive_partitioning = false, union_by_name = true)
-    WHERE LocationName = '{locationName}' AND RelativeHumidity2m IS NOT NULL
-)
+{truthCte}
 SELECT p.ValidTimeUtc, {selectRh}, {selectDp},
        p.temp_mean, p.dewdep_mean, p.cloud_low_mean, p.cloud_mid_mean, p.cloud_high_mean, p.wind_mean,
        e.truth
-FROM pivoted p JOIN era5 e USING (ValidTimeUtc)
+FROM pivoted p JOIN truth e USING (ValidTimeUtc)
 WHERE ({requiredNotNull})
   AND {anyNotNull}
 ORDER BY p.ValidTimeUtc;";

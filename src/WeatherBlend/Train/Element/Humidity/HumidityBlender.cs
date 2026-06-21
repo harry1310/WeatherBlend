@@ -25,7 +25,10 @@ public sealed class HumidityBlender : IElementBlender
             ModelsRoot: _cfg.Storage.ModelsPath,
             BuildSpec: lead => HumidityFeatureBuilder.BuildSpec(_cfg.Blenders, lead),
             LoadRowsForSpec: (spec, c) => HumidityFeatureBuilder.BuildForLead(
-                _cfg.Storage.ForecastsPath, _cfg.Storage.Era5Path, location.Name, spec, c),
+                _cfg.Storage.ForecastsPath, _cfg.Storage.Era5Path, location.Name, spec, c,
+                // Opt-in per location: train RH against the WeatherLink station instead
+                // of ERA5 (Sennen → Gwennap Head). Others pass null → unchanged ERA5.
+                weatherLinkTruthPath: location.HumidityTruthWeatherLink ? _cfg.Storage.WeatherLinkPath : null),
             DeviationsFromBrief: new[]
             {
                 "UKMO excluded entirely (4-way bake-off 2026-04-26 — humidity behaves like " +

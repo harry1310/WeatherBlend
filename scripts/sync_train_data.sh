@@ -84,6 +84,7 @@ cd "$LOCAL_ROOT"
 
 need_forecasts=0
 need_era5=0
+need_weatherlink=0
 need_metar=0
 need_rainfall=0
 need_midas=0
@@ -97,8 +98,14 @@ for p in "${phases[@]}"; do
     # wind_gust_lgb all share the same dependency set: per-location
     # forecast tree + per-location ERA5 truth + the existing models tree
     # for RetrainGuard's previous-summary read.
-    2b|2c|2d|wind|humidity|shortwave_radiation|cloud_cover|wind_gust_lgb)
+    2b|2c|2d|wind|shortwave_radiation|cloud_cover|wind_gust_lgb)
       need_forecasts=1; need_era5=1; need_models=1 ;;
+
+    # Humidity element blender: same deps PLUS the WeatherLink truth tree —
+    # Sennen humidity trains + verifies against Gwennap Head RH, not ERA5
+    # (2026-06-21). ERA5 still pulled: other locations' humidity stays on ERA5.
+    humidity)
+      need_forecasts=1; need_era5=1; need_models=1; need_weatherlink=1 ;;
 
     # Precipitation / dry-window blenders score against EA rainfall truth.
     3a|3c|3d|3b)
@@ -127,7 +134,7 @@ for p in "${phases[@]}"; do
     # scripts/sync_train_data.sh. A request here exits 3 loudly below.
 
     all)
-      need_forecasts=1; need_era5=1; need_metar=1; need_rainfall=1
+      need_forecasts=1; need_era5=1; need_weatherlink=1; need_metar=1; need_rainfall=1
       need_midas=1; need_orographic=1; need_models=1 ;;
 
     *)
@@ -174,6 +181,15 @@ fi
 
 if [ "$need_era5" -gt 0 ]; then
   pull "data/truth/era5/location=$location" "truth/era5/location=$location"
+fi
+
+if [ "$need_weatherlink" -gt 0 ]; then
+  # OPTIONAL truth: only locations with a WeatherLink station + humidityTruthWeatherLink
+  # use it (Sennen → Gwennap). On R2 a missing prefix already no-ops; tolerate a missing
+  # LOCAL source too (other locations / the smoke fake-R2 have none) so the sync doesn't
+  # die — those locations just fall back to ERA5. A genuinely-needed-but-absent tree
+  # surfaces loudly later as "0 training rows", not as a silent sync failure.
+  pull "data/truth/weatherlink/location=$location" "truth/weatherlink/location=$location" || true
 fi
 
 if [ "$need_metar" -gt 0 ]; then

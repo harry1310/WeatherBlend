@@ -282,6 +282,10 @@ locations:
     # 15-min archive land under data/truth/weatherlink/. Credentials are global
     # (see the weatherLink: block); only the station id is per-location.
     weatherLinkStationId: "115072"   # NCI Gwennap Head
+    # Train + verify the HUMIDITY blender against Gwennap Head RH, not ERA5: ERA5 RH
+    # runs ~6.5% dry here (r 0.81 over ~29mo) and that bias under-fires the salt
+    # greasiness model (RH onset 85-90%). Temp/wind/etc stay on ERA5 (2026-06-21).
+    humidityTruthWeatherLink: true
 
     # Culdrose (RNAS) is the nearest reliable METAR issuer (~32 km E); Newquay
     # (St Mawgan) is the fallback. Land's End (EGHC) is closer but doesn't issue

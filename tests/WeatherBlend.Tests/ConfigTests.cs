@@ -124,6 +124,10 @@ public class ConfigTests
             .Contain("Trengwainton")
             .And.Contain("St Ives Towednack")
             .And.Contain("St Erth");
+        // Humidity blender trains + verifies against Gwennap Head (WeatherLink), not
+        // ERA5 — Sennen only (2026-06-21; ERA5 RH dry-biased, hurts the salt model).
+        bound.Locations[2].HumidityTruthWeatherLink.Should().BeTrue();
+        bound.Locations[0].HumidityTruthWeatherLink.Should().BeFalse("Bonehill stays on ERA5");
         // Back-compat accessor still points to the primary.
         bound.Location.Name.Should().Be("bonehill_rocks");
     }

@@ -82,9 +82,18 @@ public sealed class ElementVerifyCommand
             return 0;
         }
 
+        // Humidity verify follows the same truth a location trained against: ERA5 by
+        // default, or its WeatherLink station where opted in (Sennen → Gwennap Head,
+        // 2026-06-21) — otherwise verify would flag false "drift" against ERA5.
+        var useWeatherLink = string.Equals(target.CliName, "humidity", StringComparison.Ordinal)
+            && _cfg.Locations.FirstOrDefault(l => string.Equals(l.Name, locationName, StringComparison.OrdinalIgnoreCase))
+                ?.HumidityTruthWeatherLink == true;
         var truthCol = TruthColumnFor(target);
-        var truth = _truth.GetEra5Hourly(locationName, windowStart, windowEnd, ct, truthCol);
-        _log.LogInformation("Loaded {N} ERA5 truth points (column={Col}).", truth.Count, truthCol);
+        var truth = useWeatherLink
+            ? _truth.GetWeatherLinkHumidityHourly(locationName, windowStart, windowEnd, ct)
+            : _truth.GetEra5Hourly(locationName, windowStart, windowEnd, ct, truthCol);
+        _log.LogInformation("Loaded {N} {Src} truth points (column={Col}).",
+            truth.Count, useWeatherLink ? "WeatherLink" : "ERA5", useWeatherLink ? "Humidity" : truthCol);
 
         var metadata = _metadata.GetTrainingMetadataForVersions(
             target.ModelDirName, locationName,

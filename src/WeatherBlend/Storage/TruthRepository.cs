@@ -94,6 +94,37 @@ WHERE LocationName = '{locationName.Replace("'", "''")}'
     }
 
     /// <summary>
+    /// WeatherLink station relative humidity (%) as an hourly truth dict, keyed by
+    /// ValidTimeUtc. The drop-in station-truth alternative to <see cref="GetEra5Hourly"/>
+    /// for the humidity element verify where a location opts in (Sennen → Gwennap Head,
+    /// 2026-06-21). WeatherLink obs are ~hourly; collapsed to an hourly mean on the
+    /// truncated hour to line up with the prediction ValidTimeUtc. Empty dict on a
+    /// missing tree (degraded with a warning).
+    /// </summary>
+    public IReadOnlyDictionary<DateTime, double> GetWeatherLinkHumidityHourly(
+        string locationName, DateTime start, DateTime end, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (string.IsNullOrWhiteSpace(locationName))
+            throw new ArgumentException("locationName is required.", nameof(locationName));
+
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.WeatherLinkPath, "**", "*.parquet"));
+        var sql = $@"
+SELECT date_trunc('hour', ObservedTimeUtc) AS ValidTimeUtc, AVG(Humidity) AS rh
+FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+WHERE LocationName = '{locationName.Replace("'", "''")}'
+  AND Humidity IS NOT NULL
+  AND ObservedTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
+  AND ObservedTimeUtc <= TIMESTAMP '{end:yyyy-MM-dd HH:mm:ss}'
+GROUP BY 1";
+
+        var rows = ParquetReader.Query(sql,
+            r => (Time: r.GetDateTime(0), Val: r.GetDouble(1)),
+            _log, "WeatherLink tree empty — humidity truth dict will be empty.", ct);
+        return rows.ToDictionary(x => x.Time, x => x.Val);
+    }
+
+    /// <summary>
     /// EA rainfall in mm/h at the named station, aggregated from 15-min
     /// readings with the <strong>4-of-4 quarter-hour completeness gate</strong>:
     /// only hours with all four readings present pass through, so a partial
