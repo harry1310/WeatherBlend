@@ -210,6 +210,19 @@ jobs:
           dotnet-version: "10.0.x"
           dotnet-quality: preview
 
+      # Cache the restored NuGet packages keyed on the project files. The location
+      # matrix is SERIAL (max-parallel: 1), so the cache job 1 writes is restored by
+      # jobs 2/3 (and across runs) — `dotnet build`'s implicit restore reads packages
+      # from cache instead of re-downloading them (2026-06-21, per-location waste fix).
+      - name: Cache NuGet packages
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.phases_resolved_csv != ''
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
       # rclone install + R2 remote config via the shared composite action
       # (.github/actions/setup-r2) — same call shape as verify.yml, plus this
       # workflow's no-op gate. The workflow-level RCLONE_* hang-guard env
