@@ -1506,10 +1506,10 @@ public class SitePagesTests
 
         var html = SitePages.RenderForecastsRain(input, lead: 24);
 
-        // The experimental tor line is labelled and overlaid (deep-orange,
-        // dashed) on the Bellever chart.
+        // The experimental tor line is labelled and overlaid (green, dashed)
+        // on the Bellever chart — green so it's distinct from the orange gauge lines.
         html.Should().Contain("Bonehill tor (3oni, experimental");
-        html.Should().Contain("#e65100");
+        html.Should().Contain("#2e7d32");
         // The tor never gets its own per-station P(wet) chart.
         html.Should().NotContain("P(wet) — Bonehill Rocks");
     }

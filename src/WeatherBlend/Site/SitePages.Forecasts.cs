@@ -670,7 +670,7 @@ public static partial class SitePages
                 if (torRows.Count > 0)
                     probSeries.Add(new LineSeries(
                         "Bonehill tor (3oni, experimental)",
-                        "#e65100",
+                        "#2e7d32",   // green — distinct from the orange 3a/3o gauge lines (Harry 2026-06-21)
                         torRows.Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet)).ToList(),
                         Dashed: true));
             }
