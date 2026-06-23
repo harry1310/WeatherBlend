@@ -463,6 +463,24 @@ public sealed class WeatherLinkConfig
     // git. Env vars win over the file; CI uses env vars only — the file fallback
     // is purely local-dev convenience. Two lines: key=… / secret=…
     public string KeyFile { get; set; } = "../WeatherLinkKey.txt";
+
+    /// <summary>WeatherLink truth stations NOT tied to a forecast location —
+    /// collected (WeatherLink only, stamped with their own location key) without
+    /// the forecast/ERA5/marine/render machinery a full <see cref="LocationConfig"/>
+    /// triggers (forecast collection is global per-location, so a fake location
+    /// would waste an Open-Meteo pull per model and need a render page). Use for a
+    /// supplemental gauge near an existing site — e.g. Lands End (cove) for Sennen.
+    /// YAML key: <c>extraStations</c>.</summary>
+    public List<WeatherLinkExtraStation> ExtraStations { get; set; } = new();
+}
+
+/// <summary>One supplemental WeatherLink truth station — a station id plus the
+/// <c>location=</c> partition its rows are written under (see
+/// <see cref="WeatherLinkConfig.ExtraStations"/>).</summary>
+public sealed class WeatherLinkExtraStation
+{
+    public string StationId { get; set; } = "";
+    public string LocationName { get; set; } = "";
 }
 
 public sealed class HttpConfig
