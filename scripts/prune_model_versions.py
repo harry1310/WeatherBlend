@@ -11,8 +11,9 @@ version-partitioned, not date-partitioned, so this is the lever (2026-06-21).
 SAFE BY DESIGN:
   * DRY-RUN by default — prints the plan, deletes NOTHING. Requires --apply to act.
   * KEEP set per (target, station) = Active ∪ ChampionByLead values ∪ every version
-    newer than --buffer-days (default 14). Champions and anything recent are never
-    touched, even if a version is mid-rollout / a rollback candidate.
+    newer than --buffer-days (default 45 — covers verify's 30d SCORING window plus the
+    ~15d a version's predictions outlive its training; the 90d sync is a superset, not
+    the metadata need). Champions and anything recent are never touched.
   * DELETE = the manifest's Versions list MINUS the keep set — i.e. only versions the
     manifest itself already considers superseded AND older than the buffer.
   * On --apply: back up each MANIFEST.json on R2 first (.bak_<date>_pre_oldver_prune,
@@ -75,7 +76,14 @@ def dir_object_count(path):
 def main():
     ap = argparse.ArgumentParser(description="Prune stale model versions from R2 (dry-run default).")
     ap.add_argument("--apply", action="store_true", help="actually delete (default: dry run, deletes nothing)")
-    ap.add_argument("--buffer-days", type=int, default=14, help="keep every version newer than this many days (default 14)")
+    # MUST cover verify's SCORING window (not its 90d prediction sync, which is a generous
+    # superset). VerifyCommand only scores --window-days and only reads metadata for
+    # versions in that window: 14d (temp) / 30d (precip, dry-window, element). A version's
+    # predictions outlive its training by ~its champion tenure (≈7d, weekly retrain) + lead
+    # (≤3d), so a version trained ~40d ago can still have in-window predictions. 30d window
+    # + ~15d that tail = 45d. (Missing metadata only degrades to a null label / blank drift
+    # for SUPERSEDED versions — never a crash — but 45d keeps everything still scored.)
+    ap.add_argument("--buffer-days", type=int, default=45, help="keep every version newer than this many days (default 45 — covers verify's 30d scoring window + prediction tail)")
     ap.add_argument("--count-objects", action="store_true", help="count objects per stale version (slower; shows exact savings)")
     ap.add_argument("--target", default=None, help="limit to one target (e.g. cloud_cover) — stage the first apply on one tree")
     args = ap.parse_args()
