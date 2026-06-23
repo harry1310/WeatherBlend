@@ -32,6 +32,11 @@ public sealed class WeatherLinkClient
     /// the temp / humidity / wind / rain archive fields.</summary>
     public const int IssSensorType = 43;
 
+    /// <summary>Newer Davis ISS hardware reports the SAME weather-archive fields
+    /// under sensor_type 45 (e.g. the Lands End station, id 85899 — 5-min records).
+    /// Identical field schema to 43, so both are accepted.</summary>
+    public const int IssSensorTypeV2 = 45;
+
     /// <summary>WeatherLink /historic requests are capped to a 24h window.</summary>
     public static readonly TimeSpan MaxHistoricWindow = TimeSpan.FromHours(24);
 
@@ -117,7 +122,8 @@ public sealed class WeatherLinkClient
 
         foreach (var sensor in sensors.EnumerateArray())
         {
-            if (GetInt(sensor, "sensor_type") != IssSensorType) continue;
+            var sensorType = GetInt(sensor, "sensor_type");
+            if (sensorType != IssSensorType && sensorType != IssSensorTypeV2) continue;
             if (!sensor.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array) continue;
 
             foreach (var rec in data.EnumerateArray())

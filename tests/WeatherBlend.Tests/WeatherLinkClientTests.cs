@@ -64,6 +64,41 @@ public class WeatherLinkClientTests
     }
     """;
 
+    /// <summary>A single sensor_type 45 record (newer Davis ISS, e.g. the Lands End
+    /// station 85899) — identical field schema to 43; must produce a row. Regression
+    /// for the 2026-06-22 fix that widened the accepted ISS types to {43, 45}.</summary>
+    private const string Sensor45Json = """
+    {
+      "station_id": 85899,
+      "sensors": [
+        {
+          "sensor_type": 45,
+          "data": [
+            {
+              "ts": 1781002800,
+              "temp_avg": 50.0, "temp_hi": 50.0, "temp_lo": 50.0,
+              "hum_last": 80, "dew_point_last": 41.0,
+              "rainfall_mm": 0.2, "rain_rate_hi_mm": 1.0,
+              "wind_speed_avg": 10.0, "wind_speed_hi": 20.0,
+              "wind_dir_of_prevail": 90, "solar_rad_avg": 300
+            }
+          ]
+        }
+      ]
+    }
+    """;
+
+    [Fact]
+    public void Parse_accepts_sensor_type_45_newer_iss()
+    {
+        var rows = WeatherLinkClient.Parse(Payload(Sensor45Json), Loc, Station);
+
+        rows.Should().HaveCount(1);
+        rows[0].Temperature2m.Should().BeApproximately(10.0, 1e-9); // 50°F → 10°C
+        rows[0].RainfallMm.Should().BeApproximately(0.2, 1e-9);
+        rows[0].SolarRadiation.Should().BeApproximately(300.0, 1e-9);
+    }
+
     [Fact]
     public void Parse_aggregates_two_utc_hours_with_correct_unit_conversions()
     {

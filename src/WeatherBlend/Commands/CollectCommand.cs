@@ -223,6 +223,36 @@ public sealed class CollectCommand
             }
         }
 
+        // Supplemental WeatherLink truth stations not tied to a forecast location
+        // (e.g. the Lands End cove gauge for Sennen) — WeatherLink only, stamped
+        // under their own location key, so no forecast/render machinery fires.
+        // Same NON-CRITICAL soft-fail as the per-location pull: a hiccup must not
+        // fail the cycle.
+        if (wlCreds is { } extraCreds)
+        {
+            foreach (var extra in wlCfg.ExtraStations)
+            {
+                if (string.IsNullOrWhiteSpace(extra.StationId) || string.IsNullOrWhiteSpace(extra.LocationName))
+                    continue;
+                try
+                {
+                    var end = DateTimeOffset.UtcNow;
+                    var rows = await _weatherLink.FetchHistoricAsync(
+                        extra.LocationName, extra.StationId,
+                        end - WeatherLinkClient.MaxHistoricWindow, end, extraCreds.Key, extraCreds.Secret, ct);
+                    await ParquetWriter.WriteWeatherLinkAsync(_cfg.Storage.WeatherLinkPath, rows, ct);
+                    _log.LogInformation("  WeatherLink extra {Loc}/{Station}: wrote {Rows} hourly rows",
+                        extra.LocationName, extra.StationId, rows.Count);
+                }
+                catch (Exception ex)
+                {
+                    weatherLinkErrors++;
+                    _log.LogError(ex, "  WeatherLink extra {Loc}/{Station}: FAILED (non-fatal)",
+                        extra.LocationName, extra.StationId);
+                }
+            }
+        }
+
         var metOfficeErrors = await CollectMetOfficeAsync(ct);
 
         if (marineErrors > 0)

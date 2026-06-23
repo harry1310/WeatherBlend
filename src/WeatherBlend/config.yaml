@@ -17,12 +17,13 @@ locations:
     longitude: -3.7931
     elevationMeters: 393
 
-    # Manaton WeatherLink station (Davis, station 197218, ~4.2km N, real terrain
-    # ~345m ≈ Bonehill's elevation): the closest real obs to the tor, a live
-    # verification truth + wind/humidity/dew for the climbing index. Hourly rows
-    # land under data/truth/weatherlink/. Creds are global (weatherLink: block).
-    # Archive starts ~Nov 2024; solar present but uncalibrated by the owner (null).
-    weatherLinkStationId: "197218"   # Manaton
+    # Manaton WeatherLink (Davis id 197218, ~4.2km N) was here but Harry DOWNGRADED
+    # its subscription 2026-06-22 — it was unused in production (Bonehill humidity/
+    # temp stay on ERA5; nothing consumed Manaton). Its historic archive
+    # (2024-10..2026-06) is preserved in R2 under
+    # data/truth/weatherlink/location=bonehill_rocks/. No weatherLinkStationId now
+    # (collect skips Bonehill WeatherLink); re-add an id to resume if a Bonehill
+    # station is ever provisioned. See [[project_weatherlink_stations]].
 
     # Phase D nav tabs (2026-05-20). Bonehill is the full-stack location —
     # temperature, rain, dry-window forecasts, plus skill + models. Listed
@@ -605,6 +606,17 @@ weatherLink:
   apiSecretEnvVar: "WEATHERLINK_API_SECRET"
   # Relative to cwd (repo root). Lives one level above the repo, outside git.
   keyFile: "../WeatherLinkKey.txt"
+
+  # Supplemental truth stations NOT tied to a forecast location — collected
+  # WeatherLink-only under their own location key (no forecast/ERA5/render). Lands
+  # End cove gauge (id 85899, 1.5km from Sennen Cove, SHELTERED) is the most
+  # representative Sennen rain truth found: occurrence wet-Jaccard 48.6% vs the
+  # exposed headlands' ~35% (they undercatch light rain ~half). Archive 2022+ in R2
+  # under location=lands_end. Newer Davis model → relies on the sensor_type 45
+  # support in WeatherLinkClient. Not yet wired into 3c — collection first.
+  extraStations:
+    - stationId: "85899"
+      locationName: "lands_end"
 
 # HTTP client settings.
 http:

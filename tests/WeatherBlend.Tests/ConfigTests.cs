@@ -46,6 +46,26 @@ public class ConfigTests
     }
 
     [Fact]
+    public void WeatherLink_extraStations_bind_from_yaml()
+    {
+        // The Lands End cove gauge collects via weatherLink.extraStations (a truth
+        // station not tied to a forecast location). Verify the YAML list-of-objects
+        // binds to WeatherLinkExtraStation by name.
+        const string yaml =
+            "weatherLink:\n" +
+            "  extraStations:\n" +
+            "    - stationId: \"85899\"\n" +
+            "      locationName: \"lands_end\"\n";
+        using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(yaml));
+        var cfg = new AppConfig();
+        new ConfigurationBuilder().AddYamlStream(stream).Build().Bind(cfg);
+
+        cfg.WeatherLink.ExtraStations.Should().ContainSingle();
+        cfg.WeatherLink.ExtraStations[0].StationId.Should().Be("85899");
+        cfg.WeatherLink.ExtraStations[0].LocationName.Should().Be("lands_end");
+    }
+
+    [Fact]
     public void AppConfig_Location_returns_first_of_Locations_for_back_compat()
     {
         // The 29+ existing call sites use `_cfg.Location.X` — keeping
