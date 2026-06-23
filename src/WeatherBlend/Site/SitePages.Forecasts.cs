@@ -609,10 +609,10 @@ public static partial class SitePages
             // station loop (2026-05-12 — was overcrowded with 5 blender
             // lines + 4 NWP PoP lines + climatology on one axis).
             //
-            // Champion = 3a (solid brand purple). Each challenger has its
-            // OWN distinct colour so 5+ phases stay readable. Dashed for
-            // every challenger; solid only for the champion. Climatology
-            // is grey.
+            // Champion = the per-station champion phase (solid brand purple).
+            // Each challenger has its OWN distinct colour so 5+ phases stay
+            // readable. Dashed for every challenger; solid only for the champion.
+            // Climatology is grey.
             var probSeries = new List<LineSeries>();
             var orderedPrecipPhases = ActivePhasePolicy.ByTarget["precipitation"];
             var precipByPhase = precipForLocation
@@ -624,6 +624,16 @@ public static partial class SitePages
                 .ToDictionary(g => g.Key, g => g.FreshestPerValid(r => r.ValidTimeUtc, r => r.PredictedAtUtc)
                                                  .OrderBy(r => r.ValidTimeUtc)
                                                  .ToList());
+            // Champion marker is the PER-STATION champion phase (the 3o→3c→3a
+            // fallback chain makes 3c Sennen's champion, 3o Bonehill's), resolved
+            // the same way the home tiles + daily/hourly tables do — NOT global
+            // index 0. With i==0, a station whose global-champion phase (3o) has
+            // no predictions labelled EVERY present phase "challenger" — Sennen
+            // showed both 3a and 3c as challenger. (2026-06-22 fix.)
+            var stationChampionPhase =
+                input.PrecipCurrentByStation.TryGetValue(station, out var stChampVer)
+                && input.PhaseByVersion.TryGetValue(stChampVer, out var stChampPh)
+                    ? stChampPh : "";
             for (int i = 0; i < orderedPrecipPhases.Count; i++)
             {
                 var phase = orderedPrecipPhases[i];
@@ -633,11 +643,12 @@ public static partial class SitePages
                 // more posterior detail without competing for space.
                 if (phase == "4a") continue;
                 if (!precipByPhase.TryGetValue(phase, out var phaseRows) || phaseRows.Count == 0) continue;
-                var color = PrecipPhaseColor(phase, isChampion: i == 0);
+                var isChampion = string.Equals(phase, stationChampionPhase, StringComparison.Ordinal);
+                var color = PrecipPhaseColor(phase, isChampion);
                 // Legend labels drop the redundant "P(wet)" prefix (the chart
                 // title + "Probability" axis already say it) so the 6+ phase
                 // entries don't wrap into a third legend row and crush the plot.
-                var label = i == 0 ? $"{phase} champion" : $"{phase} challenger";
+                var label = isChampion ? $"{phase} champion" : $"{phase} challenger";
                 var pts = phaseRows
                     .Select(r => (X: r.ValidTimeUtc.ToOADate(), Y: r.ProbWet))
                     .ToList();
