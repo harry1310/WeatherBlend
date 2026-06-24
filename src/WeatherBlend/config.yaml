@@ -310,8 +310,7 @@ locations:
         - id: "9bd58397-e67c-4007-aaf5-fd9dfa5d929b"
           name: "Trengwainton"
         - name: "Lands End"
-          source: weatherlink
-          weatherLinkLocation: "lands_end"
+          source: weatherlink   # truth from data/truth/weatherlink/location=lands_end (= slug of the name)
 
     # Sea-state collection (Sennen sea-state Phase 0, 2026-06-11 — see
     # docs/SENNEN_SEA_STATE_PLAN.md). The coordinate is the PINNED marine

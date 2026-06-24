@@ -255,39 +255,44 @@ public sealed class RainfallConfig
     public List<RainfallStationConfig> Stations { get; set; } = new();
 }
 
+/// <summary>Where a rainfall station's wet-label TRUTH comes from. <c>Ea</c> = EA
+/// Hydrology 15-min readings (<c>Value15MinMm</c>, 4-of-4 hourly); <c>WeatherLink</c> =
+/// a Davis cove gauge's hourly <c>RainfallMm</c> under <c>data/truth/weatherlink</c>.
+/// YAML <c>source</c> binds case-insensitively (<c>ea</c> / <c>weatherlink</c>).</summary>
+public enum RainfallTruthSource { Ea, WeatherLink }
+
 public sealed class RainfallStationConfig
 {
+    /// <summary>EA Hydrology gauge UUID (EA stations only; empty for WeatherLink).</summary>
     public string Id { get; set; } = "";
+
+    /// <summary>Display name, and — for an EA station — the <c>StationName</c> key in the
+    /// rainfall tree.</summary>
     public string Name { get; set; } = "";
 
-    /// <summary>Truth source: <c>"ea"</c> (default — EA Hydrology 15-min readings,
-    /// <c>Value15MinMm</c>) or <c>"weatherlink"</c> (a Davis gauge's hourly
-    /// <c>RainfallMm</c>). A WeatherLink-sourced station is a PRECIP-OCCURRENCE truth
-    /// only — e.g. the Lands End cove gauge for Sennen's 3c — and reads its rain from
-    /// <see cref="WeatherLinkLocation"/> under <c>data/truth/weatherlink</c>, while the
-    /// forecasts/features still come from the parent location (sennen_cove). YAML key:
-    /// <c>source</c>.</summary>
-    public string Source { get; set; } = "ea";
+    /// <summary>Truth source type. Defaults to <see cref="RainfallTruthSource.Ea"/>, so EA
+    /// stations omit the YAML <c>source</c> key; a WeatherLink cove gauge (e.g. Lands End
+    /// for Sennen) sets <c>source: weatherlink</c>. A WeatherLink station is a
+    /// precip-occurrence truth only — its forecasts/features still come from the parent
+    /// location (sennen_cove); only the wet label is read from the weatherlink tree.</summary>
+    public RainfallTruthSource Source { get; set; } = RainfallTruthSource.Ea;
 
-    /// <summary>For <see cref="Source"/>=<c>weatherlink</c>: the <c>location=</c>
-    /// partition under <c>data/truth/weatherlink/</c> holding this station's rows
-    /// (e.g. <c>lands_end</c>). YAML key: <c>weatherLinkLocation</c>.</summary>
-    public string WeatherLinkLocation { get; set; } = "";
-
-    /// <summary>True when this station's rain truth comes from a Davis WeatherLink
-    /// gauge rather than the EA tree.</summary>
-    public bool IsWeatherLink =>
-        string.Equals(Source, "weatherlink", StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>Per-station parquet/path slug — single source of truth for the
-    /// per-(station) model + prediction tree. EA gauges slug off their name
-    /// (<c>ea_trengwainton</c>); WeatherLink gauges off their location partition
-    /// (<c>wl_lands_end</c>). Used by train, predict, verify and the site so the
-    /// same station resolves to the same key everywhere.</summary>
+    /// <summary>Per-station parquet/path slug — the single key the model + prediction
+    /// trees use everywhere (train, predict, verify, site): provider prefix + slugified
+    /// name, e.g. <c>ea_trengwainton</c> / <c>wl_lands_end</c>.</summary>
     public string Slug =>
-        IsWeatherLink
-            ? Models.StationSlug.WithWlPrefix(WeatherLinkLocation)
-            : Models.StationSlug.WithEaPrefix(Name);
+        (Source is RainfallTruthSource.WeatherLink ? "wl_" : "ea_") + Models.StationSlug.Of(Name);
+
+    /// <summary>Resolves this station's wet-label truth coordinates from storage — the
+    /// single place the EA-vs-WeatherLink branch lives, so callers never repeat it. An
+    /// EA station returns <c>(null, null)</c> (read the EA tree by <see cref="Name"/>); a
+    /// WeatherLink station returns the weatherlink tree path + its <c>location=</c>
+    /// partition key (the slugified name, e.g. <c>lands_end</c>) — exactly the
+    /// <c>weatherLinkTruthPath</c> / <c>weatherLinkTruthLocation</c> the truth loaders take.</summary>
+    public (string? Path, string? LocationKey) WeatherLinkTruth(StorageConfig storage) =>
+        Source is RainfallTruthSource.WeatherLink
+            ? (storage.WeatherLinkPath, Models.StationSlug.Of(Name))
+            : (null, null);
 }
 
 public sealed class ModelConfig

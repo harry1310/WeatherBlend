@@ -464,16 +464,12 @@ public sealed class PrecipPredictCommand
                     station, string.Join(", ", location.Rainfall.Stations.Select(s => s.Slug)));
                 return false;
             }
-            // Same truth source the bundle was trained on — EA gauge or the
-            // station's WeatherLink cove gauge (e.g. Lands End) — so the live
-            // persistence features match training.
-            hourlyRain = PrecipTruthLoader.LoadHourlyRain(
-                _cfg.Storage.RainfallPath, location.Name, stationCfg.Name, minValidTime: null, ct: ct,
-                weatherLinkTruthPath: stationCfg.IsWeatherLink ? _cfg.Storage.WeatherLinkPath : null,
-                weatherLinkTruthLocation: stationCfg.IsWeatherLink ? stationCfg.WeatherLinkLocation : null);
-            _log.LogInformation("Station {Station}: loaded {N} hourly rainfall rows for persistence features (source={Src})",
-                station, hourlyRain.Count,
-                stationCfg.IsWeatherLink ? "weatherlink:" + stationCfg.WeatherLinkLocation : "ea:" + stationCfg.Name);
+            // Same truth source the bundle was trained on — EA gauge or the station's
+            // WeatherLink cove gauge (e.g. Lands End), resolved from the station config —
+            // so the live persistence features match training.
+            hourlyRain = PrecipTruthLoader.LoadHourlyRain(stationCfg, _cfg.Storage, location.Name, minValidTime: null, ct: ct);
+            _log.LogInformation("Station {Station}: loaded {N} hourly rainfall rows for persistence features (source={Slug})",
+                station, hourlyRain.Count, stationCfg.Slug);
         }
 
         var ml = new MLContext(seed: 42);

@@ -277,8 +277,9 @@ ORDER BY StationName, valid_time";
                 result[slug] = new Dictionary<DateTime, double>();
                 continue;
             }
-            result[slug] = stationCfg.IsWeatherLink
-                ? GetWeatherLinkHourlyRainfall(stationCfg.WeatherLinkLocation, start, end, ct)
+            var (_, weatherLinkKey) = stationCfg.WeatherLinkTruth(_cfg.Storage);
+            result[slug] = weatherLinkKey is { } wlLoc
+                ? GetWeatherLinkHourlyRainfall(wlLoc, start, end, ct)
                 : GetEaHourlyRainfall(stationCfg.Name, start, end, ct);
         }
         return result;

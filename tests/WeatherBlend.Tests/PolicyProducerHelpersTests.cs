@@ -120,6 +120,44 @@ public sealed class PolicyProducerHelpersTests : IDisposable
         rows[0].Mm.Should().BeApproximately(1.0, 1e-9);
     }
 
+    // ---- LoadHourlyTruthWeatherLink (WeatherLink cove gauge — e.g. Lands End for Sennen) ----
+
+    private sealed record WlFix(string LocationName, DateTime ObservedTimeUtc, double? RainfallMm);
+
+    [Fact]
+    public async Task LoadHourlyTruthWeatherLink_reads_the_cove_gauge_the_EA_reader_cannot_serve()
+    {
+        var b = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);
+        var wlPath = await SeedAsync("weatherlink", new[]
+        {
+            // Already-hourly RainfallMm — summed per hour, NO 4-of-4 completeness rule.
+            new WlFix("lands_end", b,             0.5),
+            new WlFix("lands_end", b.AddHours(1), 1.2),
+            new WlFix("lands_end", b.AddHours(2), 0.0),
+            new WlFix("gwennap_head", b, 9.0),   // other location → excluded by LocationName filter
+        });
+        // The EA tree carries the OTHER Sennen gauge (Trengwainton), not Lands End.
+        var eaPath = await SeedAsync("rain", new[]
+        {
+            new RainFix("sennen_cove", "Trengwainton", b, 0.1),
+            new RainFix("sennen_cove", "Trengwainton", b.AddMinutes(15), 0.1),
+            new RainFix("sennen_cove", "Trengwainton", b.AddMinutes(30), 0.1),
+            new RainFix("sennen_cove", "Trengwainton", b.AddMinutes(45), 0.1),
+        });
+
+        var wl = PrecipCrossLeadBakeoffCommand.LoadHourlyTruthWeatherLink(
+            wlPath, "lands_end", earliest: b, latest: b.AddHours(24), CancellationToken.None);
+        wl.Select(r => r.Mm).Should().Equal(0.5, 1.2, 0.0);
+
+        // A WeatherLink station must flow through its OWN source: the EA reader can't serve
+        // Lands End (it isn't in the EA tree). Routing a WeatherLink gauge through the EA
+        // slug/truth is exactly what yielded 0 study rows and crashed the 2026-06-24
+        // lead-policy fit — so this guards that regression.
+        PrecipCrossLeadBakeoffCommand.LoadHourlyTruth(
+            eaPath, "sennen_cove", "Lands End", earliest: b, latest: b.AddHours(24), CancellationToken.None)
+            .Should().BeEmpty();
+    }
+
     // ---- QueryLatestTempRows (the worst-broken helper: pivot + freshest-cycle dedup) ----
 
     private sealed record FcFix(

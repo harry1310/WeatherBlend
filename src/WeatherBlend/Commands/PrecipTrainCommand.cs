@@ -155,6 +155,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             specsPerLead[lead] = spec;
             _log.LogInformation("Spec: {Spec}", spec);
 
+            var (wlPath, wlKey) = stationCfg.WeatherLinkTruth(_cfg.Storage);
             var rows = PrecipFeatureBuilder.BuildForLead(
                 cache.FcPath,
                 cache.RnPath,
@@ -163,8 +164,8 @@ public sealed class PrecipTrainCommand : TrainCommandBase
                 spec,
                 minValidTime3a,
                 ct,
-                weatherLinkTruthPath: stationCfg.IsWeatherLink ? _cfg.Storage.WeatherLinkPath : null,
-                weatherLinkTruthLocation: stationCfg.IsWeatherLink ? stationCfg.WeatherLinkLocation : null);
+                weatherLinkTruthPath: wlPath,
+                weatherLinkTruthLocation: wlKey);
             _log.LogInformation("Loaded {N} rows (wet={Wet} / {Pct:P1}) spanning {S:yyyy-MM-dd} → {E:yyyy-MM-dd}",
                 rows.Count,
                 rows.Count(r => r.Label),
@@ -281,7 +282,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             Target = "precipitation",
             Phase = "3a",
             LocationName = location.Name,
-            DataSource = stationCfg.IsWeatherLink ? "previous_runs_api+weatherlink" : "previous_runs_api+ea_rainfall",
+            DataSource = stationCfg.Source is Config.RainfallTruthSource.WeatherLink ? "previous_runs_api+weatherlink" : "previous_runs_api+ea_rainfall",
             TrainedAtUtc = now,
             Hyperparameters = BuildPrecipHpDict(hp),
             TestMae = perLead.ToDictionary(kv => $"lead_{kv.Key}h_brier", kv => kv.Value.BlendTestMae),
@@ -486,6 +487,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             specsPerLead[lead] = spec;
             _log.LogInformation("Spec: {Spec}", spec);
 
+            var (wlPath, wlKey) = stationCfg.WeatherLinkTruth(_cfg.Storage);
             var rows = PrecipRichFeatureBuilder.BuildForLead(
                 cache.FcPath,
                 cache.RnPath,
@@ -494,8 +496,8 @@ public sealed class PrecipTrainCommand : TrainCommandBase
                 spec,
                 minValidTime3c,
                 ct,
-                weatherLinkTruthPath: stationCfg.IsWeatherLink ? _cfg.Storage.WeatherLinkPath : null,
-                weatherLinkTruthLocation: stationCfg.IsWeatherLink ? stationCfg.WeatherLinkLocation : null);
+                weatherLinkTruthPath: wlPath,
+                weatherLinkTruthLocation: wlKey);
             _log.LogInformation("Loaded {N} rich rows (wet={Wet} / {Pct:P1}) spanning {S:yyyy-MM-dd} → {E:yyyy-MM-dd}",
                 rows.Count,
                 rows.Count(r => r.Label),
@@ -627,7 +629,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             Target = "precipitation",
             Phase = "3c",
             LocationName = location.Name,
-            DataSource = stationCfg.IsWeatherLink ? "previous_runs_api+weatherlink" : "previous_runs_api+ea_rainfall",
+            DataSource = stationCfg.Source is Config.RainfallTruthSource.WeatherLink ? "previous_runs_api+weatherlink" : "previous_runs_api+ea_rainfall",
             TrainedAtUtc = DateTime.UtcNow,
             Hyperparameters = BuildPrecipHpDict(hp),
             TestMae = perLead.ToDictionary(kv => $"lead_{kv.Key}h_brier", kv => kv.Value.BlendTestMae),
@@ -1106,7 +1108,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         if (string.IsNullOrWhiteSpace(stationOverride))
         {
             stationsToTrain = location.Rainfall.Stations
-                .Where(s => !s.IsWeatherLink)
+                .Where(s => s.Source is Config.RainfallTruthSource.Ea)
                 .Select(s => s.Name).ToList();
         }
         else
@@ -1119,7 +1121,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
                     stationOverride, location.Name, string.Join(", ", location.Rainfall.Stations.Select(s => s.Name)));
                 return 2;
             }
-            if (match.IsWeatherLink)
+            if (match.Source is Config.RainfallTruthSource.WeatherLink)
             {
                 _log.LogError("Station '{Station}' is a WeatherLink (3c-only) gauge — Phase 3d is EA-truth only. Skipping.", match.Name);
                 return 2;

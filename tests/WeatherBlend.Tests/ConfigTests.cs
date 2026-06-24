@@ -150,11 +150,10 @@ public class ConfigTests
             .Contain("Trengwainton")
             .And.Contain("Lands End");
         bound.Locations[2].Rainfall.Stations[0].Name.Should().Be("Trengwainton");
-        bound.Locations[2].Rainfall.Stations[0].IsWeatherLink.Should().BeFalse();
+        bound.Locations[2].Rainfall.Stations[0].Source.Should().Be(RainfallTruthSource.Ea);   // default — no `source:` line in YAML
         var sennenLandsEnd = bound.Locations[2].Rainfall.Stations.Single(s => s.Name == "Lands End");
-        sennenLandsEnd.IsWeatherLink.Should().BeTrue();
-        sennenLandsEnd.WeatherLinkLocation.Should().Be("lands_end");
-        sennenLandsEnd.Slug.Should().Be("wl_lands_end");
+        sennenLandsEnd.Source.Should().Be(RainfallTruthSource.WeatherLink);                   // source: weatherlink
+        sennenLandsEnd.Slug.Should().Be("wl_lands_end");                                       // wl_ + slug(Name); no separate location field
         // Humidity blender trains + verifies against Gwennap Head (WeatherLink), not
         // ERA5 — Sennen only (2026-06-21; ERA5 RH dry-biased, hurts the salt model).
         bound.Locations[2].HumidityTruthWeatherLink.Should().BeTrue();

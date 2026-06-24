@@ -257,11 +257,15 @@ public sealed class PrecipCrossLeadBakeoffCommand
         _log.LogInformation("STUDY retrain — loc={Loc}, train ValidTime ≤ {Cut:yyyy-MM-dd} (live window stays OOS), UA OFF; out={Root}",
             location.Name, cutoff, studyRoot);
 
-        // ---- 3c: per-gauge, rich (no-UA) ----
+        // ---- 3c: per-gauge, rich (no-UA). WeatherLink gauges (e.g. Lands End)
+        // flow through exactly like EA gauges — they are just a different truth
+        // source: slug is wl_* (s.Slug), and the wet label is read from
+        // data/truth/weatherlink instead of the EA tree. ----
         foreach (var s in location.Rainfall.Stations)
         {
             ct.ThrowIfCancellationRequested();
-            var slug = StationSlug.WithEaPrefix(s.Name);
+            var slug = s.Slug;
+            var (wlPath, wlKey) = s.WeatherLinkTruth(_cfg.Storage);
             var versionDir = Path.Combine(studyRoot, "precipitation", slug, "vstudy_phase3c_noua");
             Directory.CreateDirectory(versionDir);
             var specs = new Dictionary<int, BlenderSpec>();
@@ -272,7 +276,9 @@ public sealed class PrecipCrossLeadBakeoffCommand
                 specs[lead] = spec;
                 var rows = PrecipRichFeatureBuilder.BuildForLead(
                     fcPath, rnPath, location.Name, s.Name, spec,
-                    minValidTime: min3c, ct: ct, maxValidTime: cutoff);
+                    minValidTime: min3c, ct: ct, maxValidTime: cutoff,
+                    weatherLinkTruthPath: wlPath,
+                    weatherLinkTruthLocation: wlKey);
                 if (rows.Count < 500) { _log.LogWarning("  3c {Slug} L{Lead}h: only {N} rows ≤cutoff — skipping.", slug, lead, rows.Count); continue; }
                 var ds = BinaryDataset.Split(rows);
                 var trained = PrecipOccurrenceTrainer.TrainVector(ds.Train, ds.Val, spec, hp);
@@ -554,15 +560,22 @@ FROM latest WHERE rn = 1;";
         var ml = new MLContext(seed: 42);
         var emptyUa = System.Array.Empty<(DateTime, double[])>();
         var oroBySlug = OroStaticFeatures.LoadAll(Path.Combine(Path.GetDirectoryName(_cfg.Storage.ForecastsPath)!, "static", "orographic"));
-        var gauges = location.Rainfall.Stations.Select(s => (Slug: StationSlug.WithEaPrefix(s.Name), Friendly: s.Name)).ToList();
+        // WeatherLink gauges (e.g. Lands End) flow through like EA gauges — slug is
+        // wl_* and truth + persistence read from data/truth/weatherlink. Carry the
+        // station config and read the truth source off it per gauge.
+        var gauges = location.Rainfall.Stations;
         var truth = new Dictionary<string, IReadOnlyList<(DateTime, double)>>();
         var rain = new Dictionary<string, Dictionary<DateTime, double>>();
         var m3c = new Dictionary<string, Dictionary<int, (ITransformer Model, BlenderSpec Spec)>>();
         var m3o = new Dictionary<string, Dictionary<int, (ITransformer Model, BlenderSpec Spec)>>();
-        foreach (var (slug, friendly) in gauges)
+        foreach (var s in gauges)
         {
-            truth[slug] = LoadHourlyTruth(_cfg.Storage.RainfallPath, location.Name, friendly, windowStart, windowEnd, ct);
-            rain[slug] = PrecipRichFeatureBuilder.LoadHourlyRain(_cfg.Storage.RainfallPath, location.Name, friendly, null, ct);
+            var slug = s.Slug;
+            var (wlPath, wlKey) = s.WeatherLinkTruth(_cfg.Storage);
+            truth[slug] = wlKey is { } wlLoc
+                ? LoadHourlyTruthWeatherLink(wlPath!, wlLoc, windowStart, windowEnd, ct)
+                : LoadHourlyTruth(_cfg.Storage.RainfallPath, location.Name, s.Name, windowStart, windowEnd, ct);
+            rain[slug] = PrecipTruthLoader.LoadHourlyRain(s, _cfg.Storage, location.Name, null, ct);
             foreach (var (dir, dst) in new[] {
                 (Path.Combine(studyRoot, "precipitation", slug, "vstudy_phase3c_noua"), m3c),
                 (Path.Combine(studyRoot, "precipitation", slug, "vstudy_phase3o_noua"), m3o) })
@@ -627,8 +640,9 @@ FROM latest WHERE rn = 1;";
         {
             ct.ThrowIfCancellationRequested();
             var pivot = QueryLatestForecastRows(fcPath, location.Name, windowStart, windowEnd, asOf, tau, ct);
-            foreach (var (slug, friendly) in gauges)
+            foreach (var s in gauges)
             {
+                var slug = s.Slug;
                 if (!Phase3oStationIndex.TryGetValue(slug, out var stIdx)) stIdx = -1;
                 oroBySlug.TryGetValue(slug, out var oro);
                 foreach (var (phase, store) in new[] { ("3c", m3c), ("3o", m3o) })
@@ -1079,6 +1093,42 @@ WHERE LocationName = '{escLoc}' AND StationName = '{escSt}' AND Value15MinMm IS 
   AND ObservedTimeUtc >= TIMESTAMP '{earliest:yyyy-MM-dd HH:mm:ss}'
   AND ObservedTimeUtc <  TIMESTAMP '{latest:yyyy-MM-dd HH:mm:ss}'
 GROUP BY 1 HAVING COUNT(*) = 4 ORDER BY 1;";
+
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        var rows = new List<(DateTime, double)>();
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            ct.ThrowIfCancellationRequested();
+            rows.Add((r.GetDateTime(0), r.IsDBNull(1) ? 0.0 : r.GetDouble(1)));
+        }
+        return rows;
+    }
+
+    /// <summary>
+    /// Hourly rainfall truth (mm) for a WeatherLink cove gauge (e.g. Lands End for
+    /// Sennen), keyed by hour. WeatherLink rows are already HOURLY <c>RainfallMm</c>
+    /// under their own <c>location=</c> partition, so SUM-by-hour with no 4-of-4
+    /// completeness rule — the WeatherLink counterpart of <see cref="LoadHourlyTruth"/>,
+    /// so a WeatherLink-sourced gauge flows through the lead-policy study/fit exactly
+    /// like an EA gauge.
+    /// </summary>
+    internal static IReadOnlyList<(DateTime Valid, double Mm)> LoadHourlyTruthWeatherLink(
+        string weatherLinkPath, string weatherLinkLocation,
+        DateTime earliest, DateTime latest, CancellationToken ct)
+    {
+        var glob = Path.Combine(weatherLinkPath, "**", "*.parquet").Replace('\\', '/').Replace("'", "''");
+        var escLoc = weatherLinkLocation.Replace("'", "''");
+        var sql = $@"
+SELECT date_trunc('hour', ObservedTimeUtc) AS valid_time, SUM(RainfallMm) AS mm
+FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+WHERE LocationName = '{escLoc}' AND RainfallMm IS NOT NULL
+  AND ObservedTimeUtc >= TIMESTAMP '{earliest:yyyy-MM-dd HH:mm:ss}'
+  AND ObservedTimeUtc <  TIMESTAMP '{latest:yyyy-MM-dd HH:mm:ss}'
+GROUP BY 1 ORDER BY 1;";
 
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();

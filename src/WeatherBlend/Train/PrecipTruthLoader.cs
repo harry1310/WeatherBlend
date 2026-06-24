@@ -1,4 +1,5 @@
 using DuckDB.NET.Data;
+using WeatherBlend.Config;
 using WeatherBlend.Train.Common;
 
 namespace WeatherBlend.Train;
@@ -26,6 +27,19 @@ namespace WeatherBlend.Train;
 /// </summary>
 public static class PrecipTruthLoader
 {
+    /// <summary>
+    /// Config-driven overload — resolves the EA-vs-WeatherLink source from the station's
+    /// <see cref="RainfallStationConfig.Source"/>, so callers pass the station and never
+    /// branch on the source themselves.
+    /// </summary>
+    public static Dictionary<DateTime, double> LoadHourlyRain(
+        RainfallStationConfig station, StorageConfig storage, string locationName,
+        DateTime? minValidTime, CancellationToken ct)
+    {
+        var (wlPath, wlKey) = station.WeatherLinkTruth(storage);
+        return LoadHourlyRain(storage.RainfallPath, locationName, station.Name, minValidTime, ct, wlPath, wlKey);
+    }
+
     /// <summary>
     /// Hourly rainfall (mm) keyed by hour-of-observation UTC. Pass
     /// <paramref name="weatherLinkTruthPath"/> (+ <paramref name="weatherLinkTruthLocation"/>)
