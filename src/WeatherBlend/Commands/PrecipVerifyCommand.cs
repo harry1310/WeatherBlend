@@ -81,7 +81,7 @@ public sealed class PrecipVerifyCommand
         }
 
         // Truth lookup needs to cover the window + persistence lookback (up to 72h before windowStart).
-        var truth = _truth.GetEaHourlyRainfallByStation(stations, windowStart.AddHours(-72), windowEnd, ct);
+        var truth = _truth.GetHourlyRainfallByStation(stations, windowStart.AddHours(-72), windowEnd, ct);
         var truthPoints = truth.Sum(kv => kv.Value.Count);
         _log.LogInformation("Loaded {N} hourly rainfall truth points across {S} stations.",
             truthPoints, truth.Count);

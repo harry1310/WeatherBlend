@@ -109,6 +109,12 @@ jobs:
           mkdir -p data/truth/rainfall
           rclone copy "r2:${R2_BUCKET}/data/truth/rainfall" ./data/truth/rainfall --fast-list --transfers 16 --checkers 32 --progress $RECENT_INCLUDES
 
+          # WeatherLink cove-gauge truth: join key for precip verify of a
+          # WeatherLink-sourced rainfall station (Sennen → Lands End, under
+          # location=lands_end). Already hourly RainfallMm — no 4-of-4 gate.
+          mkdir -p data/truth/weatherlink
+          rclone copy "r2:${R2_BUCKET}/data/truth/weatherlink" ./data/truth/weatherlink --fast-list --transfers 16 --checkers 32 --progress $RECENT_INCLUDES
+
           # Wave buoy truth: join key for the wave_height verify (Sennen vs
           # Sevenstones). Partitions as location=…/source=…/date=…, so the
           # same unrooted date-window include applies. Pulls the era5_ocean

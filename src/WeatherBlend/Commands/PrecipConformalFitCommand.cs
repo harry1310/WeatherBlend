@@ -256,15 +256,18 @@ public sealed class PrecipConformalFitCommand
             }
             else if (PrecipPhases.IsRich(metadata.Phase))
             {
+                // Calibrate conformal intervals on the SAME window the 3c/3a model was
+                // trained on (phases.yaml 2024-01-01) — not full history, whose pre-2024
+                // rows are NULL-padded and out-of-distribution for the fitted model.
                 rows = PrecipRichFeatureBuilder.BuildForLead(
                     _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
-                    _cfg.Location.Name, stationName, spec, minValidTime: null, ct);
+                    _cfg.Location.Name, stationName, spec, minValidTime: Train.Common.RichDatasetGuard.ProductionCutoff, ct: ct);
             }
             else
             {
                 rows = PrecipFeatureBuilder.BuildForLead(
                     _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
-                    _cfg.Location.Name, stationName, spec, minValidTime: null, ct);
+                    _cfg.Location.Name, stationName, spec, minValidTime: Train.Common.RichDatasetGuard.ProductionCutoff, ct: ct);
             }
             if (rows.Count < 500)
             {

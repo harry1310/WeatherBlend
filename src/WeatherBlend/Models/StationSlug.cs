@@ -12,7 +12,7 @@ namespace WeatherBlend.Models;
 ///   * the CLI argument resolver in the precip / dry-window / start-hour
 ///     verify commands (<c>--truth-station bellever</c> → look up
 ///     <c>ea_bellever_dartmoor</c>),
-///   * <see cref="Storage.TruthRepository.GetEaHourlyRainfallByStation"/>
+///   * <see cref="Storage.TruthRepository.GetHourlyRainfallByStation"/>
 ///     for the slug → <c>StationName</c> reverse map.
 ///
 /// Pre-2026-05-02 this lived as nine private copies across as many command
@@ -63,4 +63,12 @@ public static class StationSlug
     /// without colliding in the parquet path tree.
     /// </summary>
     public static string WithEaPrefix(string name) => "ea_" + Of(name);
+
+    /// <summary>
+    /// Convenience: <c>"wl_" + Of(weatherLinkLocation)</c> for a Davis
+    /// WeatherLink-sourced precip-truth station (e.g. the Lands End cove gauge
+    /// for Sennen → <c>wl_lands_end</c>). The <c>wl_</c> prefix keeps it distinct
+    /// from any EA gauge of the same name in the per-station parquet tree.
+    /// </summary>
+    public static string WithWlPrefix(string weatherLinkLocation) => "wl_" + Of(weatherLinkLocation);
 }

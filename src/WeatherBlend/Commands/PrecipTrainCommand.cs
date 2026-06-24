@@ -84,10 +84,10 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             return 2;
         }
 
-        string primaryStation;
+        Config.RainfallStationConfig stationCfg;
         if (string.IsNullOrWhiteSpace(stationOverride))
         {
-            primaryStation = location.Rainfall.Stations[0].Name;
+            stationCfg = location.Rainfall.Stations[0];
         }
         else
         {
@@ -99,14 +99,15 @@ public sealed class PrecipTrainCommand : TrainCommandBase
                     stationOverride, location.Name, string.Join(", ", location.Rainfall.Stations.Select(s => s.Name)));
                 return 2;
             }
-            primaryStation = match.Name;
+            stationCfg = match;
         }
+        var primaryStation = stationCfg.Name;
 
         // Each station gets its own subtree under data/models/precipitation/{station}/v{ts}/
         // so the manifest can track a separate "current" pointer per truth source.
-        // Slug is prefixed with the provider ("ea_") so a future Met Office
-        // collector for the same site can live alongside the EA one without colliding.
-        var stationSlug = StationSlug.WithEaPrefix(primaryStation);
+        // Slug is prefixed with the provider ("ea_" for EA gauges, "wl_" for
+        // WeatherLink cove gauges like Lands End) so same-named sites can't collide.
+        var stationSlug = stationCfg.Slug;
         var now = DateTime.UtcNow;
         var modelsRoot = _cfg.Storage.ModelsPath;
         var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "precipitation", stationSlug, now);
@@ -161,7 +162,9 @@ public sealed class PrecipTrainCommand : TrainCommandBase
                 primaryStation,
                 spec,
                 minValidTime3a,
-                ct);
+                ct,
+                weatherLinkTruthPath: stationCfg.IsWeatherLink ? _cfg.Storage.WeatherLinkPath : null,
+                weatherLinkTruthLocation: stationCfg.IsWeatherLink ? stationCfg.WeatherLinkLocation : null);
             _log.LogInformation("Loaded {N} rows (wet={Wet} / {Pct:P1}) spanning {S:yyyy-MM-dd} → {E:yyyy-MM-dd}",
                 rows.Count,
                 rows.Count(r => r.Label),
@@ -278,7 +281,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             Target = "precipitation",
             Phase = "3a",
             LocationName = location.Name,
-            DataSource = "previous_runs_api+ea_rainfall",
+            DataSource = stationCfg.IsWeatherLink ? "previous_runs_api+weatherlink" : "previous_runs_api+ea_rainfall",
             TrainedAtUtc = now,
             Hyperparameters = BuildPrecipHpDict(hp),
             TestMae = perLead.ToDictionary(kv => $"lead_{kv.Key}h_brier", kv => kv.Value.BlendTestMae),
@@ -388,12 +391,13 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         }
 
         // When no station override is given, 3c iterates every configured rainfall
-        // station so one command run produces a challenger for each 3a champion.
-        // A specific station still trains that one alone.
-        IReadOnlyList<string> stationsToTrain;
+        // station (EA gauges + WeatherLink cove gauges alike) so one command run
+        // produces a challenger for each 3a champion. A specific station still
+        // trains that one alone.
+        IReadOnlyList<Config.RainfallStationConfig> stationsToTrain;
         if (string.IsNullOrWhiteSpace(stationOverride))
         {
-            stationsToTrain = location.Rainfall.Stations.Select(s => s.Name).ToList();
+            stationsToTrain = location.Rainfall.Stations;
         }
         else
         {
@@ -405,31 +409,31 @@ public sealed class PrecipTrainCommand : TrainCommandBase
                     stationOverride, location.Name, string.Join(", ", location.Rainfall.Stations.Select(s => s.Name)));
                 return 2;
             }
-            stationsToTrain = new[] { match.Name };
+            stationsToTrain = new[] { match };
         }
 
         var modelsRoot = _cfg.Storage.ModelsPath;
         var hp = PrecipOccurrenceTrainer.Hyperparameters.Default();
 
         _log.LogInformation("Phase 3c — rich-feature precip blender, location='{Loc}', stations=[{Stations}], leads=[{Leads}]",
-            location.Name, string.Join(", ", stationsToTrain), string.Join(",", leads));
+            location.Name, string.Join(", ", stationsToTrain.Select(s => s.Name)), string.Join(",", leads));
         _log.LogInformation("Hyperparameters: iter={Iter} lr={Lr} leaves={Leaves} esr={Esr} seed={Seed} (identical to Phase 3a — feature richness is the only variable)",
             hp.NumberOfIterations, hp.LearningRate, hp.NumberOfLeaves, hp.EarlyStoppingRound, hp.Seed);
 
         var cache = MaterializeTrainCache(location.Name, $"3c_{location.Name}");
 
         var anyFail = false;
-        foreach (var station in stationsToTrain)
+        foreach (var stationCfg in stationsToTrain)
         {
             ct.ThrowIfCancellationRequested();
-            var rc = await TrainPhase3cStationAsync(station, leads, modelsRoot, hp, location, cache, ct);
+            var rc = await TrainPhase3cStationAsync(stationCfg, leads, modelsRoot, hp, location, cache, ct);
             if (rc != 0) anyFail = true;
         }
         return anyFail ? 3 : 0;
     }
 
     private async Task<int> TrainPhase3cStationAsync(
-        string primaryStation,
+        Config.RainfallStationConfig stationCfg,
         int[] leads,
         string modelsRoot,
         PrecipOccurrenceTrainer.Hyperparameters hp,
@@ -437,7 +441,8 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         (string FcPath, string RnPath) cache,
         CancellationToken ct)
     {
-        var stationSlug = StationSlug.WithEaPrefix(primaryStation);
+        var primaryStation = stationCfg.Name;
+        var stationSlug = stationCfg.Slug;
         var now = DateTime.UtcNow;
         var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "precipitation", stationSlug, now, suffix: "phase3c");
         var versionName = Path.GetFileName(versionDir);
@@ -488,7 +493,9 @@ public sealed class PrecipTrainCommand : TrainCommandBase
                 primaryStation,
                 spec,
                 minValidTime3c,
-                ct);
+                ct,
+                weatherLinkTruthPath: stationCfg.IsWeatherLink ? _cfg.Storage.WeatherLinkPath : null,
+                weatherLinkTruthLocation: stationCfg.IsWeatherLink ? stationCfg.WeatherLinkLocation : null);
             _log.LogInformation("Loaded {N} rich rows (wet={Wet} / {Pct:P1}) spanning {S:yyyy-MM-dd} → {E:yyyy-MM-dd}",
                 rows.Count,
                 rows.Count(r => r.Label),
@@ -620,7 +627,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             Target = "precipitation",
             Phase = "3c",
             LocationName = location.Name,
-            DataSource = "previous_runs_api+ea_rainfall",
+            DataSource = stationCfg.IsWeatherLink ? "previous_runs_api+weatherlink" : "previous_runs_api+ea_rainfall",
             TrainedAtUtc = DateTime.UtcNow,
             Hyperparameters = BuildPrecipHpDict(hp),
             TestMae = perLead.ToDictionary(kv => $"lead_{kv.Key}h_brier", kv => kv.Value.BlendTestMae),
@@ -1092,10 +1099,15 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             return 2;
         }
 
+        // 3d is exact-runtime EA truth only — WeatherLink cove gauges (e.g. Lands
+        // End) are 3c-only, so they're excluded here both for the auto list and an
+        // explicit --station override.
         IReadOnlyList<string> stationsToTrain;
         if (string.IsNullOrWhiteSpace(stationOverride))
         {
-            stationsToTrain = location.Rainfall.Stations.Select(s => s.Name).ToList();
+            stationsToTrain = location.Rainfall.Stations
+                .Where(s => !s.IsWeatherLink)
+                .Select(s => s.Name).ToList();
         }
         else
         {
@@ -1105,6 +1117,11 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             {
                 _log.LogError("Station '{Station}' not found in location '{Loc}' config. Available: {Available}",
                     stationOverride, location.Name, string.Join(", ", location.Rainfall.Stations.Select(s => s.Name)));
+                return 2;
+            }
+            if (match.IsWeatherLink)
+            {
+                _log.LogError("Station '{Station}' is a WeatherLink (3c-only) gauge — Phase 3d is EA-truth only. Skipping.", match.Name);
                 return 2;
             }
             stationsToTrain = new[] { match.Name };

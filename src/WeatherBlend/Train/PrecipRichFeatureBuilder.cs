@@ -95,56 +95,16 @@ public static class PrecipRichFeatureBuilder
         string locationName,
         string stationName,
         DateTime? minValidTime,
-        CancellationToken ct)
-    {
-        using var conn = new DuckDBConnection("DataSource=:memory:");
-        conn.Open();
-        var rnGlob = SqlGlob.Escape(Path.Combine(rainfallPath, "**", "*.parquet"));
-        var escLocation = locationName.Replace("'", "''");
-        var escStation  = stationName.Replace("'", "''");
-        var minObservedFilter = minValidTime.HasValue
-            ? $"  AND ObservedTimeUtc >= TIMESTAMP '{minValidTime.Value:yyyy-MM-dd HH:mm:ss}'\n"
-            : string.Empty;
-
-        var sql = $@"
-SELECT date_trunc('hour', ObservedTimeUtc) AS valid_time,
-       SUM(Value15MinMm) AS mm
-FROM read_parquet('{rnGlob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{escLocation}'
-  AND StationName  = '{escStation}'
-  AND Value15MinMm IS NOT NULL
-{minObservedFilter}GROUP BY 1
-HAVING COUNT(*) = 4
-ORDER BY 1;
-";
-
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-        var dict = new Dictionary<DateTime, double>();
-        try
-        {
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
-            {
-                ct.ThrowIfCancellationRequested();
-                dict[r.GetDateTime(0)] = r.GetDouble(1);
-            }
-        }
-        catch (DuckDBException ex) when (ex.Message.Contains("No files found"))
-        {
-            // DuckDB's raw "No files found" crash is nearly un-diagnosable inside a
-            // CI log — the actual mistake is upstream (workflow didn't sync the
-            // rainfall tree). Translate to a clear InvalidOperationException with the
-            // path that was checked so operators can go straight to the fix.
-            throw new InvalidOperationException(
-                $"Rainfall truth tree is empty at '{rainfallPath}'. " +
-                $"Phase 3c precip requires the hourly EA rainfall observations for " +
-                $"persistence features anchored at run_time = valid_time - leadHours; " +
-                $"sync 'data/truth/rainfall' from R2 before invoking the command.",
-                ex);
-        }
-        return dict;
-    }
+        CancellationToken ct,
+        string? weatherLinkTruthPath = null,
+        string? weatherLinkTruthLocation = null)
+        // Delegates to the shared loader so 3a / 3c / 3o all resolve the wet
+        // label through ONE implementation (see PrecipTruthLoader). Retained as
+        // a public forwarder so the predict + bake-off call sites that already
+        // reference PrecipRichFeatureBuilder.LoadHourlyRain need no change.
+        => PrecipTruthLoader.LoadHourlyRain(
+            rainfallPath, locationName, stationName, minValidTime, ct,
+            weatherLinkTruthPath, weatherLinkTruthLocation);
 
     // -----------------------------------------------------------------------
     // New canonical API (Phase 3 of unify-model-membership refactor).
@@ -224,9 +184,16 @@ ORDER BY 1;
         BlenderSpec spec,
         DateTime? minValidTime = null,
         CancellationToken ct = default,
-        DateTime? maxValidTime = null)
+        DateTime? maxValidTime = null,
+        string? weatherLinkTruthPath = null,
+        string? weatherLinkTruthLocation = null,
+        bool allowFullHistory = false)
     {
-        var hourlyRain = LoadHourlyRain(rainfallPath, locationName, stationName, minValidTime, ct);
+        // Refuse to silently train on NULL-padded pre-2024 rows (see RichDatasetGuard).
+        RichDatasetGuard.RequireCutoff(minValidTime, allowFullHistory, "PrecipRichFeatureBuilder (3c)");
+
+        var hourlyRain = PrecipTruthLoader.LoadHourlyRain(rainfallPath, locationName, stationName, minValidTime, ct,
+            weatherLinkTruthPath, weatherLinkTruthLocation);
         if (hourlyRain.Count == 0) return new List<BinaryTrainingRow>();
 
         using var conn = new DuckDBConnection("DataSource=:memory:");

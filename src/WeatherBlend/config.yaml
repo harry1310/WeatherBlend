@@ -295,17 +295,23 @@ locations:
       primary: "EGDR"    # RNAS Culdrose
       fallback: "EGHQ"   # Newquay (St Mawgan)
 
-    # 3 nearest EA Hydrology rainfall gauges (all inland-east; the SW tip has
-    # none seaward). Trengwainton ~11 km NE, St Ives Towednack ~18 km NE,
-    # St Erth ~21 km NE. Same 15-min EA Hydrology path as Bonehill/Membury.
+    # Sennen precip truth (2026-06-24): Trengwainton (EA Hydrology, ~11 km NE)
+    # + the Lands End cove WeatherLink gauge (~1.5 km, the most representative
+    # cove rain). St Ives Towednack + St Erth DROPPED — both agreed least with
+    # the cove gauge over ~21k overlapping hours (St Ives r 0.46 / wet-Jaccard
+    # 42.9%, St Erth 0.61 / 44.9%, vs Trengwainton 0.75 / 51.9%); no train or
+    # predict for them now. Trengwainton stays FIRST so it remains the 3a primary
+    # and the Overview headline P(wet) gauge. Lands End is 3c-only (3d filters
+    # WeatherLink stations out); its hourly RainfallMm lives under
+    # data/truth/weatherlink/location=lands_end while forecasts/features still
+    # come from the parent sennen_cove location. See [[project_weatherlink_stations]].
     rainfall:
       stations:
         - id: "9bd58397-e67c-4007-aaf5-fd9dfa5d929b"
           name: "Trengwainton"
-        - id: "26cd5df2-d1c3-438a-bcc2-4a2126f5b9d2"
-          name: "St Ives Towednack"
-        - id: "eb6c1930-b131-4d71-9ce2-3616abd6ea39_382133"
-          name: "St Erth"
+        - name: "Lands End"
+          source: weatherlink
+          weatherLinkLocation: "lands_end"
 
     # Sea-state collection (Sennen sea-state Phase 0, 2026-06-11 — see
     # docs/SENNEN_SEA_STATE_PLAN.md). The coordinate is the PINNED marine

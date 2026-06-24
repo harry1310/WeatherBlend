@@ -65,6 +65,11 @@ on:
         required: false
         default: false
         type: boolean
+      location:
+        description: "Scope the run to ONE configured location (e.g. 'sennen_cove'). Empty or 'all' = every location in the matrix. Use to retrain a single location (e.g. a newly-added station) without churning the others."
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   # Distinct group from previous-runs-refresh / collect / backfill so
@@ -106,7 +111,15 @@ jobs:
           # Sole trigger is workflow_dispatch (worker Hop B, or manual).
           # force=true — the default, and what the worker passes — proceeds;
           # force=false is a dry-run escape hatch.
-          if [ "${{ inputs.force }}" = "true" ]; then
+          # Optional `location` input scopes the run to ONE matrix location
+          # (empty or "all" = every location). Lets a targeted dispatch (e.g. a
+          # newly-added Sennen station) retrain just that location without
+          # churning the others' live models.
+          LOC_FILTER="${{ inputs.location }}"
+          if [ -n "$LOC_FILTER" ] && [ "$LOC_FILTER" != "all" ] && [ "$LOC_FILTER" != "${{ matrix.location }}" ]; then
+            echo "::notice::location='$LOC_FILTER' — skipping ${{ matrix.location }}."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          elif [ "${{ inputs.force }}" = "true" ]; then
             echo "force=true — proceeding."
             echo "proceed=true" >> "$GITHUB_OUTPUT"
           else

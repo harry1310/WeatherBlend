@@ -71,9 +71,11 @@ public sealed class Phase3cDataWindowBakeoffCommand
             {
                 ct.ThrowIfCancellationRequested();
                 var slug = StationSlug.WithEaPrefix(name);
+                // This command's whole job is to study the EFFECT of the training-data
+                // window on 3c, so full history (null) is a deliberate arm here.
                 var rows = PrecipRichFeatureBuilder.BuildForLead(
                     _cfg.Storage.ForecastsPath, _cfg.Storage.RainfallPath,
-                    loc.Name, name, spec, minValidTime: null, ct);
+                    loc.Name, name, spec, minValidTime: null, ct: ct, allowFullHistory: true);
                 if (rows.Count < 200)
                 {
                     _log.LogWarning("  {Slug}: only {N} rows — skipping", slug, rows.Count);

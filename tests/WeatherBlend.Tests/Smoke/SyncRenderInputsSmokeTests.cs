@@ -42,6 +42,7 @@ public class SyncRenderInputsSmokeTests
         ("data/truth/era5",           "temperature skill chart truth"),
         ("data/truth/metar",          "temp-skill METAR comparison line"),
         ("data/truth/rainfall",       "precip/rain-skill truth + PrecipPredict rich/3d antecedent-rain features (LoadHourlyRain)"),
+        ("data/truth/weatherlink",    "3c predict persistence for WeatherLink-sourced rainfall stations (Sennen → Lands End cove gauge)"),
         ("data/truth/met_office_obs", "temp-skill Met Office Land Obs cross-check line — the 2026-05-04 regression"),
     };
 

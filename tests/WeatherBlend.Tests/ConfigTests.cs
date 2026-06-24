@@ -140,10 +140,21 @@ public class ConfigTests
         bound.Locations[2].Name.Should().Be("sennen_cove");
         bound.Locations[2].Tabs.Should().Equal("overview", "temperature", "rain", "wind", "dry_window", "sea_state", "skill", "models");
         bound.Locations[2].Metar.Primary.Should().Be("EGDR");
+        // Sennen precip truth trimmed to Trengwainton (EA) + Lands End cove
+        // (WeatherLink) 2026-06-24; St Ives Towednack + St Erth dropped (they
+        // agreed least with the cove gauge). Trengwainton stays first (3a
+        // primary + Overview headline); Lands End is a WeatherLink-sourced,
+        // 3c-only station.
+        bound.Locations[2].Rainfall.Stations.Should().HaveCount(2);
         bound.Locations[2].Rainfall.Stations.Select(s => s.Name).Should()
             .Contain("Trengwainton")
-            .And.Contain("St Ives Towednack")
-            .And.Contain("St Erth");
+            .And.Contain("Lands End");
+        bound.Locations[2].Rainfall.Stations[0].Name.Should().Be("Trengwainton");
+        bound.Locations[2].Rainfall.Stations[0].IsWeatherLink.Should().BeFalse();
+        var sennenLandsEnd = bound.Locations[2].Rainfall.Stations.Single(s => s.Name == "Lands End");
+        sennenLandsEnd.IsWeatherLink.Should().BeTrue();
+        sennenLandsEnd.WeatherLinkLocation.Should().Be("lands_end");
+        sennenLandsEnd.Slug.Should().Be("wl_lands_end");
         // Humidity blender trains + verifies against Gwennap Head (WeatherLink), not
         // ERA5 — Sennen only (2026-06-21; ERA5 RH dry-biased, hurts the salt model).
         bound.Locations[2].HumidityTruthWeatherLink.Should().BeTrue();

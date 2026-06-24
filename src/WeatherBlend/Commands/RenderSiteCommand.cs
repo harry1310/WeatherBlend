@@ -236,17 +236,18 @@ public sealed class RenderSiteCommand
                 ? "(none)"
                 : string.Join(", ", precipCurrentByStation.Select(kv => $"{kv.Key}→{kv.Value}")));
 
-        // All-locations EA station slug union — needed by the cross-location
+        // All-locations station slug union — needed by the cross-location
         // Specs page's feature spec rows. Per-loc loops below scope this down
-        // to one location's stations.
+        // to one location's stations. s.Slug is ea_* for EA gauges, wl_* for
+        // WeatherLink cove gauges (Sennen → Lands End).
         var allStationSlugs = new HashSet<string>(
-            _cfg.Locations.SelectMany(loc => loc.Rainfall.Stations.Select(s => StationSlug.WithEaPrefix(s.Name))),
+            _cfg.Locations.SelectMany(loc => loc.Rainfall.Stations.Select(s => s.Slug)),
             StringComparer.Ordinal);
 
         var locationDescriptors = _cfg.Locations.Select((loc, idx) => new SitePages.LocationDescriptor(
             Name: loc.Name,
             DisplayName: string.IsNullOrWhiteSpace(loc.DisplayName) ? loc.Name : loc.DisplayName,
-            RainStationSlugs: loc.Rainfall.Stations.Select(s => StationSlug.WithEaPrefix(s.Name)).ToList(),
+            RainStationSlugs: loc.Rainfall.Stations.Select(s => s.Slug).ToList(),
             IsPrimary: idx == 0,
             Tabs: loc.Tabs.ToList(),
             // The climbing range (05:00–20:00 UTC) is defined once in
@@ -336,7 +337,7 @@ public sealed class RenderSiteCommand
             // forgets to filter can't leak another location's data because
             // there's nothing else in the object to leak.
             var locStationSlugs = new HashSet<string>(
-                loc.Rainfall.Stations.Select(s => StationSlug.WithEaPrefix(s.Name)),
+                loc.Rainfall.Stations.Select(s => s.Slug),
                 StringComparer.Ordinal);
 
             bool IsThisLoc(string locationName) =>
@@ -1068,9 +1069,10 @@ public sealed class RenderSiteCommand
 
 
     /// <summary>
-    /// Resolve EA rainfall truth for the stations that actually produced
-    /// precip predictions in the window. Pure delegate to
-    /// <see cref="TruthRepository.GetEaHourlyRainfallByStation"/>; this stub
+    /// Resolve rainfall truth for the stations that actually produced
+    /// precip predictions in the window — EA gauges and WeatherLink cove
+    /// gauges (e.g. Lands End) alike. Pure delegate to
+    /// <see cref="TruthRepository.GetHourlyRainfallByStation"/>; this stub
     /// only exists because we want the per-station list to be derived from
     /// the predictions (so empty windows skip the I/O entirely).
     /// </summary>
@@ -1080,7 +1082,7 @@ public sealed class RenderSiteCommand
         CancellationToken ct)
     {
         var stations = precip.Select(p => p.Station).Distinct().ToList();
-        return _truth.GetEaHourlyRainfallByStation(stations, start, end, ct);
+        return _truth.GetHourlyRainfallByStation(stations, start, end, ct);
     }
 
     /// <summary>

@@ -164,10 +164,46 @@ ORDER BY 1";
     }
 
     /// <summary>
+    /// WeatherLink cove-gauge rainfall in mm/h, keyed by hour-of-observation UTC.
+    /// The WeatherLink truth counterpart of <see cref="GetEaHourlyRainfall"/> for
+    /// occurrence verify of a WeatherLink-sourced rainfall station (Sennen → the
+    /// Lands End cove gauge). WeatherLink rows are already HOURLY <c>RainfallMm</c>
+    /// (one per hour) under their own <c>location=</c> partition, so there's no
+    /// 4-of-4 completeness gate — same rule <c>PrecipTruthLoader.LoadHourlyRain</c>'s
+    /// WeatherLink branch uses at train/predict time. Empty dict on a missing tree
+    /// (degraded with a warning). <paramref name="weatherLinkLocation"/> is the
+    /// <c>LocationName</c> column value (e.g. <c>"lands_end"</c>).
+    /// </summary>
+    public IReadOnlyDictionary<DateTime, double> GetWeatherLinkHourlyRainfall(
+        string weatherLinkLocation, DateTime start, DateTime end, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (string.IsNullOrWhiteSpace(weatherLinkLocation))
+            throw new ArgumentException("weatherLinkLocation is required.", nameof(weatherLinkLocation));
+
+        var glob = ParquetReader.Glob(Path.Combine(_cfg.Storage.WeatherLinkPath, "**", "*.parquet"));
+        var sql = $@"
+SELECT date_trunc('hour', ObservedTimeUtc) AS valid_time,
+       SUM(RainfallMm) AS mm_hour
+FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
+WHERE LocationName = '{weatherLinkLocation.Replace("'", "''")}'
+  AND RainfallMm IS NOT NULL
+  AND ObservedTimeUtc >= TIMESTAMP '{start:yyyy-MM-dd HH:mm:ss}'
+  AND ObservedTimeUtc <= TIMESTAMP '{end.AddHours(1):yyyy-MM-dd HH:mm:ss}'
+GROUP BY 1
+ORDER BY 1";
+
+        var rows = ParquetReader.Query(sql,
+            r => (Hour: r.GetDateTime(0), Mm: r.GetDouble(1)),
+            _log, $"WeatherLink tree empty for location {weatherLinkLocation} — rainfall truth dict will be empty.", ct);
+        return rows.ToDictionary(x => x.Hour, x => x.Mm);
+    }
+
+    /// <summary>
     /// Bulk fetch of EA hourly rainfall for every configured station, keyed
     /// by <c>StationName</c> (the friendly form, e.g. <c>"Bellever Dartmoor"</c>).
     /// Single SQL query rather than the per-station fan-out
-    /// <see cref="GetEaHourlyRainfallByStation"/> uses — pays one read for
+    /// <see cref="GetHourlyRainfallByStation"/> uses — pays one read for
     /// many stations, useful when the caller wants every station's data at
     /// once (start-hour verify groups by station internally). Same 4-of-4
     /// quarter-hour completeness gate.
@@ -205,42 +241,45 @@ ORDER BY StationName, valid_time";
     }
 
     /// <summary>
-    /// Multi-station fan-out of <see cref="GetEaHourlyRainfall"/>, taking
-    /// <c>ea_*</c> slugs (the format predictions use in their
-    /// <c>TruthStation</c> column). Slug → <c>StationName</c> mapping is
-    /// resolved against <c>AppConfig.Location.Rainfall.Stations</c>; slugs
-    /// without a config match get an empty dict and a warning, mirroring the
-    /// pre-repo behaviour. Returned dict is keyed by the original slug so
-    /// callers can keep their slug-based join logic intact.
+    /// Multi-station fan-out of per-station hourly rainfall truth, taking the
+    /// per-station slugs predictions carry in their <c>TruthStation</c> column
+    /// (<c>ea_*</c> for EA gauges, <c>wl_*</c> for WeatherLink cove gauges).
+    /// Each slug is resolved against <c>AppConfig.Locations</c>' rainfall config
+    /// by its <see cref="RainfallStationConfig.Slug"/>, then read from the right
+    /// source — <see cref="GetEaHourlyRainfall"/> for EA, or
+    /// <see cref="GetWeatherLinkHourlyRainfall"/> for a WeatherLink station
+    /// (Sennen → Lands End). Slugs without a config match get an empty dict and a
+    /// warning. Returned dict is keyed by the original slug so callers keep their
+    /// slug-based join logic intact.
     /// </summary>
     public IReadOnlyDictionary<string, IReadOnlyDictionary<DateTime, double>>
-        GetEaHourlyRainfallByStation(
+        GetHourlyRainfallByStation(
             IReadOnlyList<string> slugs, DateTime start, DateTime end, CancellationToken ct)
     {
         if (slugs.Count == 0)
             return new Dictionary<string, IReadOnlyDictionary<DateTime, double>>(StringComparer.OrdinalIgnoreCase);
 
-        // Slug → friendly StationName across EVERY configured location.
-        // Pre-2026-05-12 this looked at primary's stations only and Membury
-        // slugs returned an empty dict + "no config station" warning, which
-        // was the second half of why Membury rolling-Brier rendered empty.
-        var stationNamesBySlug = _cfg.Locations
+        // Slug → station config across EVERY configured location. Keyed on the
+        // station's own Slug (ea_*/wl_*) so EA and WeatherLink gauges both
+        // resolve. (Pre-2026-05-12 the EA-only ancestor looked at the primary
+        // location only, which was half of why Membury rolling-Brier rendered
+        // empty; now it spans all locations and both truth sources.)
+        var cfgBySlug = _cfg.Locations
             .SelectMany(loc => loc.Rainfall.Stations)
-            .ToDictionary(
-                s => StationSlug.WithEaPrefix(s.Name),
-                s => s.Name,
-                StringComparer.OrdinalIgnoreCase);
+            .ToDictionary(s => s.Slug, s => s, StringComparer.OrdinalIgnoreCase);
 
         var result = new Dictionary<string, IReadOnlyDictionary<DateTime, double>>(StringComparer.OrdinalIgnoreCase);
         foreach (var slug in slugs)
         {
-            if (!stationNamesBySlug.TryGetValue(slug, out var stationName))
+            if (!cfgBySlug.TryGetValue(slug, out var stationCfg))
             {
                 _log.LogWarning("Rainfall truth: no config station for slug {Slug}.", slug);
                 result[slug] = new Dictionary<DateTime, double>();
                 continue;
             }
-            result[slug] = GetEaHourlyRainfall(stationName, start, end, ct);
+            result[slug] = stationCfg.IsWeatherLink
+                ? GetWeatherLinkHourlyRainfall(stationCfg.WeatherLinkLocation, start, end, ct)
+                : GetEaHourlyRainfall(stationCfg.Name, start, end, ct);
         }
         return result;
     }

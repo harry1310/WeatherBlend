@@ -92,8 +92,12 @@ public static class TempRichFeatureBuilder
         string locationName,
         BlenderSpec spec,
         DateTime? minValidTime = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool allowFullHistory = false)
     {
+        // Refuse to silently train on NULL-padded pre-2024 rows (see RichDatasetGuard).
+        RichDatasetGuard.RequireCutoff(minValidTime, allowFullHistory, "TempRichFeatureBuilder (2c)");
+
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
 

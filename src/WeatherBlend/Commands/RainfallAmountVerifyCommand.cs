@@ -85,7 +85,7 @@ public sealed class RainfallAmountVerifyCommand
             return 0;
         }
 
-        var truth = _truth.GetEaHourlyRainfallByStation(stations, windowStart, windowEnd, ct);
+        var truth = _truth.GetHourlyRainfallByStation(stations, windowStart, windowEnd, ct);
         var truthPoints = truth.Sum(kv => kv.Value.Count);
         _log.LogInformation("Loaded {N} hourly rainfall truth points across {S} stations.",
             truthPoints, truth.Count);

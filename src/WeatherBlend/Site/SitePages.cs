@@ -1701,13 +1701,17 @@ public static partial class SitePages
         => v.HasValue ? v.Value.ToString(fmt, Ci) : "—";
 
     /// <summary>
-    /// Map a station slug (e.g. <c>ea_bellever_dartmoor</c>) to a display name.
-    /// Strips the data-source prefix and title-cases the rest.
+    /// Map a station slug (e.g. <c>ea_bellever_dartmoor</c> or
+    /// <c>wl_lands_end</c>) to a display name. Strips the data-source prefix
+    /// (<c>ea_</c> EA gauge / <c>wl_</c> WeatherLink cove gauge) and title-cases
+    /// the rest.
     /// </summary>
     private static string PrettyStation(string slug)
     {
         if (string.IsNullOrWhiteSpace(slug)) return slug;
-        var trimmed = slug.StartsWith("ea_", StringComparison.Ordinal) ? slug[3..] : slug;
+        var trimmed = slug.StartsWith("ea_", StringComparison.Ordinal) || slug.StartsWith("wl_", StringComparison.Ordinal)
+            ? slug[3..]
+            : slug;
         var parts = trimmed.Split('_', StringSplitOptions.RemoveEmptyEntries);
         return string.Join(' ', parts.Select(p => p.Length == 0 ? p : char.ToUpperInvariant(p[0]) + p[1..]));
     }
@@ -1726,6 +1730,7 @@ public static partial class SitePages
         "ea_bellever_dartmoor" => "bellever",
         "ea_dartmoor_nr_hexworthy" => "hexworthy",
         "ea_bovey_tracey" => "bovey",
+        "wl_lands_end" => "lands-end",
         _ => station,
     };
 

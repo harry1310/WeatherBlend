@@ -259,6 +259,35 @@ public sealed class RainfallStationConfig
 {
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
+
+    /// <summary>Truth source: <c>"ea"</c> (default — EA Hydrology 15-min readings,
+    /// <c>Value15MinMm</c>) or <c>"weatherlink"</c> (a Davis gauge's hourly
+    /// <c>RainfallMm</c>). A WeatherLink-sourced station is a PRECIP-OCCURRENCE truth
+    /// only — e.g. the Lands End cove gauge for Sennen's 3c — and reads its rain from
+    /// <see cref="WeatherLinkLocation"/> under <c>data/truth/weatherlink</c>, while the
+    /// forecasts/features still come from the parent location (sennen_cove). YAML key:
+    /// <c>source</c>.</summary>
+    public string Source { get; set; } = "ea";
+
+    /// <summary>For <see cref="Source"/>=<c>weatherlink</c>: the <c>location=</c>
+    /// partition under <c>data/truth/weatherlink/</c> holding this station's rows
+    /// (e.g. <c>lands_end</c>). YAML key: <c>weatherLinkLocation</c>.</summary>
+    public string WeatherLinkLocation { get; set; } = "";
+
+    /// <summary>True when this station's rain truth comes from a Davis WeatherLink
+    /// gauge rather than the EA tree.</summary>
+    public bool IsWeatherLink =>
+        string.Equals(Source, "weatherlink", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Per-station parquet/path slug — single source of truth for the
+    /// per-(station) model + prediction tree. EA gauges slug off their name
+    /// (<c>ea_trengwainton</c>); WeatherLink gauges off their location partition
+    /// (<c>wl_lands_end</c>). Used by train, predict, verify and the site so the
+    /// same station resolves to the same key everywhere.</summary>
+    public string Slug =>
+        IsWeatherLink
+            ? Models.StationSlug.WithWlPrefix(WeatherLinkLocation)
+            : Models.StationSlug.WithEaPrefix(Name);
 }
 
 public sealed class ModelConfig

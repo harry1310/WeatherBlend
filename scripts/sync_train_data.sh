@@ -107,8 +107,14 @@ for p in "${phases[@]}"; do
     humidity)
       need_forecasts=1; need_era5=1; need_models=1; need_weatherlink=1 ;;
 
-    # Precipitation / dry-window blenders score against EA rainfall truth.
-    3a|3c|3d|3b)
+    # Occurrence blenders 3a/3c score against EA rainfall truth AND, for any
+    # WeatherLink-sourced rainfall station (Sennen → Lands End cove gauge),
+    # the weatherlink tree. need_weatherlink is harmless for locations without
+    # one (the pull no-ops). 3b/3d stay EA-only (3d is exact-runtime EA truth;
+    # 3b is dry-window EA; WeatherLink gauges are 3a/3c-only).
+    3a|3c)
+      need_forecasts=1; need_rainfall=1; need_weatherlink=1; need_models=1 ;;
+    3d|3b)
       need_forecasts=1; need_rainfall=1; need_models=1 ;;
 
     # 3o (and 3oni, the no-station-id tor variant) add the per-station static
@@ -184,12 +190,17 @@ if [ "$need_era5" -gt 0 ]; then
 fi
 
 if [ "$need_weatherlink" -gt 0 ]; then
-  # OPTIONAL truth: only locations with a WeatherLink station + humidityTruthWeatherLink
-  # use it (Sennen → Gwennap). On R2 a missing prefix already no-ops; tolerate a missing
-  # LOCAL source too (other locations / the smoke fake-R2 have none) so the sync doesn't
-  # die — those locations just fall back to ERA5. A genuinely-needed-but-absent tree
-  # surfaces loudly later as "0 training rows", not as a silent sync failure.
-  pull "data/truth/weatherlink/location=$location" "truth/weatherlink/location=$location" || true
+  # OPTIONAL truth, used two ways: humidity (Sennen → Gwennap, under
+  # location=sennen_cove) and precip 3a/3c truth for a WeatherLink rainfall
+  # station (Sennen → Lands End, under location=lands_end). The cove gauge sits
+  # in its OWN location= partition, distinct from the forecast location, so pull
+  # the WHOLE weatherlink tree (small — a few stations of hourly rows) rather
+  # than a single location= prefix. On R2 a missing prefix already no-ops;
+  # tolerate a missing LOCAL source too (other locations / the smoke fake-R2
+  # have none) so the sync doesn't die — those locations just fall back to ERA5.
+  # A genuinely-needed-but-absent tree surfaces loudly later as "0 training
+  # rows", not as a silent sync failure.
+  pull "data/truth/weatherlink" "truth/weatherlink" || true
 fi
 
 if [ "$need_metar" -gt 0 ]; then

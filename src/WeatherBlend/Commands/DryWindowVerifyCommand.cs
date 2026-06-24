@@ -268,7 +268,7 @@ public sealed class DryWindowVerifyCommand
         // applied internally). Slugs without a config match come back as
         // empty dicts and silently no-op the label-building loop, mirroring
         // the pre-repo behaviour.
-        var truthByStation = _truth.GetEaHourlyRainfallByStation(stationSlugs, start, end, ct);
+        var truthByStation = _truth.GetHourlyRainfallByStation(stationSlugs, start, end, ct);
 
         var result = new Dictionary<(string, int), IReadOnlyDictionary<DateOnly, bool>>();
         foreach (var slug in stationSlugs)

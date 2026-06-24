@@ -138,6 +138,7 @@ runs:
             data/truth/era5 \
             data/truth/metar \
             data/truth/rainfall \
+            data/truth/weatherlink \
             data/truth/met_office_obs \
             data/models \
             data/reports \
@@ -157,7 +158,7 @@ runs:
             # surroundings. Same location=/model=/date= hive layout, so the
             # window include applies verbatim; tiny tree (one location,
             # 6 wave models, ~2 files/date).
-            data/forecasts|data/truth/rainfall|data/truth/era5|data/truth/metar|data/predictions|data/marine)
+            data/forecasts|data/truth/rainfall|data/truth/weatherlink|data/truth/era5|data/truth/metar|data/predictions|data/marine)
               # Date-window-filtered trees — see the comment above the
               # DATE_WINDOW_INCLUDES builder for the per-tree rationale.
               #

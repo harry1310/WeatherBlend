@@ -138,7 +138,7 @@ public static class PrecipRichOroFeatureBuilder
         // for the explicit exemption.
         var richRows = PrecipRichFeatureBuilder.BuildForLead(
             forecastsPath, rainfallPath, locationName, stationName, richSpec,
-            minValidTime: null, ct: ct, maxValidTime: maxValidTime);
+            minValidTime: null, ct: ct, maxValidTime: maxValidTime, allowFullHistory: true);
         if (richRows.Count == 0) return richRows;
 
         var aux = LoadAuxNwpMeans(forecastsPath, locationName, richSpec, ct);

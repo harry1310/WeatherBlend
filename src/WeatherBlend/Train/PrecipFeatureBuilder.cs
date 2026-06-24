@@ -120,29 +120,37 @@ public static class PrecipFeatureBuilder
         string stationName,
         BlenderSpec spec,
         DateTime? minValidTime = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? weatherLinkTruthPath = null,
+        string? weatherLinkTruthLocation = null)
     {
+        // Wet label via the shared loader — 3a now resolves truth the same way as
+        // 3c/3o (PrecipTruthLoader), so the EA-vs-WeatherLink switch lives in one
+        // place. The lean spec has no persistence features, so the dict is only
+        // used for the per-row label. Forecast rows with no matching truth hour
+        // are dropped below (TryGetValue), preserving the old hourly_truth INNER
+        // JOIN semantics.
+        var hourlyRain = PrecipTruthLoader.LoadHourlyRain(
+            rainfallPath, locationName, stationName, minValidTime, ct,
+            weatherLinkTruthPath, weatherLinkTruthLocation);
+        if (hourlyRain.Count == 0) return new List<BinaryTrainingRow>();
+
         using var conn = new DuckDBConnection("DataSource=:memory:");
         conn.Open();
 
         var fcGlob = SqlGlob.Escape(Path.Combine(forecastsPath, "**", "*.parquet"));
-        var rnGlob = SqlGlob.Escape(Path.Combine(rainfallPath, "**", "*.parquet"));
-        var escStation = stationName.Replace("'", "''");
         var escLocation = locationName.Replace("'", "''");
         var modelInClause = "(" + string.Join(",", spec.Models.Select(m => $"'{m}'")) + ")";
 
         // Optional per-phase training-data cutoff (2026-05-26 — see
         // PhaseRegistry.ParseMinValidTime + project_3a_3b_data_drift memory).
-        // Applied to BOTH SQL CTEs that select on ValidTimeUtc so truth and
-        // forecast rows are clipped on the same boundary — otherwise the
-        // inner-join between hourly_truth and pivoted would silently drop
-        // any row past the cutoff. ISO-format here keeps the DuckDB literal
-        // unambiguous regardless of DuckDB's default date locale.
+        // Applied to the forecast CTE here; the truth side is clipped on the
+        // same boundary inside PrecipTruthLoader.LoadHourlyRain (minValidTime →
+        // ObservedTimeUtc filter), so the dict-lookup join below stays aligned.
+        // ISO-format here keeps the DuckDB literal unambiguous regardless of
+        // DuckDB's default date locale.
         var minValidTimeFilter = minValidTime.HasValue
             ? $"      AND ValidTimeUtc >= TIMESTAMP '{minValidTime.Value:yyyy-MM-dd HH:mm:ss}'\n"
-            : string.Empty;
-        var minObservedTimeFilter = minValidTime.HasValue
-            ? $"      AND ObservedTimeUtc >= TIMESTAMP '{minValidTime.Value:yyyy-MM-dd HH:mm:ss}'\n"
             : string.Empty;
 
         var precipPivot = string.Join(",\n        ",
@@ -193,18 +201,7 @@ exact_ua AS (
         }
 
         var sql = $@"
-WITH hourly_truth AS (
-    SELECT
-        date_trunc('hour', ObservedTimeUtc) AS valid_time,
-        SUM(Value15MinMm) AS precip_mm_hour
-    FROM read_parquet('{rnGlob}', hive_partitioning = false, union_by_name = true)
-    WHERE LocationName = '{escLocation}'
-      AND StationName  = '{escStation}'
-      AND Value15MinMm IS NOT NULL
-{minObservedTimeFilter}    GROUP BY 1
-    HAVING COUNT(*) = 4
-),
-latest AS (
+WITH latest AS (
     SELECT
         ValidTimeUtc, Model,
         Precipitation,
@@ -241,10 +238,8 @@ SELECT
     {precipSelect},
     p.rh_mean, p.dew_depression_mean,
     p.cloud_low_mean, p.cloud_mid_mean, p.cloud_high_mean,
-    p.cape_mean, p.wind_speed_mean,
-    t.precip_mm_hour{uaSelectSql}
+    p.cape_mean, p.wind_speed_mean{uaSelectSql}
 FROM pivoted p
-JOIN hourly_truth t ON p.ValidTimeUtc = t.valid_time
 {uaJoin}
 WHERE ({requiredNotNull})
   AND {anyNotNull}
@@ -262,6 +257,8 @@ ORDER BY p.ValidTimeUtc;
         {
             ct.ThrowIfCancellationRequested();
             var valid = r.GetDateTime(0);
+            if (!hourlyRain.TryGetValue(valid, out var truth))
+                continue;  // No label — drop row, matches the old hourly_truth INNER JOIN.
             for (int i = 0; i < n; i++)
                 precip[i] = r.IsDBNull(1 + i) ? double.NaN : r.GetDouble(1 + i);
             var baseIdx = 1 + n;
@@ -272,14 +269,13 @@ ORDER BY p.ValidTimeUtc;
             var cH     = r.IsDBNull(baseIdx + 4) ? double.NaN : r.GetDouble(baseIdx + 4);
             var cape   = r.IsDBNull(baseIdx + 5) ? double.NaN : r.GetDouble(baseIdx + 5);
             var wind   = r.IsDBNull(baseIdx + 6) ? double.NaN : r.GetDouble(baseIdx + 6);
-            var truth  = r.GetDouble(baseIdx + 7);
 
-            // Trailing upper-air columns (after truth), UpperAirModels ×
+            // Trailing upper-air columns (after wind_speed_mean), UpperAirModels ×
             // UaPressureCols order, then ensemble t850_mean + rh850_mean.
             double[]? uaValues = null;
             if (withUpperAir)
             {
-                int uaStart = baseIdx + 8;
+                int uaStart = baseIdx + 7;
                 int mc = UpperAirModels.Length;
                 int pc = UaPressureCols.Length;
                 int t850Off = Array.FindIndex(UaPressureCols, c => c.Short == "t850");

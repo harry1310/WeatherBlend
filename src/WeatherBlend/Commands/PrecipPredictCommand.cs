@@ -143,7 +143,7 @@ public sealed class PrecipPredictCommand
         // returns 0 with a clear log message instead of silently producing
         // wrong-NWP predictions.
         var locationSlugs = location.Rainfall.Stations
-            .Select(s => StationSlug.WithEaPrefix(s.Name))
+            .Select(s => s.Slug)   // ea_* for EA gauges, wl_* for WeatherLink (e.g. Lands End)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var beforeCount = stationsToRun.Count;
         var dropped = stationsToRun.Where(s => !locationSlugs.Contains(s)).ToList();
@@ -457,17 +457,23 @@ public sealed class PrecipPredictCommand
         Dictionary<DateTime, double>? hourlyRain = null;
         if (isRich)
         {
-            var friendly = ResolveFriendlyStationName(station, location);
-            if (friendly is null)
+            var stationCfg = ResolveStationConfig(station, location);
+            if (stationCfg is null)
             {
-                _log.LogError("Station {Station}: cannot resolve rainfall config name for phase-3c persistence lookup. Known: [{Known}]",
-                    station, string.Join(", ", location.Rainfall.Stations.Select(s => s.Name)));
+                _log.LogError("Station {Station}: cannot resolve rainfall config for phase-3c persistence lookup. Known: [{Known}]",
+                    station, string.Join(", ", location.Rainfall.Stations.Select(s => s.Slug)));
                 return false;
             }
-            hourlyRain = PrecipRichFeatureBuilder.LoadHourlyRain(
-                _cfg.Storage.RainfallPath, location.Name, friendly, minValidTime: null, ct);
-            _log.LogInformation("Station {Station}: loaded {N} hourly rainfall rows for persistence features (friendly='{Friendly}')",
-                station, hourlyRain.Count, friendly);
+            // Same truth source the bundle was trained on — EA gauge or the
+            // station's WeatherLink cove gauge (e.g. Lands End) — so the live
+            // persistence features match training.
+            hourlyRain = PrecipTruthLoader.LoadHourlyRain(
+                _cfg.Storage.RainfallPath, location.Name, stationCfg.Name, minValidTime: null, ct: ct,
+                weatherLinkTruthPath: stationCfg.IsWeatherLink ? _cfg.Storage.WeatherLinkPath : null,
+                weatherLinkTruthLocation: stationCfg.IsWeatherLink ? stationCfg.WeatherLinkLocation : null);
+            _log.LogInformation("Station {Station}: loaded {N} hourly rainfall rows for persistence features (source={Src})",
+                station, hourlyRain.Count,
+                stationCfg.IsWeatherLink ? "weatherlink:" + stationCfg.WeatherLinkLocation : "ea:" + stationCfg.Name);
         }
 
         var ml = new MLContext(seed: 42);
@@ -1379,12 +1385,18 @@ ORDER BY ValidTimeUtc, Model;";
     /// so predict time can reach for the same hourly rainfall series the trainer used.
     /// </summary>
     private static string? ResolveFriendlyStationName(string stationSlug, LocationConfig location)
+        => ResolveStationConfig(stationSlug, location)?.Name;
+
+    /// <summary>Reverse-map a per-station slug (<c>ea_trengwainton</c> /
+    /// <c>wl_lands_end</c>) back to its <see cref="RainfallStationConfig"/> via the
+    /// station's own <see cref="RainfallStationConfig.Slug"/>, so callers can branch
+    /// on the truth source (EA vs WeatherLink).</summary>
+    private static RainfallStationConfig? ResolveStationConfig(string stationSlug, LocationConfig location)
     {
         foreach (var s in location.Rainfall.Stations)
         {
-            var slug = StationSlug.WithEaPrefix(s.Name);
-            if (string.Equals(slug, stationSlug, StringComparison.OrdinalIgnoreCase))
-                return s.Name;
+            if (string.Equals(s.Slug, stationSlug, StringComparison.OrdinalIgnoreCase))
+                return s;
         }
         return null;
     }
