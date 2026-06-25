@@ -618,9 +618,16 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
   // chain-dispatches, not failure visibility).
 
   const issueTitle = `[ci-fail] ${wfName}`;
-  // `cancelled` included: a timeout-minutes breach completes as `cancelled`,
-  // not `failure` (see handleWorkflowRun doc above). No workflow here uses
-  // cancel-in-progress, so `cancelled` is never a benign supersede.
+  // `cancelled` is included to catch timeout-minutes HANGS: GitHub completes a run
+  // that breaches `timeout-minutes` as `cancelled`, not `failure` (predict-4a hung
+  // exactly this way on 2026-05-18 and slipped past alerting silently). The catch: a
+  // workflow with concurrency `cancel-in-progress: true` ALSO reports a benign
+  // supersede as `cancelled` — render-site (group `weatherblend-site`, added after
+  // the original comment claimed "no workflow uses cancel-in-progress") is dispatched
+  // off two converging paths (verify→render, predict-3f→render) seconds apart, so the
+  // newer run cancels the older. So a `cancelled` is a real failure ONLY when it was
+  // NOT superseded by a newer run of the same workflow — checked via
+  // wasConcurrencySuperseded below before any issue is filed.
   const failureConclusions = new Set(["failure", "timed_out", "startup_failure", "cancelled"]);
   const isFailure = conclusion !== null && failureConclusions.has(conclusion);
   const isSuccess = conclusion === "success";
@@ -641,6 +648,14 @@ async function handleWorkflowRun(env: Env, payload: WorkflowRunPayload): Promise
   // issues list endpoint with state=open + labels filter instead.
   const existing = await listOpenCiFailureIssues(installationToken, repo);
   const matching = existing.filter((i) => i.title === issueTitle);
+
+  // Benign-supersede guard: a `cancelled` run that a NEWER run of the same workflow
+  // superseded (concurrency cancel-in-progress) is not a hang — don't file. A real
+  // timeout-minutes hang has no newer run during its life, so it still files.
+  if (isFailure && conclusion === "cancelled"
+      && await wasConcurrencySuperseded(installationToken, repo, wfRun)) {
+    return `ignored: ${wfName} cancelled but superseded by a newer run (benign concurrency supersede)`;
+  }
 
   if (isFailure) {
     if (matching.length === 0) {
@@ -680,6 +695,11 @@ interface WorkflowRunPayload {
   workflow_run: {
     id: number;
     name: string;
+    /** Run created + last-updated (≈ completion) timestamps, ISO 8601. Used to
+     * detect a benign concurrency supersede: a newer run of the same workflow that
+     * STARTED while this run was still in-progress is what cancelled it. */
+    created_at?: string;
+    updated_at?: string;
     /** Workflow file path, e.g. ".github/workflows/retrain-python.yml". */
     path?: string;
     /** Event that triggered the run, e.g. "repository_dispatch", "schedule". */
@@ -703,6 +723,46 @@ interface WorkflowRunPayload {
     name: string;
     owner: { login: string };
   };
+}
+
+/** True when a `cancelled` run was superseded by a NEWER run of the same workflow
+ * that started during its lifetime — a benign `concurrency: cancel-in-progress`
+ * supersede, NOT a `timeout-minutes` hang. render-site (group `weatherblend-site`) is
+ * the one such workflow today: the scheduler dispatches it off two converging paths
+ * (verify→render, predict-3f→render) seconds apart, so the newer run cancels the older.
+ * A timeout-hang has no newer run during its life (the next cron run is hours away), so
+ * it still files. The check is workflow-agnostic — any future cancel-in-progress
+ * workflow is covered. On any API error we return false → treat it as a real failure
+ * (fail safe: a hang must never go unnoticed). */
+async function wasConcurrencySuperseded(
+  token: string,
+  repo: string,
+  wfRun: WorkflowRunPayload["workflow_run"],
+): Promise<boolean> {
+  const file = (wfRun.path ?? "").split("/").pop();
+  if (!file || !wfRun.created_at || !wfRun.updated_at) return false;
+  const startedMs = Date.parse(wfRun.created_at);
+  const endedMs = Date.parse(wfRun.updated_at);
+  const branchQ = wfRun.head_branch ? `&branch=${encodeURIComponent(wfRun.head_branch)}` : "";
+  const url = `https://api.github.com/repos/${repo}/actions/workflows/${file}/runs?per_page=20${branchQ}`;
+  const response = await fetch(url, {
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Accept": "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "weatherblend-scheduler",
+    },
+  });
+  if (!response.ok) return false;
+  const data = (await response.json()) as { workflow_runs?: { id: number; created_at: string }[] };
+  // A different run that STARTED within this run's [created, completed] window is what
+  // cancelled it. The 15s buffer absorbs webhook-timestamp granularity; a timeout-hang's
+  // next run is hours later, so the buffer can't false-positive it as a supersede.
+  return (data.workflow_runs ?? []).some(
+    (r) => r.id !== wfRun.id
+      && Date.parse(r.created_at) > startedMs
+      && Date.parse(r.created_at) <= endedMs + 15_000,
+  );
 }
 
 async function listOpenCiFailureIssues(token: string, repo: string): Promise<GitHubIssue[]> {
