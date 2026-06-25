@@ -17,6 +17,24 @@ public sealed class AppConfig
     /// </summary>
     public List<LocationConfig> Locations { get; set; } = new();
 
+    /// <summary>True when the station slug (<c>ea_*</c> / <c>wl_*</c>) belongs to a
+    /// <see cref="RainfallStationConfig.PoolOnly"/> gauge — pooled into 3o training but
+    /// excluded from every per-station predict / verify / render / 4b path. The slug-keyed
+    /// predict/verify/render code resolves stations from the model manifest, so it needs
+    /// this config lookup to know which to skip.</summary>
+    public bool IsPoolOnlySlug(string slug)
+    {
+        foreach (var loc in Locations)
+        {
+            var stations = loc.Rainfall?.Stations;
+            if (stations is null) continue;
+            foreach (var s in stations)
+                if (s.PoolOnly && string.Equals(s.Slug, slug, System.StringComparison.OrdinalIgnoreCase))
+                    return true;
+        }
+        return false;
+    }
+
     /// <summary>
     /// Back-compat accessor for the historical single-location field. Returns
     /// the FIRST configured location (the primary). 29+ call sites across
@@ -276,6 +294,14 @@ public sealed class RainfallStationConfig
     /// precip-occurrence truth only — its forecasts/features still come from the parent
     /// location (sennen_cove); only the wet label is read from the weatherlink tree.</summary>
     public RainfallTruthSource Source { get; set; } = RainfallTruthSource.Ea;
+
+    /// <summary>Pool-only gauge: it feeds the pooled 3o TRAINING (its truth sharpens the
+    /// shared model) but is NOT a product — every per-station predict / verify / render / 4b
+    /// path skips it, and per-station 3a/3c/3d/dry-window are never trained for it. Use for a
+    /// gauge that only earns its keep as extra pooled training data (Princetown — a far
+    /// Dartmoor town, pointless to predict; Manaton — a WeatherLink archive). The hard-coded
+    /// 3o pool (BonehillStationOrder3o / Phase3oStationIndex) still includes it. YAML: <c>poolOnly</c>.</summary>
+    public bool PoolOnly { get; set; }
 
     /// <summary>Per-station parquet/path slug — the single key the model + prediction
     /// trees use everywhere (train, predict, verify, site): provider prefix + slugified

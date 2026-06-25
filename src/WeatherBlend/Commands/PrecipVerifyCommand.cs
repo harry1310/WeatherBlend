@@ -54,7 +54,10 @@ public sealed class PrecipVerifyCommand
             return 2;
         }
 
-        var stations = FilterStations(allStations, truthStation);
+        var stations = FilterStations(allStations, truthStation)
+            // Pool-only gauges (e.g. ea_princetown) are pooled-3o-training only,
+            // never a per-station product — drop them from verification too.
+            .Where(s => !_cfg.IsPoolOnlySlug(s)).ToList();
         if (stations.Count == 0)
         {
             _log.LogError("Station filter '{F}' matched no trained stations. Known: [{Known}]",

@@ -1,0 +1,53 @@
+{
+  "slug": "wl_manaton",
+  "kind": "station",
+  "dem_source": "cgiar_srtm_v4_90m_srtm_36_02",
+  "site_elevation_m": 338,
+  "lat": 50.62109,
+  "lon": -3.789268,
+  "window_sea_pct": 5.0,
+  "nwp_cell_elevation_m": 303.9,
+  "elevation_vs_cell_m": 34.1,
+  "relief_5km_m": 449.0,
+  "relief_10km_m": 508.0,
+  "relief_25km_m": 647.0,
+  "terrain_ruggedness_5km_m": 81.6,
+  "upwind_gain_5km": {
+    "N": -95.2,
+    "NE": -119.7,
+    "E": -131.0,
+    "SE": -37.6,
+    "S": 7.7,
+    "SW": 67.2,
+    "W": 64.1,
+    "NW": -45.2
+  },
+  "upwind_gain_10km": {
+    "N": -121.6,
+    "NE": -94.6,
+    "E": -148.8,
+    "SE": -139.2,
+    "S": -36.4,
+    "SW": 14.8,
+    "W": 69.4,
+    "NW": -55.6
+  },
+  "terrain_gradient_dx": -0.053804,
+  "terrain_gradient_dy": 0.095221,
+  "tpi_200m": 4.2,
+  "tpi_1000m": 5.9,
+  "tpi_5000m": 36.2,
+  "tpi_25000m": 131.8,
+  "lee_obstruction_10km": {
+    "N": 82.0,
+    "NE": 39.0,
+    "E": -7.0,
+    "SE": 95.0,
+    "S": 129.0,
+    "SW": 191.0,
+    "W": 186.0,
+    "NW": 93.0
+  },
+  "mean_slope_5km": 0.127389,
+  "aspect_dominance_5km": 0.1558
+}

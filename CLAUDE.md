@@ -25,6 +25,25 @@ need to read X before answering — want me to?" is the right move. Inventing
 a plausible answer and shipping it as fact has burnt trust at least twice
 (2026-05-07 feels-like sparsity, 2026-05-27 wind-chain incident). Don't do it.
 
+## NEVER RUN BLIND — long jobs must stream progress
+
+Any long-running job (bake-off harness, training, backfill, sweep) MUST emit
+live, flushed progress so it can be watched and its position known at any time.
+**Never launch something whose output only appears when it exits.**
+
+- Piped stdout is block-buffered by .NET (non-TTY), so `Console.WriteLine` lines
+  sit unflushed until the process ends — the output file reads 0 bytes the whole
+  run. Put this at the top of every harness `Main` so each line lands immediately:
+  `Console.SetOut(new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true });`
+- Log per-phase progress — per-gauge row counts, `seed k/N`, per-lead headers —
+  not just the final report, so "how far along is it?" always has an answer.
+- Give a realistic time estimate before launching and report elapsed-vs-expected
+  honestly. A full-history pooled 3o multi-seed bake-off is ~100 min (30 LightGBM
+  fits on ~105k rows), NOT 45 — don't lowball it.
+
+Flying a ~100-min run blind (2026-06-25 oro-slope bake-off) burned attention with
+no way to gauge progress. Don't do it again.
+
 ## Project
 
 PoC for blending ~6 free NWP models against ERA5 reanalysis (training truth)

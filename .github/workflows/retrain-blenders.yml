@@ -326,20 +326,20 @@ jobs:
         # every station of the location), so loop this location's rainfall
         # gauges via --station. The station list is read from config.yaml —
         # no hardcoded station list in the workflow.
-        # Princetown is filtered out — per the 2026-05-25 cleanup plan it
-        # joined the Bonehill pool ONLY for 3o (4-station rich+oro). 3a stays
-        # 3-station to avoid polluting the per-station 3a champion with a
-        # gauge whose pre-2024 history is thin and which the user explicitly
-        # excluded from 3a's scope.
+        # poolOnly gauges are excluded here: they train the pooled 3o ONLY and
+        # are never a per-station product (Bonehill: Princetown + Manaton). The
+        # yq filter is flag-driven — select(.poolOnly != true) — so any future
+        # poolOnly gauge is handled with no workflow edit. The rich 3c/3d and
+        # dry-window auto-iterate paths apply the same poolOnly filter in code.
         id: train_3a
         if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_3a == 'true'
         continue-on-error: true
         env:
           MATRIX_LOCATION: ${{ matrix.location }}
         run: |
-          STATIONS=$(yq -r ".locations[] | select(.name == \"$MATRIX_LOCATION\") | .rainfall.stations[].name" \
-            src/WeatherBlend/config.yaml | grep -v "^Princetown$")
-          echo "3a stations for $MATRIX_LOCATION (Princetown excluded — 3o-only per cleanup plan):"
+          STATIONS=$(yq -r ".locations[] | select(.name == \"$MATRIX_LOCATION\") | .rainfall.stations[] | select(.poolOnly != true) | .name" \
+            src/WeatherBlend/config.yaml)
+          echo "3a stations for $MATRIX_LOCATION (poolOnly gauges excluded):"
           echo "$STATIONS"
           while IFS= read -r s; do
             [ -z "$s" ] && continue

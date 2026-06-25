@@ -109,7 +109,9 @@ public static class PrecipRichOroFeatureBuilder
         BlenderSpec richOroSpec,
         CancellationToken ct = default,
         DateTime? maxValidTime = null,
-        bool includeStationId = true)
+        bool includeStationId = true,
+        string? weatherLinkTruthPath = null,
+        string? weatherLinkTruthLocation = null)
     {
         var terrainCount = TerrainCountFor(includeStationId);
         // The rich spec is what the underlying builder consumes. Reuse the
@@ -138,7 +140,8 @@ public static class PrecipRichOroFeatureBuilder
         // for the explicit exemption.
         var richRows = PrecipRichFeatureBuilder.BuildForLead(
             forecastsPath, rainfallPath, locationName, stationName, richSpec,
-            minValidTime: null, ct: ct, maxValidTime: maxValidTime, allowFullHistory: true);
+            minValidTime: null, ct: ct, maxValidTime: maxValidTime, allowFullHistory: true,
+            weatherLinkTruthPath: weatherLinkTruthPath, weatherLinkTruthLocation: weatherLinkTruthLocation);
         if (richRows.Count == 0) return richRows;
 
         var aux = LoadAuxNwpMeans(forecastsPath, locationName, richSpec, ct);

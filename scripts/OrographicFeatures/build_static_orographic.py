@@ -62,6 +62,10 @@ STATIONS = [
     ("ea_chards_snowdon_hill",     50.875716, -2.981262),
     ("ea_goren",                   50.816230, -3.085698),
     ("ea_raymonds_hill",           50.767425, -2.964048),
+    # WeatherLink Davis station (id 197218), ~4.2 km N of Bonehill on the moor; coords
+    # from the WeatherLink /stations API 2026-06-25 (its reported elevation is bogus —
+    # site elevation comes from the DEM below). Truth lives under location=bonehill_rocks.
+    ("wl_manaton",                 50.621090, -3.789268),
 ]
 LOCATIONS = [
     ("bonehill_rocks",  50.5831, -3.7931),

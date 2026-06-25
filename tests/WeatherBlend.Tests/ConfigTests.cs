@@ -110,18 +110,28 @@ public class ConfigTests
 
         bound.Locations.Should().HaveCount(3);
         bound.Locations[0].Name.Should().Be("bonehill_rocks");
-        // Bonehill rainfall: Bellever + Bovey + Hexworthy + Princetown
-        // (Princetown re-added 2026-05-25 in anticipation of Phase 3o's
-        // 4-station pool — per the cleanup plan its history is back-
-        // filled to 2022-01-01, matching the other three. Princetown is
-        // 3o-only — the retrain-blenders.yml 3a step explicitly filters
-        // it out via `grep -v "^Princetown$"`).
-        bound.Locations[0].Rainfall.Stations.Should().HaveCount(4);
+        // Bonehill rainfall: a 5-gauge 3o pool. Bellever + Bovey + Hexworthy predict
+        // normally; Princetown + Manaton are POOL-ONLY (2026-06-25) — they train the pooled
+        // 3o but are never predicted/verified/rendered. Manaton is a WeatherLink cove gauge
+        // (wl_manaton, truth under location=manaton); the other four are EA.
+        bound.Locations[0].Rainfall.Stations.Should().HaveCount(5);
         bound.Locations[0].Rainfall.Stations.Select(s => s.Name).Should()
             .Contain("Bellever Dartmoor")
             .And.Contain("Bovey Tracey")
             .And.Contain("Dartmoor nr Hexworthy")
-            .And.Contain("Princetown");
+            .And.Contain("Princetown")
+            .And.Contain("Manaton");
+        var bonehillStations = bound.Locations[0].Rainfall.Stations;
+        bonehillStations.Single(s => s.Name == "Bellever Dartmoor").PoolOnly.Should().BeFalse();
+        bonehillStations.Single(s => s.Name == "Princetown").PoolOnly.Should().BeTrue();
+        var manaton = bonehillStations.Single(s => s.Name == "Manaton");
+        manaton.PoolOnly.Should().BeTrue();
+        manaton.Source.Should().Be(RainfallTruthSource.WeatherLink);
+        manaton.Slug.Should().Be("wl_manaton");
+        // The pool-only slugs are recognised by the predict/verify/render/4b guard.
+        bound.IsPoolOnlySlug("ea_princetown").Should().BeTrue();
+        bound.IsPoolOnlySlug("wl_manaton").Should().BeTrue();
+        bound.IsPoolOnlySlug("ea_bellever_dartmoor").Should().BeFalse();
         bound.Locations[0].Metar.Primary.Should().Be("EGTE");
         bound.Locations[0].Metar.Fallback.Should().Be("EGDY");
         bound.Locations[1].Name.Should().Be("membury_devon");

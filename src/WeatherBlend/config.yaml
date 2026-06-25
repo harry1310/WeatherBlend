@@ -17,13 +17,13 @@ locations:
     longitude: -3.7931
     elevationMeters: 393
 
-    # Manaton WeatherLink (Davis id 197218, ~4.2km N) was here but Harry DOWNGRADED
-    # its subscription 2026-06-22 — it was unused in production (Bonehill humidity/
-    # temp stay on ERA5; nothing consumed Manaton). Its historic archive
-    # (2024-10..2026-06) is preserved in R2 under
-    # data/truth/weatherlink/location=bonehill_rocks/. No weatherLinkStationId now
-    # (collect skips Bonehill WeatherLink); re-add an id to resume if a Bonehill
-    # station is ever provisioned. See [[project_weatherlink_stations]].
+    # Manaton WeatherLink (Davis id 197218, ~4.2km N at 50.62109,-3.78927) is a
+    # POOL-ONLY member of the Bonehill 3o pool (2026-06-25): its ~20-month archive
+    # sharpens the pooled model (4 EA gauges −1.9% @24h / −2.7% @48h Brier, 5/5 seeds)
+    # but it is never predicted or shown. Truth re-partitioned to
+    # data/truth/weatherlink/location=manaton/ (LocationName='manaton', the slug of the
+    # name); terrain = data/static/orographic/wl_manaton.json. Declared as a rainfall
+    # station below (source: weatherlink, poolOnly: true). See [[project_weatherlink_stations]].
 
     # Phase D nav tabs (2026-05-20). Bonehill is the full-stack location —
     # temperature, rain, dry-window forecasts, plus skill + models. Listed
@@ -69,9 +69,10 @@ locations:
     # only high-elevation central/west Dartmoor gauge in range and adds a
     # distinct upwind-geometry anchor to the 6-station pool that the three
     # existing Bonehill gauges + the three Membury gauges otherwise lack.
-    # Side-effect: next Sunday auto-retrain picks Princetown up across every
-    # per-station phase (3a/3c/3b/3d + Python 4a), producing
-    # a per-station Princetown set alongside the pooled blender.
+    # 2026-06-25: Princetown is now poolOnly — it stays in the pooled 3o TRAINING
+    # (its high-moor truth sharpens the shared model) but is NOT predicted/verified/
+    # rendered for any phase (a far Dartmoor town, pointless as a product). No
+    # per-station 3a/3c/3d/dry-window/4b are built for it. Same posture as Manaton.
     rainfall:
       stations:
         - id: "723a8fc4-908b-4430-91c7-9990be86540a_363307"
@@ -82,6 +83,10 @@ locations:
           name: "Dartmoor nr Hexworthy"
         - id: "f0676423-f697-4dec-8958-440f335cce9a"
           name: "Princetown"
+          poolOnly: true
+        - name: "Manaton"          # WeatherLink cove gauge, pool-only 3o training member
+          source: weatherlink      # truth from data/truth/weatherlink/location=manaton (= slug of name)
+          poolOnly: true
 
     # Rock surface modelled as a single SUNLIT VERTICAL face (2026-06-20). The
     # whole-crag horizontal mode ran ~4°C warm vs the vertical rock climbers are

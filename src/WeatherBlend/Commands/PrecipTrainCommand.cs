@@ -398,7 +398,9 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         IReadOnlyList<Config.RainfallStationConfig> stationsToTrain;
         if (string.IsNullOrWhiteSpace(stationOverride))
         {
-            stationsToTrain = location.Rainfall.Stations;
+            // Pool-only gauges (e.g. Princetown) feed the pooled 3o training but are
+            // never a per-station product — exclude them from the 3c challenger sweep.
+            stationsToTrain = location.Rainfall.Stations.Where(s => !s.PoolOnly).ToList();
         }
         else
         {
@@ -749,6 +751,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         "Bovey Tracey",
         "Dartmoor nr Hexworthy",
         "Princetown",
+        "Manaton",   // idx 4: pool-only WeatherLink cove gauge — train-only, never predicted
     };
 
     private async Task<int> RunPhase3oAsync(int[] leads, Config.LocationConfig location, CancellationToken ct, bool includeStationId = true)
@@ -781,24 +784,29 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         var oroRoot = Path.Combine(
             Path.GetDirectoryName(_cfg.Storage.ForecastsPath)!, "static", "orographic");
         var oroBySlug = OroStaticFeatures.LoadAll(oroRoot);
-        var pool = new List<(string Name, string Slug, OroStaticFeatures Oro, int Index)>();
+        var pool = new List<(string Name, string Slug, OroStaticFeatures Oro, int Index, string? WlPath, string? WlLoc)>();
         foreach (var (name, idx) in BonehillStationOrder3o.Select((n, i) => (n, i)))
         {
             var match = location.Rainfall.Stations
                 .FirstOrDefault(s => s.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
             if (match is null)
             {
-                _log.LogError("Phase 3o: station '{Name}' missing from config.yaml's bonehill_rocks.rainfall.stations.", name);
-                return 2;
+                // A pool member absent from THIS config is skipped, not fatal — it lets a
+                // minimal/test config (or a not-yet-provisioned gauge) still train 3o on the
+                // rest. The production config's pool membership is guarded by ConfigTests.
+                _log.LogWarning("Phase 3o: pool station '{Name}' not in config — skipping it from the pool.", name);
+                continue;
             }
-            var slug = StationSlug.WithEaPrefix(match.Name);
+            var slug = match.Slug;   // wl_manaton for the WeatherLink pool member; ea_* otherwise
             if (!oroBySlug.TryGetValue(slug, out var oro))
             {
                 _log.LogError("Phase 3o: no orographic record for {Slug} at {Path}. " +
                     "Run scripts/OrographicFeatures/build_static_orographic.py.", slug, oroRoot);
                 return 2;
             }
-            pool.Add((match.Name, slug, oro, idx));
+            // WeatherLink pool members (Manaton) carry their truth source; EA gauges get (null,null).
+            var (wlPath, wlLoc) = match.WeatherLinkTruth(_cfg.Storage);
+            pool.Add((match.Name, slug, oro, idx, wlPath, wlLoc));
         }
         _log.LogInformation("Phase 3o — 4-station Bonehill pool: [{Stations}]; leads=[{Leads}]",
             string.Join(", ", pool.Select(p => p.Name)), string.Join(",", leads));
@@ -857,12 +865,13 @@ public sealed class PrecipTrainCommand : TrainCommandBase
 
             // Build per-station datasets + chronological 70/15/15 splits.
             var perStation = new List<(string Name, string Slug, BinaryDataset Ds)>();
-            foreach (var (name, slug, oro, idx) in pool)
+            foreach (var (name, slug, oro, idx, wlPath, wlLoc) in pool)
             {
                 ct.ThrowIfCancellationRequested();
                 var rows = PrecipRichOroFeatureBuilder.BuildForLead(
                     cache.FcPath, cache.RnPath,
-                    location.Name, name, oro, idx, spec, ct, includeStationId: includeStationId);
+                    location.Name, name, oro, idx, spec, ct, includeStationId: includeStationId,
+                    weatherLinkTruthPath: wlPath, weatherLinkTruthLocation: wlLoc);
                 if (rows.Count < 200)
                 {
                     _log.LogWarning("  station {Slug}: only {N} rich-oro rows for lead {Lead}h — skipping station for this lead.",
@@ -989,7 +998,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
 
         // Per-station bundle sidecars: spec, importance, climatology,
         // training_metadata, test_predictions.
-        foreach (var (name, slug, oro, idx) in pool)
+        foreach (var (name, slug, oro, idx, _, _) in pool)
         {
             var dir = stationDirs[slug];
             ModelArtifact.SaveBlenderSpecs(dir, specsPerLead);
@@ -1062,7 +1071,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         }
 
         // Promote per-station as challenger.
-        foreach (var (_, slug, _, _) in pool)
+        foreach (var (_, slug, _, _, _, _) in pool)
         {
             ModelArtifact.PromoteStationVersion(
                 modelsRoot, "precipitation", slug, versionName, newPhase: phaseTag);
@@ -1078,7 +1087,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         }
         else
         {
-            foreach (var (_, slug, _, _) in pool)
+            foreach (var (_, slug, _, _, _, _) in pool)
             {
                 var (cf, cs) = await _precipConformal.FitOneAsync(
                     slug, versionName, PrecipConformalFitCommand.DefaultAlpha, ct);
@@ -1108,7 +1117,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         if (string.IsNullOrWhiteSpace(stationOverride))
         {
             stationsToTrain = location.Rainfall.Stations
-                .Where(s => s.Source is Config.RainfallTruthSource.Ea)
+                .Where(s => s.Source is Config.RainfallTruthSource.Ea && !s.PoolOnly)
                 .Select(s => s.Name).ToList();
         }
         else

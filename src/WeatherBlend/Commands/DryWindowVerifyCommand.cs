@@ -238,6 +238,10 @@ public sealed class DryWindowVerifyCommand
             var slug = m.Groups["slug"].Value;
             var window = int.Parse(m.Groups["w"].Value, CultureInfo.InvariantCulture);
 
+            // Pool-only gauges (e.g. ea_princetown) are pooled-3o-training only,
+            // never a per-station product — skip any stale dry-window manifest entry.
+            if (_cfg.IsPoolOnlySlug(slug)) continue;
+
             if (!string.Equals(stationArg, "all", StringComparison.OrdinalIgnoreCase))
             {
                 var stripped = slug.StartsWith("ea_") ? slug[3..] : slug;

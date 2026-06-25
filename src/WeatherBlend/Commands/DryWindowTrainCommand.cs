@@ -482,7 +482,9 @@ public sealed class DryWindowTrainCommand
         // ONE source version per station for the lifetime of the artefact —
         // re-running training picks up the latest champion at that moment.
         var precipSrcByStation = new Dictionary<string, string>();
-        foreach (var station in _activeLocation.Rainfall.Stations)
+        // Pool-only gauges (e.g. Princetown) feed pooled 3o training only — never a
+        // per-station product, so the dry-window copula-MC is never trained for them.
+        foreach (var station in _activeLocation.Rainfall.Stations.Where(s => !s.PoolOnly))
         {
             var stationSlug = StationSlug.WithEaPrefix(station.Name);
             var vSrc = ModelArtifact.ResolveStationPhaseVersion(modelsRoot, "precipitation", stationSlug, source.PrecipPhase);
@@ -723,7 +725,10 @@ ORDER BY 1";
     {
         if (string.IsNullOrWhiteSpace(stationArg) || stationArg.Equals("all", StringComparison.OrdinalIgnoreCase))
         {
-            var found = _activeLocation.Rainfall.Stations.Select(s => s.Name).ToArray();
+            // Pool-only gauges (e.g. Princetown) feed pooled 3o training only —
+            // never a per-station product, so dry-window is never trained for them.
+            var found = _activeLocation.Rainfall.Stations
+                .Where(s => !s.PoolOnly).Select(s => s.Name).ToArray();
             if (found.Length == 0)
             {
                 _log.LogError("No rainfall stations in config — nothing to train.");

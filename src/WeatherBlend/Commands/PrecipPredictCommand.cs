@@ -128,6 +128,16 @@ public sealed class PrecipPredictCommand
         var modelsRoot = _cfg.Storage.ModelsPath;
 
         var stationsToRun = ResolveStations(modelsRoot, truthStation);
+        // Pool-only gauges (e.g. ea_princetown) feed the pooled 3o TRAINING but
+        // are not a product — the 3o bundle is saved under each pool gauge's slug,
+        // so predict WOULD pick ea_princetown up here unless filtered. Drop them
+        // before any per-station predict (3a/3c/3o/3d) runs.
+        var poolOnlyDropped = stationsToRun.Where(s => _cfg.IsPoolOnlySlug(s)).ToList();
+        stationsToRun = stationsToRun.Where(s => !_cfg.IsPoolOnlySlug(s)).ToList();
+        if (poolOnlyDropped.Count > 0)
+            _log.LogInformation(
+                "Dropping {Count} pool-only gauge(s) from predict (pooled-3o-training only, never a product): [{Dropped}].",
+                poolOnlyDropped.Count, string.Join(", ", poolOnlyDropped));
         // Always intersect with the active location's rainfall config — a
         // station's predict MUST use NWP from its own location's grid cell,
         // never from a sibling location's. Pre-2026-05-12 this filter only

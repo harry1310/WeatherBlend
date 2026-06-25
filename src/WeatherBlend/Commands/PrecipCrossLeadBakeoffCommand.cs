@@ -193,7 +193,7 @@ public sealed class PrecipCrossLeadBakeoffCommand
     // Mirrors PrecipTrainCommand's 3c/3o train loops but isolated + parameterised.
 
     private static readonly string[] BonehillOrder3o =
-        { "Bellever Dartmoor", "Bovey Tracey", "Dartmoor nr Hexworthy", "Princetown" };
+        { "Bellever Dartmoor", "Bovey Tracey", "Dartmoor nr Hexworthy", "Princetown", "Manaton" };
 
     /// <summary>
     /// Resolve a <c>--location</c> override to its <see cref="Config.LocationConfig"/>,
@@ -261,7 +261,7 @@ public sealed class PrecipCrossLeadBakeoffCommand
         // flow through exactly like EA gauges — they are just a different truth
         // source: slug is wl_* (s.Slug), and the wet label is read from
         // data/truth/weatherlink instead of the EA tree. ----
-        foreach (var s in location.Rainfall.Stations)
+        foreach (var s in location.Rainfall.Stations.Where(st => !st.PoolOnly))   // 3c study: skip pool-only gauges (not products)
         {
             ct.ThrowIfCancellationRequested();
             var slug = s.Slug;
@@ -306,14 +306,15 @@ public sealed class PrecipCrossLeadBakeoffCommand
         }
         var oroRoot = Path.Combine(Path.GetDirectoryName(_cfg.Storage.ForecastsPath)!, "static", "orographic");
         var oroBySlug = OroStaticFeatures.LoadAll(oroRoot);
-        var pool = new List<(string Name, string Slug, OroStaticFeatures Oro, int Index)>();
+        var pool = new List<(string Name, string Slug, OroStaticFeatures Oro, int Index, string? WlPath, string? WlLoc)>();
         for (int i = 0; i < BonehillOrder3o.Length; i++)
         {
             var match = location.Rainfall.Stations.FirstOrDefault(x => x.Name.Equals(BonehillOrder3o[i], StringComparison.OrdinalIgnoreCase));
-            if (match is null) { _log.LogError("3o pool: station '{N}' missing from config.", BonehillOrder3o[i]); return 2; }
-            var slug = StationSlug.WithEaPrefix(match.Name);
+            if (match is null) { _log.LogWarning("3o pool: station '{N}' not in config — skipping from study pool.", BonehillOrder3o[i]); continue; }
+            var slug = match.Slug;   // wl_manaton for the WeatherLink pool member; ea_* otherwise
             if (!oroBySlug.TryGetValue(slug, out var oro)) { _log.LogError("3o pool: no oro record for {S}.", slug); return 2; }
-            pool.Add((match.Name, slug, oro, i));
+            var (wlPath, wlLoc) = match.WeatherLinkTruth(_cfg.Storage);
+            pool.Add((match.Name, slug, oro, i, wlPath, wlLoc));
         }
         var stationDirs = pool.ToDictionary(p => p.Slug, p => Path.Combine(studyRoot, "precipitation", p.Slug, "vstudy_phase3o_noua"));
         foreach (var dir in stationDirs.Values) Directory.CreateDirectory(dir);
@@ -324,12 +325,13 @@ public sealed class PrecipCrossLeadBakeoffCommand
             var spec = PrecipRichOroFeatureBuilder.BuildSpec(_cfg.Blenders, lead, withUpperAir: false);
             specs3o[lead] = spec;
             var perStation = new List<(string Slug, BinaryDataset Ds)>();
-            foreach (var (name, slug, oro, idx) in pool)
+            foreach (var (name, slug, oro, idx, wlPath, wlLoc) in pool)
             {
                 ct.ThrowIfCancellationRequested();
                 var rows = PrecipRichOroFeatureBuilder.BuildForLead(
                     fcPath, rnPath, location.Name, name, oro, idx, spec,
-                    ct: ct, maxValidTime: cutoff);
+                    ct: ct, maxValidTime: cutoff,
+                    weatherLinkTruthPath: wlPath, weatherLinkTruthLocation: wlLoc);
                 if (rows.Count < 200) { _log.LogWarning("  3o {Slug} L{Lead}h: only {N} rows — skipping station.", slug, lead, rows.Count); continue; }
                 perStation.Add((slug, BinaryDataset.Split(rows)));
             }
@@ -563,7 +565,7 @@ FROM latest WHERE rn = 1;";
         // WeatherLink gauges (e.g. Lands End) flow through like EA gauges — slug is
         // wl_* and truth + persistence read from data/truth/weatherlink. Carry the
         // station config and read the truth source off it per gauge.
-        var gauges = location.Rainfall.Stations;
+        var gauges = location.Rainfall.Stations.Where(s => !s.PoolOnly).ToList();   // policy scored on product gauges only
         var truth = new Dictionary<string, IReadOnlyList<(DateTime, double)>>();
         var rain = new Dictionary<string, Dictionary<DateTime, double>>();
         var m3c = new Dictionary<string, Dictionary<int, (ITransformer Model, BlenderSpec Spec)>>();

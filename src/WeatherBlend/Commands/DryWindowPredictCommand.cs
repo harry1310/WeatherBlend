@@ -607,6 +607,10 @@ public sealed class DryWindowPredictCommand
             if (parsed is null) continue;
             var (slug, window) = parsed.Value;
 
+            // Pool-only gauges (e.g. ea_princetown) are pooled-3o-training only,
+            // never a per-station product — skip any stale dry-window manifest entry.
+            if (_cfg.IsPoolOnlySlug(slug)) continue;
+
             if (!string.Equals(stationArg, "all", StringComparison.OrdinalIgnoreCase))
             {
                 if (!SlugMatches(slug, stationArg)) continue;

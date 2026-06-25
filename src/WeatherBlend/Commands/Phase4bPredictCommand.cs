@@ -78,7 +78,9 @@ public sealed class Phase4bPredictCommand
         var slugs = new List<string>();
         foreach (var loc in _cfg.Locations)
         {
-            foreach (var s in loc.Rainfall.Stations)
+            // Pool-only gauges (e.g. Princetown) feed pooled 3o training only —
+            // never a per-station product, so 4b is never synthesised for them.
+            foreach (var s in loc.Rainfall.Stations.Where(s => !s.PoolOnly))
                 slugs.Add(StationSlug.WithEaPrefix(s.Name));
         }
         return slugs;
