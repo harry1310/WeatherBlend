@@ -533,6 +533,21 @@ public sealed class PrecipPredictCommand
             }
         }
 
+        // Pre-load the dProg/dt trend (offset_day leads {48,72,96,120}) ONCE if any lead's
+        // schema carries the slope arm — the leak-safe per-valid slope is computed at compose
+        // time. Same offset_day source the trainer used; empty until those leads are collected.
+        Dictionary<string, Dictionary<DateTime, double[]>>? slopeTrend = null;
+        if (isRich && phaseTargets.Length > 0
+            && specs.Values.Any(s => PrecipRichFeatureBuilder.SlopeArmOf(s) != PrecipRichFeatureBuilder.SlopeArm.None))
+        {
+            var slopeModels = specs.Values.SelectMany(s => s.Models).Distinct().ToList();
+            var vs = phaseTargets.Select(t => t.Valid).ToList();
+            slopeTrend = PrecipRichFeatureBuilder.LoadTrend(
+                _cfg.Storage.ForecastsPath, location.Name, slopeModels, vs.Min(), vs.Max(), ct);
+            _log.LogInformation("Station {Station}: slope trend loaded — {M} models across {V} valid-times.",
+                station, slopeModels.Count, slopeTrend.Sum(m => m.Value.Count));
+        }
+
         foreach (var (lead, valid) in phaseTargets)
         {
             if (!perLeadValid.TryGetValue(lead, out var perValid)
@@ -627,6 +642,7 @@ public sealed class PrecipPredictCommand
                         && PrecipFeatureBuilder.UpperAirAsofTime(uaAsofRows, valid) is { } uaAsofTime)
                         uaAgeHours = (valid - uaAsofTime).TotalHours;
                 }
+                var slopeValues = PrecipRichFeatureBuilder.ComputeSlopeValues(spec, slopeTrend, valid);
                 row = PrecipRichFeatureBuilder.ComposeRow(
                     spec, valid, specPrecip, dew, rh, dewDep, pres,
                     rhMean: pivot.RhMean, dewDepressionMean: pivot.DewDepressionMean,
@@ -638,7 +654,8 @@ public sealed class PrecipPredictCommand
                     eaWetHoursLast24h: persist.WetHoursLast24h,
                     eaDryHoursTrailing: persist.DryHoursTrailing,
                     truthMmHour: 0.0,
-                    upperAir: uaValues);
+                    upperAir: uaValues,
+                    slope: slopeValues);
             }
             else
             {
@@ -921,6 +938,19 @@ public sealed class PrecipPredictCommand
                 _cfg.Storage.ForecastsPath, location.Name, lead, lv.Min().AddDays(-2), lv.Max(), ct);
         }
 
+        // dProg/dt trend (offset_day {48,72,96,120}) for the slope arm — loaded once if the
+        // 3o schema carries it (AGG). The leak-safe per-valid slope composes into the rich half.
+        Dictionary<string, Dictionary<DateTime, double[]>>? slopeTrend = null;
+        if (targets.Length > 0 && specs.Values.Any(s => PrecipRichFeatureBuilder.SlopeArmOf(s) != PrecipRichFeatureBuilder.SlopeArm.None))
+        {
+            var slopeModels = specs.Values.SelectMany(s => s.Models).Distinct().ToList();
+            slopeTrend = PrecipRichFeatureBuilder.LoadTrend(
+                _cfg.Storage.ForecastsPath, location.Name, slopeModels,
+                targets.Min(t => t.Valid), targets.Max(t => t.Valid), ct);
+            _log.LogInformation("Station {Station}: slope trend loaded — {M} models across {V} valid-times (3o).",
+                station, slopeModels.Count, slopeTrend.Sum(m => m.Value.Count));
+        }
+
         // EA hourly rainfall for the rich row's persistence features —
         // exact same load path 3c uses.
         var friendly = ResolveFriendlyStationName(station, location);
@@ -1025,6 +1055,7 @@ public sealed class PrecipPredictCommand
             double[]? uaValues = richSpec.FeatureNames.Contains("t850_mean")
                 ? PrecipFeatureBuilder.UpperAirValuesFor(uaAsofRows, valid)
                 : null;
+            var slopeValues = PrecipRichFeatureBuilder.ComputeSlopeValues(richSpec, slopeTrend, valid);
             var richRow = PrecipRichFeatureBuilder.ComposeRow(
                 richSpec, valid, specPrecip, dew, rh, dewDep, pres,
                 rhMean: pivot.RhMean, dewDepressionMean: pivot.DewDepressionMean,
@@ -1036,7 +1067,8 @@ public sealed class PrecipPredictCommand
                 eaWetHoursLast24h: persist.WetHoursLast24h,
                 eaDryHoursTrailing: persist.DryHoursTrailing,
                 truthMmHour: 0.0,
-                upperAir: uaValues);
+                upperAir: uaValues,
+                slope: slopeValues);
 
             // Terrain block — needs NWP-mean wind/temp/dew/pressure at
             // this valid_time. The live-tree aux table was loaded once

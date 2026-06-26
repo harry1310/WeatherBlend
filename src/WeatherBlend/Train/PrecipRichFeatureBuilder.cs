@@ -114,6 +114,141 @@ public static class PrecipRichFeatureBuilder
     public const string SpecTarget = "precipitation";
     public const string SpecFeatureSet = "rich";
 
+    /// <summary>Which dProg/dt forecast-trend arm a spec carries (run-to-run drift of the
+    /// forecast for a fixed valid time V, as the lead shrank). <see cref="PerProvider"/> adds
+    /// one slope column per NWP (pslope_&lt;model&gt;); <see cref="Aggregate"/> adds the
+    /// ensemble mean + cross-model spread (pslope_mean / pslope_std). Bake-offs (2026-06-25):
+    /// PROV wins flat-3c at Bonehill, AGG wins the pooled/terrain champions — so 3c is wired
+    /// PerProvider and 3o Aggregate, decided at the train call-site.</summary>
+    public enum SlopeArm { None, PerProvider, Aggregate }
+
+    /// <summary>offset_day forecast leads the trend slope is fit over. The slope uses only the
+    /// subset STRICTLY greater than the predict lead L (all issued before predict time T = V − L,
+    /// so leak-free): L=24 → {48,72,96,120}; L=48 → {72,96,120}; L≥96 → too few points → NaN.</summary>
+    public static readonly int[] TrendLeads = { 48, 72, 96, 120 };
+
+    /// <summary>Least-squares slope of forecast value vs lead over <see cref="TrendLeads"/>
+    /// STRICTLY greater than <paramref name="predictLead"/> (the leak guard), NaN-skipping.
+    /// NaN when &lt;2 usable points. <paramref name="byTrendLead"/> is indexed parallel to
+    /// <see cref="TrendLeads"/>. Ported verbatim from the validated trend bake-off harness.</summary>
+    public static double LeadSafeSlope(IReadOnlyList<double> byTrendLead, int predictLead)
+    {
+        double sx = 0, sy = 0, sxx = 0, sxy = 0; int n = 0;
+        for (int i = 0; i < TrendLeads.Length; i++)
+        {
+            if (TrendLeads[i] <= predictLead) continue;
+            double y = byTrendLead[i];
+            if (double.IsNaN(y)) continue;
+            double x = TrendLeads[i];
+            sx += x; sy += y; sxx += x * x; sxy += x * y; n++;
+        }
+        if (n < 2) return double.NaN;
+        double denom = n * sxx - sx * sx;
+        if (Math.Abs(denom) < 1e-9) return double.NaN;
+        return (n * sxy - sx * sy) / denom;
+    }
+
+    /// <summary>Ensemble mean + population std of the per-model slopes (the AGG arm),
+    /// NaN-skipping. (NaN, NaN) when no model has a slope; std 0 with exactly one.</summary>
+    public static (double Mean, double Std) AggregateSlopes(IReadOnlyList<double> perModel)
+    {
+        double sum = 0; int n = 0;
+        foreach (var v in perModel) if (!double.IsNaN(v)) { sum += v; n++; }
+        if (n == 0) return (double.NaN, double.NaN);
+        double mean = sum / n;
+        if (n == 1) return (mean, 0.0);
+        double sq = 0; foreach (var v in perModel) if (!double.IsNaN(v)) sq += (v - mean) * (v - mean);
+        return (mean, Math.Sqrt(sq / n));
+    }
+
+    /// <summary>The slope arm a spec encodes — kept in sync with <see cref="BuildSpec"/> so
+    /// <see cref="BuildForLead"/> stays consistent without a separate flag (mirrors how UA is
+    /// detected off t850_mean). PROV → pslope_&lt;first-model&gt;; AGG → pslope_mean.</summary>
+    public static SlopeArm SlopeArmOf(BlenderSpec spec)
+    {
+        if (spec.FeatureNames.Contains("pslope_mean")) return SlopeArm.Aggregate;
+        if (spec.Models.Count > 0 && spec.FeatureNames.Contains($"pslope_{TempFeatureBuilder.ShortName(spec.Models[0])}"))
+            return SlopeArm.PerProvider;
+        return SlopeArm.None;
+    }
+
+    /// <summary>The per-row slope values that <see cref="ComposeRow"/> appends, given a
+    /// pre-loaded <paramref name="trend"/> (or null). Null for <see cref="SlopeArm.None"/>;
+    /// PROV → one slope per model; AGG → [mean, std]. SHARED by <see cref="BuildForLead"/>
+    /// (training) and PrecipPredictCommand (predict) so both compose the vector identically —
+    /// the divergence that previously bit UA-vs-slope can't recur.</summary>
+    public static double[]? ComputeSlopeValues(BlenderSpec spec,
+        Dictionary<string, Dictionary<DateTime, double[]>>? trend, DateTime valid)
+    {
+        var arm = SlopeArmOf(spec);
+        if (arm == SlopeArm.None || trend is null) return null;
+        var per = new double[spec.Models.Count];
+        for (int i = 0; i < spec.Models.Count; i++)
+            per[i] = (trend.TryGetValue(spec.Models[i], out var bv) && bv.TryGetValue(valid, out var arr))
+                ? LeadSafeSlope(arr, spec.LeadHours) : double.NaN;
+        if (arm == SlopeArm.PerProvider) return per;
+        var (m, s) = AggregateSlopes(per);
+        return new[] { m, s };
+    }
+
+    /// <summary>Public conn-owning entry to <see cref="LoadTrend"/> for the predict path
+    /// (training calls the conn-sharing overload inside BuildForLead). offset_day leads
+    /// {48,72,96,120} for each valid time, keyed model → valid → [p@lead].</summary>
+    public static Dictionary<string, Dictionary<DateTime, double[]>> LoadTrend(
+        string forecastsPath, string locationName, IReadOnlyList<string> models,
+        DateTime? minValidTime, DateTime? maxValidTime, CancellationToken ct = default)
+    {
+        using var conn = new DuckDBConnection("DataSource=:memory:");
+        conn.Open();
+        var fcGlob = SqlGlob.Escape(Path.Combine(forecastsPath, "**", "*.parquet"));
+        return LoadTrend(conn, fcGlob, locationName.Replace("'", "''"), models, minValidTime, maxValidTime, ct);
+    }
+
+    private static string? BuildFeatureSetLabel(bool withUpperAir, SlopeArm slopeArm)
+    {
+        var label = SpecFeatureSet;
+        if (withUpperAir) label += "-ua";
+        if (slopeArm == SlopeArm.PerProvider) label += "-pslope";
+        else if (slopeArm == SlopeArm.Aggregate) label += "-aslope";
+        return label == SpecFeatureSet ? null : label;
+    }
+
+    // model -> valid -> [p@48, p@72, p@96, p@120]: offset_day forecast precip (mm) at each
+    // trend lead for valid time V. The trend leads are all ≥48h, so always offset_day —
+    // independent of the predict lead's surface source (hist_forecast at lead 0). Loaded once
+    // per BuildForLead; the per-row slope reads it in memory. Mirrors the bake-off LoadTrend.
+    private static Dictionary<string, Dictionary<DateTime, double[]>> LoadTrend(
+        DuckDBConnection conn, string fcGlob, string escLocation, IReadOnlyList<string> models,
+        DateTime? minValidTime, DateTime? maxValidTime, CancellationToken ct)
+    {
+        var modelIn = "(" + string.Join(",", models.Select(m => $"'{m}'")) + ")";
+        var leadIn = string.Join(", ", TrendLeads);
+        var sb = new StringBuilder();
+        sb.AppendLine("SELECT Model, ValidTimeUtc, LeadHours, Precipitation");
+        sb.AppendLine($"FROM read_parquet('{fcGlob}', hive_partitioning = false, union_by_name = true)");
+        sb.AppendLine($"WHERE LocationName = '{escLocation}' AND RunTimeSource = 'offset_day'");
+        sb.AppendLine($"  AND LeadHours IN ({leadIn}) AND Model IN {modelIn}");
+        sb.AppendLine("  AND Precipitation IS NOT NULL");
+        if (minValidTime.HasValue) sb.AppendLine($"  AND ValidTimeUtc >= TIMESTAMP '{minValidTime.Value:yyyy-MM-dd HH:mm:ss}'");
+        if (maxValidTime.HasValue) sb.AppendLine($"  AND ValidTimeUtc <= TIMESTAMP '{maxValidTime.Value:yyyy-MM-dd HH:mm:ss}'");
+        sb.Append(';');
+        var trend = new Dictionary<string, Dictionary<DateTime, double[]>>();
+        using var cmd = conn.CreateCommand(); cmd.CommandText = sb.ToString();
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            ct.ThrowIfCancellationRequested();
+            var model = r.GetString(0);
+            var valid = DateTime.SpecifyKind(r.GetDateTime(1), DateTimeKind.Utc);
+            int li = Array.IndexOf(TrendLeads, r.GetInt32(2));
+            if (li < 0) continue;
+            if (!trend.TryGetValue(model, out var byValid)) { byValid = new(); trend[model] = byValid; }
+            if (!byValid.TryGetValue(valid, out var arr)) { arr = new[] { double.NaN, double.NaN, double.NaN, double.NaN }; byValid[valid] = arr; }
+            arr[li] = r.GetDouble(3);
+        }
+        return trend;
+    }
+
     /// <summary>Resolve the runtime <see cref="BlenderSpec"/> for rich precipitation at a given lead.</summary>
     /// <param name="withUpperAir">Experimental (2026-06-01): append the FULL
     /// multi-level pressure block (per exact model × <see cref="PrecipFeatureBuilder.UaPressureCols"/>
@@ -121,9 +256,9 @@ public static class PrecipRichFeatureBuilder
     /// TOP of the rich surface features (humidity / dew-depression / EA
     /// persistence) — i.e. is the lean 3a-UA win orthogonal or already captured
     /// here. Appended LAST so the baseline rich indices are untouched.</param>
-    public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours, bool withUpperAir = false)
+    public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours, bool withUpperAir = false, SlopeArm slopeArm = SlopeArm.None)
         // Shared membership/guards/spec-field boilerplate in BlenderSpec.Build.
-        // The UA variant stamps FeatureSet "rich-ua" (Tier stays "rich").
+        // The UA variant stamps FeatureSet "rich-ua"; slope arms add "-pslope"/"-aslope" (Tier stays "rich").
         => BlenderSpec.Build(blendersCfg, SpecTarget, SpecFeatureSet, leadHours, orderedModels =>
         {
             // Layout (N = orderedModels.Count) — prob_* removed 2026-04-28 (zero-gain
@@ -167,8 +302,16 @@ public static class PrecipRichFeatureBuilder
                 names.Add("t850_mean");
                 names.Add("rh850_mean");
             }
+
+            // dProg/dt trend slope — APPENDED LAST (after the UA block) so every baseline and
+            // UA index is untouched; ComposeRow's exact-count guard catches a miscount. PROV
+            // adds one column per model; AGG adds the ensemble mean + cross-model spread.
+            if (slopeArm == SlopeArm.PerProvider)
+                foreach (var m in orderedModels) names.Add($"pslope_{TempFeatureBuilder.ShortName(m)}");
+            else if (slopeArm == SlopeArm.Aggregate)
+                names.AddRange(new[] { "pslope_mean", "pslope_std" });
             return names;
-        }, featureSetLabel: withUpperAir ? SpecFeatureSet + "-ua" : null);
+        }, featureSetLabel: BuildFeatureSetLabel(withUpperAir, slopeArm));
 
     /// <summary>
     /// Build training rows for one (target=precipitation, feature-set=rich, station, lead).
@@ -242,6 +385,13 @@ exact_ua AS (
                 uaCols.Select(c => $"x.{c.Short}_{x.Short}")));
             uaJoin = "ASOF LEFT JOIN exact_ua x ON pivoted.ValidTimeUtc >= x.valid_time_ua";
         }
+
+        // dProg/dt trend slope: load the multi-lead offset_day trend ONCE (its own reader,
+        // disposed before the main query opens), then compute each row's slope in memory.
+        // Arm detected off the spec (kept in sync with BuildSpec), exactly like UA.
+        var slopeArm = SlopeArmOf(spec);
+        var trend = slopeArm == SlopeArm.None ? null
+            : LoadTrend(conn, fcGlob, escLocation, spec.Models, minValidTime, maxValidTime, ct);
 
         var sb = new StringBuilder();
         sb.AppendLine("WITH latest AS (");
@@ -370,6 +520,10 @@ exact_ua AS (
                 uaValues[pc * mc + 1] = rh850N == 0 ? double.NaN : rh850Sum / rh850N;
             }
 
+            // Per-model leak-safe slope → PROV (per-model) or AGG (mean + spread); null arm →
+            // null. Shared with the predict path via ComputeSlopeValues so both compose alike.
+            var slopeValues = ComputeSlopeValues(spec, trend, valid);
+
             // Anchor persistence at valid − max(lead, min-lag). Identity for the
             // ≥24h leads; at lead 0 it back-shifts off the predicted hour so the
             // (runTime-inclusive) window can't fold in valid's own gauge reading.
@@ -380,7 +534,7 @@ exact_ua AS (
                 rhMean, dewDepMn, cL, cM, cH, cape, wind,
                 persistence.Prev24hMm, persistence.Prev72hMm,
                 persistence.WetHoursLast24h, persistence.DryHoursTrailing,
-                truth, uaValues));
+                truth, uaValues, slopeValues));
         }
         return rows;
     }
@@ -410,7 +564,8 @@ exact_ua AS (
         double eaWetHoursLast24h,
         double eaDryHoursTrailing,
         double truthMmHour,
-        IReadOnlyList<double>? upperAir = null)
+        IReadOnlyList<double>? upperAir = null,
+        IReadOnlyList<double>? slope = null)
     {
         var n = spec.Models.Count;
         if (perModelPrecip.Count != n) throw new ArgumentException($"Expected {n} model precip values", nameof(perModelPrecip));
@@ -482,6 +637,9 @@ exact_ua AS (
         if (upperAir is not null)
             for (int i = 0; i < upperAir.Count; i++)
                 features[idx++] = (float)upperAir[i];
+        if (slope is not null)
+            for (int i = 0; i < slope.Count; i++)
+                features[idx++] = (float)slope[i];
 
         if (idx != spec.FeatureCount)
             throw new InvalidOperationException(

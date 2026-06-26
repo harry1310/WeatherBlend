@@ -72,18 +72,23 @@ public static class PrecipRichOroFeatureBuilder
     /// auto-detects the ASOF upper-air join from <c>t850_mean</c> being present.
     /// Default false keeps every production caller (train/predict/conformal)
     /// bit-identical. See PrecipUaBakeoffCommand --oro.</param>
-    public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours, bool withUpperAir = false, bool includeStationId = true)
+    public static BlenderSpec BuildSpec(BlendersConfig blendersCfg, int leadHours, bool withUpperAir = false, bool includeStationId = true,
+        PrecipRichFeatureBuilder.SlopeArm slopeArm = PrecipRichFeatureBuilder.SlopeArm.None)
     {
         // Reuse rich's model membership + names — same precipitation blender
-        // membership (the terrain block doesn't change which NWPs the
-        // builder ingests).
-        var rich = PrecipRichFeatureBuilder.BuildSpec(blendersCfg, leadHours, withUpperAir);
+        // membership (the terrain block doesn't change which NWPs the builder
+        // ingests). The slope arm flows into the rich prefix, so BuildForLead's
+        // Take(count − terrain) still reconstructs the rich(+slope) prefix unchanged
+        // and the rich builder auto-detects + computes the arm. 3o is wired Aggregate.
+        var rich = PrecipRichFeatureBuilder.BuildSpec(blendersCfg, leadHours, withUpperAir, slopeArm);
         var names = rich.FeatureNames.Concat(TerrainNamesFor(includeStationId)).ToList();
         var baseSet = includeStationId ? SpecFeatureSet : SpecFeatureSetNoId;
+        var slopeSuffix = slopeArm == PrecipRichFeatureBuilder.SlopeArm.PerProvider ? "-pslope"
+                        : slopeArm == PrecipRichFeatureBuilder.SlopeArm.Aggregate ? "-aslope" : "";
         return new BlenderSpec
         {
             Target = rich.Target,
-            FeatureSet = withUpperAir ? baseSet + "-ua" : baseSet,
+            FeatureSet = (withUpperAir ? baseSet + "-ua" : baseSet) + slopeSuffix,
             LeadHours = rich.LeadHours,
             RequiredModels = rich.RequiredModels,
             OptionalModels = rich.OptionalModels,

@@ -485,7 +485,11 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             // its exact-pressure backfill lands (same posture as 3d/3o). Per-loc
             // schema is fine: predict reads each bundle's own feature_schema.json.
             var useUpperAir = location.Name.Equals("bonehill_rocks", StringComparison.OrdinalIgnoreCase);
-            var spec = PrecipRichFeatureBuilder.BuildSpec(_cfg.Blenders, lead, withUpperAir: useUpperAir);
+            // 3c carries the dProg/dt slope PER-PROVIDER (pslope_<model>) — the arm that won
+            // the flat-3c bake-off (Bonehill 48h −1.3% [5/5]). Predict reads this off the
+            // persisted schema, so the arm need only be set here. (3o uses Aggregate.)
+            var spec = PrecipRichFeatureBuilder.BuildSpec(_cfg.Blenders, lead, withUpperAir: useUpperAir,
+                slopeArm: PrecipRichFeatureBuilder.SlopeArm.PerProvider);
             specsPerLead[lead] = spec;
             _log.LogInformation("Spec: {Spec}", spec);
 
@@ -859,7 +863,11 @@ public sealed class PrecipTrainCommand : TrainCommandBase
             // stays last so BuildForLead's Take(count-9) reconstruction is
             // unchanged. Standalone −1.4%..−2.1% Brier; the real win is in the
             // 4b blend (3-way mean(4a, 3o+UA, 3c+UA) beats live 4b −3.5%@24h).
-            var spec = PrecipRichOroFeatureBuilder.BuildSpec(_cfg.Blenders, lead, withUpperAir: true, includeStationId: includeStationId);
+            // 3o (and 3oni) carry the slope AGGREGATED (pslope_mean + pslope_std) — the arm
+            // that won on the pooled/terrain champion (Bonehill 3o 48h −0.7% [5/5]); per-provider
+            // is dead once pooling/terrain absorb it. Predict reads this off the persisted schema.
+            var spec = PrecipRichOroFeatureBuilder.BuildSpec(_cfg.Blenders, lead, withUpperAir: true, includeStationId: includeStationId,
+                slopeArm: PrecipRichFeatureBuilder.SlopeArm.Aggregate);
             specsPerLead[lead] = spec;
             _log.LogInformation("Spec: {Spec} ({N} features)", spec, spec.FeatureCount);
 
