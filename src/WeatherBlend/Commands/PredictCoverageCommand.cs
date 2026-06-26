@@ -53,11 +53,10 @@ public sealed class PredictCoverageCommand
                         || string.Equals(l.Name, locationOverride, StringComparison.OrdinalIgnoreCase))
             .Select(l => new CoverageGuard.LocationSpec(
                 l.Name,
-                // poolOnly gauges (Princetown, Manaton) train the 3o pool but are never
-                // predicted, so the 3o/3oni bundles re-saved under their slug must NOT be
-                // coverage-checked — they'd always breach ("active bundle, no predictions").
-                // Use the real slug (wl_* for WeatherLink) for the rest.
-                l.Rainfall.Stations.Where(s => !s.PoolOnly).Select(s => s.Slug).ToList()))
+                // ProductRainfallStations excludes pool-only gauges — so the 3o/3oni bundles
+                // re-saved under a pool-only slug are never coverage-checked (predict skips
+                // them, so they'd always breach). Same source of truth as predict/verify/render.
+                l.ProductRainfallStations.Select(s => s.Slug).ToList()))
             .ToList();
 
         if (locations.Count == 0)

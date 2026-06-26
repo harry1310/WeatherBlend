@@ -132,6 +132,18 @@ public class ConfigTests
         bound.IsPoolOnlySlug("ea_princetown").Should().BeTrue();
         bound.IsPoolOnlySlug("wl_manaton").Should().BeTrue();
         bound.IsPoolOnlySlug("ea_bellever_dartmoor").Should().BeFalse();
+        // ProductRainfallStations is THE single source of truth for product gauges — every
+        // per-station predict/verify/render/4b/coverage path resolves its list from here, so a
+        // pool-only gauge can't leak into one. It must exclude Princetown + Manaton.
+        bound.Locations[0].ProductRainfallStations.Select(s => s.Name).Should()
+            .BeEquivalentTo("Bellever Dartmoor", "Bovey Tracey", "Dartmoor nr Hexworthy");
+        // Invariant: the config-view (ProductRainfallStations) and the slug-view (IsPoolOnlySlug)
+        // must AGREE for every gauge — that agreement is what stops a gauge being filtered in one
+        // path but not another (the 2026-06-26 coverage-guard breach was exactly such a divergence).
+        foreach (var s in bound.Locations[0].Rainfall.Stations)
+            bound.IsPoolOnlySlug(s.Slug).Should().Be(
+                !bound.Locations[0].ProductRainfallStations.Contains(s),
+                "IsPoolOnlySlug and ProductRainfallStations must agree for {0}", s.Name);
         bound.Locations[0].Metar.Primary.Should().Be("EGTE");
         bound.Locations[0].Metar.Fallback.Should().Be("EGDY");
         bound.Locations[1].Name.Should().Be("membury_devon");

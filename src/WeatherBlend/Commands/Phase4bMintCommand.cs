@@ -109,8 +109,8 @@ public sealed class Phase4bMintCommand
         {
             // Pool-only gauges (e.g. Princetown) feed pooled 3o training only —
             // never a per-station product, so 4b is never synthesised for them.
-            foreach (var s in loc.Rainfall.Stations.Where(s => !s.PoolOnly))
-                slugs.Add(StationSlug.WithEaPrefix(s.Name));
+            foreach (var s in loc.ProductRainfallStations)
+                slugs.Add(s.Slug);
         }
         return slugs;
     }

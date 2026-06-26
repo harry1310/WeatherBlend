@@ -250,7 +250,7 @@ public sealed class RenderSiteCommand
             // Pool-only gauges (e.g. Princetown) feed pooled 3o training only —
             // never a per-station product, so they never appear in any rendered
             // station list (forecasts / skill / dry-window / index all read this).
-            RainStationSlugs: loc.Rainfall.Stations.Where(s => !s.PoolOnly).Select(s => s.Slug).ToList(),
+            RainStationSlugs: loc.ProductRainfallStations.Select(s => s.Slug).ToList(),
             IsPrimary: idx == 0,
             Tabs: loc.Tabs.ToList(),
             // The climbing range (05:00–20:00 UTC) is defined once in

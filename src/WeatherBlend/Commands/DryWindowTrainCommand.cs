@@ -484,7 +484,7 @@ public sealed class DryWindowTrainCommand
         var precipSrcByStation = new Dictionary<string, string>();
         // Pool-only gauges (e.g. Princetown) feed pooled 3o training only — never a
         // per-station product, so the dry-window copula-MC is never trained for them.
-        foreach (var station in _activeLocation.Rainfall.Stations.Where(s => !s.PoolOnly))
+        foreach (var station in _activeLocation.ProductRainfallStations)
         {
             var stationSlug = StationSlug.WithEaPrefix(station.Name);
             var vSrc = ModelArtifact.ResolveStationPhaseVersion(modelsRoot, "precipitation", stationSlug, source.PrecipPhase);
@@ -727,8 +727,7 @@ ORDER BY 1";
         {
             // Pool-only gauges (e.g. Princetown) feed pooled 3o training only —
             // never a per-station product, so dry-window is never trained for them.
-            var found = _activeLocation.Rainfall.Stations
-                .Where(s => !s.PoolOnly).Select(s => s.Name).ToArray();
+            var found = _activeLocation.ProductRainfallStations.Select(s => s.Name).ToArray();
             if (found.Length == 0)
             {
                 _log.LogError("No rainfall stations in config — nothing to train.");

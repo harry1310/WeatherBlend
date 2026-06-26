@@ -135,6 +135,24 @@ public sealed class LocationConfig
     public MetarConfig Metar { get; set; } = new();
     public RainfallConfig Rainfall { get; set; } = new();
 
+    /// <summary>The PRODUCT rainfall gauges for this location — every configured gauge
+    /// EXCEPT <see cref="RainfallStationConfig.PoolOnly"/> ones. THE single source of truth
+    /// for "which gauges do we predict / verify / render / blend / coverage-check": every
+    /// per-station product path resolves its station list from here (config-keyed) or from
+    /// <see cref="AppConfig.IsPoolOnlySlug"/> (the equivalent check for manifest-slug paths),
+    /// so a pool-only gauge can never leak into a product path. The pooled 3o TRAINING
+    /// deliberately uses the full <see cref="Rainfall"/> list instead (the pool needs them).</summary>
+    public List<RainfallStationConfig> ProductRainfallStations
+    {
+        get
+        {
+            var result = new List<RainfallStationConfig>();
+            foreach (var s in Rainfall.Stations)
+                if (!s.PoolOnly) result.Add(s);
+            return result;
+        }
+    }
+
     /// <summary>
     /// Optional Davis WeatherLink (api.weatherlink.com v2) station id for a
     /// close, real-instrument truth source (2026-06-19). Set on

@@ -261,7 +261,7 @@ public sealed class PrecipCrossLeadBakeoffCommand
         // flow through exactly like EA gauges — they are just a different truth
         // source: slug is wl_* (s.Slug), and the wet label is read from
         // data/truth/weatherlink instead of the EA tree. ----
-        foreach (var s in location.Rainfall.Stations.Where(st => !st.PoolOnly))   // 3c study: skip pool-only gauges (not products)
+        foreach (var s in location.ProductRainfallStations)   // 3c study: product gauges only
         {
             ct.ThrowIfCancellationRequested();
             var slug = s.Slug;
@@ -565,7 +565,7 @@ FROM latest WHERE rn = 1;";
         // WeatherLink gauges (e.g. Lands End) flow through like EA gauges — slug is
         // wl_* and truth + persistence read from data/truth/weatherlink. Carry the
         // station config and read the truth source off it per gauge.
-        var gauges = location.Rainfall.Stations.Where(s => !s.PoolOnly).ToList();   // policy scored on product gauges only
+        var gauges = location.ProductRainfallStations;   // policy scored on product gauges only
         var truth = new Dictionary<string, IReadOnlyList<(DateTime, double)>>();
         var rain = new Dictionary<string, Dictionary<DateTime, double>>();
         var m3c = new Dictionary<string, Dictionary<int, (ITransformer Model, BlenderSpec Spec)>>();

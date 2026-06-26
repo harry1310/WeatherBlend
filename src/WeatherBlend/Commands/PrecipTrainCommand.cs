@@ -400,7 +400,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         {
             // Pool-only gauges (e.g. Princetown) feed the pooled 3o training but are
             // never a per-station product — exclude them from the 3c challenger sweep.
-            stationsToTrain = location.Rainfall.Stations.Where(s => !s.PoolOnly).ToList();
+            stationsToTrain = location.ProductRainfallStations;
         }
         else
         {
@@ -1116,8 +1116,8 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         IReadOnlyList<string> stationsToTrain;
         if (string.IsNullOrWhiteSpace(stationOverride))
         {
-            stationsToTrain = location.Rainfall.Stations
-                .Where(s => s.Source is Config.RainfallTruthSource.Ea && !s.PoolOnly)
+            stationsToTrain = location.ProductRainfallStations
+                .Where(s => s.Source is Config.RainfallTruthSource.Ea)
                 .Select(s => s.Name).ToList();
         }
         else
