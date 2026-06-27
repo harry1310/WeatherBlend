@@ -38,9 +38,6 @@ public static class TempVerifier
     internal static string[] ModelNamesForPhase(string? phase) =>
         string.Equals(phase, "2d", StringComparison.Ordinal) ? ModelNamesExact : ModelNamesOffsetDay;
 
-    [Obsolete("Use ModelNamesForPhase(phase). Kept for tests that pre-date 2d.")]
-    internal static readonly string[] ModelNames = ModelNamesOffsetDay;
-
     public sealed class Inputs
     {
         public required IReadOnlyList<TempPredictionRow> Predictions { get; init; }

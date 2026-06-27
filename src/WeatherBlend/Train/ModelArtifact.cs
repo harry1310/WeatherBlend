@@ -95,13 +95,6 @@ public static class ModelArtifact
         /// </summary>
         public Dictionary<string, LeadSchema> Leads { get; set; } = new();
 
-        /// <summary>
-        /// Legacy flat feature-name list. Populated by pre-refactor builders that
-        /// haven't migrated to <see cref="SaveBlenderSpecs"/> yet. Removed after
-        /// Phase 5 of the refactor lands.
-        /// </summary>
-        public List<string>? FeatureNames { get; set; }
-
         public string Dtype { get; set; } = "float32";
     }
 
@@ -354,18 +347,6 @@ public static class ModelArtifact
     /// </summary>
     public static string? PredictConformalIfPresent(string versionDir, int leadHours, double prob)
         => TryLoadLeadConformalCalibrator(versionDir, leadHours)?.Predict(prob).ToString();
-
-    /// <summary>
-    /// Legacy flat-list schema writer. Used by builders that haven't been migrated
-    /// to <see cref="SaveBlenderSpecs"/> yet. Removed after Phase 5 of the
-    /// unify-model-membership refactor.
-    /// </summary>
-    [Obsolete("Use SaveBlenderSpecs instead — per-lead schema captures model membership.")]
-    public static void SaveFeatureSchema(string versionDir, IEnumerable<string> featureNames)
-    {
-        var obj = new FeatureSchema { FeatureNames = featureNames.ToList() };
-        WriteJson(Path.Combine(versionDir, FeatureSchemaFileName), obj);
-    }
 
     /// <summary>
     /// Persist per-lead BlenderSpecs to <c>feature_schema.json</c>. One file per

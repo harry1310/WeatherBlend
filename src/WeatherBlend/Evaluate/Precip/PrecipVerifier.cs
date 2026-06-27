@@ -38,9 +38,6 @@ public static class PrecipVerifier
     internal static string[] ModelNamesForPhase(string? phase) =>
         string.Equals(phase, "3d", StringComparison.Ordinal) ? ModelNamesExact : ModelNamesOffsetDay;
 
-    [Obsolete("Use ModelNamesForPhase(phase). Kept for tests that pre-date 3d.")]
-    internal static readonly string[] ModelNames = ModelNamesOffsetDay;
-
     public const double WetThresholdMm = PrecipFeatureBuilder.WetThresholdMm;
 
     public sealed class Inputs
