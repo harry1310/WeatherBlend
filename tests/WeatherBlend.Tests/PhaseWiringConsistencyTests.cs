@@ -111,6 +111,61 @@ public class PhaseWiringConsistencyTests
     }
 
     // ------------------------------------------------------------------
+    // scripts/sync_train_data.sh — every per-station precip/dry-window phase
+    // pulls the WeatherLink truth tree (it scores against a WeatherLink gauge
+    // via the shared PrecipTruthLoader). The guard missing on 2026-06-28, when
+    // Sennen 3b/3q crashed on an un-synced data/truth/weatherlink because their
+    // case entries declared only EA rainfall — and the dry-window smoke trains
+    // an EA fixture, so it never exercised the WeatherLink path.
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public void Per_station_precip_and_dry_window_phases_pull_weatherlink()
+    {
+        var weatherlinkPhases = SyncTrainDataWeatherlinkLabels();
+
+        // Registry-driven (and dotnet-only, like the case-table test above) so a NEW
+        // precip/dry-window phase is covered automatically — 4a is impl=python and
+        // declares its pulls in WeatherProbabilistic's own sync script, not here.
+        // 4b is excluded: it MINTS mean(4a,3o,3c) from already-trained bundles and
+        // reads no truth tree, so it legitimately declares no weatherlink.
+        var truthReaders = RetrainedDotnetPhases
+            .Where(t => t.Target is "precipitation" or "dry_window")
+            .Select(t => t.Phase.Id)
+            .Where(id => id != "4b")
+            .Distinct();
+
+        foreach (var id in truthReaders)
+        {
+            weatherlinkPhases.Should().Contain(id,
+                because: $"{id} scores against per-station rainfall truth via PrecipTruthLoader, so " +
+                         "its scripts/sync_train_data.sh case must set need_weatherlink=1 — otherwise a " +
+                         "WeatherLink-sourced gauge (Sennen's Lands End; the 3o pool's Manaton) crashes " +
+                         "the retrain on an un-synced data/truth/weatherlink (the 2026-06-28 3b/3q break)");
+        }
+    }
+
+    /// <summary>
+    /// Phase ids whose case branch sets <c>need_weatherlink=1</c> — a label
+    /// line <c>&lt;ids&gt;)</c> immediately followed by a body line declaring it.
+    /// </summary>
+    private static HashSet<string> SyncTrainDataWeatherlinkLabels()
+    {
+        var script = File.ReadAllText(RepoFile("scripts", "sync_train_data.sh"));
+        var labels = new HashSet<string>(StringComparer.Ordinal);
+        foreach (Match m in Regex.Matches(script,
+            @"^[ \t]*([A-Za-z0-9_|]+)\)[ \t]*\r?\n[ \t]*[^\r\n]*need_weatherlink=1",
+            RegexOptions.Multiline))
+        {
+            foreach (var id in m.Groups[1].Value.Split('|'))
+                if (id != "all") labels.Add(id);
+        }
+        labels.Should().NotBeEmpty("the weatherlink case-table parse found nothing; if " +
+                                   "sync_train_data.sh's layout changed, update this regex");
+        return labels;
+    }
+
+    // ------------------------------------------------------------------
     // Predict handled-sets (the L2 gate) stay subsets of the registry
     // ------------------------------------------------------------------
 

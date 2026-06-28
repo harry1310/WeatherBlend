@@ -107,33 +107,33 @@ for p in "${phases[@]}"; do
     humidity)
       need_forecasts=1; need_era5=1; need_models=1; need_weatherlink=1 ;;
 
-    # Occurrence blenders 3a/3c score against EA rainfall truth AND, for any
-    # WeatherLink-sourced rainfall station (Sennen → Lands End cove gauge),
-    # the weatherlink tree. need_weatherlink is harmless for locations without
-    # one (the pull no-ops). 3b/3d stay EA-only (3d is exact-runtime EA truth;
-    # 3b is dry-window EA; WeatherLink gauges are 3a/3c-only).
-    3a|3c)
+    # Per-station precip (3a/3c/3d) AND dry-window (3b/3p/3q) blenders all score
+    # against the SAME per-station truth via the shared PrecipTruthLoader: EA
+    # rainfall, AND for a WeatherLink-sourced gauge (Sennen → Lands End cove gauge)
+    # the weatherlink tree. So EVERY one of them must set need_weatherlink — it is
+    # a harmless no-op for locations with no WeatherLink gauge (the pull no-ops).
+    # Omitting it for 3b/3q crashed the 2026-06-28 Sennen retrain ("truth tree
+    # empty at data/truth/weatherlink") when run WITHOUT 3c — 3c had been silently
+    # masking the gap by pulling weatherlink first in the full Sunday sweep.
+    3a|3c|3b|3d)
       need_forecasts=1; need_rainfall=1; need_weatherlink=1; need_models=1 ;;
-    3d|3b)
-      need_forecasts=1; need_rainfall=1; need_models=1 ;;
 
-    # 3o (and 3oni, the no-station-id tor variant) add the per-station static
-    # orographic JSON on top of 3c's inputs.
+    # 3o/3oni add the per-station orographic JSON on top of 3c's inputs; 3o's
+    # Bonehill pool also includes the WeatherLink Manaton gauge, so weatherlink too.
     3o|3oni)
-      need_forecasts=1; need_rainfall=1; need_orographic=1; need_models=1 ;;
+      need_forecasts=1; need_rainfall=1; need_weatherlink=1; need_orographic=1; need_models=1 ;;
 
-    # 3p (copula MC) + 4b (mint) consume previously-trained bundles + EA truth.
-    # Orographic is technically only needed by the 3p smoke for its 3o
-    # source-binding consistency check, but cheap so pull it.
-    3p|4b)
-      need_forecasts=1; need_rainfall=1; need_orographic=1; need_models=1 ;;
-
-    # 3q (copula MC over 3c) — Sennen's coastal dry-window challenger. Like
-    # 3p but bound to 3c, which has NO orographic features, so no orographic
-    # pull. Σ-fit needs EA rainfall truth; the 3c champion version is read
-    # from the (already-pulled) manifest.
+    # 3p (copula MC over 3o) + 3q (over 3c) — dry-window challengers; Σ-fit reads
+    # per-station truth via PrecipTruthLoader, so weatherlink too. 3p pulls
+    # orographic for its 3o source-binding smoke check; 3q's 3c source has none.
+    3p)
+      need_forecasts=1; need_rainfall=1; need_weatherlink=1; need_orographic=1; need_models=1 ;;
     3q)
-      need_forecasts=1; need_rainfall=1; need_models=1 ;;
+      need_forecasts=1; need_rainfall=1; need_weatherlink=1; need_models=1 ;;
+
+    # 4b mints mean(4a,3o,3c) from already-trained bundles — reads no truth tree.
+    4b)
+      need_forecasts=1; need_rainfall=1; need_orographic=1; need_models=1 ;;
 
     # wind_speed_lgb moved to Python 2026-06-10 (Option B CQR cutover) — its
     # pull declaration now lives in WeatherProbabilistic's
@@ -148,6 +148,16 @@ for p in "${phases[@]}"; do
       exit 3 ;;
   esac
 done
+
+# --dry-run contract check (SYNC_DRY_RUN=1): print the resolved per-tree needs
+# and exit WITHOUT pulling, so a fast test can assert the case table above gives
+# the right trees per phase — specifically that EVERY per-station precip/dry-
+# window phase declares weatherlink. This is the guard that was missing when the
+# 2026-06-28 Sennen 3b/3q retrain crashed on an un-synced data/truth/weatherlink.
+if [ -n "${SYNC_DRY_RUN:-}" ]; then
+  echo "NEEDS forecasts=$need_forecasts era5=$need_era5 metar=$need_metar rainfall=$need_rainfall weatherlink=$need_weatherlink midas=$need_midas orographic=$need_orographic models=$need_models"
+  exit 0
+fi
 
 # ----------------------------------------------------------------------------
 # Pull helper
