@@ -501,14 +501,14 @@ jobs:
       # dotnet fanout automatically.
 
       - name: Mint Phase 4b bundle (4a + 3o mean)
-        # Reads the latest 4a + 3o bundles already pulled from R2 at job
-        # start. Bundle re-mint is one-cycle-behind on 4a updates (4a is
-        # retrained in the WP-side workflow on the same Sunday tick) but
-        # always fresh on 3o — acceptable trade for the simple flow.
-        # Gated on 3o succeeding, since that's the leg we control in
-        # this workflow.
+        # Reads the latest 4a + 3o + 3c CHAMPION bundles pulled from R2 at job
+        # start — it does NOT need 3o to have just been trained in this run.
+        # Gated only on 3o not having FAILED, so `phases=4b` can re-mint
+        # STANDALONE (3o skipped) to pick up a fresh 4a from the WP-side retrain
+        # WITHOUT needlessly re-training the 3o pool. A 3o failure still blocks
+        # the mint (don't build 4b on a broken 3o).
         id: mint_4b
-        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_4b == 'true' && steps.train_3o.outcome == 'success'
+        if: steps.gate.outputs.proceed == 'true' && steps.phases.outputs.run_4b == 'true' && steps.train_3o.outcome != 'failure'
         continue-on-error: true
         run: |
           dotnet run --project src/WeatherBlend --no-build -c Release -- phase4b-mint
