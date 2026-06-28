@@ -1,6 +1,7 @@
 using System.Text;
 using DuckDB.NET.Data;
 using WeatherBlend.Config;
+using WeatherBlend.Train;
 using WeatherBlend.Train.Common;
 using CommonRow = WeatherBlend.Train.Common.DryWindowTrainingRow;
 
@@ -41,38 +42,27 @@ public static class DryWindowFeatureBuilder
 
     private static List<DryWindowLabelBuilder.HourlyTruth> LoadHourlyTruth(
         string rainfallPath, string locationName, string stationName,
-        DateTime? minValidTime, CancellationToken ct)
+        DateTime? minValidTime, CancellationToken ct,
+        string? weatherLinkTruthPath = null, string? weatherLinkTruthLocation = null)
     {
-        var glob = SqlGlob.Escape(Path.Combine(rainfallPath, "**", "*.parquet"));
-        var escStation  = stationName.Replace("'", "''");
-        var escLocation = locationName.Replace("'", "''");
-        var minObservedFilter = minValidTime.HasValue
-            ? $"  AND ObservedTimeUtc >= TIMESTAMP '{minValidTime.Value:yyyy-MM-dd HH:mm:ss}'\n"
-            : string.Empty;
+        // Reuse the canonical hourly-rain loader so the EA-vs-WeatherLink switch
+        // (and its SQL) lives in ONE place. The EA branch is byte-for-byte the
+        // query this method used to hand-roll (SUM(Value15MinMm), 4-of-4 gate);
+        // a non-null weatherLinkTruthPath swaps in the WeatherLink hourly tree so
+        // WeatherLink product gauges (e.g. Lands End at Sennen) get truth instead
+        // of silently producing zero rows.
+        var hourly = PrecipTruthLoader.LoadHourlyRain(
+            rainfallPath, locationName, stationName, minValidTime, ct,
+            weatherLinkTruthPath, weatherLinkTruthLocation);
 
-        var sql = $@"
-SELECT date_trunc('hour', ObservedTimeUtc) AS valid_time,
-       SUM(Value15MinMm) AS mm_hour
-FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{escLocation}'
-  AND StationName  = '{escStation}'
-  AND Value15MinMm IS NOT NULL
-{minObservedFilter}GROUP BY 1
-HAVING COUNT(*) = 4
-ORDER BY 1";
-
-        using var conn = new DuckDBConnection("DataSource=:memory:");
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-        var rows = new List<DryWindowLabelBuilder.HourlyTruth>();
-        using var r = cmd.ExecuteReader();
-        while (r.Read())
+        var rows = new List<DryWindowLabelBuilder.HourlyTruth>(hourly.Count);
+        foreach (var (hourUtc, mm) in hourly)
         {
             ct.ThrowIfCancellationRequested();
-            var hour = DateTime.SpecifyKind(r.GetDateTime(0), DateTimeKind.Utc);
-            rows.Add(new DryWindowLabelBuilder.HourlyTruth(hour, r.GetDouble(1)));
+            var hour = DateTime.SpecifyKind(hourUtc, DateTimeKind.Utc);
+            rows.Add(new DryWindowLabelBuilder.HourlyTruth(hour, mm));
         }
+        rows.Sort((a, b) => a.HourUtc.CompareTo(b.HourUtc));
         return rows;
     }
 
@@ -302,14 +292,17 @@ ORDER BY 1";
         int windowHours,
         DaytimeWindow daytime,
         DateTime? minValidTime = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? weatherLinkTruthPath = null,
+        string? weatherLinkTruthLocation = null)
     {
         if (windowHours < 1 || windowHours > daytime.DurationHours)
             throw new ArgumentOutOfRangeException(nameof(windowHours),
                 $"Window length {windowHours} exceeds the daytime range ({daytime.DurationHours}h).");
 
         // Step 1: hourly truth + per-day labels.
-        var truth = LoadHourlyTruth(rainfallPath, locationName, stationName, minValidTime, ct);
+        var truth = LoadHourlyTruth(rainfallPath, locationName, stationName, minValidTime, ct,
+            weatherLinkTruthPath, weatherLinkTruthLocation);
         var labels = DryWindowLabelBuilder.Build(truth, new[] { windowHours }, daytime);
         if (labels.Labels.Count == 0) return new List<CommonRow>();
 

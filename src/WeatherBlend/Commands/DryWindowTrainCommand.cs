@@ -123,6 +123,14 @@ public sealed class DryWindowTrainCommand
                 _log.LogInformation("=== Station '{Station}', window {W}h → {Key} ===",
                     stationName, window, compositeKey);
 
+                // Resolve the station's wet-label truth source. A WeatherLink
+                // product gauge (e.g. Lands End at Sennen) returns its weatherlink
+                // tree path + location key here; an EA station returns (null,
+                // null) and reads the EA tree by name as before.
+                var stationCfg = _activeLocation.Rainfall.Stations
+                    .First(s => s.Name.Equals(stationName, StringComparison.OrdinalIgnoreCase));
+                var (wlTruthPath, wlTruthLoc) = stationCfg.WeatherLinkTruth(_cfg.Storage);
+
                 var perLead = new Dictionary<string, ModelArtifact.PerLeadStats>();
                 var importanceByLead = new Dictionary<int, IEnumerable<(string Name, double Gain)>>();
                 var specsPerLead = new Dictionary<int, BlenderSpec>();
@@ -167,7 +175,9 @@ public sealed class DryWindowTrainCommand
                         window,
                         _cfg.DryWindow.BuildDaytimeWindow(),
                         minValidTime,
-                        ct);
+                        ct,
+                        wlTruthPath,
+                        wlTruthLoc);
 
                     var pos = rows.Count(r => r.Label);
                     _log.LogInformation("Loaded {N} rows (positives={Pos} / {Pct:P1}) spanning {S:yyyy-MM-dd} → {E:yyyy-MM-dd}",
@@ -520,7 +530,7 @@ public sealed class DryWindowTrainCommand
             // Load hourly EA truth across the station's full history. Build
             // per-day daytime wet/dry binary sequences. Threshold = 0.1 mm/h
             // (same as PrecipFeatureBuilder.WetThresholdMm).
-            var sequencesByDate = LoadDaytimeBinarySequences(station.Name, daytime, ct);
+            var sequencesByDate = LoadDaytimeBinarySequences(station, daytime, ct);
             if (sequencesByDate.Count < 200)
             {
                 _log.LogWarning("Phase {P} {Slug}: only {N} daytime-complete days of truth — too few to fit Σ; skipping.",
@@ -668,43 +678,22 @@ public sealed class DryWindowTrainCommand
     /// label builder applies to 3b training rows).
     /// </summary>
     private Dictionary<DateOnly, byte[]> LoadDaytimeBinarySequences(
-        string stationName, DaytimeWindow daytime, CancellationToken ct)
+        RainfallStationConfig station, DaytimeWindow daytime, CancellationToken ct)
     {
-        var rainfallPath = _cfg.Storage.RainfallPath;
-        var glob = Path.Combine(rainfallPath, "**", "*.parquet").Replace('\\', '/');
-        var escLocation = _activeLocation.Name.Replace("'", "''");
-        var escStation  = stationName.Replace("'", "''");
-        // 15-min totals roll up to hourly via SUM with a "all 4 quarters present"
-        // gate — identical aggregation to DryWindowFeatureBuilder.LoadHourlyTruth.
-        var sql = $@"
-SELECT date_trunc('hour', ObservedTimeUtc) AS valid_time,
-       SUM(Value15MinMm) AS mm_hour
-FROM read_parquet('{glob}', hive_partitioning = false, union_by_name = true)
-WHERE LocationName = '{escLocation}'
-  AND StationName  = '{escStation}'
-  AND Value15MinMm IS NOT NULL
-GROUP BY 1
-HAVING COUNT(*) = 4
-ORDER BY 1";
-
-        using var conn = new DuckDBConnection("DataSource=:memory:");
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-        var hourly = new SortedDictionary<DateTime, double>();
-        using var r = cmd.ExecuteReader();
-        while (r.Read())
-        {
-            ct.ThrowIfCancellationRequested();
-            var t = DateTime.SpecifyKind(r.GetDateTime(0), DateTimeKind.Utc);
-            hourly[t] = r.GetDouble(1);
-        }
+        // Reuse the canonical hourly-rain loader so WeatherLink product gauges
+        // (e.g. Lands End at Sennen) get truth too, instead of the old EA-only
+        // hand-rolled query silently returning zero rows for them. The EA branch
+        // is the same SUM(Value15MinMm) + 4-of-4 gate this used to inline.
+        var hourly = PrecipTruthLoader.LoadHourlyRain(
+            station, _cfg.Storage, _activeLocation.Name, null, ct);
 
         const double WetThresholdMm = 0.1;
         var result = new Dictionary<DateOnly, byte[]>();
         if (hourly.Count == 0) return result;
-        var minDay = DateOnly.FromDateTime(hourly.Keys.First().Date);
-        var maxDay = DateOnly.FromDateTime(hourly.Keys.Last().Date);
+        // LoadHourlyRain returns an unordered Dictionary, so take explicit
+        // Min/Max rather than relying on First/Last key order.
+        var minDay = DateOnly.FromDateTime(hourly.Keys.Min().Date);
+        var maxDay = DateOnly.FromDateTime(hourly.Keys.Max().Date);
         for (var d = minDay; d <= maxDay; d = d.AddDays(1))
         {
             var (startUtc, endUtcExclusive) = daytime.UtcHourRangeFor(d);
