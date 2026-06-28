@@ -247,7 +247,7 @@ public sealed class DryWindowVerifyCommand
                 var stripped = slug.StartsWith("ea_") ? slug[3..] : slug;
                 if (!slug.Equals(stationArg, StringComparison.OrdinalIgnoreCase)
                     && !stripped.Equals(stationArg, StringComparison.OrdinalIgnoreCase)
-                    && !slug.Equals(StationSlug.WithEaPrefix(stationArg), StringComparison.OrdinalIgnoreCase))
+                    && !slug.Equals(_cfg.ResolveStationSlug(stationArg), StringComparison.OrdinalIgnoreCase))
                     continue;
             }
             if (!string.Equals(windowArg, "all", StringComparison.OrdinalIgnoreCase))

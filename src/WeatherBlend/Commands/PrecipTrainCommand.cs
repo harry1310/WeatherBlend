@@ -1179,7 +1179,7 @@ public sealed class PrecipTrainCommand : TrainCommandBase
         Config.LocationConfig location,
         CancellationToken ct)
     {
-        var stationSlug = StationSlug.WithEaPrefix(primaryStation);
+        var stationSlug = _cfg.ResolveStationSlug(primaryStation);
         var now = DateTime.UtcNow;
         var versionDir = ModelArtifact.BuildStationVersionDir(modelsRoot, "precipitation", stationSlug, now, suffix: "phase3d");
         var versionName = Path.GetFileName(versionDir);

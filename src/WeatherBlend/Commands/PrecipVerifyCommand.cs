@@ -162,7 +162,7 @@ public sealed class PrecipVerifyCommand
         var exact = all.FirstOrDefault(s => string.Equals(s, filter, StringComparison.OrdinalIgnoreCase));
         if (exact is not null) return new[] { exact };
 
-        var derivedSlug = StationSlug.WithEaPrefix(filter);
+        var derivedSlug = _cfg.ResolveStationSlug(filter);
         var byDerived = all.FirstOrDefault(s => string.Equals(s, derivedSlug, StringComparison.OrdinalIgnoreCase));
         return byDerived is null ? Array.Empty<string>() : new[] { byDerived };
     }

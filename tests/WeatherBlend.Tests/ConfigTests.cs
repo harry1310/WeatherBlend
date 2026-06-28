@@ -132,6 +132,14 @@ public class ConfigTests
         bound.IsPoolOnlySlug("ea_princetown").Should().BeTrue();
         bound.IsPoolOnlySlug("wl_manaton").Should().BeTrue();
         bound.IsPoolOnlySlug("ea_bellever_dartmoor").Should().BeFalse();
+        // ResolveStationSlug must be SOURCE-AWARE: wl_ for WeatherLink gauges, ea_ otherwise.
+        // StationSlug.WithEaPrefix hard-codes ea_, which sent the dry-window / 4a / conformal /
+        // verify paths hunting for ea_lands_end / ea_manaton while those WeatherLink gauges live
+        // under wl_ — the 2026-06-28 3b break (Lands End is the real WeatherLink product that fell over).
+        bound.ResolveStationSlug("Manaton").Should().Be("wl_manaton");
+        bound.ResolveStationSlug("Lands End").Should().Be("wl_lands_end");
+        bound.ResolveStationSlug("Bellever Dartmoor").Should().Be("ea_bellever_dartmoor");
+        bound.ResolveStationSlug("Some Unknown Gauge").Should().Be("ea_some_unknown_gauge"); // ea_ fallback for an unknown name
         // ProductRainfallStations is THE single source of truth for product gauges — every
         // per-station predict/verify/render/4b/coverage path resolves its list from here, so a
         // pool-only gauge can't leak into one. It must exclude Princetown + Manaton.

@@ -35,6 +35,25 @@ public sealed class AppConfig
         return false;
     }
 
+    /// <summary>The source-aware slug for a rainfall gauge by friendly NAME — <c>wl_*</c> for
+    /// WeatherLink, <c>ea_*</c> otherwise. Use THIS, not <see cref="Models.StationSlug.WithEaPrefix"/>,
+    /// wherever only the name is in hand: WithEaPrefix hard-codes <c>ea_</c>, so it resolves a
+    /// WeatherLink gauge (Lands End, Manaton) to the wrong slug and it can't find its own
+    /// models/truth/predictions (the 2026-06-28 dry-window 3b break: looked for ea_lands_end
+    /// while 3c trained under wl_lands_end). Falls back to <c>ea_</c> for an unknown name.</summary>
+    public string ResolveStationSlug(string stationName)
+    {
+        foreach (var loc in Locations)
+        {
+            var stations = loc.Rainfall?.Stations;
+            if (stations is null) continue;
+            foreach (var s in stations)
+                if (string.Equals(s.Name, stationName, System.StringComparison.OrdinalIgnoreCase))
+                    return s.Slug;
+        }
+        return WeatherBlend.Models.StationSlug.WithEaPrefix(stationName);
+    }
+
     /// <summary>
     /// Back-compat accessor for the historical single-location field. Returns
     /// the FIRST configured location (the primary). 29+ call sites across

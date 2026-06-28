@@ -70,7 +70,7 @@ public sealed class Phase3cDataWindowBakeoffCommand
             foreach (var (loc, name) in stations)
             {
                 ct.ThrowIfCancellationRequested();
-                var slug = StationSlug.WithEaPrefix(name);
+                var slug = _cfg.ResolveStationSlug(name);
                 // This command's whole job is to study the EFFECT of the training-data
                 // window on 3c, so full history (null) is a deliberate arm here.
                 var rows = PrecipRichFeatureBuilder.BuildForLead(

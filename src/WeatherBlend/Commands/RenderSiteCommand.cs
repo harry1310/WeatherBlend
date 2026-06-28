@@ -263,7 +263,7 @@ public sealed class RenderSiteCommand
                     Label: string.IsNullOrWhiteSpace(vr.Label) ? $"{loc.DisplayName} (on-site estimate)" : vr.Label,
                     FittedOn: vr.FittedOn,
                     WeightsBySlug: vr.Weights.ToDictionary(
-                        kv => StationSlug.WithEaPrefix(kv.Key), kv => kv.Value, StringComparer.Ordinal))
+                        kv => _cfg.ResolveStationSlug(kv.Key), kv => kv.Value, StringComparer.Ordinal))
                 : null,
             // Sea-state badge thresholds — marine locations with a
             // seaStateBadge config block only (Sennen). No block = null =

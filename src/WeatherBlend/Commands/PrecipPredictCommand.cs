@@ -271,7 +271,7 @@ public sealed class PrecipPredictCommand
         LocationConfig location,
         CancellationToken ct)
     {
-        var refGauge = StationSlug.WithEaPrefix(TorReferenceGauge);
+        var refGauge = _cfg.ResolveStationSlug(TorReferenceGauge);
         var version = ModelArtifact.ResolveStationPhaseVersion(modelsRoot, "precipitation", refGauge, "3oni");
         if (string.IsNullOrEmpty(version))
         {
@@ -1194,7 +1194,7 @@ public sealed class PrecipPredictCommand
         if (explicitSlug is not null)
             return new[] { explicitSlug };
 
-        var derivedSlug = StationSlug.WithEaPrefix(truthStation);
+        var derivedSlug = _cfg.ResolveStationSlug(truthStation);
         var match = manifestStations.FirstOrDefault(s =>
             string.Equals(s, derivedSlug, StringComparison.OrdinalIgnoreCase));
         if (match is not null)

@@ -113,7 +113,7 @@ public sealed class DryWindowTrainCommand
             foreach (var window in windows)
             {
                 ct.ThrowIfCancellationRequested();
-                var compositeKey = $"{StationSlug.WithEaPrefix(stationName)}/window_{window}h";
+                var compositeKey = $"{_cfg.ResolveStationSlug(stationName)}/window_{window}h";
                 var now = DateTime.UtcNow;
                 // 3b → v{ts} (champion, no suffix). Any future challenger
                 // adds its own _phaseXX suffix.
@@ -222,7 +222,7 @@ public sealed class DryWindowTrainCommand
                     // index-aligned. p_dry_window is the SHIPPING value so a
                     // downstream Brier on the bake-off parquet matches what
                     // the site renders.
-                    var stationSlug = StationSlug.WithEaPrefix(stationName);
+                    var stationSlug = _cfg.ResolveStationSlug(stationName);
                     for (int i = 0; i < ds.Test.Count; i++)
                     {
                         testPredictionRows.Add(new DryWindowTestPredictionRow
@@ -296,9 +296,15 @@ public sealed class DryWindowTrainCommand
 
                 if (!anyLeadTrained)
                 {
-                    _log.LogError("No leads trained for ({Station}, {W}h) — every lead had too few " +
-                        "rows; cell not produced. Counts as a failure.", stationName, window);
-                    cellFailures++;
+                    // No input for this cell — every lead had too few rows, i.e. the station's
+                    // upstream precip/gauge data isn't available yet (e.g. a freshly-wired
+                    // WeatherLink gauge whose 3c hasn't championed). SKIP it gracefully like 3q
+                    // does ("will retry once 3c is trained") rather than failing the whole retrain;
+                    // it'll produce once the data lands. A guard failure on a cell that DID train
+                    // still counts as a failure below — this only spares not-yet-ready stations.
+                    _log.LogWarning("No usable rows for ({Station}, {W}h) — upstream data not ready; " +
+                        "skipping this cell this run (it'll produce once the station's data is available).", stationName, window);
+                    modelsSkipped++;
                     continue;
                 }
 
@@ -346,7 +352,7 @@ public sealed class DryWindowTrainCommand
                     },
                 };
                 ModelArtifact.SaveTrainingMetadata(versionDir, metadata);
-                var stationSlug3b = StationSlug.WithEaPrefix(stationName);
+                var stationSlug3b = _cfg.ResolveStationSlug(stationName);
                 var labelRates3b = firstLeadTrainLabels is { Count: > 0 }
                     ? new Dictionary<string, double>
                       {
@@ -486,7 +492,7 @@ public sealed class DryWindowTrainCommand
         // per-station product, so the dry-window copula-MC is never trained for them.
         foreach (var station in _activeLocation.ProductRainfallStations)
         {
-            var stationSlug = StationSlug.WithEaPrefix(station.Name);
+            var stationSlug = _cfg.ResolveStationSlug(station.Name);
             var vSrc = ModelArtifact.ResolveStationPhaseVersion(modelsRoot, "precipitation", stationSlug, source.PrecipPhase);
             if (string.IsNullOrEmpty(vSrc))
             {
@@ -508,7 +514,7 @@ public sealed class DryWindowTrainCommand
         foreach (var station in _activeLocation.Rainfall.Stations)
         {
             ct.ThrowIfCancellationRequested();
-            var stationSlug = StationSlug.WithEaPrefix(station.Name);
+            var stationSlug = _cfg.ResolveStationSlug(station.Name);
             if (!precipSrcByStation.TryGetValue(stationSlug, out var vSrc)) continue;
 
             // Load hourly EA truth across the station's full history. Build

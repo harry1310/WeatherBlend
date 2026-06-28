@@ -68,7 +68,7 @@ public sealed class DumpOroFeaturesCommand
             _log.LogError("No configured location has rainfall station '{Station}'.", stationFriendly);
             return 2;
         }
-        var slug = StationSlug.WithEaPrefix(stationFriendly);
+        var slug = _cfg.ResolveStationSlug(stationFriendly);
 
         // stationIndex MUST match PrecipTrainCommand.BonehillStationOrder3o's
         // position for the station (Bellever=0, Bovey=1, Hexworthy=2,

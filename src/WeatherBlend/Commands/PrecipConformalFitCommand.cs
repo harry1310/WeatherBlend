@@ -308,7 +308,7 @@ public sealed class PrecipConformalFitCommand
     private string? ResolveStationName(string slug)
     {
         foreach (var s in _cfg.Location.Rainfall.Stations)
-            if (StationSlug.WithEaPrefix(s.Name).Equals(slug, StringComparison.OrdinalIgnoreCase))
+            if (s.Slug.Equals(slug, StringComparison.OrdinalIgnoreCase))
                 return s.Name;
         return null;
     }
