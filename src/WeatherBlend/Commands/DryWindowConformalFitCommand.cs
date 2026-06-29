@@ -96,7 +96,7 @@ public sealed class DryWindowConformalFitCommand
             return Task.FromResult((fitted, skipped + 1));
         }
         var (stationSlug, windowHours) = parsed.Value;
-        var stationName = ResolveStationName(stationSlug);
+        var stationName = _cfg.ResolveStationName(stationSlug);
         if (stationName is null)
         {
             _log.LogWarning("{Key}: cannot resolve station name from slug; skipping", compositeKey);
@@ -173,11 +173,4 @@ public sealed class DryWindowConformalFitCommand
     }
 
 
-    private string? ResolveStationName(string slug)
-    {
-        foreach (var s in _cfg.Location.Rainfall.Stations)
-            if (s.Slug.Equals(slug, StringComparison.OrdinalIgnoreCase))
-                return s.Name;
-        return null;
-    }
 }

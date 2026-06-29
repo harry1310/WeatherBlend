@@ -136,7 +136,7 @@ public sealed class PrecipConformalFitCommand
         var modelsRoot = _cfg.Storage.ModelsPath;
         int fitted = 0, skipped = 0;
 
-        var stationName = ResolveStationName(stationSlug);
+        var stationName = _cfg.ResolveStationName(stationSlug);
         if (stationName is null)
         {
             _log.LogWarning("{S}: cannot resolve station name from slug; skipping", stationSlug);
@@ -305,11 +305,4 @@ public sealed class PrecipConformalFitCommand
         return Task.FromResult((fitted, skipped));
     }
 
-    private string? ResolveStationName(string slug)
-    {
-        foreach (var s in _cfg.Location.Rainfall.Stations)
-            if (s.Slug.Equals(slug, StringComparison.OrdinalIgnoreCase))
-                return s.Name;
-        return null;
-    }
 }

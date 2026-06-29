@@ -54,6 +54,27 @@ public sealed class AppConfig
         return WeatherBlend.Models.StationSlug.WithEaPrefix(stationName);
     }
 
+    /// <summary>The friendly NAME of a rainfall gauge by SLUG — the reverse of
+    /// <see cref="ResolveStationSlug"/>, searching ALL locations (slugs are globally
+    /// unique across the config). <see cref="Models.StationSlug.Of"/> is lossy/one-way
+    /// (it lowercases + collapses punctuation), so the config is the only safe slug→name
+    /// source — never reconstruct it. Returns null for an unknown slug. Fixes the
+    /// conformal-fit skip: its local resolver searched only <see cref="Location"/>
+    /// (primary = Bonehill), so every non-Bonehill gauge (Sennen's Trengwainton + Lands
+    /// End) failed to resolve and its conformal calibration was silently skipped.</summary>
+    public string? ResolveStationName(string slug)
+    {
+        foreach (var loc in Locations)
+        {
+            var stations = loc.Rainfall?.Stations;
+            if (stations is null) continue;
+            foreach (var s in stations)
+                if (string.Equals(s.Slug, slug, System.StringComparison.OrdinalIgnoreCase))
+                    return s.Name;
+        }
+        return null;
+    }
+
     /// <summary>
     /// Back-compat accessor for the historical single-location field. Returns
     /// the FIRST configured location (the primary). 29+ call sites across

@@ -140,6 +140,18 @@ public class ConfigTests
         bound.ResolveStationSlug("Lands End").Should().Be("wl_lands_end");
         bound.ResolveStationSlug("Bellever Dartmoor").Should().Be("ea_bellever_dartmoor");
         bound.ResolveStationSlug("Some Unknown Gauge").Should().Be("ea_some_unknown_gauge"); // ea_ fallback for an unknown name
+        // ResolveStationName is the REVERSE (slug->name). Like ResolveStationSlug it must search
+        // ALL locations, not just the primary (Bonehill): the conformal fit's old local resolver
+        // searched only _cfg.Location, so Sennen's gauges (Trengwainton + Lands End) silently
+        // skipped their calibration (2026-06-29). StationSlug.Of() is lossy, so config is the
+        // only safe slug->name source.
+        bound.ResolveStationName("wl_lands_end").Should().Be("Lands End");  // Sennen (non-primary) + WeatherLink
+        bound.ResolveStationName("ea_bellever_dartmoor").Should().Be("Bellever Dartmoor");
+        bound.ResolveStationName("ea_not_a_real_gauge").Should().BeNull();
+        // Round-trip name -> slug -> name is identity for EVERY configured gauge, across all locations.
+        foreach (var loc in bound.Locations)
+            foreach (var st in loc.Rainfall.Stations)
+                bound.ResolveStationName(bound.ResolveStationSlug(st.Name)).Should().Be(st.Name);
         // ProductRainfallStations is THE single source of truth for product gauges — every
         // per-station predict/verify/render/4b/coverage path resolves its list from here, so a
         // pool-only gauge can't leak into one. It must exclude Princetown + Manaton.
