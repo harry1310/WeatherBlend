@@ -162,7 +162,14 @@ const CHAIN_EDGES: ChainEdge[] = [
  * see the 2026-05-27 15:05Z s3-collect miss for the motivating
  * incident). NOT included in WORKFLOW_FOR_CRON because it dispatches
  * via handleWatchdog, not via the generic dispatch path. */
-const WATCHDOG_CRON = "0 * * * *";
+// 2026-06-30: was hourly; now the every-5-min TICK. It drives the radar freshness-gate (runRadarTick)
+// on EVERY fire, and the hourly failure-recovery watchdog only at minute===0 (so the watchdog's behaviour
+// is unchanged). Must match the last cron in wrangler.toml. Name kept to avoid churn.
+const WATCHDOG_CRON = "*/5 * * * *";
+
+// Met Office UK radar (free, anonymous) — the worker only LISTS it (cheap) to detect a new frame; the heavy
+// fetch+advect happens in radar-nowcast.yml on GitHub Actions.
+const MO_RADAR_BASE = "https://met-office-radar-obs-data.s3.eu-west-2.amazonaws.com/";
 
 export interface Env {
   GH_APP_ID: string;
@@ -177,6 +184,49 @@ export interface Env {
    * One secret across both repos is fine; each webhook signs its own POSTs
    * and we verify the signature in handleWebhook below. */
   GH_WEBHOOK_SECRET: string;
+  /** R2 bucket binding (weatherblend) — the radar tick reads the armed flag
+   * (`control/radar_armed.json`, written by radar-arm.yml) and the last-frame
+   * marker (`control/radar_last_frame`). Configured in wrangler.toml. */
+  RADAR: R2Bucket;
+}
+
+/** Newest Met Office frame timestamp (YYYYMMDDhhmm) by listing today's + yesterday's prefix. */
+async function latestFrameTs(): Promise<string | null> {
+  const now = new Date();
+  for (const off of [0, 1]) {
+    const d = new Date(now.getTime() - off * 86_400_000);
+    const pfx = `radar/${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, "0")}/` +
+      `${String(d.getUTCDate()).padStart(2, "0")}/`;
+    const res = await fetch(`${MO_RADAR_BASE}?list-type=2&prefix=${pfx}&max-keys=400`);
+    if (!res.ok) continue;
+    const ts = [...(await res.text()).matchAll(/<Key>radar\/[^<]*?\/(\d{12})_/g)].map((m) => m[1]);
+    if (ts.length) return ts.sort().at(-1)!;
+  }
+  return null;
+}
+
+/** Radar tick: dispatch the nowcast iff armed AND a frame newer than the last-processed marker exists.
+ * FULLY defensive — any error is swallowed so a radar problem can NEVER break the production watchdog
+ * (collect/predict/retrain recovery) that shares this scheduled handler. */
+async function runRadarTick(env: Env): Promise<void> {
+  try {
+    const armedObj = await env.RADAR.get("control/radar_armed.json");
+    if (!armedObj) return;                                 // never armed
+    const armedUntil = Number(JSON.parse(await armedObj.text()).armed_until) || 0;
+    if (Date.now() / 1000 >= armedUntil) return;           // disarmed / window lapsed
+
+    const latest = await latestFrameTs();
+    if (!latest) return;
+    const lastObj = await env.RADAR.get("control/radar_last_frame");
+    const last = lastObj ? (await lastObj.text()).trim() : "";
+    if (latest <= last) return;                            // no new frame since last dispatch
+
+    console.log(`radar: new frame ${latest} (was ${last || "none"}) — dispatching radar-nowcast.yml`);
+    await dispatchWorkflow(env, "radar-nowcast.yml", env.GH_REPO);
+    await env.RADAR.put("control/radar_last_frame", latest);
+  } catch (e) {
+    console.error("radar tick error (non-fatal — watchdog unaffected):", e);
+  }
 }
 
 export default {
@@ -187,7 +237,14 @@ export default {
     // edge (did each completed upstream get its downstream?), and
     // dispatches anything that's missing.
     if (event.cron === WATCHDOG_CRON) {
-      await runWatchdog(env, event.scheduledTime, /*lookbackMin*/ 60, /*dryRun*/ false);
+      // Every 5 min: fire the Bonehill radar nowcast iff armed AND a new Met Office frame landed
+      // (cheap — one S3 list + a couple of R2 reads). No-op on disarmed days / stale frames.
+      await runRadarTick(env);
+      // Hourly failure-recovery watchdog — UNCHANGED behaviour, gated to the top-of-hour tick so it
+      // still runs exactly once an hour with a 60-min lookback (no duplicate re-dispatches).
+      if (new Date(event.scheduledTime).getUTCMinutes() === 0) {
+        await runWatchdog(env, event.scheduledTime, /*lookbackMin*/ 60, /*dryRun*/ false);
+      }
       return;
     }
 

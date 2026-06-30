@@ -82,8 +82,20 @@ crons = [
   # NOTE: Cloudflare free tier caps a Worker at 5 cron triggers — this
   # is the 5th. Adding any further cron requires moving to paid or
   # consolidating an existing schedule.
-  "0 * * * *",
+  #
+  # 2026-06-30: bumped hourly -> every 5 min so this same tick can drive the
+  # Bonehill radar nowcast (runRadarTick: fire iff armed + a new Met Office
+  # frame landed). The hourly failure-recovery watchdog is UNCHANGED — index.ts
+  # gates runWatchdog to the top-of-hour tick (minute===0). No new cron (still 5).
+  "*/5 * * * *",
 ]
+
+# R2 binding so the worker can read the radar "armed_until" flag (written by
+# radar-arm.yml) and the "last processed frame" marker. Same bucket the CI
+# rclone path uses (weatherblend). Free-tier R2 ops easily cover a 5-min read.
+[[r2_buckets]]
+binding = "RADAR"
+bucket_name = "weatherblend"
 
 # Variables (non-secret). GH_REPO is intentionally a plain var rather than a
 # secret because it's not sensitive — repo owner/name is public on every
