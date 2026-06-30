@@ -286,12 +286,12 @@ public static partial class SitePages
         // Pages deploy; the worker already has a public URL + the RADAR binding, so we reuse it cross-origin).
         var url = "https://weatherblend-scheduler.rhcslater.workers.dev/radar/nowcast/bonehill.json";
         return $$"""
-            <article id="radar-nowcast" hidden style="margin:.25rem 0 1rem">
+            <div id="radar-nowcast" hidden style="background:var(--pico-card-background-color);border:1px solid var(--pico-card-border-color);border-radius:var(--pico-border-radius);padding:.6rem .9rem;margin:.25rem 0 1rem">
               <strong>⚡ Next hour at the crag</strong>
               <small style="color:var(--pico-muted-color);text-transform:uppercase;letter-spacing:.04em;margin-left:.4rem">live radar</small>
               <p id="radar-line" style="margin:.35rem 0 0">…</p>
               <p style="margin:.2rem 0 0;font-size:.8rem;color:var(--pico-muted-color)"><span id="radar-asof"></span> · Contains Met Office data © Crown copyright</p>
-            </article>
+            </div>
             <script>
             (function(){
               var FRESH_MIN = 35, SITE = "Bonehill crag";
