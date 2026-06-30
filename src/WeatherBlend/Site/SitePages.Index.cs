@@ -286,18 +286,12 @@ public static partial class SitePages
         // Pages deploy; the worker already has a public URL + the RADAR binding, so we reuse it cross-origin).
         var url = "https://weatherblend-scheduler.rhcslater.workers.dev/radar/nowcast/bonehill.json";
         return $$"""
-            <style>
-              .radar-nowcast .radar-card{border:1px solid #b9d;border-left:4px solid #74a;border-radius:6px;
-                padding:.5rem .75rem;margin:.25rem 0 1rem;background:#f6f3fb}
-              .radar-nowcast .radar-sub{font-size:.75rem;color:#74a;text-transform:uppercase;letter-spacing:.05em}
-              .radar-nowcast .radar-meta{font-size:.75rem;color:#666;margin:.15rem 0 0}
-            </style>
-            <section id="radar-nowcast" class="radar-nowcast" hidden>
-              <div class="radar-card"><strong>⚡ Next hour at the crag</strong> <span class="radar-sub">live radar</span>
-                <p id="radar-line" style="margin:.25rem 0 0">…</p>
-                <p class="radar-meta"><span id="radar-asof"></span> · <small>Contains Met Office data © Crown copyright</small></p>
-              </div>
-            </section>
+            <article id="radar-nowcast" hidden style="margin:.25rem 0 1rem">
+              <strong>⚡ Next hour at the crag</strong>
+              <small style="color:var(--pico-muted-color);text-transform:uppercase;letter-spacing:.04em;margin-left:.4rem">live radar</small>
+              <p id="radar-line" style="margin:.35rem 0 0">…</p>
+              <p style="margin:.2rem 0 0;font-size:.8rem;color:var(--pico-muted-color)"><span id="radar-asof"></span> · Contains Met Office data © Crown copyright</p>
+            </article>
             <script>
             (function(){
               var FRESH_MIN = 35, SITE = "Bonehill crag";
