@@ -642,6 +642,11 @@ public static partial class SitePages
                 // crowd the main chart, and its own panel can carry
                 // more posterior detail without competing for space.
                 if (phase == "4a") continue;
+                // 3oni is the ungauged-tor (no-station-id) variant. Its gauge predictions are a
+                // credibility-check only — NOT a per-gauge product line — so never draw it on a gauge
+                // chart (it was cluttering all 3 Bonehill gauges). The real product is the crag tor line,
+                // overlaid on the reference gauge below (reads the bonehill_rocks rows directly).
+                if (phase == "3oni") continue;
                 if (!precipByPhase.TryGetValue(phase, out var phaseRows) || phaseRows.Count == 0) continue;
                 var isChampion = string.Equals(phase, stationChampionPhase, StringComparison.Ordinal);
                 var color = PrecipPhaseColor(phase, isChampion);

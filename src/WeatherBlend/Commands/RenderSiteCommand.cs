@@ -350,7 +350,13 @@ public sealed class RenderSiteCommand
             // Precip + dry-window rows are keyed by EA station, not LocationName
             // — scope by this loc's configured station slugs.
             var precip = precipAllLocs
-                .Where(p => locStationSlugs.Count == 0 || locStationSlugs.Contains(p.Station))
+                // Keep this location's configured gauge stations, PLUS the ungauged-tor (3oni)
+                // pseudo-station, which is keyed by the location name (== TorStationSlug
+                // "bonehill_rocks"). Without this the tor rows load from R2 but get dropped here,
+                // so the crag's green 3oni overlay never renders on the rain page.
+                .Where(p => locStationSlugs.Count == 0
+                            || locStationSlugs.Contains(p.Station)
+                            || string.Equals(p.Station, loc.Name, StringComparison.Ordinal))
                 .ToList();
             // Rainfall_amount rows carry both LocationName + TruthStation; scope
             // by location since 3f is per-location-active per phases.yaml.
