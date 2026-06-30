@@ -289,22 +289,37 @@ public static partial class SitePages
             <div id="radar-nowcast" hidden style="background:var(--pico-card-background-color);border:1px solid var(--pico-card-border-color);border-radius:var(--pico-border-radius);padding:.6rem .9rem;margin:.25rem 0 1rem">
               <strong>⚡ Next hour at the crag</strong>
               <small style="color:var(--pico-muted-color);text-transform:uppercase;letter-spacing:.04em;margin-left:.4rem">live radar</small>
-              <p id="radar-line" style="margin:.35rem 0 0">…</p>
+              <p style="margin:.35rem 0 0;font-variant-numeric:tabular-nums">P(wet) <strong id="radar-pwet" style="font-weight:700"></strong></p>
+              <p id="radar-line" style="margin:.1rem 0 0;color:var(--pico-muted-color)">…</p>
               <p style="margin:.2rem 0 0;font-size:.8rem;color:var(--pico-muted-color)"><span id="radar-asof"></span> · Contains Met Office data © Crown copyright</p>
             </div>
             <script>
             (function(){
               var FRESH_MIN = 35, SITE = "Bonehill crag";
+              function pcol(p){
+                if(isNaN(p)) return "var(--pico-muted-color)";
+                var a=[[0,67,160,71],[0.5,255,167,38],[1,229,57,53]];
+                if(p<0){p=0;}
+                if(p>1){p=1;}
+                for(var i=0;i<2;i++){
+                  if(p<=a[i+1][0]){
+                    var f=(p-a[i][0])/(a[i+1][0]-a[i][0]);
+                    return "rgb("+Math.round(a[i][1]+f*(a[i+1][1]-a[i][1]))+","+Math.round(a[i][2]+f*(a[i+1][2]-a[i][2]))+","+Math.round(a[i][3]+f*(a[i+1][3]-a[i][3]))+")";
+                  }
+                }
+                return "var(--pico-muted-color)";
+              }
               fetch("{{url}}", {cache:"no-store"}).then(function(r){return r.ok?r.json():null;}).then(function(j){
                 if(!j||!j.sites||!j.sites[SITE]) return;
                 var ageMs = Date.now() - Date.parse(j.computed_at);
                 if(isNaN(ageMs) || ageMs > FRESH_MIN*60000) return;        // stale / not armed -> stay hidden
-                var s = j.sites[SITE], p = Math.round((s.p_wet||0)*100);
-                var line = s.rain_from
-                  ? ("Rain likely from ~" + s.rain_from + (s.rain_until ? " until ~" + s.rain_until : "")
-                     + " — P(rain next hour) " + p + "%")
-                  : ("Dry next hour likely — P(rain) " + p + "%");
-                document.getElementById("radar-line").textContent = line;
+                var s = j.sites[SITE], p = s.p_wet || 0;
+                var pe = document.getElementById("radar-pwet");
+                pe.textContent = Math.round(p * 100) + "%";
+                pe.style.color = pcol(p);
+                document.getElementById("radar-line").textContent = s.rain_from
+                  ? ("Rain likely from ~" + s.rain_from + (s.rain_until ? " until ~" + s.rain_until : ""))
+                  : "Dry for the next hour";
                 document.getElementById("radar-asof").textContent =
                   "as of " + j.frame_valid.slice(11,16) + ", radar " + Math.round(j.frame_age_min) + " min old";
                 document.getElementById("radar-nowcast").hidden = false;
