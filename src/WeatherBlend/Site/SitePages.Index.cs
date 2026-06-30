@@ -282,7 +282,9 @@ public static partial class SitePages
     private static string RenderRadarNowcastCard(SiteInputs input)
     {
         if (input.ActiveLocationName != "bonehill_rocks") return "";
-        var url = $"{input.AssetPrefix}radar/nowcast/bonehill.json";
+        // Same-origin path served by the Pages Function (cloudflare/pages-functions/radar/nowcast/bonehill.json.js),
+        // which proxies the live JSON from R2. Root-absolute so it resolves regardless of the page's day-offset.
+        var url = "/radar/nowcast/bonehill.json";
         return $$"""
             <style>
               .radar-nowcast .radar-card{border:1px solid #b9d;border-left:4px solid #74a;border-radius:6px;

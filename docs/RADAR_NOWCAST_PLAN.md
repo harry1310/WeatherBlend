@@ -214,18 +214,22 @@ lat/lon through the file's own `where.projdef` (OSGB tmerc) and index off the UL
 10. **Verification track: WRITTEN 2026-06-30.** `verify_archive.py` (live `_engine` at the 3 gauges over the ODIM
     archive, radar P(wet) vs truth — CSI/Brier) + `radar-verify.yml`. Blend column stubbed (`load_blend_pwet`).
 
-### Deployment — REMAINING (needs live access / your go; nothing pushed or deployed yet)
-- **Commit + push** the branch (outside work-hours window today; awaiting your go).
-- **Deploy the worker** (`wrangler deploy`) — adds the `RADAR` R2 binding + the `*/5` cron. Secrets already exist;
-  watch `wrangler tail` to confirm radar ticks no-op when disarmed and the watchdog still fires only at `:00`.
-- **Confirm the served JSON path** — the card fetches `{AssetPrefix}radar/nowcast/bonehill.json`; verify that
-  resolves on the live site (how the site bucket root maps to `radar/nowcast/`). Adjust the URL if needed.
-- **Wire `radar-verify.yml` to fire automatically** — add a worker CHAIN_EDGE off `verify.yml` (reliable path),
-  rather than a GitHub-native `workflow_run` trigger. Manual `workflow_dispatch` works meanwhile.
-- **Blend join** — implement `load_blend_pwet` against the deployed precip blend's gauge P(wet) (the verify.yml
-  prediction path) so the verification shows radar-vs-blend, not just radar-vs-truth.
-- **First armed test** on a showery day; sanity-check the card against reality; then consider re-fitting the
-  calibration with `trend_gain` on and A/B'ing pySTEPS via the verification track (the v2 questions).
+### Deployment — STATUS (DEPLOYED + VERIFIED LIVE 2026-06-30 ~21:30Z)
+- **DONE — pushed to main** (commits 7e05416 radar code, 9d2598d rclone `--s3-no-check-bucket` fix, 1c82e7c worker).
+- **DONE — worker deployed** (deploy-scheduler-worker run succeeded): `*/5` cron + `RADAR` R2 binding live.
+- **DONE — pipeline verified in CI**: `radar-nowcast.yml` fetch→advect→calibrate→`bonehill.json`→R2 (success;
+  JSON confirmed in R2, crag P(wet) ~0.20).
+- **DONE — full loop verified**: armed via `radar-arm.yml` (flag in R2) → the WORKER's `*/5` tick fired the nowcast
+  on its own and wrote `control/radar_last_frame=2026063021..` (proof `runRadarTick` runs). Watchdog untouched.
+- **REMAINING — the card's data source (the one real gap).** The site is **Cloudflare Pages**; the JSON is in the
+  **R2 bucket** = different origin, so the card's relative `{AssetPrefix}radar/nowcast/bonehill.json` won't reach it.
+  Fix options: (a) a **Pages Function** that proxies `radar/nowcast/bonehill.json` from R2 (same-origin, cleanest);
+  (b) enable the bucket's **public r2.dev / custom-domain URL + CORS** for the Pages origin and point the card's
+  `url` there. Needs Cloudflare config + the chosen URL. Until then the card stays hidden (degrades gracefully).
+- **REMAINING — `radar-verify.yml` auto-trigger** (worker CHAIN_EDGE off `verify.yml`); manual dispatch works now.
+- **REMAINING — blend join** (`load_blend_pwet`) for radar-vs-blend in the verification.
+- **REMAINING — v2 questions**: re-fit calibration with `trend_gain` on; A/B pySTEPS via the verification track.
+- Disarm anytime: `gh workflow run radar-arm.yml -f hours=0`.
 
 ---
 

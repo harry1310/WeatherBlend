@@ -52,6 +52,16 @@ runs:
         if [ -n "$ROLLING" ]; then ARGS="$ARGS --rolling-window-days $ROLLING"; fi
         dotnet run --project src/WeatherBlend --no-build -c Release -- render-site $ARGS
 
+    # Ship the Pages Functions alongside the static site so live data (the radar nowcast JSON) can be
+    # served same-origin from R2 — the static site can't read the private bucket directly.
+    - name: Stage Pages Functions
+      shell: bash
+      run: |
+        if [ -d cloudflare/pages-functions ]; then
+          mkdir -p data/site/functions
+          cp -r cloudflare/pages-functions/* data/site/functions/
+        fi
+
     - name: Deploy to Cloudflare Pages
       uses: cloudflare/wrangler-action@v3
       with:
