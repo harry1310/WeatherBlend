@@ -282,9 +282,9 @@ public static partial class SitePages
     private static string RenderRadarNowcastCard(SiteInputs input)
     {
         if (input.ActiveLocationName != "bonehill_rocks") return "";
-        // Same-origin path served by the Pages Function (cloudflare/pages-functions/radar/nowcast/bonehill.json.js),
-        // which proxies the live JSON from R2. Root-absolute so it resolves regardless of the page's day-offset.
-        var url = "/radar/nowcast/bonehill.json";
+        // The scheduler worker serves the live JSON from R2 with CORS (Pages Functions didn't compile in the
+        // Pages deploy; the worker already has a public URL + the RADAR binding, so we reuse it cross-origin).
+        var url = "https://weatherblend-scheduler.rhcslater.workers.dev/radar/nowcast/bonehill.json";
         return $$"""
             <style>
               .radar-nowcast .radar-card{border:1px solid #b9d;border-left:4px solid #74a;border-radius:6px;

@@ -297,6 +297,21 @@ export default {
       for (const t of ts) knownWorkflows.set(t.workflow, t);
     }
 
+    // Serve the live radar nowcast JSON from R2 with CORS. The static Pages site fetches this cross-origin
+    // (Pages Functions didn't compile in the deploy); this reuses the worker's public URL + RADAR binding.
+    if (url.pathname === "/radar/nowcast/bonehill.json") {
+      const cors: Record<string, string> = { "access-control-allow-origin": "*", "cache-control": "no-store" };
+      if (request.method === "OPTIONS") return new Response(null, { headers: cors });
+      try {
+        const obj = await env.RADAR.get("radar/nowcast/bonehill.json");
+        if (!obj) return new Response("{}", { status: 404, headers: { "content-type": "application/json", ...cors } });
+        return new Response(obj.body, { headers: { "content-type": "application/json", ...cors } });
+      } catch (e: unknown) {
+        const m = e instanceof Error ? e.message : String(e);
+        return new Response(`{"error":${JSON.stringify(m)}}`, { status: 500, headers: { "content-type": "application/json", ...cors } });
+      }
+    }
+
     if (url.pathname === "/dispatch" && request.method === "POST") {
       const requested = url.searchParams.get("workflow") ?? "collect.yml";
       const target = knownWorkflows.get(requested);
