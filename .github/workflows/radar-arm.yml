@@ -39,7 +39,7 @@ jobs:
           endpoint: ${{ secrets.R2_ENDPOINT }}
 
       - name: Write armed flag to R2
-        run: rclone copyto out/radar_armed.json r2:weatherblend/control/radar_armed.json
+        run: rclone copyto out/radar_armed.json r2:weatherblend/control/radar_armed.json --s3-no-check-bucket
 
       - name: Fire one nowcast immediately (if arming, not disarming)
         if: ${{ inputs.hours != '0' }}

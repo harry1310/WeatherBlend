@@ -43,4 +43,5 @@ jobs:
           endpoint: ${{ secrets.R2_ENDPOINT }}
 
       - name: Publish JSON to R2
-        run: rclone copyto data/radar/nowcast/bonehill.json r2:weatherblend/radar/nowcast/bonehill.json
+        # --s3-no-check-bucket: R2 tokens can't CreateBucket, so skip rclone's bucket probe (repo convention).
+        run: rclone copyto data/radar/nowcast/bonehill.json r2:weatherblend/radar/nowcast/bonehill.json --s3-no-check-bucket

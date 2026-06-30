@@ -45,7 +45,7 @@ jobs:
         run: python scripts/radar/verify_archive.py "${{ inputs.days }}"
 
       - name: Publish report
-        run: rclone copy data/reports r2:weatherblend/radar/reports --include "radar_live_verify_*.md"
+        run: rclone copy data/reports r2:weatherblend/radar/reports --include "radar_live_verify_*.md" --s3-no-check-bucket
 
       - uses: actions/upload-artifact@v4
         with:
