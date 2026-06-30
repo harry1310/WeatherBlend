@@ -221,11 +221,12 @@ lat/lon through the file's own `where.projdef` (OSGB tmerc) and index off the UL
   JSON confirmed in R2, crag P(wet) ~0.20).
 - **DONE — full loop verified**: armed via `radar-arm.yml` (flag in R2) → the WORKER's `*/5` tick fired the nowcast
   on its own and wrote `control/radar_last_frame=2026063021..` (proof `runRadarTick` runs). Watchdog untouched.
-- **REMAINING — the card's data source (the one real gap).** The site is **Cloudflare Pages**; the JSON is in the
-  **R2 bucket** = different origin, so the card's relative `{AssetPrefix}radar/nowcast/bonehill.json` won't reach it.
-  Fix options: (a) a **Pages Function** that proxies `radar/nowcast/bonehill.json` from R2 (same-origin, cleanest);
-  (b) enable the bucket's **public r2.dev / custom-domain URL + CORS** for the Pages origin and point the card's
-  `url` there. Needs Cloudflare config + the chosen URL. Until then the card stays hidden (degrades gracefully).
+- **DONE — the card's data source.** The site is Cloudflare Pages, the JSON is in R2 (different origin). First tried
+  a **Pages Function** to proxy it — but `wrangler pages deploy` did NOT compile `functions/` (0 functions deployed),
+  so that path was abandoned and removed. Final: the **scheduler worker serves it** — it already has a public URL
+  and the `RADAR` R2 binding, so we added `GET /radar/nowcast/bonehill.json` (CORS `*`) to its fetch handler. The
+  card fetches `https://weatherblend-scheduler.rhcslater.workers.dev/radar/nowcast/bonehill.json` cross-origin.
+  Verified live: the worker returns the fresh JSON. No Cloudflare dashboard step needed.
 - **REMAINING — `radar-verify.yml` auto-trigger** (worker CHAIN_EDGE off `verify.yml`); manual dispatch works now.
 - **REMAINING — blend join** (`load_blend_pwet`) for radar-vs-blend in the verification.
 - **REMAINING — v2 questions**: re-fit calibration with `trend_gain` on; A/B pySTEPS via the verification track.
