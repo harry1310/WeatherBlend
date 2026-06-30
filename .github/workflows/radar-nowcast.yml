@@ -1,0 +1,46 @@
+# Live Bonehill radar nowcast. Dispatched by the Cloudflare scheduler worker ONLY when (a) armed and
+# (b) a genuinely new Met Office radar frame has landed — see cloudflare/scheduler-worker (the worker
+# does the freshness gate, so this workflow just runs). Fetches the latest ODIM frames, advects, and
+# writes radar/nowcast/bonehill.json to R2; the Bonehill Overview card reads it client-side.
+#
+# Scheduling lives in the worker (per the 2026-05-05 audit — never a GitHub `schedule:` block here).
+name: radar-nowcast
+
+on:
+  workflow_dispatch: {}
+
+# Don't let two nowcast runs overlap; a newer frame supersedes an in-flight one.
+concurrency:
+  group: radar-nowcast
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  nowcast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: scripts/radar/requirements.txt
+
+      - name: Install deps
+        run: pip install -r scripts/radar/requirements.txt
+
+      - name: Compute nowcast (fetch latest ODIM -> engine -> calibrate -> JSON)
+        run: python scripts/radar/nowcast.py
+
+      - uses: ./.github/actions/setup-r2
+        with:
+          access_key_id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          secret_access_key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          endpoint: ${{ secrets.R2_ENDPOINT }}
+
+      - name: Publish JSON to R2
+        run: rclone copyto data/radar/nowcast/bonehill.json r2:weatherblend/radar/nowcast/bonehill.json

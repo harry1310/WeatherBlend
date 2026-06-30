@@ -1,0 +1,48 @@
+# Arm (or disarm) the live Bonehill radar nowcast for a window. Run this from the GitHub UI / mobile app
+# / `gh workflow run radar-arm.yml -f hours=12` on a possible climbing day. It writes an "armed_until"
+# timestamp to R2; the Cloudflare worker checks it every 5 min and only fires radar-nowcast.yml while armed.
+# Auto-off is implicit (the timestamp lapses). hours=0 writes a past timestamp = instant disarm.
+name: radar-arm
+
+on:
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: "Hours to keep the nowcast armed (0 = disarm now)"
+        required: true
+        default: "12"
+
+permissions:
+  contents: read
+  actions: write          # to fire an immediate first nowcast
+
+jobs:
+  arm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build armed marker
+        run: |
+          HOURS="${{ inputs.hours }}"
+          UNTIL=$(date -u -d "+${HOURS} hours" +%s)
+          mkdir -p out
+          printf '{"armed_until":%s,"armed_at":"%s","hours":%s}\n' \
+            "$UNTIL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$HOURS" > out/radar_armed.json
+          cat out/radar_armed.json
+
+      - uses: ./.github/actions/setup-r2
+        with:
+          access_key_id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          secret_access_key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          endpoint: ${{ secrets.R2_ENDPOINT }}
+
+      - name: Write armed flag to R2
+        run: rclone copyto out/radar_armed.json r2:weatherblend/control/radar_armed.json
+
+      - name: Fire one nowcast immediately (if arming, not disarming)
+        if: ${{ inputs.hours != '0' }}
+        run: gh workflow run radar-nowcast.yml --ref "${{ github.ref_name }}"
+        env:
+          GH_TOKEN: ${{ github.token }}

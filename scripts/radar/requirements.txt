@@ -1,0 +1,7 @@
+# Radar nowcast pipeline (scripts/radar/*.py). Pure-wheel deps — no compiler needed (pySTEPS deferred to v2).
+numpy
+opencv-python-headless
+h5py
+pyproj
+scipy
+pytest

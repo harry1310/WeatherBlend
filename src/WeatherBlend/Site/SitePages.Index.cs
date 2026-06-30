@@ -244,6 +244,7 @@ public static partial class SitePages
 
         var body = new StringBuilder();
         body.Append("<section>");
+        body.Append(RenderRadarNowcastCard(input));   // live 0–1h radar card (Bonehill only, shown only when fresh)
         body.Append(RenderHomeDaySubNav(input, dayOffset));
         body.Append(Ci, $"""
               <hgroup>
@@ -269,6 +270,52 @@ public static partial class SitePages
         // "index-N" silently broke the Home highlight on every forward-day
         // tab because NavActive("index-1", "index") returns false.
         return WrapPage(input, "Overview", "overview", body.ToString());
+    }
+
+    /// <summary>
+    /// Live 0–1h radar nowcast card (Bonehill only). Emits a hidden section + a tiny client script that
+    /// fetches the JSON written by <c>radar-nowcast.yml</c> (<c>radar/nowcast/bonehill.json</c>) and reveals
+    /// the card ONLY when it is fresh (computed within ~35 min — which only happens while the nowcast is
+    /// armed). A separate product from the NWP blend; never blended, degrades to hidden on any failure.
+    /// TODO: confirm the served JSON path matches how the site bucket is exposed (assumes AssetPrefix root).
+    /// </summary>
+    private static string RenderRadarNowcastCard(SiteInputs input)
+    {
+        if (input.ActiveLocationName != "bonehill_rocks") return "";
+        var url = $"{input.AssetPrefix}radar/nowcast/bonehill.json";
+        return $$"""
+            <style>
+              .radar-nowcast .radar-card{border:1px solid #b9d;border-left:4px solid #74a;border-radius:6px;
+                padding:.5rem .75rem;margin:.25rem 0 1rem;background:#f6f3fb}
+              .radar-nowcast .radar-sub{font-size:.75rem;color:#74a;text-transform:uppercase;letter-spacing:.05em}
+              .radar-nowcast .radar-meta{font-size:.75rem;color:#666;margin:.15rem 0 0}
+            </style>
+            <section id="radar-nowcast" class="radar-nowcast" hidden>
+              <div class="radar-card"><strong>⚡ Next hour at the crag</strong> <span class="radar-sub">live radar</span>
+                <p id="radar-line" style="margin:.25rem 0 0">…</p>
+                <p class="radar-meta"><span id="radar-asof"></span> · <small>Contains Met Office data © Crown copyright</small></p>
+              </div>
+            </section>
+            <script>
+            (function(){
+              var FRESH_MIN = 35, SITE = "Bonehill crag";
+              fetch("{{url}}", {cache:"no-store"}).then(function(r){return r.ok?r.json():null;}).then(function(j){
+                if(!j||!j.sites||!j.sites[SITE]) return;
+                var ageMs = Date.now() - Date.parse(j.computed_at);
+                if(isNaN(ageMs) || ageMs > FRESH_MIN*60000) return;        // stale / not armed -> stay hidden
+                var s = j.sites[SITE], p = Math.round((s.p_wet||0)*100);
+                var line = s.rain_from
+                  ? ("Rain likely from ~" + s.rain_from + (s.rain_until ? " until ~" + s.rain_until : "")
+                     + " — P(rain next hour) " + p + "%")
+                  : ("Dry next hour likely — P(rain) " + p + "%");
+                document.getElementById("radar-line").textContent = line;
+                document.getElementById("radar-asof").textContent =
+                  "as of " + j.frame_valid.slice(11,16) + ", radar " + Math.round(j.frame_age_min) + " min old";
+                document.getElementById("radar-nowcast").hidden = false;
+              }).catch(function(){});
+            })();
+            </script>
+            """;
     }
 
     /// <summary>The shared "climbing range" — lowest UTC hour the Overview tile

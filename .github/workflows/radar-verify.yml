@@ -1,0 +1,53 @@
+# Rolling verification of the live radar engine vs the EA gauges over the ODIM archive (NOT armed-gated).
+# Manual for now (`gh workflow run radar-verify.yml`). To run it automatically, add a worker CHAIN_EDGE so
+# it fires after verify.yml completes (the reliable path — per the 2026-05-05 audit, prefer a worker hop to
+# a GitHub-native workflow_run trigger). See docs/RADAR_NOWCAST_PLAN.md.
+name: radar-verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Verification window in days"
+        required: false
+        default: "30"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: scripts/radar/requirements.txt
+
+      - name: Install deps
+        run: pip install -r scripts/radar/requirements.txt
+
+      - uses: ./.github/actions/setup-r2
+        with:
+          access_key_id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          secret_access_key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          endpoint: ${{ secrets.R2_ENDPOINT }}
+
+      # gauge truth lives in R2 under data/truth/rainfall — pull just that prefix for the verify.
+      - name: Sync EA rainfall truth from R2
+        run: rclone copy r2:weatherblend/data/truth/rainfall data/truth/rainfall --fast-list
+
+      - name: Run rolling verification
+        run: python scripts/radar/verify_archive.py "${{ inputs.days }}"
+
+      - name: Publish report
+        run: rclone copy data/reports r2:weatherblend/radar/reports --include "radar_live_verify_*.md"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: radar-live-verify
+          path: data/reports/radar_live_verify_*.md

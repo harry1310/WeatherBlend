@@ -1,0 +1,12 @@
+{
+  "model": "logistic",
+  "transform": "log1p(accum/0.1)",
+  "a": -1.359568618102396,
+  "b": 1.3042775576811552,
+  "nbhd_rad": 2,
+  "wet": 0.1,
+  "source": "phase2_bonehill_rocks_hw150_lead1.npz",
+  "n": 14209,
+  "brier": 0.16787423525820086,
+  "climatology_brier": 0.2307679380224087
+}
