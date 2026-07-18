@@ -11,11 +11,15 @@ env:
   RCLONE_RETRIES: "5"
 
 # Daily ERA5 truth refresh. Open-Meteo's ERA5 feed mirrors ECMWF's release
-# cadence — roughly once a day with ~5-day lag — so polling more often is
-# wasted calls. We backfill a rolling 7-day window each refresh to catch
-# any late-arriving days without assuming a single release timing.
-# (Window narrowed from 14 → 7 days 2026-05-09 — 14 was overkill given
-# Open-Meteo's typical 1-day publish cadence + ~5-day lag.)
+# cadence — roughly once a day, but the ERA5T lag is not fixed (~5 days
+# typically, seen as high as ~8). We backfill a rolling 14-day window each
+# refresh to catch late-arriving days without assuming a single release
+# timing, and — critically — so a lag spike can't drop a boundary day out
+# of the window before it publishes (that day would otherwise be a silent
+# permanent gap, not just a red run).
+# (Window was narrowed 14 → 7 days 2026-05-09 on a ~5-day-lag assumption;
+# restored to 14 on 2026-07-18 after an ~8-day lag emptied the whole 7-day
+# window and failed the refresh — see the push guard below.)
 #
 # Schedule moved to Cloudflare 2026-05-01 (cloudflare/scheduler-worker/);
 # GitHub's `schedule:` trigger removed at the same time. The Cloudflare
@@ -79,7 +83,7 @@ jobs:
           START="${{ github.event.inputs.start }}"
           END="${{ github.event.inputs.end }}"
           if [ -z "$START" ]; then
-            START=$(date -u -d '7 days ago' +%Y-%m-%d)
+            START=$(date -u -d '14 days ago' +%Y-%m-%d)
           fi
           if [ -z "$END" ]; then
             END=$(date -u +%Y-%m-%d)
@@ -118,7 +122,17 @@ jobs:
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
-          rclone copy ./data/truth/era5 "r2:${R2_BUCKET}/data/truth/era5" --fast-list --transfers 16 --checkers 32 --progress
+          # Guarded like the waves/rainfall pushes below: when ERA5T lag
+          # exceeds the whole refresh window every day fails the null-canary
+          # in WriteEra5Async, so no era5 tree is produced and a bare
+          # `rclone copy` would 404 the source dir (exit 3). That's an
+          # upstream-lag red herring, not our failure — no-op instead. The
+          # 14-day window makes a fully-empty refresh rare, but tolerate it.
+          if [ -d ./data/truth/era5 ]; then
+            rclone copy ./data/truth/era5 "r2:${R2_BUCKET}/data/truth/era5" --fast-list --transfers 16 --checkers 32 --progress
+          else
+            echo "No data/truth/era5 tree produced this run (ERA5 not yet published for any day in window) — nothing to push."
+          fi
 
       - name: Push wave-truth tree to R2
         env:
