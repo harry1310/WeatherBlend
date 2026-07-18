@@ -625,12 +625,14 @@ public static partial class SitePages
         // <details> pop-outs that overflowed the tile (2026-06-16 redesign).
         var alertLines = new StringBuilder();
         int alertCount = 0;
-        bool anyRed = false, anyAmber = false;
+        // Only anyRed drives severity: reaching the amber branch downstream is
+        // implied by (alertCount > 0 && !anyRed), since AddAlert only ever fires
+        // for red/amber families.
+        bool anyRed = false;
         void AddAlert(BadgeSeverity sev, string icon, string text)
         {
             alertCount++;
             if (sev == BadgeSeverity.Red) anyRed = true;
-            else if (sev == BadgeSeverity.Amber) anyAmber = true;
             var color = sev == BadgeSeverity.Red ? "var(--alert-red)" : "var(--alert-amber)";
             alertLines.Append(Ci,
                 $"""<div class="alert-line"><span class="pip" style="color:{color}">{icon}</span><span>{text}</span></div>""");

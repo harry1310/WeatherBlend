@@ -516,7 +516,8 @@ public sealed class DryWindowTrainCommand
         if (precipSrcByStation.Count == 0)
         {
             _log.LogError("Phase {P}: no station has a {Src} champion yet — abort. " +
-                "Train the {Src} precipitation phase for this location first.", dryWindowPhase, source.PrecipPhase);
+                "Train the {Src} precipitation phase for this location first.",
+                dryWindowPhase, source.PrecipPhase, source.PrecipPhase);
             return 3;
         }
 

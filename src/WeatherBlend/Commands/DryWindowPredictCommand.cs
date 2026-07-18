@@ -436,7 +436,7 @@ public sealed class DryWindowPredictCommand
             _log.LogWarning("{Key} {V}: no {Src} live predictions for anchor {A:yyyy-MM-dd} under the bound " +
                 "version ({VSrc}) or any current Active {Src} — skipping (expected immediately after a fresh " +
                 "deploy until {Src} has run at least once).",
-                stationSlug, versionName, source.PrecipPhase, anchorDate, vSrc, source.PrecipPhase);
+                stationSlug, versionName, source.PrecipPhase, anchorDate, vSrc, source.PrecipPhase, source.PrecipPhase);
             return false;
         }
 
