@@ -517,15 +517,20 @@ public sealed class BackfillCommand
         // (.Stations empty) are silently skipped.
         foreach (var location in locations)
         {
-            if (location.Rainfall.Stations.Count == 0)
+            // EaRainfallStations, NOT Rainfall.Stations: a WeatherLink gauge has no EA
+            // measure id, so the EA client would build a blank-GUID URL and burn three
+            // 60s attempt-timeouts on EVERY month chunk of the range. WeatherLink truth
+            // has its own archive path and is never backfilled from here.
+            var stations = location.EaRainfallStations;
+            if (stations.Count == 0)
             {
-                _log.LogInformation("rainfall backfill: location={Name} has no rainfall stations configured — skipping",
+                _log.LogInformation("rainfall backfill: location={Name} has no EA rainfall stations configured — skipping",
                     location.Name);
                 continue;
             }
             _log.LogInformation("rainfall backfill: location={Name} — {N} stations",
-                location.Name, location.Rainfall.Stations.Count);
-            foreach (var station in location.Rainfall.Stations)
+                location.Name, stations.Count);
+            foreach (var station in stations)
             {
                 var cursor = start;
                 while (cursor <= end)

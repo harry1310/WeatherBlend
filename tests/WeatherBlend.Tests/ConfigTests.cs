@@ -196,6 +196,22 @@ public class ConfigTests
         var sennenLandsEnd = bound.Locations[2].Rainfall.Stations.Single(s => s.Name == "Lands End");
         sennenLandsEnd.Source.Should().Be(RainfallTruthSource.WeatherLink);                   // source: weatherlink
         sennenLandsEnd.Slug.Should().Be("wl_lands_end");                                       // wl_ + slug(Name); no separate location field
+        // EaRainfallStations is THE single source of truth for "which gauges does the EA
+        // client fetch" (collect + backfill both loop over it). Lands End has NO EA measure
+        // id, so including it builds ".../measures/-rainfall-t-900-mm-qualified/..." — a URL
+        // that can never resolve but still costs three 60s attempt-timeouts every cycle.
+        // That dead wait is what pushed the 2026-08-12 02:45Z/08:45Z collect runs past their
+        // 30-minute limit during the EA outage, cancelling them and starving predict-4a.
+        bound.Locations[2].EaRainfallStations.Select(s => s.Name).Should().Equal("Trengwainton");
+        // Bonehill has the other WeatherLink gauge (Manaton) — pool-only AND non-EA, and the
+        // two filters are independent: pool-only gauges (Princetown) ARE still collected from
+        // the EA API, they just aren't products.
+        bound.Locations[0].EaRainfallStations.Select(s => s.Name).Should()
+            .Equal("Bellever Dartmoor", "Bovey Tracey", "Dartmoor nr Hexworthy", "Princetown");
+        // Invariant across every location: nothing the EA client is handed may lack a measure id.
+        foreach (var loc in bound.Locations)
+            foreach (var st in loc.EaRainfallStations)
+                st.Id.Should().NotBeNullOrWhiteSpace("{0}/{1} is fetched from the EA API", loc.Name, st.Name);
         // Humidity blender trains + verifies against Gwennap Head (WeatherLink), not
         // ERA5 — Sennen only (2026-06-21; ERA5 RH dry-biased, hurts the salt model).
         bound.Locations[2].HumidityTruthWeatherLink.Should().BeTrue();

@@ -165,9 +165,12 @@ public sealed class CollectCommand
             // wholesale when WEATHERBLEND_SKIP_RAINFALL is set (see above).
             // The skip does NOT touch rainfallErrors, so the cycle still
             // exits 0 and the predict chain proceeds.
+            // EaRainfallStations, NOT Rainfall.Stations: a WeatherLink gauge
+            // has no EA measure id and is collected by the WeatherLink pull
+            // below, so sending it here is three 60s timeouts of dead wait.
             foreach (var st in skipRainfall
                          ? Enumerable.Empty<RainfallStationConfig>()
-                         : location.Rainfall.Stations)
+                         : location.EaRainfallStations)
             {
                 try
                 {

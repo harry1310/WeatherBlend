@@ -1,5 +1,6 @@
 using System.Text.Json;
 using FluentAssertions;
+using Microsoft.Extensions.Logging.Abstractions;
 using WeatherBlend.Collect;
 using WeatherBlend.Config;
 using Xunit;
@@ -113,5 +114,44 @@ public class EaHydrologyClientTests
         rows.Should().ContainSingle();
         rows[0].ObservedTimeUtc.Kind.Should().Be(DateTimeKind.Utc);
         rows[0].ObservedTimeUtc.Hour.Should().Be(12);
+    }
+
+    // A WeatherLink gauge (Lands End) has no EA measure id, so it used to build
+    // ".../measures/-rainfall-t-900-mm-qualified/..." — a URL that can never resolve, yet
+    // still burned three 60s attempt-timeouts before the resilience handler gave up. Three
+    // minutes of dead wait per collect cycle, which is what tipped the 2026-08-12 02:45Z and
+    // 08:45Z runs past their 30-minute job limit during that morning's EA outage. Callers
+    // now filter via LocationConfig.EaRainfallStations; this guard is the backstop, and it
+    // must throw BEFORE any HTTP call so a future miswire surfaces on the first run.
+    [Theory]
+    [InlineData(RainfallTruthSource.WeatherLink, "")]                  // Lands End as configured
+    [InlineData(RainfallTruthSource.WeatherLink, "some-guid")]         // wrong source even with an id
+    [InlineData(RainfallTruthSource.Ea, "")]                           // EA source but a blank id
+    [InlineData(RainfallTruthSource.Ea, "   ")]                        // whitespace-only id
+    public async Task FetchAsync_rejects_a_station_with_no_EA_measure_id(
+        RainfallTruthSource source, string id)
+    {
+        var client = new EaHydrologyClient(new HttpClient(), NullLogger<EaHydrologyClient>.Instance);
+        var station = new RainfallStationConfig { Id = id, Name = "Lands End", Source = source };
+
+        var act = async () => await client.FetchAsync(
+            "sennen_cove", station, new DateOnly(2026, 8, 12), new DateOnly(2026, 8, 12), CancellationToken.None);
+
+        (await act.Should().ThrowAsync<ArgumentException>())
+            .WithMessage("*no measure id*");
+    }
+
+    [Fact]
+    public async Task FetchAsync_accepts_a_normal_EA_station_past_the_guard()
+    {
+        // Sanity check the guard isn't over-eager: a properly configured EA gauge must get
+        // past it and fail (if at all) on the network, never on the argument check.
+        var client = new EaHydrologyClient(new HttpClient { Timeout = TimeSpan.FromMilliseconds(1) },
+                                           NullLogger<EaHydrologyClient>.Instance);
+
+        var act = async () => await client.FetchAsync(
+            Loc, Station, new DateOnly(2026, 8, 12), new DateOnly(2026, 8, 12), CancellationToken.None);
+
+        await act.Should().NotThrowAsync<ArgumentException>();
     }
 }

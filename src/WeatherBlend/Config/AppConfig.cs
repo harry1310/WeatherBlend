@@ -193,6 +193,29 @@ public sealed class LocationConfig
         }
     }
 
+    /// <summary>The rainfall gauges this location COLLECTS from the EA Hydrology API —
+    /// every configured gauge whose <see cref="RainfallStationConfig.Source"/> is
+    /// <see cref="RainfallTruthSource.Ea"/>. THE single source of truth for "which gauges
+    /// does the EA client fetch": both <c>collect</c> and <c>backfill</c> resolve their
+    /// rainfall loop from here. A WeatherLink gauge (Lands End) carries no EA measure id,
+    /// so handing it to <see cref="Collect.EaHydrologyClient"/> builds a measure URL with a
+    /// blank GUID that can never resolve — three 60s attempt-timeouts of dead wait per
+    /// cycle. That is exactly what happened until 2026-08-12, and it is what pushed the
+    /// 02:45Z + 08:45Z collect runs past their 30-minute job limit during the EA outage
+    /// that morning (cancelled collect → the worker's collect→predict-4a hop never fired
+    /// → no fresh 4a → Phase 4b wrote nothing → coverage guard failed predict).
+    /// WeatherLink truth is collected separately, by its own client.</summary>
+    public List<RainfallStationConfig> EaRainfallStations
+    {
+        get
+        {
+            var result = new List<RainfallStationConfig>();
+            foreach (var s in Rainfall.Stations)
+                if (s.Source is RainfallTruthSource.Ea) result.Add(s);
+            return result;
+        }
+    }
+
     /// <summary>
     /// Optional Davis WeatherLink (api.weatherlink.com v2) station id for a
     /// close, real-instrument truth source (2026-06-19). Set on

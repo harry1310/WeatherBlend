@@ -50,6 +50,19 @@ public sealed class EaHydrologyClient
         DateOnly endDate,
         CancellationToken ct)
     {
+        // Fail fast, loudly, on a station this client cannot address. Without this a
+        // WeatherLink gauge (no EA measure id) builds ".../measures/-rainfall-t-900-mm-
+        // qualified/..." — a URL that can never resolve, yet still costs three 60s
+        // attempt-timeouts before the resilience handler gives up. Callers filter via
+        // LocationConfig.EaRainfallStations; this is the backstop that stops a future
+        // miswire from silently eating minutes of every collect cycle instead of
+        // surfacing on the first run.
+        if (station.Source is not RainfallTruthSource.Ea || string.IsNullOrWhiteSpace(station.Id))
+            throw new ArgumentException(
+                $"Station '{station.Name}' (source={station.Source}, id='{station.Id}') is not an EA " +
+                "Hydrology gauge — it has no measure id. Filter with LocationConfig.EaRainfallStations.",
+                nameof(station));
+
         var measureId = $"{station.Id}{MeasureSuffix}";
         var url =
             $"{BaseUrl}/id/measures/{measureId}/readings.json" +
